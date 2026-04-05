@@ -40,7 +40,6 @@ out/
 data/
 *.log
 .gradle-home*/
-doordash-app/
 
 ### Frontend ###
 frontend/node_modules/
