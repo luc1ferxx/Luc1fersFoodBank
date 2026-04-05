@@ -47,7 +47,7 @@ frontend/build/
 frontend/coverage/
 
 ### Backend ###
-backEnd/.gradle/
-backEnd/build/
-backEnd/bin/
-backEnd/data/
+backend/.gradle/
+backend/build/
+backend/bin/
+backend/data/

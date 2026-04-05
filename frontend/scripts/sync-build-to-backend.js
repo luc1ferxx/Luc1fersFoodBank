@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 
 const sourceDir = path.resolve(__dirname, "..", "build");
-const targetDir = path.resolve(__dirname, "..", "..", "backEnd", "src", "main", "resources", "public");
+const targetDir = path.resolve(__dirname, "..", "..", "backend", "src", "main", "resources", "public");
 
 if (!fs.existsSync(sourceDir)) {
   throw new Error(`Frontend build output was not found: ${sourceDir}`);
