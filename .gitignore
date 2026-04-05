@@ -35,3 +35,12 @@ out/
 
 ### VS Code ###
 .vscode/
+
+### Runtime data ###
+data/
+*.log
+
+### Frontend ###
+frontend/node_modules/
+frontend/build/
+frontend/coverage/
