@@ -6,7 +6,7 @@ const targetDir = path.resolve(
   __dirname,
   "..",
   "..",
-  "backend",
+  "backEnd",
   "src",
   "main",
   "resources",

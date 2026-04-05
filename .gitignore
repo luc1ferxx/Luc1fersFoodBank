@@ -39,8 +39,16 @@ out/
 ### Runtime data ###
 data/
 *.log
+.gradle-home*/
+doordash-app/
 
 ### Frontend ###
 frontend/node_modules/
 frontend/build/
 frontend/coverage/
+
+### Backend ###
+backEnd/.gradle/
+backEnd/build/
+backEnd/bin/
+backEnd/data/
