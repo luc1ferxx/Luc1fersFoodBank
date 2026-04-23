@@ -7,6 +7,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
@@ -16,9 +17,6 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 
 @Component
@@ -26,17 +24,19 @@ public class RateLimitingFilter extends OncePerRequestFilter {
 
     private final boolean enabled;
     private final Duration window;
+    private final StringRedisTemplate redisTemplate;
     private final ApplicationMetricsService metricsService;
-    private final Map<String, RateLimitWindow> counters = new ConcurrentHashMap<>();
 
 
     public RateLimitingFilter(
             @Value("${app.security.rate-limit.enabled:true}") boolean enabled,
             @Value("${app.security.rate-limit.window:1m}") Duration window,
+            StringRedisTemplate redisTemplate,
             ApplicationMetricsService metricsService
     ) {
         this.enabled = enabled;
         this.window = window;
+        this.redisTemplate = redisTemplate;
         this.metricsService = metricsService;
     }
 
@@ -73,16 +73,16 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     private boolean allow(HttpServletRequest request, RateLimitRule rule) {
         Instant now = Instant.now();
         String clientIp = extractClientIp(request);
-        String key = rule.routeKey() + "|" + clientIp;
+        long windowMillis = Math.max(window.toMillis(), 1000L);
+        long windowBucket = now.toEpochMilli() / windowMillis;
+        String redisKey = "onlineorder:rate-limit:" + rule.routeKey() + ":" + clientIp + ":" + windowBucket;
 
-        RateLimitWindow current = counters.compute(key, (ignored, existing) -> {
-            if (existing == null || now.isAfter(existing.windowStart.plus(window))) {
-                return new RateLimitWindow(now, new AtomicInteger(1));
-            }
-            existing.counter.incrementAndGet();
-            return existing;
-        });
-        return current.counter.get() <= rule.limit();
+        Long count = redisTemplate.opsForValue().increment(redisKey);
+        if (count != null && count == 1L) {
+            redisTemplate.expire(redisKey, window.plusSeconds(1));
+        }
+
+        return count == null || count <= rule.limit();
     }
 
 
@@ -121,16 +121,5 @@ public class RateLimitingFilter extends OncePerRequestFilter {
 
 
     private record RateLimitRule(String routeKey, int limit) {
-    }
-
-
-    private static final class RateLimitWindow {
-        private final Instant windowStart;
-        private final AtomicInteger counter;
-
-        private RateLimitWindow(Instant windowStart, AtomicInteger counter) {
-            this.windowStart = windowStart;
-            this.counter = counter;
-        }
     }
 }

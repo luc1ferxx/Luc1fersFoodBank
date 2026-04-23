@@ -13,7 +13,7 @@
 The backend now defaults to:
 
 - PostgreSQL on `localhost:5433`, database `onlineorder`
-- Redis on `localhost:6379` for shared sessions and cache
+- Redis on `localhost:6379` for shared sessions, cache, and distributed rate-limit counters
 - Kafka on `localhost:9092` for asynchronous order events
 
 Operational endpoints and jobs:
@@ -39,7 +39,7 @@ Demo account:
 
 ## H2 Fallback
 
-If you want to run without PostgreSQL, Redis, and Kafka, start the backend with the `h2` profile instead:
+If you want to run without PostgreSQL and Kafka, start the backend with the `h2` profile instead. Redis is still the configured cache backend; the project no longer uses Spring's local/simple cache manager.
 
 ```powershell
 $env:SPRING_PROFILES_ACTIVE="h2"
@@ -47,7 +47,7 @@ cd c:\Users\Jxx\Desktop\OnlineOrder\backend
 gradlew.bat bootRun
 ```
 
-That enables the in-memory H2 datasource and `/h2-console`.
+That enables the in-memory H2 datasource and `/h2-console`; keep Redis running if you exercise cache-backed paths.
 
 ## If You Change The React Frontend
 

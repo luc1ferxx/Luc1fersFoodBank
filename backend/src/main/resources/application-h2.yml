@@ -1,6 +1,6 @@
 spring:
   cache:
-    type: simple
+    type: redis
   datasource:
     url: ${DATABASE_URL:jdbc:h2:mem:onlineorder;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE}
     username: ${DATABASE_USERNAME:sa}
