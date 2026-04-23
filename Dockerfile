@@ -16,7 +16,7 @@ COPY --chown=gradle:gradle frontend frontend
 COPY --chown=gradle:gradle backend backend
 
 WORKDIR /workspace/frontend
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 
 WORKDIR /workspace/backend
 RUN sh gradlew bootJar --no-daemon

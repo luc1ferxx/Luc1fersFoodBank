@@ -7,6 +7,7 @@ import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.model.DeadLetterReplayDto;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.DeadLetterEventRepository;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -35,6 +36,7 @@ public class DeadLetterReplayService {
     private final TransactionOperations transactionOperations;
 
 
+    @Autowired
     public DeadLetterReplayService(
             @Value("${app.dlt.replay-timeout:5s}") Duration replayTimeout,
             KafkaTemplate<String, String> kafkaTemplate,
