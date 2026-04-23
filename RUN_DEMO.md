@@ -1,39 +1,73 @@
 # Run Demo
 
-## IntelliJ Backend Demo
+## Backend Demo
 
-1. Open `backEnd` as a Gradle project in IntelliJ.
-2. Use JDK 17 or newer for the project SDK.
-3. Run `com.laioffer.onlineorder.OnlineOrderApplication`.
-4. Open `http://localhost:8080`.
+1. Start PostgreSQL, Redis, and Kafka from [docker-compose.yml](/c:/Users/Jxx/Desktop/OnlineOrder/backend/docker-compose.yml):
+   `cd backend`
+   `docker compose up -d`
+2. Open `backend` as a Gradle project in IntelliJ.
+3. Use JDK 17 or newer for the project SDK.
+4. Run `com.laioffer.onlineorder.OnlineOrderApplication`.
+5. Open `http://localhost:8080`.
 
-The backend now defaults to an embedded H2 database, so you do not need PostgreSQL just to run the demo locally.
+The backend now defaults to:
+
+- PostgreSQL on `localhost:5433`, database `onlineorder`
+- Redis on `localhost:6379` for shared sessions and cache
+- Kafka on `localhost:9092` for asynchronous order events
+
+Operational endpoints and jobs:
+
+- `POST /dead-letters/{id}/replay` replays one stored dead-letter event back to its original Kafka topic
+- `PATCH /orders/{id}/status` updates an order status through the state machine; the demo user can call it because it has `ROLE_ADMIN`
+- `POST /orders/{id}/cancel` cancels one of the current user's orders when the state machine allows it
+- `GET /actuator/health`, `GET /actuator/info`, `GET /actuator/metrics/**`, and `GET /actuator/prometheus` are enabled; only `health` and `info` are anonymous
+- Every HTTP response includes `X-Trace-Id` for request correlation in logs
+- Scheduled cleanup removes old `published outbox`, `processed_events`, `idempotency_requests`, and replayed dead letters
+- Cleanup cadence and retention are configurable with `CLEANUP_*` environment variables
+
+Default PostgreSQL credentials:
+
+- Username: `postgres`
+- Password: `secret`
 
 Demo account:
 
 - Email: `demo@laifood.com`
 - Password: `demo123`
+- Roles: `ROLE_USER`, `ROLE_ADMIN`
+
+## H2 Fallback
+
+If you want to run without PostgreSQL, Redis, and Kafka, start the backend with the `h2` profile instead:
+
+```powershell
+$env:SPRING_PROFILES_ACTIVE="h2"
+cd c:\Users\Jxx\Desktop\OnlineOrder\backend
+gradlew.bat bootRun
+```
+
+That enables the in-memory H2 datasource and `/h2-console`.
 
 ## If You Change The React Frontend
 
-The Spring app serves the built files from `backEnd/src/main/resources/public`.
+The Spring app now rebuilds and stages the frontend automatically during backend resource processing, so `gradlew.bat bootRun` picks up the current React code under `frontend/`.
 
-When you update files under `doordash-app`, rebuild and sync them back into the backend:
+If you want a manual production rebuild:
 
-```bash
-cd doordash-app
-npm install
-npm run deploy:backend
+```powershell
+cd c:\Users\Jxx\Desktop\OnlineOrder\backend
+gradlew.bat processResources
 ```
 
-Then rerun the Spring Boot app from IntelliJ and refresh `http://localhost:8080`.
+Then rerun the Spring Boot app and refresh `http://localhost:8080`.
 
 ## Optional Frontend Dev Server
 
 If you want hot reload while editing React:
 
-```bash
-cd doordash-app
+```powershell
+cd c:\Users\Jxx\Desktop\OnlineOrder\frontend
 npm install
 npm start
 ```

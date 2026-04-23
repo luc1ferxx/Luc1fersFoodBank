@@ -1,9 +1,0 @@
-spring:
-  datasource:
-    url: jdbc:postgresql://${DATABASE_HOST:localhost}:${DATABASE_PORT:5433}/onlineorder
-    username: ${DATABASE_USERNAME:postgres}
-    password: ${DATABASE_PASSWORD:secret}
-    driver-class-name: org.postgresql.Driver
-  h2:
-    console:
-      enabled: false

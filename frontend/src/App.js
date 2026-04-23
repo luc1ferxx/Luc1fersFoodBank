@@ -35,6 +35,7 @@ function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [loadingSession, setLoadingSession] = useState(true);
   const [cartVersion, setCartVersion] = useState(0);
+  const [authView, setAuthView] = useState("login");
 
   const refreshSession = () => {
     setLoadingSession(true);
@@ -67,6 +68,7 @@ function App() {
       .then(() => {
         setCurrentUser(null);
         setCartVersion((value) => value + 1);
+        setAuthView("login");
         message.success("Logged out");
       })
       .catch((err) => {
@@ -135,12 +137,7 @@ function App() {
                   Logout
                 </Button>
               </>
-            ) : (
-              <SignupForm
-                buttonLabel="Create account"
-                buttonClassName="topbar__register"
-              />
-            )}
+            ) : null}
           </Space>
         </header>
 
@@ -210,17 +207,14 @@ function App() {
               </div>
             ) : (
               <div className="auth-stack">
-                <LoginForm onSuccess={refreshSession} />
-                <div className="auth-promo">
-                  <Text className="auth-promo__eyebrow">New here?</Text>
-                  <Title level={4} className="auth-promo__title">
-                    Open an account and test the full flow.
-                  </Title>
-                  <SignupForm
-                    buttonLabel="Register now"
-                    buttonClassName="auth-promo__button"
+                {authView === "signup" ? (
+                  <SignupForm onShowLogin={() => setAuthView("login")} />
+                ) : (
+                  <LoginForm
+                    onShowSignup={() => setAuthView("signup")}
+                    onSuccess={refreshSession}
                   />
-                </div>
+                )}
               </div>
             )}
           </div>
@@ -228,7 +222,7 @@ function App() {
 
         {loadingSession ? null : currentUser ? (
           <section className="menu-stage">
-            <FoodList onItemAdded={handleItemAdded} />
+            <FoodList cartVersion={cartVersion} onItemAdded={handleItemAdded} />
           </section>
         ) : (
           <section className="guest-banner">

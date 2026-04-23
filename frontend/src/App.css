@@ -389,6 +389,31 @@
   margin-top: 12px;
 }
 
+.auth-card__switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(84, 48, 23, 0.08);
+}
+
+.auth-card__switch-text.ant-typography {
+  color: #675345;
+}
+
+.auth-card__switch-button.ant-btn {
+  padding: 0;
+  color: #9b4b1b;
+  font-weight: 700;
+}
+
+.auth-card__switch-button.ant-btn:hover,
+.auth-card__switch-button.ant-btn:focus {
+  color: #c45a11;
+}
+
 .menu-stage {
   margin-top: 26px;
   padding: 28px;
@@ -606,6 +631,85 @@
   min-width: 110px;
 }
 
+.menu-card__cta.ant-btn {
+  min-width: 132px;
+  height: 44px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #7f431f, #c45a11);
+  color: #fff9f2;
+  font-weight: 700;
+  box-shadow: 0 16px 26px rgba(123, 63, 28, 0.18);
+  transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.menu-card__cta.ant-btn:hover,
+.menu-card__cta.ant-btn:focus {
+  background: linear-gradient(135deg, #6e3818, #b34d08);
+  color: #fff9f2;
+  transform: translateY(-1px);
+}
+
+.menu-card__cta.ant-btn[disabled],
+.menu-card__cta.ant-btn[disabled]:hover {
+  background: rgba(137, 88, 58, 0.26);
+  color: rgba(36, 24, 15, 0.58);
+  box-shadow: none;
+}
+
+.menu-card__stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px;
+  border: 1px solid rgba(84, 48, 23, 0.1);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(255, 248, 239, 0.98), rgba(244, 232, 216, 0.92));
+  box-shadow: 0 14px 24px rgba(118, 77, 40, 0.12);
+}
+
+.menu-card__stepper-button.ant-btn {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  border: none;
+  background: rgba(84, 48, 23, 0.08);
+  color: #5b3317;
+  box-shadow: none;
+}
+
+.menu-card__stepper-button.ant-btn:hover,
+.menu-card__stepper-button.ant-btn:focus {
+  background: rgba(196, 90, 17, 0.18);
+  color: #8c3f17;
+}
+
+.menu-card__stepper-button--plus.ant-btn {
+  background: linear-gradient(135deg, #7f431f, #c45a11);
+  color: #fff9f2;
+}
+
+.menu-card__stepper-button--plus.ant-btn:hover,
+.menu-card__stepper-button--plus.ant-btn:focus {
+  background: linear-gradient(135deg, #6e3818, #b34d08);
+  color: #fff9f2;
+}
+
+.menu-card__stepper-button.ant-btn[disabled],
+.menu-card__stepper-button.ant-btn[disabled]:hover,
+.menu-card__stepper-button.ant-btn[disabled]:focus {
+  background: rgba(137, 88, 58, 0.18);
+  color: rgba(36, 24, 15, 0.42);
+}
+
+.menu-card__quantity {
+  min-width: 20px;
+  text-align: center;
+  color: #24180f;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
 .menu-empty-state,
 .drawer-empty-state,
 .drawer-loading-state {
@@ -784,6 +888,94 @@
   margin-bottom: 18px;
 }
 
+.signup-success {
+  display: grid;
+  gap: 14px;
+  text-align: center;
+}
+
+.signup-success__icon {
+  margin: 0 auto;
+  font-size: 52px;
+  color: #c45a11;
+}
+
+.signup-success__eyebrow.ant-typography {
+  display: block;
+  color: #9b5a2f;
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.signup-success__title.ant-typography {
+  margin: 0;
+}
+
+.signup-success__text.ant-typography {
+  color: #675345;
+}
+
+.signup-success__button {
+  margin-top: 6px;
+}
+
+.payment-modal__hero {
+  margin-bottom: 20px;
+}
+
+.payment-modal__layout {
+  display: grid;
+  gap: 18px;
+}
+
+.payment-modal__note.ant-typography {
+  color: #675345;
+}
+
+.payment-summary {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 24px;
+  background: linear-gradient(135deg, rgba(252, 245, 236, 0.94), rgba(241, 228, 210, 0.92));
+}
+
+.payment-summary__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  color: #2d1d12;
+}
+
+.payment-summary__row--note {
+  justify-content: flex-start;
+  padding-top: 6px;
+  color: #6c5648;
+}
+
+.payment-summary__label.ant-typography {
+  color: #9b5a2f;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.payment-summary__value {
+  font-size: 1.3rem;
+}
+
+.payment-modal__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.payment-submit {
+  margin-top: 6px;
+}
+
 @media (max-width: 1100px) {
   .hero-panel,
   .restaurant-spotlight {
@@ -823,6 +1015,11 @@
 
   .drawer-summary {
     grid-template-columns: 1fr;
+  }
+
+  .payment-modal__fields {
+    grid-template-columns: 1fr;
+    gap: 0;
   }
 }
 

@@ -2,23 +2,26 @@ package com.laioffer.onlineorder.service;
 
 
 import com.laioffer.onlineorder.entity.CartEntity;
+import com.laioffer.onlineorder.entity.IdempotencyRequestEntity;
 import com.laioffer.onlineorder.entity.MenuItemEntity;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.entity.OrderItemEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
+import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.model.CartDto;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 import com.laioffer.onlineorder.model.OrderItemDto;
+import com.laioffer.onlineorder.model.OrderStatus;
+import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.CartRepository;
+import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.MenuItemRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderItemRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
-import org.springframework.cache.annotation.CacheEvict;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,60 +34,71 @@ import java.util.List;
 @Service
 public class CartService {
 
+    private static final String IDEMPOTENCY_STATUS_PROCESSING = "PROCESSING";
+    private static final String IDEMPOTENCY_STATUS_SUCCEEDED = "SUCCEEDED";
+
     private final CartRepository cartRepository;
+    private final IdempotencyRequestRepository idempotencyRequestRepository;
     private final MenuItemRepository menuItemRepository;
     private final OrderItemRepository orderItemRepository;
     private final OrderRepository orderRepository;
     private final OrderHistoryItemRepository orderHistoryItemRepository;
+    private final OrderEventOutboxService orderEventOutboxService;
+    private final ApplicationMetricsService metricsService;
 
 
     public CartService(
             CartRepository cartRepository,
+            IdempotencyRequestRepository idempotencyRequestRepository,
             MenuItemRepository menuItemRepository,
             OrderItemRepository orderItemRepository,
             OrderRepository orderRepository,
-            OrderHistoryItemRepository orderHistoryItemRepository
+            OrderHistoryItemRepository orderHistoryItemRepository,
+            OrderEventOutboxService orderEventOutboxService,
+            ApplicationMetricsService metricsService
     ) {
         this.cartRepository = cartRepository;
+        this.idempotencyRequestRepository = idempotencyRequestRepository;
         this.menuItemRepository = menuItemRepository;
         this.orderItemRepository = orderItemRepository;
         this.orderRepository = orderRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
+        this.orderEventOutboxService = orderEventOutboxService;
+        this.metricsService = metricsService;
     }
 
 
-    @CacheEvict(cacheNames = "cart", key = "#customerId")
     @Transactional
     public void addMenuItemToCart(long customerId, long menuItemId) {
-        CartEntity cart = getRequiredCart(customerId);
+        CartEntity cart = getRequiredLockedCart(customerId);
         MenuItemEntity menuItem = getRequiredMenuItem(menuItemId);
-        OrderItemEntity orderItem = orderItemRepository.findByCartIdAndMenuItemId(cart.id(), menuItem.id());
-
-        Long orderItemId = orderItem == null ? null : orderItem.id();
-        int quantity = orderItem == null ? 1 : orderItem.quantity() + 1;
-
-        OrderItemEntity newOrderItem = new OrderItemEntity(orderItemId, menuItem.id(), cart.id(), menuItem.price(), quantity);
-        orderItemRepository.save(newOrderItem);
+        orderItemRepository.incrementQuantity(cart.id(), menuItem.id(), menuItem.price());
         syncCartTotal(cart.id());
     }
 
 
-    @Cacheable("cart")
     public CartDto getCart(Long customerId) {
         CartEntity cart = getRequiredCart(customerId);
         return buildCartDto(cart);
     }
 
 
-    @CacheEvict(cacheNames = "cart", key = "#customerId")
     @Transactional
     public void updateOrderItemQuantity(Long customerId, Long orderItemId, Integer quantity) {
         if (quantity == null || quantity < 0) {
             throw new BadRequestException("Quantity must be zero or greater");
         }
 
-        CartEntity cart = getRequiredCart(customerId);
-        OrderItemEntity orderItem = getRequiredOrderItem(cart.id(), orderItemId);
+        CartEntity cart = getRequiredLockedCart(customerId);
+        OrderItemEntity orderItem = findOwnedOrderItem(cart.id(), orderItemId);
+
+        if (orderItem == null) {
+            if (quantity == 0) {
+                syncCartTotal(cart.id());
+                return;
+            }
+            throw new ResourceNotFoundException("Cart item not found");
+        }
 
         if (quantity == 0) {
             orderItemRepository.deleteByIdAndCartId(orderItem.id(), cart.id());
@@ -103,19 +117,77 @@ public class CartService {
     }
 
 
-    @CacheEvict(cacheNames = "cart", key = "#customerId")
     @Transactional
     public void clearCart(Long customerId) {
-        CartEntity cart = getRequiredCart(customerId);
+        CartEntity cart = getRequiredLockedCart(customerId);
         orderItemRepository.deleteByCartId(cart.id());
         cartRepository.updateTotalPrice(cart.id(), 0.0);
     }
 
 
-    @CacheEvict(cacheNames = "cart", key = "#customerId")
     @Transactional
     public OrderDto checkout(Long customerId) {
-        CartEntity cart = getRequiredCart(customerId);
+        CartEntity cart = getRequiredLockedCart(customerId);
+        return checkoutInternal(customerId, cart, "PLACED", null);
+    }
+
+
+    @Transactional
+    public OrderDto checkout(Long customerId, String status) {
+        CartEntity cart = getRequiredLockedCart(customerId);
+        return checkoutInternal(customerId, cart, status, null);
+    }
+
+
+    @Transactional
+    public OrderDto checkoutWithIdempotency(Long customerId, String status, String idempotencyKey) {
+        return checkoutWithIdempotency(customerId, status, idempotencyKey, buildDefaultRequestHash(status));
+    }
+
+
+    @Transactional
+    public OrderDto checkoutWithIdempotency(Long customerId, String status, String idempotencyKey, String requestHash) {
+        String normalizedStatus = normalizeStatus(status);
+        String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
+        LocalDateTime now = LocalDateTime.now();
+        String scope = buildScope(normalizedStatus);
+
+        idempotencyRequestRepository.insertIfAbsent(
+                customerId,
+                scope,
+                normalizedKey,
+                requestHash,
+                IDEMPOTENCY_STATUS_PROCESSING,
+                now,
+                now
+        );
+
+        IdempotencyRequestEntity request = idempotencyRequestRepository.lockByCustomerIdAndScopeAndIdempotencyKey(
+                customerId,
+                scope,
+                normalizedKey
+        );
+        if (request == null) {
+            throw new ConflictException("Unable to initialize idempotent checkout");
+        }
+        if (!request.requestHash().equals(requestHash)) {
+            throw new ConflictException("Idempotency key was already used with a different request");
+        }
+        if (IDEMPOTENCY_STATUS_SUCCEEDED.equals(request.status())) {
+            if (request.orderId() == null) {
+                throw new ConflictException("Idempotent checkout completed without a stored order");
+            }
+            return getRequiredOrderDto(request.orderId());
+        }
+
+        CartEntity cart = getRequiredLockedCart(customerId);
+        OrderDto order = checkoutInternal(customerId, cart, normalizedStatus, normalizedKey);
+        idempotencyRequestRepository.markSucceeded(request.id(), IDEMPOTENCY_STATUS_SUCCEEDED, order.id(), LocalDateTime.now());
+        return order;
+    }
+
+
+    private OrderDto checkoutInternal(Long customerId, CartEntity cart, String status, String idempotencyKey) {
         List<OrderItemEntity> cartItems = orderItemRepository.getAllByCartId(cart.id());
         if (cartItems.isEmpty()) {
             throw new BadRequestException("Your cart is empty");
@@ -128,7 +200,7 @@ public class CartService {
                 null,
                 customerId,
                 refreshedCart.totalPrice(),
-                "PLACED",
+                normalizeStatus(status),
                 LocalDateTime.now()
         ));
 
@@ -154,6 +226,8 @@ public class CartService {
             orderHistoryItemDtos.add(new OrderHistoryItemDto(savedItem));
         }
 
+        orderEventOutboxService.enqueueOrderEvent(savedOrder, orderHistoryItemDtos, idempotencyKey);
+        metricsService.recordCheckout(savedOrder.status());
         orderItemRepository.deleteByCartId(cart.id());
         cartRepository.updateTotalPrice(cart.id(), 0.0);
 
@@ -170,17 +244,25 @@ public class CartService {
     }
 
 
+    private CartEntity getRequiredLockedCart(Long customerId) {
+        CartEntity cart = cartRepository.lockByCustomerId(customerId);
+        if (cart == null) {
+            throw new ResourceNotFoundException("Cart not found");
+        }
+        return cart;
+    }
+
+
     private MenuItemEntity getRequiredMenuItem(Long menuItemId) {
         return menuItemRepository.findById(menuItemId)
                 .orElseThrow(() -> new ResourceNotFoundException("Menu item not found"));
     }
 
 
-    private OrderItemEntity getRequiredOrderItem(Long cartId, Long orderItemId) {
-        OrderItemEntity orderItem = orderItemRepository.findById(orderItemId)
-                .orElseThrow(() -> new ResourceNotFoundException("Cart item not found"));
-        if (!orderItem.cartId().equals(cartId)) {
-            throw new ResourceNotFoundException("Cart item not found");
+    private OrderItemEntity findOwnedOrderItem(Long cartId, Long orderItemId) {
+        OrderItemEntity orderItem = orderItemRepository.findById(orderItemId).orElse(null);
+        if (orderItem == null || !orderItem.cartId().equals(cartId)) {
+            return null;
         }
         return orderItem;
     }
@@ -198,11 +280,42 @@ public class CartService {
 
 
     private void syncCartTotal(Long cartId) {
-        List<OrderItemEntity> orderItems = orderItemRepository.getAllByCartId(cartId);
-        double totalPrice = 0.0;
-        for (OrderItemEntity orderItem : orderItems) {
-            totalPrice += orderItem.price() * orderItem.quantity();
-        }
+        Double totalPrice = orderItemRepository.getTotalPriceByCartId(cartId);
         cartRepository.updateTotalPrice(cartId, totalPrice);
+    }
+
+
+    private OrderDto getRequiredOrderDto(Long orderId) {
+        OrderEntity order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Order not found"));
+        List<OrderHistoryItemEntity> orderItems = orderHistoryItemRepository.findAllByOrderIdOrderByIdAsc(order.id());
+        List<OrderHistoryItemDto> itemDtos = new ArrayList<>();
+        for (OrderHistoryItemEntity orderItem : orderItems) {
+            itemDtos.add(new OrderHistoryItemDto(orderItem));
+        }
+        return new OrderDto(order, itemDtos);
+    }
+
+
+    private String normalizeStatus(String status) {
+        return OrderStatus.normalizeForCheckout(status).name();
+    }
+
+
+    private String normalizeIdempotencyKey(String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new BadRequestException("Idempotency-Key header is required");
+        }
+        return idempotencyKey.trim();
+    }
+
+
+    private String buildScope(String status) {
+        return "checkout:" + status.toLowerCase();
+    }
+
+
+    private String buildDefaultRequestHash(String status) {
+        return "checkout|" + normalizeStatus(status);
     }
 }

@@ -1,4 +1,4 @@
-import { PlusOutlined, SearchOutlined } from "@ant-design/icons";
+import { MinusOutlined, PlusOutlined, SearchOutlined } from "@ant-design/icons";
 import {
   Button,
   Card,
@@ -12,50 +12,84 @@ import {
   message,
 } from "antd";
 import { useEffect, useMemo, useState } from "react";
-import { addItemToCart, getMenus, getRestaurants } from "../utils";
+import {
+  addItemToCart,
+  getCart,
+  getMenus,
+  getRestaurants,
+  updateCartItem,
+} from "../utils";
 
 const { Paragraph, Text, Title } = Typography;
 
-const AddToCartButton = ({ itemId, onAdded }) => {
-  const [loading, setLoading] = useState(false);
+const buildCartItemMap = (cartData) =>
+  (cartData?.order_items || []).reduce((cartMap, item) => {
+    cartMap[item.menu_item_id] = {
+      orderItemId: item.order_item_id,
+      quantity: item.quantity,
+    };
+    return cartMap;
+  }, {});
 
-  const addToCart = () => {
-    setLoading(true);
-    addItemToCart(itemId)
-      .then(() => {
-        message.success("Added item to cart");
-        onAdded();
-      })
-      .catch((err) => {
-        message.error(err.message);
-      })
-      .finally(() => {
-        setLoading(false);
-      });
-  };
+const QuantityControl = ({ loading, quantity = 0, onIncrease, onDecrease }) => {
+  if (quantity > 0) {
+    return (
+      <div className="menu-card__stepper" role="group" aria-label="Item quantity">
+        <Button
+          className="menu-card__stepper-button"
+          disabled={loading}
+          icon={<MinusOutlined />}
+          shape="circle"
+          onClick={onDecrease}
+        />
+        <span className="menu-card__quantity">{quantity}</span>
+        <Button
+          className="menu-card__stepper-button menu-card__stepper-button--plus"
+          disabled={loading}
+          icon={<PlusOutlined />}
+          shape="circle"
+          onClick={onIncrease}
+        />
+      </div>
+    );
+  }
 
   return (
-    <Tooltip title="Add to cart">
+    <Tooltip title="Add to bag">
       <Button
         className="menu-card__cta"
         loading={loading}
-        type="primary"
         icon={<PlusOutlined />}
-        onClick={addToCart}
+        shape="round"
+        onClick={onIncrease}
       >
-        Add
+        Add to bag
       </Button>
     </Tooltip>
   );
 };
 
-const FoodList = ({ onItemAdded }) => {
+const FoodList = ({ cartVersion, onItemAdded }) => {
   const [foodData, setFoodData] = useState([]);
   const [currentRestaurantId, setCurrentRestaurantId] = useState();
   const [restaurants, setRestaurants] = useState([]);
+  const [cartItemsByMenuId, setCartItemsByMenuId] = useState({});
   const [loadingMenus, setLoadingMenus] = useState(false);
   const [loadingRestaurants, setLoadingRestaurants] = useState(false);
+  const [pendingCartItems, setPendingCartItems] = useState({});
   const [searchValue, setSearchValue] = useState("");
+
+  const refreshCartSnapshot = () =>
+    getCart().then((cartData) => {
+      setCartItemsByMenuId(buildCartItemMap(cartData));
+      return cartData;
+    });
+
+  useEffect(() => {
+    refreshCartSnapshot().catch((err) => {
+      message.error(err.message);
+    });
+  }, [cartVersion]);
 
   useEffect(() => {
     setLoadingRestaurants(true);
@@ -111,6 +145,86 @@ const FoodList = ({ onItemAdded }) => {
   }, [foodData, searchValue]);
 
   const heroImage = filteredFoodData[0]?.image_url || foodData[0]?.image_url;
+
+  const setPendingState = (menuItemId, isPending) => {
+    setPendingCartItems((currentPendingItems) => {
+      const nextPendingItems = { ...currentPendingItems };
+
+      if (isPending) {
+        nextPendingItems[menuItemId] = true;
+      } else {
+        delete nextPendingItems[menuItemId];
+      }
+
+      return nextPendingItems;
+    });
+  };
+
+  const handleQuickAdd = (menuItemId) => {
+    const previousCartSnapshot = cartItemsByMenuId;
+
+    setPendingState(menuItemId, true);
+    setCartItemsByMenuId((currentCartItems) => ({
+      ...currentCartItems,
+      [menuItemId]: {
+        orderItemId: currentCartItems[menuItemId]?.orderItemId,
+        quantity: (currentCartItems[menuItemId]?.quantity || 0) + 1,
+      },
+    }));
+
+    addItemToCart(menuItemId)
+      .then(() => refreshCartSnapshot())
+      .then(() => {
+        onItemAdded();
+      })
+      .catch((err) => {
+        setCartItemsByMenuId(previousCartSnapshot);
+        message.error(err.message);
+      })
+      .finally(() => {
+        setPendingState(menuItemId, false);
+      });
+  };
+
+  const handleQuickDecrease = (menuItemId) => {
+    const previousCartSnapshot = cartItemsByMenuId;
+    const previousItem = previousCartSnapshot[menuItemId];
+
+    if (!previousItem?.orderItemId || !previousItem.quantity) {
+      return;
+    }
+
+    const nextQuantity = previousItem.quantity - 1;
+
+    setPendingState(menuItemId, true);
+    setCartItemsByMenuId((currentCartItems) => {
+      const nextCartItems = { ...currentCartItems };
+
+      if (nextQuantity > 0) {
+        nextCartItems[menuItemId] = {
+          orderItemId: previousItem.orderItemId,
+          quantity: nextQuantity,
+        };
+      } else {
+        delete nextCartItems[menuItemId];
+      }
+
+      return nextCartItems;
+    });
+
+    updateCartItem(previousItem.orderItemId, nextQuantity)
+      .then(() => refreshCartSnapshot())
+      .then(() => {
+        onItemAdded();
+      })
+      .catch((err) => {
+        setCartItemsByMenuId(previousCartSnapshot);
+        message.error(err.message);
+      })
+      .finally(() => {
+        setPendingState(menuItemId, false);
+      });
+  };
 
   return (
     <div className="food-stage">
@@ -200,50 +314,61 @@ const FoodList = ({ onItemAdded }) => {
             xxl: 3,
           }}
           dataSource={filteredFoodData}
-          renderItem={(item, index) => (
-            <List.Item key={item.id}>
-              <Card
-                className="menu-card"
-                cover={
-                  <div className="menu-card__cover">
-                    <img src={item.image_url} alt={item.name} />
-                    <div className="menu-card__overlay">
-                      <Text className="menu-card__price">{`$${item.price?.toFixed(2)}`}</Text>
-                      {index === 0 ? (
-                        <Tag className="menu-card__tag">Chef&apos;s pick</Tag>
-                      ) : (
-                        <Tag className="menu-card__tag">Fresh today</Tag>
-                      )}
-                    </div>
-                  </div>
-                }
-              >
-                <Space className="menu-card__content" direction="vertical" size="middle">
-                  <div>
-                    <Title level={4} className="menu-card__title">
-                      {item.name}
-                    </Title>
-                    <Paragraph
-                      className="menu-card__description"
-                      ellipsis={{ rows: 3, expandable: false }}
-                    >
-                      {item.description || "No description available."}
-                    </Paragraph>
-                  </div>
+          renderItem={(item, index) => {
+            const cartItem = cartItemsByMenuId[item.id];
+            const quantity = cartItem?.quantity || 0;
+            const isPending = Boolean(pendingCartItems[item.id]);
 
-                  <div className="menu-card__footer">
-                    <div>
-                      <Text className="menu-card__label">Quick order</Text>
-                      <Text className="menu-card__subtitle">
-                        Add this item directly to your bag
-                      </Text>
+            return (
+              <List.Item key={item.id}>
+                <Card
+                  className="menu-card"
+                  cover={
+                    <div className="menu-card__cover">
+                      <img src={item.image_url} alt={item.name} />
+                      <div className="menu-card__overlay">
+                        <Text className="menu-card__price">{`$${item.price?.toFixed(2)}`}</Text>
+                        {index === 0 ? (
+                          <Tag className="menu-card__tag">Chef&apos;s pick</Tag>
+                        ) : (
+                          <Tag className="menu-card__tag">Fresh today</Tag>
+                        )}
+                      </div>
                     </div>
-                    <AddToCartButton itemId={item.id} onAdded={onItemAdded} />
-                  </div>
-                </Space>
-              </Card>
-            </List.Item>
-          )}
+                  }
+                >
+                  <Space className="menu-card__content" direction="vertical" size="middle">
+                    <div>
+                      <Title level={4} className="menu-card__title">
+                        {item.name}
+                      </Title>
+                      <Paragraph
+                        className="menu-card__description"
+                        ellipsis={{ rows: 3, expandable: false }}
+                      >
+                        {item.description || "No description available."}
+                      </Paragraph>
+                    </div>
+
+                    <div className="menu-card__footer">
+                      <div>
+                        <Text className="menu-card__label">Quick order</Text>
+                        <Text className="menu-card__subtitle">
+                          Add this item directly to your bag
+                        </Text>
+                      </div>
+                      <QuantityControl
+                        loading={isPending}
+                        quantity={quantity}
+                        onIncrease={() => handleQuickAdd(item.id)}
+                        onDecrease={() => handleQuickDecrease(item.id)}
+                      />
+                    </div>
+                  </Space>
+                </Card>
+              </List.Item>
+            );
+          }}
         />
       )}
     </div>

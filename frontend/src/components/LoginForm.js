@@ -5,7 +5,7 @@ import { login } from "../utils";
 
 const { Paragraph, Text, Title } = Typography;
 
-const LoginForm = ({ onSuccess }) => {
+const LoginForm = ({ onShowSignup, onSuccess }) => {
   const [loading, setLoading] = useState(false);
 
   const onFinish = (data) => {
@@ -77,6 +77,13 @@ const LoginForm = ({ onSuccess }) => {
           </Button>
         </Form.Item>
       </Form>
+
+      <div className="auth-card__switch">
+        <Text className="auth-card__switch-text">Need a new account?</Text>
+        <Button className="auth-card__switch-button" type="link" onClick={onShowSignup}>
+          Create account
+        </Button>
+      </div>
     </Card>
   );
 };

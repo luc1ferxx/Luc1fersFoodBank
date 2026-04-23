@@ -1,3 +1,5 @@
+import org.gradle.internal.os.OperatingSystem
+
 plugins {
     id 'java'
     id 'org.springframework.boot' version '3.5.6'
@@ -22,14 +24,27 @@ repositories {
 }
 
 
+def frontendDir = file("${rootDir}/../frontend")
+def frontendBuildDir = file("${frontendDir}/build")
+def generatedFrontendResourcesDir = layout.buildDirectory.dir('generated/frontend-public')
+
+
 dependencies {
-    implementation 'com.github.ben-manes.caffeine:caffeine:3.+'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
     implementation 'org.springframework.boot:spring-boot-starter-cache'
     implementation 'org.springframework.boot:spring-boot-starter-data-jdbc'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    implementation 'org.springframework.kafka:spring-kafka'
+    implementation 'io.micrometer:micrometer-registry-prometheus'
     implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.session:spring-session-data-redis'
     runtimeOnly 'com.h2database:h2'
     runtimeOnly 'org.postgresql:postgresql:42.7.7'
+    testImplementation 'org.testcontainers:junit-jupiter:1.21.3'
+    testImplementation 'org.testcontainers:postgresql:1.21.3'
+    testImplementation 'org.testcontainers:kafka:1.21.3'
+    testImplementation 'org.testcontainers:testcontainers:1.21.3'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
@@ -37,4 +52,43 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+}
+
+
+tasks.register('buildFrontend', Exec) {
+    group = 'frontend'
+    description = 'Builds the React frontend before packaging or running the backend.'
+    workingDir frontendDir
+
+    inputs.files(
+            fileTree("${frontendDir}/src"),
+            fileTree("${frontendDir}/public"),
+            "${frontendDir}/package.json",
+            "${frontendDir}/package-lock.json"
+    )
+    outputs.dir(frontendBuildDir)
+
+    if (OperatingSystem.current().isWindows()) {
+        commandLine 'cmd', '/c', 'npm run build'
+    } else {
+        commandLine 'npm', 'run', 'build'
+    }
+}
+
+
+tasks.register('syncFrontendBuild', Sync) {
+    group = 'frontend'
+    description = 'Copies the built frontend into backend resources for serving.'
+    dependsOn tasks.named('buildFrontend')
+    from(frontendBuildDir)
+    into(generatedFrontendResourcesDir)
+}
+
+
+tasks.named('processResources') {
+    dependsOn tasks.named('syncFrontendBuild')
+    exclude 'public/**'
+    from(generatedFrontendResourcesDir) {
+        into 'public'
+    }
 }

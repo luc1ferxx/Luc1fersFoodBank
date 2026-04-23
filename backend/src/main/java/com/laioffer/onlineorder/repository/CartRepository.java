@@ -13,6 +13,10 @@ public interface CartRepository extends ListCrudRepository<CartEntity, Long> {
     CartEntity getByCustomerId(Long customerId);
 
 
+    @Query("SELECT * FROM carts WHERE customer_id = :customerId FOR UPDATE")
+    CartEntity lockByCustomerId(Long customerId);
+
+
     @Modifying
     @Query("UPDATE carts SET total_price = :totalPrice WHERE id = :cartId")
     void updateTotalPrice(Long cartId, Double totalPrice);

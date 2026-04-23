@@ -1,28 +1,117 @@
+server:
+  servlet:
+    session:
+      timeout: ${SESSION_TIMEOUT:30m}
+      cookie:
+        http-only: true
+        same-site: lax
+        secure: ${SESSION_COOKIE_SECURE:false}
+
 spring:
   application:
     name: OnlineOrder
   jackson:
     default-property-inclusion: non_null
     property-naming-strategy: SNAKE_CASE
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      retries: 3
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:onlineorder}
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      missing-topics-fatal: false
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: ${REDIS_TIMEOUT:2s}
   datasource:
-    url: ${DATABASE_URL:jdbc:h2:file:./data/onlineorder;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;AUTO_SERVER=TRUE}
-    username: ${DATABASE_USERNAME:sa}
-    password: ${DATABASE_PASSWORD:}
-    driver-class-name: ${DATABASE_DRIVER:org.h2.Driver}
+    url: ${DATABASE_URL:jdbc:postgresql://${DATABASE_HOST:localhost}:${DATABASE_PORT:5433}/onlineorder}
+    username: ${DATABASE_USERNAME:postgres}
+    password: ${DATABASE_PASSWORD:secret}
+    driver-class-name: ${DATABASE_DRIVER:org.postgresql.Driver}
   h2:
     console:
-      enabled: true
+      enabled: false
       path: /h2-console
   sql:
     init:
       mode: ${INIT_DB:always}
       schema-locations: "classpath:database-init.sql"
+  session:
+    store-type: redis
+    redis:
+      namespace: ${REDIS_SESSION_NAMESPACE:onlineorder:session}
   cache:
-    caffeine:
-      spec: expireAfterWrite=60s
+    type: redis
+    redis:
+      cache-null-values: false
+      time-to-live: ${REDIS_CACHE_TTL:10m}
 
+app:
+  kafka:
+    enabled: ${KAFKA_ENABLED:true}
+    order-topic: ${KAFKA_ORDER_TOPIC:order-events}
+    order-dlt-topic: ${KAFKA_ORDER_DLT_TOPIC:order-events.dlt}
+    order-dlt-group: ${KAFKA_ORDER_DLT_GROUP:onlineorder-dlt}
+    partitions: ${KAFKA_ORDER_TOPIC_PARTITIONS:3}
+    replicas: ${KAFKA_ORDER_TOPIC_REPLICAS:1}
+    publish-timeout: ${KAFKA_PUBLISH_TIMEOUT:5s}
+    listener-retries: ${KAFKA_LISTENER_RETRIES:3}
+    listener-backoff: ${KAFKA_LISTENER_BACKOFF:1s}
+  outbox:
+    publisher-enabled: ${OUTBOX_PUBLISHER_ENABLED:${KAFKA_ENABLED:true}}
+    batch-size: ${OUTBOX_BATCH_SIZE:20}
+    publish-interval: ${OUTBOX_PUBLISH_INTERVAL:3s}
+    claim-timeout: ${OUTBOX_CLAIM_TIMEOUT:30s}
+  dlt:
+    replay-timeout: ${DLT_REPLAY_TIMEOUT:5s}
+  cleanup:
+    enabled: ${CLEANUP_ENABLED:true}
+    fixed-delay-ms: ${CLEANUP_FIXED_DELAY_MS:3600000}
+    initial-delay-ms: ${CLEANUP_INITIAL_DELAY_MS:300000}
+    outbox-retention: ${CLEANUP_OUTBOX_RETENTION:7d}
+    processed-event-retention: ${CLEANUP_PROCESSED_EVENT_RETENTION:14d}
+    idempotency-retention: ${CLEANUP_IDEMPOTENCY_RETENTION:3d}
+    dead-letter-retention: ${CLEANUP_DEAD_LETTER_RETENTION:30d}
+  security:
+    rate-limit:
+      enabled: ${SECURITY_RATE_LIMIT_ENABLED:true}
+      window: ${SECURITY_RATE_LIMIT_WINDOW:1m}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  info:
+    env:
+      enabled: true
+  observations:
+    key-values:
+      application: ${spring.application.name}
+
+info:
+  app:
+    name: ${spring.application.name}
+    environment: ${APP_ENV:local}
+    kafka-enabled: ${app.kafka.enabled}
 
 logging:
   level:
     org.springframework.jdbc.datasource.init: INFO
     org.springframework.jdbc.core: INFO
+  pattern:
+    level: "%5p [traceId=%X{traceId:-na}]"

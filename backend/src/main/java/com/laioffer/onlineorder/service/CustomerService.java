@@ -3,6 +3,7 @@ package com.laioffer.onlineorder.service;
 
 import com.laioffer.onlineorder.entity.CartEntity;
 import com.laioffer.onlineorder.entity.CustomerEntity;
+import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.repository.CartRepository;
 import com.laioffer.onlineorder.repository.CustomerRepository;
@@ -12,6 +13,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.provisioning.UserDetailsManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DataIntegrityViolationException;
 
 
 @Service
@@ -44,13 +46,19 @@ public class CustomerService {
                 .password(passwordEncoder.encode(password))
                 .roles("USER")
                 .build();
-        userDetailsManager.createUser(user);
-        customerRepository.updateNameByEmail(email, firstName, lastName);
+        try {
+            userDetailsManager.createUser(user);
+            customerRepository.updateNameByEmail(email, firstName, lastName);
 
-
-        CustomerEntity savedCustomer = customerRepository.findByEmail(email);
-        CartEntity cart = new CartEntity(null, savedCustomer.id(), 0.0);
-        cartRepository.save(cart);
+            CustomerEntity savedCustomer = customerRepository.findByEmail(email);
+            if (savedCustomer == null) {
+                throw new ConflictException("Unable to create customer profile");
+            }
+            CartEntity cart = new CartEntity(null, savedCustomer.id(), 0.0);
+            cartRepository.save(cart);
+        } catch (DataIntegrityViolationException ex) {
+            throw new ConflictException("Email already exists");
+        }
     }
 
 

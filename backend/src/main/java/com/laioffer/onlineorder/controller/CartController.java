@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 
@@ -72,8 +73,11 @@ public class CartController {
 
 
     @PostMapping("/cart/checkout")
-    public OrderDto checkout(Principal principal) {
+    public OrderDto checkout(
+            Principal principal,
+            @RequestHeader("Idempotency-Key") String idempotencyKey
+    ) {
         CustomerEntity customer = customerService.getCustomerByEmail(principal.getName());
-        return cartService.checkout(customer.id());
+        return cartService.checkoutWithIdempotency(customer.id(), "PLACED", idempotencyKey);
     }
 }

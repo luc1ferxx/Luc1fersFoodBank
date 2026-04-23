@@ -1,3 +1,8 @@
+DROP TABLE IF EXISTS idempotency_requests;
+DROP TABLE IF EXISTS processed_events;
+DROP TABLE IF EXISTS dead_letter_events;
+DROP TABLE IF EXISTS order_notifications;
+DROP TABLE IF EXISTS outbox_events;
 DROP TABLE IF EXISTS order_history_items;
 DROP TABLE IF EXISTS orders;
 DROP TABLE IF EXISTS order_items;
@@ -57,6 +62,7 @@ CREATE TABLE order_items
     cart_id      INTEGER            NOT NULL,
     price        NUMERIC            NOT NULL,
     quantity     INTEGER            NOT NULL,
+    CONSTRAINT uk_order_item_cart_menu UNIQUE (cart_id, menu_item_id),
     CONSTRAINT fk_order_item_cart FOREIGN KEY (cart_id) REFERENCES carts (id) ON DELETE CASCADE,
     CONSTRAINT fk_order_item_menu FOREIGN KEY (menu_item_id) REFERENCES menu_items (id) ON DELETE CASCADE
 );
@@ -97,12 +103,97 @@ CREATE TABLE authorities
 );
 
 
+CREATE TABLE outbox_events
+(
+    id             SERIAL PRIMARY KEY NOT NULL,
+    aggregate_type TEXT               NOT NULL,
+    aggregate_id   BIGINT             NOT NULL,
+    event_id       TEXT               NOT NULL UNIQUE,
+    topic          TEXT               NOT NULL,
+    event_key      TEXT               NOT NULL,
+    event_type     TEXT               NOT NULL,
+    payload        TEXT               NOT NULL,
+    status         TEXT               NOT NULL,
+    attempts       INTEGER            NOT NULL DEFAULT 0,
+    last_error     TEXT,
+    created_at     TIMESTAMP          NOT NULL,
+    updated_at     TIMESTAMP          NOT NULL,
+    published_at   TIMESTAMP
+);
+
+
+CREATE TABLE processed_events
+(
+    id             SERIAL PRIMARY KEY NOT NULL,
+    consumer_name  TEXT               NOT NULL,
+    event_id       TEXT,
+    dedup_key      TEXT               NOT NULL,
+    event_type     TEXT               NOT NULL,
+    aggregate_type TEXT,
+    aggregate_id   BIGINT,
+    processed_at   TIMESTAMP          NOT NULL,
+    CONSTRAINT uq_processed_event_consumer_dedup UNIQUE (consumer_name, dedup_key)
+);
+
+
+CREATE TABLE order_notifications
+(
+    id          SERIAL PRIMARY KEY NOT NULL,
+    order_id    INTEGER            NOT NULL,
+    customer_id INTEGER            NOT NULL,
+    event_type  TEXT               NOT NULL,
+    title       TEXT               NOT NULL,
+    message     TEXT               NOT NULL,
+    created_at  TIMESTAMP          NOT NULL,
+    CONSTRAINT fk_notification_order FOREIGN KEY (order_id) REFERENCES orders (id) ON DELETE CASCADE,
+    CONSTRAINT fk_notification_customer FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE,
+    CONSTRAINT uq_notification_order_event UNIQUE (order_id, event_type)
+);
+
+
+CREATE TABLE dead_letter_events
+(
+    id                SERIAL PRIMARY KEY NOT NULL,
+    source_topic      TEXT,
+    dead_letter_topic TEXT               NOT NULL,
+    message_key       TEXT,
+    payload           TEXT               NOT NULL,
+    error_message     TEXT,
+    replay_status     TEXT               NOT NULL,
+    replay_attempts   INTEGER            NOT NULL DEFAULT 0,
+    replayed_at       TIMESTAMP,
+    last_replay_error TEXT,
+    created_at        TIMESTAMP          NOT NULL,
+    updated_at        TIMESTAMP          NOT NULL
+);
+
+
+CREATE TABLE idempotency_requests
+(
+    id              SERIAL PRIMARY KEY NOT NULL,
+    customer_id     INTEGER            NOT NULL,
+    scope           TEXT               NOT NULL,
+    idempotency_key TEXT               NOT NULL,
+    request_hash    TEXT               NOT NULL,
+    status          TEXT               NOT NULL,
+    order_id        INTEGER,
+    created_at      TIMESTAMP          NOT NULL,
+    updated_at      TIMESTAMP          NOT NULL,
+    CONSTRAINT fk_idempotency_customer FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE,
+    CONSTRAINT uq_idempotency_request UNIQUE (customer_id, scope, idempotency_key)
+);
+
+
 INSERT INTO customers (email, enabled, password, first_name, last_name)
 VALUES ('demo@laifood.com', TRUE, '{noop}demo123', 'Demo', 'User');
 
 
 INSERT INTO authorities (email, authority)
 VALUES ('demo@laifood.com', 'ROLE_USER');
+
+
+INSERT INTO authorities (email, authority)
+VALUES ('demo@laifood.com', 'ROLE_ADMIN');
 
 
 INSERT INTO carts (customer_id, total_price)
