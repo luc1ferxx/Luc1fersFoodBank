@@ -26,8 +26,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 
 
@@ -149,6 +154,8 @@ public class CartService {
     public OrderDto checkoutWithIdempotency(Long customerId, String status, String idempotencyKey, String requestHash) {
         String normalizedStatus = normalizeStatus(status);
         String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
+        CartEntity cart = getRequiredLockedCart(customerId);
+        String effectiveRequestHash = buildCheckoutRequestHash(cart, requestHash, normalizedStatus);
         LocalDateTime now = LocalDateTime.now();
         String scope = buildScope(normalizedStatus);
 
@@ -156,7 +163,7 @@ public class CartService {
                 customerId,
                 scope,
                 normalizedKey,
-                requestHash,
+                effectiveRequestHash,
                 IDEMPOTENCY_STATUS_PROCESSING,
                 now,
                 now
@@ -170,7 +177,13 @@ public class CartService {
         if (request == null) {
             throw new ConflictException("Unable to initialize idempotent checkout");
         }
-        if (!request.requestHash().equals(requestHash)) {
+        if (!request.requestHash().equals(effectiveRequestHash)) {
+            if (IDEMPOTENCY_STATUS_SUCCEEDED.equals(request.status()) && request.orderId() != null) {
+                String persistedOrderRequestHash = buildCheckoutRequestHashForOrder(cart.id(), requestHash, normalizedStatus, request.orderId());
+                if (request.requestHash().equals(persistedOrderRequestHash)) {
+                    return getRequiredOrderDto(request.orderId());
+                }
+            }
             throw new ConflictException("Idempotency key was already used with a different request");
         }
         if (IDEMPOTENCY_STATUS_SUCCEEDED.equals(request.status())) {
@@ -180,7 +193,6 @@ public class CartService {
             return getRequiredOrderDto(request.orderId());
         }
 
-        CartEntity cart = getRequiredLockedCart(customerId);
         OrderDto order = checkoutInternal(customerId, cart, normalizedStatus, normalizedKey);
         idempotencyRequestRepository.markSucceeded(request.id(), IDEMPOTENCY_STATUS_SUCCEEDED, order.id(), LocalDateTime.now());
         return order;
@@ -317,5 +329,57 @@ public class CartService {
 
     private String buildDefaultRequestHash(String status) {
         return "checkout|" + normalizeStatus(status);
+    }
+
+
+    private String buildCheckoutRequestHash(CartEntity cart, String requestHash, String status) {
+        List<CheckoutItemSnapshot> cartItems = orderItemRepository.getAllByCartId(cart.id()).stream()
+                .map(cartItem -> new CheckoutItemSnapshot(cartItem.menuItemId(), cartItem.quantity(), cartItem.price()))
+                .toList();
+        return buildCheckoutRequestHash(cart.id(), requestHash, status, cartItems);
+    }
+
+
+    private String buildCheckoutRequestHashForOrder(Long cartId, String requestHash, String status, Long orderId) {
+        List<CheckoutItemSnapshot> orderItems = orderHistoryItemRepository.findAllByOrderIdOrderByIdAsc(orderId).stream()
+                .map(orderItem -> new CheckoutItemSnapshot(orderItem.menuItemId(), orderItem.quantity(), orderItem.price()))
+                .toList();
+        return buildCheckoutRequestHash(cartId, requestHash, status, orderItems);
+    }
+
+
+    private String buildCheckoutRequestHash(Long cartId, String requestHash, String status, List<CheckoutItemSnapshot> itemSnapshots) {
+        List<CheckoutItemSnapshot> sortedItemSnapshots = new ArrayList<>(itemSnapshots);
+        sortedItemSnapshots.sort(Comparator
+                .comparing(CheckoutItemSnapshot::menuItemId)
+                .thenComparing(CheckoutItemSnapshot::quantity)
+                .thenComparing(CheckoutItemSnapshot::price));
+
+        StringBuilder normalizedPayload = new StringBuilder()
+                .append(status)
+                .append('|')
+                .append(requestHash)
+                .append('|')
+                .append(cartId);
+        for (CheckoutItemSnapshot itemSnapshot : sortedItemSnapshots) {
+            normalizedPayload.append('|')
+                    .append(itemSnapshot.menuItemId())
+                    .append(':')
+                    .append(itemSnapshot.quantity())
+                    .append(':')
+                    .append(itemSnapshot.price());
+        }
+
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(normalizedPayload.toString().getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is not available", ex);
+        }
+    }
+
+
+    private record CheckoutItemSnapshot(Long menuItemId, Integer quantity, Double price) {
     }
 }
