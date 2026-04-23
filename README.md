@@ -49,6 +49,9 @@ Checkout transaction
 - Cart mutation uses PostgreSQL `SELECT ... FOR UPDATE` to serialize writes for the same customer cart.
 - Add-to-cart quantity uses PostgreSQL upsert on `(cart_id, menu_item_id)`.
 - Checkout idempotency uses `idempotency_requests` with a unique `(customer_id, scope, idempotency_key)` constraint.
+- Checkout request reuse is hardened with a server-derived fingerprint that includes checkout scope plus the cart snapshot, so the same key only replays the same logical checkout.
+- A successful retry still reuses the stored order even after the cart has been cleared, while the same key with changed cart contents is rejected as a conflict.
+- Concurrent checkout attempts against the same cart are serialized by the cart row lock, so only one order is created and competing attempts either reuse the same order or fail after the cart is consumed.
 - Outbox publishing uses database claiming with `FOR UPDATE SKIP LOCKED`.
 - Kafka consumers use `processed_events` with unique `(consumer_name, dedup_key)` to make event handling idempotent.
 - Rate limiting uses Redis atomic counters, so it works across multiple backend instances.
@@ -90,7 +93,7 @@ Demo account:
 ## Useful Endpoints
 
 - `GET /restaurants`: list restaurants.
-- `POST /cart/{menuItemId}`: add one menu item to cart.
+- `POST /cart`: add one menu item to cart with body `{ "menu_id": <id> }`.
 - `POST /payments/checkout`: checkout with payment-style API and idempotency key.
 - `GET /orders`: list current user's orders.
 - `PATCH /orders/{orderId}/status`: admin order state transition.
