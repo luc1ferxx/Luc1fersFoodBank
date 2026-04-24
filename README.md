@@ -23,6 +23,7 @@ The project is designed to demonstrate **business correctness before scale-out**
 - **Kafka consumer deduplication** via `processed_events`
 - **Dead-letter workflow** with persistent storage and admin replay endpoint
 - **Redis-backed shared state** for Spring Session, cache, and rate limiting
+- **Production-shaped user lifecycle controls** with account status, login lockout, and last-login audit fields
 - **Operational visibility** through Actuator, Micrometer, Prometheus, and `X-Trace-Id`
 - **Automated verification** with unit tests, Testcontainers integration tests, and GitHub Actions
 
@@ -128,12 +129,19 @@ That means:
 - Kafka consumers use `processed_events` with unique `(consumer_name, dedup_key)` to make event handling idempotent.
 - Failed event handling is persisted to dead-letter storage and can be replayed by an admin endpoint.
 
+### Multi-User Session and Abuse Controls
+- Authentication stays session-based with Redis-backed Spring Session instead of pushing complexity into JWT refresh / revoke flows.
+- Customer records now carry `account_status`, `failed_login_attempts`, `locked_until`, `last_login_at`, `created_at`, and `updated_at` so the system can enforce account lifecycle policy inside the same transactional data model.
+- Login failures increment a per-user counter, lock the account after repeated bad credentials, and successful login clears the lock state and records the latest login timestamp.
+- User lookup and authority lookup are both case-insensitive so mixed-case email logins still resolve the correct principal and roles.
+
 ---
 
 ## Operational Features
 
 - **Sessions:** Redis-backed Spring Session
-- **Rate limiting:** Redis atomic counters for cross-instance behavior
+- **Rate limiting:** anonymous auth endpoints are limited by remote IP, while authenticated checkout/admin flows are limited by user identity for fairer multi-user protection
+- **Rate-limit resilience:** Redis counter failures fail open, emit a warning, and increment a metric instead of taking down login or checkout
 - **Metrics:** Actuator + Micrometer + Prometheus endpoint
 - **Traceability:** `X-Trace-Id` is returned and propagated into logs
 - **Recovery:** DLT persistence and replay API
@@ -228,6 +236,8 @@ The repository uses multiple layers of verification:
 - **unit tests** for service behavior and edge cases
 - **integration tests** with Testcontainers for PostgreSQL / Redis / Kafka flows
 - **checkout correctness tests** for idempotency reuse and concurrent checkout behavior
+- **authentication lifecycle tests** for signup defaults, login lockout, case-insensitive identity lookup, and successful-login reset behavior
+- **security filter tests** for user-scoped rate limiting, IP-scoped anonymous throttling, and Redis fail-open behavior
 - **CI automation** through GitHub Actions
 
 The most important tests are the ones around:
@@ -237,6 +247,8 @@ The most important tests are the ones around:
 - consumer deduplication
 - DLT replay behavior
 - cart concurrency and checkout serialization
+- account lock / unlock behavior
+- authenticated-vs-anonymous rate-limit scoping
 
 ---
 

@@ -159,7 +159,14 @@ class CartConcurrencyTests {
                 "{noop}demo123",
                 true,
                 "Concurrency",
-                "Test"
+                "Test",
+                "ACTIVE",
+                true,
+                0,
+                null,
+                null,
+                null,
+                null
         ));
         CartEntity cart = cartRepository.save(new CartEntity(null, customer.id(), 0.0));
         MenuItemEntity menuItem = menuItemRepository.findById(1L).orElseThrow();

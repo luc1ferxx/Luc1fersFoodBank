@@ -39,7 +39,7 @@ class CustomerServiceTests {
 
     @BeforeEach
     void setup() {
-        Mockito.when(passwordEncoder.encode(Mockito.anyString())).thenReturn("encoded-password");
+        Mockito.lenient().when(passwordEncoder.encode(Mockito.anyString())).thenReturn("encoded-password");
         customerService = new CustomerService(
                 cartRepository,
                 customerRepository,
@@ -51,7 +51,21 @@ class CustomerServiceTests {
 
     @Test
     void signUp_shouldCreateCustomerAndCart() {
-        CustomerEntity customer = new CustomerEntity(7L, "user@example.com", "password", true, "Ada", "Lovelace");
+        CustomerEntity customer = new CustomerEntity(
+                7L,
+                "user@example.com",
+                "password",
+                true,
+                "Ada",
+                "Lovelace",
+                "ACTIVE",
+                true,
+                0,
+                null,
+                null,
+                null,
+                null
+        );
         Mockito.when(customerRepository.findByEmail("user@example.com")).thenReturn(customer);
 
         customerService.signUp("User@Example.com", "password", "Ada", "Lovelace");
@@ -75,5 +89,21 @@ class CustomerServiceTests {
         );
 
         Mockito.verifyNoInteractions(cartRepository);
+    }
+
+
+    @Test
+    void recordFailedLoginAttempt_shouldIncrementFailureCountAndLockAccountAtThreshold() {
+        customerService.recordFailedLoginAttempt("user@example.com");
+
+        Mockito.verify(customerRepository).recordFailedLoginAttempt(Mockito.eq("user@example.com"), Mockito.any(), Mockito.eq(5));
+    }
+
+
+    @Test
+    void recordSuccessfulLogin_shouldResetFailuresAndSetLastLoginTimestamp() {
+        customerService.recordSuccessfulLogin("user@example.com");
+
+        Mockito.verify(customerRepository).recordSuccessfulLogin(Mockito.eq("user@example.com"), Mockito.any());
     }
 }

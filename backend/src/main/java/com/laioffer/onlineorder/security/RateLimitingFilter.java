@@ -6,10 +6,15 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -21,6 +26,8 @@ import java.time.Instant;
 
 @Component
 public class RateLimitingFilter extends OncePerRequestFilter {
+
+    private static final Logger logger = LoggerFactory.getLogger(RateLimitingFilter.class);
 
     private final boolean enabled;
     private final Duration window;
@@ -72,17 +79,22 @@ public class RateLimitingFilter extends OncePerRequestFilter {
 
     private boolean allow(HttpServletRequest request, RateLimitRule rule) {
         Instant now = Instant.now();
-        String clientIp = extractClientIp(request);
         long windowMillis = Math.max(window.toMillis(), 1000L);
         long windowBucket = now.toEpochMilli() / windowMillis;
-        String redisKey = "onlineorder:rate-limit:" + rule.routeKey() + ":" + clientIp + ":" + windowBucket;
+        String redisKey = "onlineorder:rate-limit:" + rule.routeKey() + ":" + resolveRateLimitSubject(request, rule) + ":" + windowBucket;
 
-        Long count = redisTemplate.opsForValue().increment(redisKey);
-        if (count != null && count == 1L) {
-            redisTemplate.expire(redisKey, window.plusSeconds(1));
+        try {
+            Long count = redisTemplate.opsForValue().increment(redisKey);
+            if (count != null && count == 1L) {
+                redisTemplate.expire(redisKey, window.plusSeconds(1));
+            }
+
+            return count == null || count <= rule.limit();
+        } catch (RuntimeException ex) {
+            logger.warn("Rate-limit store unavailable for route {} and key {}. Failing open.", rule.routeKey(), redisKey, ex);
+            metricsService.recordRateLimitStoreFailure(rule.routeKey());
+            return true;
         }
-
-        return count == null || count <= rule.limit();
     }
 
 
@@ -90,36 +102,54 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         String method = request.getMethod();
         String path = request.getRequestURI();
         if (HttpMethod.POST.matches(method) && "/login".equals(path)) {
-            return new RateLimitRule("login", 10);
+            return new RateLimitRule("login", 10, true);
         }
         if (HttpMethod.POST.matches(method) && "/signup".equals(path)) {
-            return new RateLimitRule("signup", 5);
+            return new RateLimitRule("signup", 5, true);
         }
         if (HttpMethod.POST.matches(method) && "/cart/checkout".equals(path)) {
-            return new RateLimitRule("cart-checkout", 20);
+            return new RateLimitRule("cart-checkout", 20, false);
         }
         if (HttpMethod.POST.matches(method) && "/payments/checkout".equals(path)) {
-            return new RateLimitRule("payment-checkout", 20);
+            return new RateLimitRule("payment-checkout", 20, false);
         }
         if (HttpMethod.POST.matches(method) && path.matches("^/dead-letters/\\d+/replay$")) {
-            return new RateLimitRule("dead-letter-replay", 10);
+            return new RateLimitRule("dead-letter-replay", 10, false);
         }
         if (HttpMethod.PATCH.matches(method) && path.matches("^/orders/\\d+/status$")) {
-            return new RateLimitRule("order-status", 30);
+            return new RateLimitRule("order-status", 30, false);
         }
         return null;
     }
 
 
     private String extractClientIp(HttpServletRequest request) {
-        String forwardedFor = request.getHeader("X-Forwarded-For");
-        if (forwardedFor != null && !forwardedFor.isBlank()) {
-            return forwardedFor.split(",")[0].trim();
-        }
         return request.getRemoteAddr();
     }
 
 
-    private record RateLimitRule(String routeKey, int limit) {
+    private String resolveRateLimitSubject(HttpServletRequest request, RateLimitRule rule) {
+        if (rule.ipBound()) {
+            return "ip:" + extractClientIp(request);
+        }
+
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null
+                && authentication.isAuthenticated()
+                && !(authentication instanceof AnonymousAuthenticationToken)
+                && authentication.getName() != null
+                && !authentication.getName().isBlank()) {
+            return "user:" + authentication.getName().trim().toLowerCase();
+        }
+
+        if (request.getUserPrincipal() != null && request.getUserPrincipal().getName() != null && !request.getUserPrincipal().getName().isBlank()) {
+            return "user:" + request.getUserPrincipal().getName().trim().toLowerCase();
+        }
+
+        return "ip:" + extractClientIp(request);
+    }
+
+
+    private record RateLimitRule(String routeKey, int limit, boolean ipBound) {
     }
 }

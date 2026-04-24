@@ -15,12 +15,19 @@ DROP TABLE IF EXISTS customers;
 
 CREATE TABLE customers
 (
-    id         SERIAL PRIMARY KEY   NOT NULL,
-    email      TEXT UNIQUE          NOT NULL,
-    enabled    BOOLEAN DEFAULT TRUE NOT NULL,
-    password   TEXT                 NOT NULL,
-    first_name TEXT,
-    last_name  TEXT
+    id                    SERIAL PRIMARY KEY   NOT NULL,
+    email                 TEXT UNIQUE          NOT NULL,
+    enabled               BOOLEAN DEFAULT TRUE NOT NULL,
+    password              TEXT                 NOT NULL,
+    first_name            TEXT,
+    last_name             TEXT,
+    account_status        TEXT DEFAULT 'ACTIVE' NOT NULL,
+    email_verified        BOOLEAN DEFAULT TRUE NOT NULL,
+    failed_login_attempts INTEGER DEFAULT 0    NOT NULL,
+    locked_until          TIMESTAMP,
+    last_login_at         TIMESTAMP,
+    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
 

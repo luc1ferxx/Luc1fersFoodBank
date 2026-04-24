@@ -16,8 +16,14 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DataIntegrityViolationException;
 
 
+import java.time.LocalDateTime;
+
+
 @Service
 public class CustomerService {
+
+    private static final int LOGIN_LOCK_THRESHOLD = 5;
+    private static final long LOGIN_LOCK_MINUTES = 15;
 
 
     private final CartRepository cartRepository;
@@ -68,5 +74,27 @@ public class CustomerService {
             throw new ResourceNotFoundException("Customer not found");
         }
         return customer;
+    }
+
+
+    @Transactional
+    public void recordFailedLoginAttempt(String email) {
+        if (email == null || email.isBlank()) {
+            return;
+        }
+        customerRepository.recordFailedLoginAttempt(
+                email.trim().toLowerCase(),
+                LocalDateTime.now().plusMinutes(LOGIN_LOCK_MINUTES),
+                LOGIN_LOCK_THRESHOLD
+        );
+    }
+
+
+    @Transactional
+    public void recordSuccessfulLogin(String email) {
+        if (email == null || email.isBlank()) {
+            return;
+        }
+        customerRepository.recordSuccessfulLogin(email.trim().toLowerCase(), LocalDateTime.now());
     }
 }

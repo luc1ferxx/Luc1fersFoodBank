@@ -2,6 +2,7 @@ package com.laioffer.onlineorder;
 
 
 import com.laioffer.onlineorder.security.RateLimitingFilter;
+import com.laioffer.onlineorder.service.CustomerService;
 import org.springframework.boot.autoconfigure.security.servlet.PathRequest;
 import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
 import org.springframework.context.annotation.Bean;
@@ -11,6 +12,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.annotation.web.configurers.HeadersConfigurer;
+import org.springframework.security.authentication.LockedException;
+import org.springframework.security.authentication.DisabledException;
 import org.springframework.security.crypto.factory.PasswordEncoderFactories;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.provisioning.JdbcUserDetailsManager;
@@ -35,8 +38,16 @@ public class AppConfig {
         JdbcUserDetailsManager userDetailsManager = new JdbcUserDetailsManager(dataSource);
         userDetailsManager.setCreateUserSql("INSERT INTO customers (email, password, enabled) VALUES (?,?,?)");
         userDetailsManager.setCreateAuthoritySql("INSERT INTO authorities (email, authority) values (?,?)");
-        userDetailsManager.setUsersByUsernameQuery("SELECT email, password, enabled FROM customers WHERE email = ?");
-        userDetailsManager.setAuthoritiesByUsernameQuery("SELECT email, authority FROM authorities WHERE email = ?");
+        userDetailsManager.setUsersByUsernameQuery("""
+                SELECT email,
+                       password,
+                       (enabled
+                           AND account_status = 'ACTIVE'
+                           AND (locked_until IS NULL OR locked_until <= CURRENT_TIMESTAMP)) AS enabled
+                FROM customers
+                WHERE LOWER(email) = LOWER(?)
+                """);
+        userDetailsManager.setAuthoritiesByUsernameQuery("SELECT email, authority FROM authorities WHERE LOWER(email) = LOWER(?)");
         return userDetailsManager;
     }
 
@@ -48,7 +59,11 @@ public class AppConfig {
 
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http, RateLimitingFilter rateLimitingFilter) throws Exception {
+    public SecurityFilterChain filterChain(
+            HttpSecurity http,
+            RateLimitingFilter rateLimitingFilter,
+            CustomerService customerService
+    ) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
                 .addFilterBefore(rateLimitingFilter, UsernamePasswordAuthenticationFilter.class)
@@ -87,8 +102,16 @@ public class AppConfig {
                         .sessionFixation(sessionFixation -> sessionFixation.migrateSession())
                 )
                 .formLogin(form -> form
-                        .successHandler((req, res, auth) -> res.setStatus(HttpStatus.OK.value()))
-                        .failureHandler((req, res, ex) -> res.sendError(HttpStatus.UNAUTHORIZED.value(), "Invalid email or password"))
+                        .successHandler((req, res, auth) -> {
+                            customerService.recordSuccessfulLogin(auth.getName());
+                            res.setStatus(HttpStatus.OK.value());
+                        })
+                        .failureHandler((req, res, ex) -> {
+                            if (!(ex instanceof LockedException) && !(ex instanceof DisabledException)) {
+                                customerService.recordFailedLoginAttempt(req.getParameter("username"));
+                            }
+                            res.sendError(HttpStatus.UNAUTHORIZED.value(), "Invalid email or password");
+                        })
                 )
                 .logout(logout -> logout
                         .deleteCookies("SESSION", "JSESSIONID")

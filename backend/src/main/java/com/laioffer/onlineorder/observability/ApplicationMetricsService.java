@@ -63,6 +63,14 @@ public class ApplicationMetricsService {
     }
 
 
+    public void recordRateLimitStoreFailure(String route) {
+        meterRegistry.counter(
+                "onlineorder.security.rate_limit.store_failure",
+                "route", normalize(route)
+        ).increment();
+    }
+
+
     private String normalize(String value) {
         if (value == null || value.isBlank()) {
             return "unknown";
