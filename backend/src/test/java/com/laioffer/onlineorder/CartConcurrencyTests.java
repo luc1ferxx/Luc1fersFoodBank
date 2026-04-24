@@ -24,6 +24,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -153,6 +154,7 @@ class CartConcurrencyTests {
 
     private TestCustomer createCustomerWithOneItemInCart() {
         long suffix = System.nanoTime();
+        LocalDateTime now = LocalDateTime.now();
         CustomerEntity customer = customerRepository.save(new CustomerEntity(
                 null,
                 "concurrency-" + suffix + "@example.com",
@@ -165,8 +167,8 @@ class CartConcurrencyTests {
                 0,
                 null,
                 null,
-                null,
-                null
+                now,
+                now
         ));
         CartEntity cart = cartRepository.save(new CartEntity(null, customer.id(), 0.0));
         MenuItemEntity menuItem = menuItemRepository.findById(1L).orElseThrow();
