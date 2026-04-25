@@ -103,6 +103,21 @@ class CartConcurrencyTests {
         Assertions.assertEquals(firstOrder.id(), secondOrder.id());
         Assertions.assertEquals(1, orderRepository.findAllByCustomerIdOrderByCreatedAtDesc(testCustomer.customerId()).size());
         Assertions.assertEquals(1, countIdempotencyRequests(testCustomer.customerId(), "shared-key"));
+        Assertions.assertEquals(1, countOutboxEventsForOrder(firstOrder.id()));
+        Assertions.assertTrue(orderItemRepository.getAllByCartId(testCustomer.cartId()).isEmpty());
+    }
+
+    @Test
+    void checkoutWithSameIdempotencyKey_whenRetriedSequentially_shouldReuseExistingOrderAndOutboxEvent() {
+        TestCustomer testCustomer = createCustomerWithOneItemInCart();
+
+        OrderDto firstOrder = cartService.checkoutWithIdempotency(testCustomer.customerId(), "PLACED", "sequential-key", "checkout-request");
+        OrderDto retriedOrder = cartService.checkoutWithIdempotency(testCustomer.customerId(), "PLACED", "sequential-key", "checkout-request");
+
+        Assertions.assertEquals(firstOrder.id(), retriedOrder.id());
+        Assertions.assertEquals(1, orderRepository.findAllByCustomerIdOrderByCreatedAtDesc(testCustomer.customerId()).size());
+        Assertions.assertEquals(1, countIdempotencyRequests(testCustomer.customerId(), "sequential-key"));
+        Assertions.assertEquals(1, countOutboxEventsForOrder(firstOrder.id()));
         Assertions.assertTrue(orderItemRepository.getAllByCartId(testCustomer.cartId()).isEmpty());
     }
 
@@ -138,6 +153,7 @@ class CartConcurrencyTests {
         Assertions.assertNotNull(successfulOrderId);
         Assertions.assertEquals(1, orderRepository.findAllByCustomerIdOrderByCreatedAtDesc(testCustomer.customerId()).size());
         Assertions.assertEquals(1, countTotalIdempotencyRequests(testCustomer.customerId()));
+        Assertions.assertEquals(1, countOutboxEventsForOrder(successfulOrderId));
         Assertions.assertTrue(orderItemRepository.getAllByCartId(testCustomer.cartId()).isEmpty());
     }
 
@@ -192,6 +208,15 @@ class CartConcurrencyTests {
                 "SELECT COUNT(*) FROM idempotency_requests WHERE customer_id = ?",
                 Long.class,
                 customerId
+        );
+        return count == null ? 0 : count;
+    }
+
+    private long countOutboxEventsForOrder(Long orderId) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM outbox_events WHERE aggregate_type = 'ORDER' AND aggregate_id = ?",
+                Long.class,
+                orderId
         );
         return count == null ? 0 : count;
     }
