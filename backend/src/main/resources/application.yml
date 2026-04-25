@@ -70,6 +70,7 @@ app:
     batch-size: ${OUTBOX_BATCH_SIZE:20}
     publish-interval: ${OUTBOX_PUBLISH_INTERVAL:3s}
     claim-timeout: ${OUTBOX_CLAIM_TIMEOUT:30s}
+    max-attempts: ${OUTBOX_MAX_ATTEMPTS:10}
   dlt:
     replay-timeout: ${DLT_REPLAY_TIMEOUT:5s}
   cleanup:

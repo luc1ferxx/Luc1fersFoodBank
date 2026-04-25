@@ -71,6 +71,17 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
 
     @Modifying
     @Query("""
+            UPDATE outbox_events
+            SET status = :status,
+                updated_at = :updatedAt,
+                last_error = :lastError
+            WHERE id = :id
+            """)
+    void markFailed(Long id, String status, LocalDateTime updatedAt, String lastError);
+
+
+    @Modifying
+    @Query("""
             DELETE FROM outbox_events
             WHERE status = :status
               AND published_at < :publishedBefore

@@ -27,9 +27,11 @@ public class OrderEventOutboxService {
     private static final String OUTBOX_STATUS_PENDING = "PENDING";
     private static final String OUTBOX_STATUS_PROCESSING = "PROCESSING";
     private static final String OUTBOX_STATUS_PUBLISHED = "PUBLISHED";
+    private static final String OUTBOX_STATUS_FAILED = "FAILED";
 
     private final int batchSize;
     private final Duration claimTimeout;
+    private final int maxAttempts;
     private final ObjectMapper objectMapper;
     private final String orderTopic;
     private final OutboxEventRepository outboxEventRepository;
@@ -38,12 +40,14 @@ public class OrderEventOutboxService {
     public OrderEventOutboxService(
             @Value("${app.outbox.batch-size:20}") int batchSize,
             @Value("${app.outbox.claim-timeout:30s}") Duration claimTimeout,
+            @Value("${app.outbox.max-attempts:10}") int maxAttempts,
             @Value("${app.kafka.order-topic}") String orderTopic,
             ObjectMapper objectMapper,
             OutboxEventRepository outboxEventRepository
     ) {
         this.batchSize = batchSize;
         this.claimTimeout = claimTimeout;
+        this.maxAttempts = Math.max(1, maxAttempts);
         this.objectMapper = objectMapper;
         this.orderTopic = orderTopic;
         this.outboxEventRepository = outboxEventRepository;
@@ -124,11 +128,24 @@ public class OrderEventOutboxService {
 
     @Transactional
     public void markRetryableFailure(Long eventId, String lastError) {
+        LocalDateTime now = LocalDateTime.now();
+        String abbreviatedError = abbreviate(lastError);
+        OutboxEventEntity event = outboxEventRepository.findById(eventId).orElse(null);
+        if (event != null && event.attempts() != null && event.attempts() >= maxAttempts) {
+            outboxEventRepository.markFailed(
+                    eventId,
+                    OUTBOX_STATUS_FAILED,
+                    now,
+                    abbreviatedError
+            );
+            return;
+        }
+
         outboxEventRepository.markPendingRetry(
                 eventId,
                 OUTBOX_STATUS_PENDING,
-                LocalDateTime.now(),
-                abbreviate(lastError)
+                now,
+                abbreviatedError
         );
     }
 
