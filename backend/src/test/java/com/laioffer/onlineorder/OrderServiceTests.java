@@ -6,6 +6,7 @@ import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
@@ -36,6 +37,9 @@ class OrderServiceTests {
     private OrderEventOutboxService orderEventOutboxService;
 
     @Mock
+    private IdempotencyRequestRepository idempotencyRequestRepository;
+
+    @Mock
     private ApplicationMetricsService metricsService;
 
     private OrderService orderService;
@@ -47,7 +51,8 @@ class OrderServiceTests {
                 orderRepository,
                 orderHistoryItemRepository,
                 orderEventOutboxService,
-                metricsService
+                metricsService,
+                idempotencyRequestRepository
         );
     }
 

@@ -36,7 +36,7 @@ public interface IdempotencyRequestRepository extends ListCrudRepository<Idempot
             )
             ON CONFLICT (customer_id, scope, idempotency_key) DO NOTHING
             """)
-    void insertIfAbsent(
+    int insertIfAbsent(
             Long customerId,
             String scope,
             String idempotencyKey,

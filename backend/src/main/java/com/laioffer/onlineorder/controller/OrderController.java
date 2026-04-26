@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 
@@ -40,16 +41,22 @@ public class OrderController {
 
     @PatchMapping("/orders/{orderId}/status")
     public OrderDto updateOrderStatus(
+            Principal principal,
             @PathVariable Long orderId,
-            @RequestBody UpdateOrderStatusBody body
+            @RequestBody UpdateOrderStatusBody body,
+            @RequestHeader("Idempotency-Key") String idempotencyKey
     ) {
-        return orderService.transitionOrderStatus(orderId, body.status());
+        CustomerEntity actor = customerService.getCustomerByEmail(principal.getName());
+        return orderService.idempotentTransitionOrderStatus(actor.id(), orderId, body.status(), idempotencyKey);
     }
 
-
     @PostMapping("/orders/{orderId}/cancel")
-    public OrderDto cancelOrder(Principal principal, @PathVariable Long orderId) {
-        CustomerEntity customer = customerService.getCustomerByEmail(principal.getName());
-        return orderService.cancelOrder(customer.id(), orderId);
+    public OrderDto cancelOrder(
+            Principal principal,
+            @PathVariable Long orderId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey
+    ) {
+        CustomerEntity actor = customerService.getCustomerByEmail(principal.getName());
+        return orderService.idempotentCancelOrder(actor.id(), orderId, idempotencyKey);
     }
 }

@@ -95,6 +95,32 @@ class OrderStatusTransitionRollbackTests {
         Assertions.assertEquals(0, countOutboxEventsForOrder(seededOrder.orderId()));
     }
 
+    @Test
+    void idempotentTransitionOrderStatus_whenOutboxStepFails_shouldRollbackUpdatedStatusAndIdempotencyRow() {
+        SeededOrder seededOrder = createOrderWithHistory("PAID");
+        Mockito.doThrow(new IllegalStateException("forced outbox failure during idempotent status transition"))
+                .when(orderEventOutboxService)
+                .enqueueOrderEvent(Mockito.any(), Mockito.anyList(), Mockito.isNull());
+
+        IllegalStateException ex = Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> orderService.idempotentTransitionOrderStatus(
+                        seededOrder.customerId(),
+                        seededOrder.orderId(),
+                        "ACCEPTED",
+                        "status-rollback-key"
+                )
+        );
+
+        Assertions.assertTrue(ex.getMessage().contains("forced outbox failure during idempotent status transition"));
+
+        OrderEntity unchangedOrder = orderRepository.findById(seededOrder.orderId()).orElseThrow();
+        Assertions.assertEquals("PAID", unchangedOrder.status());
+        Assertions.assertEquals(1, countOrderHistoryItemsForOrder(seededOrder.orderId()));
+        Assertions.assertEquals(0, countOutboxEventsForOrder(seededOrder.orderId()));
+        Assertions.assertEquals(0, countIdempotencyRequests(seededOrder.customerId(), "status-rollback-key"));
+    }
+
     private SeededOrder createOrderWithHistory(String status) {
         long suffix = System.nanoTime();
         LocalDateTime now = LocalDateTime.now();
@@ -144,6 +170,16 @@ class OrderStatusTransitionRollbackTests {
                 "SELECT COUNT(*) FROM outbox_events WHERE aggregate_type = 'ORDER' AND aggregate_id = ?",
                 Long.class,
                 orderId
+        );
+        return count == null ? 0 : count;
+    }
+
+    private long countIdempotencyRequests(Long customerId, String idempotencyKey) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM idempotency_requests WHERE customer_id = ? AND idempotency_key = ?",
+                Long.class,
+                customerId,
+                idempotencyKey
         );
         return count == null ? 0 : count;
     }

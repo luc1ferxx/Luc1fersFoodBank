@@ -117,10 +117,12 @@ class ContainerizedOrderFlowTests {
         Assertions.assertEquals(HttpStatus.OK, metricsResponse.getStatusCode());
         Assertions.assertTrue(metricsResponse.getBody().contains("measurements"));
 
+        HttpHeaders statusHeaders = jsonHeaders(sessionCookie);
+        statusHeaders.set("Idempotency-Key", "it-status-1");
         ResponseEntity<Map> transitionResponse = restTemplate.exchange(
                 url("/orders/" + orderId + "/status"),
                 HttpMethod.PATCH,
-                new HttpEntity<>(Map.of("status", "ACCEPTED"), authHeaders),
+                new HttpEntity<>(Map.of("status", "ACCEPTED"), statusHeaders),
                 Map.class
         );
         Assertions.assertEquals(HttpStatus.OK, transitionResponse.getStatusCode());
