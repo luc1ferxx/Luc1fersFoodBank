@@ -12,6 +12,9 @@ spring:
       path: /h2-console
   session:
     store-type: none
+  sql:
+    init:
+      mode: always
 
 app:
   kafka:

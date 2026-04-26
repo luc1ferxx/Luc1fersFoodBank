@@ -6,7 +6,6 @@ import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.model.OrderNotificationDto;
 import com.laioffer.onlineorder.repository.OrderNotificationRepository;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 
@@ -29,19 +28,14 @@ public class OrderNotificationService {
     public void recordOrderEvent(OrderEventEnvelope event) {
         validate(event);
         OrderEventPayload data = event.data();
-        try {
-            orderNotificationRepository.save(new OrderNotificationEntity(
-                    null,
-                    event.aggregateId(),
-                    data.customerId(),
-                    event.eventType(),
-                    buildTitle(event),
-                    buildMessage(event),
-                    LocalDateTime.now()
-            ));
-        } catch (DataIntegrityViolationException ignored) {
-            // Duplicate delivery is expected under at-least-once consumption; ignore it.
-        }
+        orderNotificationRepository.insertIfAbsent(
+                event.aggregateId(),
+                data.customerId(),
+                event.eventType(),
+                buildTitle(event),
+                buildMessage(event),
+                LocalDateTime.now()
+        );
     }
 
 

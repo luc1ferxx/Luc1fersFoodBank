@@ -8,6 +8,7 @@
 2. Open `backend` as a Gradle project in IntelliJ.
 3. Use JDK 17 or newer for the project SDK.
 4. Run `com.laioffer.onlineorder.OnlineOrderApplication`.
+   For a disposable local/demo database, set `INIT_DB=always` before startup so `database-init.sql` initializes demo data. That script drops and recreates tables, so leave the default `INIT_DB=never` for any database whose data must be preserved.
 5. Open `http://localhost:8080`.
 
 The backend now defaults to:

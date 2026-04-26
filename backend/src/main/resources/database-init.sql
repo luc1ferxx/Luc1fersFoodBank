@@ -82,7 +82,8 @@ CREATE TABLE orders
     total_price NUMERIC            NOT NULL,
     status      TEXT               NOT NULL,
     created_at  TIMESTAMP          NOT NULL,
-    CONSTRAINT fk_order_customer FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE
+    CONSTRAINT fk_order_customer FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE,
+    CONSTRAINT chk_order_status CHECK (status IN ('PLACED', 'PAID', 'ACCEPTED', 'PREPARING', 'COMPLETED', 'CANCELLED'))
 );
 
 
@@ -187,6 +188,8 @@ CREATE TABLE idempotency_requests
     created_at      TIMESTAMP          NOT NULL,
     updated_at      TIMESTAMP          NOT NULL,
     CONSTRAINT fk_idempotency_customer FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE,
+    CONSTRAINT fk_idempotency_order FOREIGN KEY (order_id) REFERENCES orders (id),
+    CONSTRAINT chk_idempotency_status CHECK (status IN ('PROCESSING', 'SUCCEEDED')),
     CONSTRAINT uq_idempotency_request UNIQUE (customer_id, scope, idempotency_key)
 );
 

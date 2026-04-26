@@ -215,8 +215,11 @@ docker compose up -d
 ### Run backend
 ```powershell
 cd backend
+$env:INIT_DB="always"  # local/demo reset only; database-init.sql drops and recreates tables
 gradlew.bat bootRun
 ```
+
+The production-safe default is `INIT_DB=never`, so the destructive `database-init.sql` is not run unless you explicitly opt in. Use `INIT_DB=always` only for local/demo/test database initialization or reset, not against a database whose data must be preserved. The project still uses SQL init rather than a migration framework; production environments should translate schema changes, including status `CHECK` constraints and foreign keys, into formal Flyway/Liquibase-style migrations before rollout.
 
 ### Run frontend dev server
 ```powershell
