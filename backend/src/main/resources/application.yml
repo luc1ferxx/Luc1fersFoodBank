@@ -94,6 +94,13 @@ management:
   endpoint:
     health:
       show-details: when_authorized
+      probes:
+        enabled: ${MANAGEMENT_HEALTH_PROBES_ENABLED:true}
+      group:
+        liveness:
+          include: ${MANAGEMENT_HEALTH_LIVENESS_INCLUDE:livenessState,ping}
+        readiness:
+          include: ${MANAGEMENT_HEALTH_READINESS_INCLUDE:readinessState,db,redis}
   metrics:
     tags:
       application: ${spring.application.name}
@@ -114,5 +121,8 @@ logging:
   level:
     org.springframework.jdbc.datasource.init: INFO
     org.springframework.jdbc.core: INFO
+  structured:
+    format:
+      console: ${LOG_STRUCTURED_FORMAT_CONSOLE:logstash}
   pattern:
     level: "%5p [traceId=%X{traceId:-na}]"

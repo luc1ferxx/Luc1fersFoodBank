@@ -195,9 +195,28 @@ public class CartServiceTests {
         Assertions.assertEquals("PLACED", orderDto.status());
         Assertions.assertEquals(1, orderDto.items().size());
         Mockito.verify(orderEventOutboxService).enqueueOrderEvent(savedOrder, orderDto.items(), null);
-        Mockito.verify(metricsService).recordCheckout("PLACED");
+        Mockito.verify(metricsService).recordCheckoutSuccess("PLACED");
         Mockito.verify(orderItemRepository).deleteByCartId(cartId);
         Mockito.verify(cartRepository).updateTotalPrice(cartId, 0.0);
+    }
+
+
+    @Test
+    void checkout_whenCartIsEmpty_shouldRecordCheckoutFailure() {
+        long customerId = 1L;
+        long cartId = 2L;
+        CartEntity cartEntity = new CartEntity(cartId, customerId, 0.0);
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(List.of());
+
+        Assertions.assertThrows(
+                com.laioffer.onlineorder.exception.BadRequestException.class,
+                () -> cartService.checkout(customerId)
+        );
+
+        Mockito.verify(metricsService).recordCheckoutFailure("BadRequestException");
+        Mockito.verify(metricsService, Mockito.never()).recordCheckoutSuccess(Mockito.anyString());
     }
 
 

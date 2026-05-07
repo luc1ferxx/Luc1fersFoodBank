@@ -194,6 +194,14 @@ CREATE TABLE idempotency_requests
 );
 
 
+CREATE INDEX idx_outbox_events_status_updated_id
+ON outbox_events (status, updated_at, id);
+
+
+CREATE INDEX idx_dead_letter_events_replay_status
+ON dead_letter_events (replay_status);
+
+
 INSERT INTO customers (email, enabled, password, first_name, last_name)
 VALUES ('demo@laifood.com', TRUE, '{noop}demo123', 'Demo', 'User');
 

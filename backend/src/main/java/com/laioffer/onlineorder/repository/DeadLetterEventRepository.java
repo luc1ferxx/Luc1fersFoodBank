@@ -13,6 +13,22 @@ import java.time.LocalDateTime;
 public interface DeadLetterEventRepository extends ListCrudRepository<DeadLetterEventEntity, Long> {
 
     @Query("""
+            SELECT COUNT(*)
+            FROM dead_letter_events
+            WHERE replay_status = :replayStatus
+            """)
+    long countByReplayStatus(String replayStatus);
+
+
+    @Query("""
+            SELECT COUNT(*)
+            FROM dead_letter_events
+            WHERE replay_status IN (:pendingStatus, :failedStatus, :replayedStatus)
+            """)
+    long countByReplayStatuses(String pendingStatus, String failedStatus, String replayedStatus);
+
+
+    @Query("""
             SELECT *
             FROM dead_letter_events
             WHERE id = :id

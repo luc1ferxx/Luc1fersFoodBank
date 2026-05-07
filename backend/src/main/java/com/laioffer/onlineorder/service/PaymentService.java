@@ -4,6 +4,7 @@ package com.laioffer.onlineorder.service;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.PaymentCheckoutBody;
+import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import org.springframework.stereotype.Service;
 
 
@@ -24,15 +25,22 @@ public class PaymentService {
     private static final Pattern EXPIRY_PATTERN = Pattern.compile("^(0[1-9]|1[0-2])/(\\d{2})$");
 
     private final CartService cartService;
+    private final ApplicationMetricsService metricsService;
 
 
-    public PaymentService(CartService cartService) {
+    public PaymentService(CartService cartService, ApplicationMetricsService metricsService) {
         this.cartService = cartService;
+        this.metricsService = metricsService;
     }
 
 
     public OrderDto payAndCheckout(Long customerId, String idempotencyKey, PaymentCheckoutBody body) {
-        validate(body);
+        try {
+            validate(body);
+        } catch (RuntimeException ex) {
+            metricsService.recordCheckoutFailure(ex.getClass().getSimpleName());
+            throw ex;
+        }
         return cartService.checkoutWithIdempotency(customerId, "PAID", idempotencyKey, buildRequestHash(customerId, body));
     }
 

@@ -13,6 +13,40 @@ import java.util.List;
 
 public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEntity, Long> {
 
+    @Query("""
+            SELECT *
+            FROM outbox_events
+            WHERE status = :status
+            ORDER BY updated_at ASC, id ASC
+            LIMIT :limit
+            """)
+    List<OutboxEventEntity> findByStatusOrderByUpdatedAtAsc(String status, int limit);
+
+
+    @Query("""
+            SELECT COUNT(*)
+            FROM outbox_events
+            WHERE status = :status
+            """)
+    long countByStatus(String status);
+
+
+    @Query("""
+            SELECT COUNT(*)
+            FROM outbox_events
+            WHERE status IN (:firstStatus, :secondStatus)
+            """)
+    long countByStatuses(String firstStatus, String secondStatus);
+
+
+    @Query("""
+            SELECT *
+            FROM outbox_events
+            WHERE id = :id
+            FOR UPDATE
+            """)
+    OutboxEventEntity lockById(Long id);
+
 
     @Query("""
             SELECT *
@@ -78,6 +112,20 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
             WHERE id = :id
             """)
     void markFailed(Long id, String status, LocalDateTime updatedAt, String lastError);
+
+
+    @Modifying
+    @Query("""
+            UPDATE outbox_events
+            SET status = :pendingStatus,
+                attempts = 0,
+                updated_at = :updatedAt,
+                published_at = NULL,
+                last_error = NULL
+            WHERE id = :id
+              AND status = :failedStatus
+            """)
+    int resetFailedForRetry(Long id, String failedStatus, String pendingStatus, LocalDateTime updatedAt);
 
 
     @Modifying

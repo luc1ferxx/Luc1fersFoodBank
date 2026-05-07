@@ -22,6 +22,8 @@ import com.laioffer.onlineorder.repository.MenuItemRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderItemRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,10 +36,13 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.function.Supplier;
 
 
 @Service
 public class CartService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(CartService.class);
 
     private static final String IDEMPOTENCY_STATUS_PROCESSING = "PROCESSING";
     private static final String IDEMPOTENCY_STATUS_SUCCEEDED = "SUCCEEDED";
@@ -132,15 +137,19 @@ public class CartService {
 
     @Transactional
     public OrderDto checkout(Long customerId) {
-        CartEntity cart = getRequiredLockedCart(customerId);
-        return checkoutInternal(customerId, cart, "PLACED", null);
+        return recordCheckoutAttempt(customerId, "PLACED", () -> {
+            CartEntity cart = getRequiredLockedCart(customerId);
+            return checkoutInternal(customerId, cart, "PLACED", null);
+        });
     }
 
 
     @Transactional
     public OrderDto checkout(Long customerId, String status) {
-        CartEntity cart = getRequiredLockedCart(customerId);
-        return checkoutInternal(customerId, cart, status, null);
+        return recordCheckoutAttempt(customerId, status, () -> {
+            CartEntity cart = getRequiredLockedCart(customerId);
+            return checkoutInternal(customerId, cart, status, null);
+        });
     }
 
 
@@ -152,50 +161,52 @@ public class CartService {
 
     @Transactional
     public OrderDto checkoutWithIdempotency(Long customerId, String status, String idempotencyKey, String requestHash) {
-        String normalizedStatus = normalizeStatus(status);
-        String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
-        CartEntity cart = getRequiredLockedCart(customerId);
-        String effectiveRequestHash = buildCheckoutRequestHash(cart, requestHash, normalizedStatus);
-        LocalDateTime now = LocalDateTime.now();
-        String scope = buildScope(normalizedStatus);
+        return recordCheckoutAttempt(customerId, status, () -> {
+            String normalizedStatus = normalizeStatus(status);
+            String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
+            CartEntity cart = getRequiredLockedCart(customerId);
+            String effectiveRequestHash = buildCheckoutRequestHash(cart, requestHash, normalizedStatus);
+            LocalDateTime now = LocalDateTime.now();
+            String scope = buildScope(normalizedStatus);
 
-        idempotencyRequestRepository.insertIfAbsent(
-                customerId,
-                scope,
-                normalizedKey,
-                effectiveRequestHash,
-                IDEMPOTENCY_STATUS_PROCESSING,
-                now,
-                now
-        );
+            idempotencyRequestRepository.insertIfAbsent(
+                    customerId,
+                    scope,
+                    normalizedKey,
+                    effectiveRequestHash,
+                    IDEMPOTENCY_STATUS_PROCESSING,
+                    now,
+                    now
+            );
 
-        IdempotencyRequestEntity request = idempotencyRequestRepository.lockByCustomerIdAndScopeAndIdempotencyKey(
-                customerId,
-                scope,
-                normalizedKey
-        );
-        if (request == null) {
-            throw new ConflictException("Unable to initialize idempotent checkout");
-        }
-        if (!request.requestHash().equals(effectiveRequestHash)) {
-            if (IDEMPOTENCY_STATUS_SUCCEEDED.equals(request.status()) && request.orderId() != null) {
-                String persistedOrderRequestHash = buildCheckoutRequestHashForOrder(cart.id(), requestHash, normalizedStatus, request.orderId());
-                if (request.requestHash().equals(persistedOrderRequestHash)) {
-                    return getRequiredOrderDto(request.orderId());
+            IdempotencyRequestEntity request = idempotencyRequestRepository.lockByCustomerIdAndScopeAndIdempotencyKey(
+                    customerId,
+                    scope,
+                    normalizedKey
+            );
+            if (request == null) {
+                throw new ConflictException("Unable to initialize idempotent checkout");
+            }
+            if (!request.requestHash().equals(effectiveRequestHash)) {
+                if (IDEMPOTENCY_STATUS_SUCCEEDED.equals(request.status()) && request.orderId() != null) {
+                    String persistedOrderRequestHash = buildCheckoutRequestHashForOrder(cart.id(), requestHash, normalizedStatus, request.orderId());
+                    if (request.requestHash().equals(persistedOrderRequestHash)) {
+                        return getRequiredOrderDto(request.orderId());
+                    }
                 }
+                throw new ConflictException("Idempotency key was already used with a different request");
             }
-            throw new ConflictException("Idempotency key was already used with a different request");
-        }
-        if (IDEMPOTENCY_STATUS_SUCCEEDED.equals(request.status())) {
-            if (request.orderId() == null) {
-                throw new ConflictException("Idempotent checkout completed without a stored order");
+            if (IDEMPOTENCY_STATUS_SUCCEEDED.equals(request.status())) {
+                if (request.orderId() == null) {
+                    throw new ConflictException("Idempotent checkout completed without a stored order");
+                }
+                return getRequiredOrderDto(request.orderId());
             }
-            return getRequiredOrderDto(request.orderId());
-        }
 
-        OrderDto order = checkoutInternal(customerId, cart, normalizedStatus, normalizedKey);
-        idempotencyRequestRepository.markSucceeded(request.id(), IDEMPOTENCY_STATUS_SUCCEEDED, order.id(), LocalDateTime.now());
-        return order;
+            OrderDto order = checkoutInternal(customerId, cart, normalizedStatus, normalizedKey);
+            idempotencyRequestRepository.markSucceeded(request.id(), IDEMPOTENCY_STATUS_SUCCEEDED, order.id(), LocalDateTime.now());
+            return order;
+        });
     }
 
 
@@ -239,11 +250,36 @@ public class CartService {
         }
 
         orderEventOutboxService.enqueueOrderEvent(savedOrder, orderHistoryItemDtos, idempotencyKey);
-        metricsService.recordCheckout(savedOrder.status());
         orderItemRepository.deleteByCartId(cart.id());
         cartRepository.updateTotalPrice(cart.id(), 0.0);
 
         return new OrderDto(savedOrder, orderHistoryItemDtos);
+    }
+
+
+    private OrderDto recordCheckoutAttempt(Long customerId, String requestedStatus, Supplier<OrderDto> action) {
+        try {
+            OrderDto order = action.get();
+            metricsService.recordCheckoutSuccess(order.status());
+            LOGGER.info(
+                    "Checkout completed: customer_id={}, order_id={}, status={}, total_price={}",
+                    customerId,
+                    order.id(),
+                    order.status(),
+                    order.totalPrice()
+            );
+            return order;
+        } catch (RuntimeException ex) {
+            metricsService.recordCheckoutFailure(ex.getClass().getSimpleName());
+            LOGGER.warn(
+                    "Checkout failed: customer_id={}, requested_status={}, reason={}, message={}",
+                    customerId,
+                    requestedStatus,
+                    ex.getClass().getSimpleName(),
+                    ex.getMessage()
+            );
+            throw ex;
+        }
     }
 
 

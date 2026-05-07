@@ -22,6 +22,7 @@ The project is designed to demonstrate **business correctness before scale-out**
 - **Transactional outbox** so order events are persisted in the same database transaction as the order itself
 - **Kafka consumer deduplication** via `processed_events`
 - **Dead-letter workflow** with persistent storage and admin replay endpoint
+- **Failed outbox recovery** with admin query and retry endpoints
 - **Redis-backed shared state** for Spring Session, cache, and rate limiting
 - **Production-shaped user lifecycle controls** with account status, login lockout, and last-login audit fields
 - **Operational visibility** through Actuator, Micrometer, Prometheus, and `X-Trace-Id`
@@ -82,6 +83,7 @@ Async processing
   -> Kafka publishes order event
   -> success marks the outbox event PUBLISHED
   -> publish failure returns the event to PENDING until max attempts, then FAILED
+  -> admin can inspect FAILED outbox rows and reset them to PENDING for republish
   -> consumer deduplicates with processed_events
   -> notification record is created idempotently
   -> consumer handling failures go to DLT storage and can be replayed by admin
@@ -150,6 +152,8 @@ That means:
 - When attempts reach `app.outbox.max-attempts`, the event becomes `FAILED`.
 - The default max attempts value is `10`.
 - `FAILED` outbox events are not automatically scanned by the publisher.
+- Admins can query `FAILED` outbox events with `GET /admin/outbox/events/failed`.
+- Admins can retry a `FAILED` event with `POST /admin/outbox/events/{eventId}/retry`, which safely resets only `FAILED` rows to `PENDING`, clears stale error/publish fields, resets `attempts` to `0`, and lets the existing publisher deliver the original payload.
 
 ### Consumer Idempotency
 - The Kafka delivery model should be treated as at-least-once delivery with consumer-side idempotency, not exactly-once delivery.
@@ -172,9 +176,9 @@ That means:
 - **Rate limiting:** anonymous auth endpoints are limited by remote IP, while authenticated checkout/admin flows are limited by user identity for fairer multi-user protection
 - **Rate-limit resilience:** Redis counter failures fail open, emit a warning, and increment a metric instead of taking down login or checkout
 - **Metrics:** Actuator + Micrometer + Prometheus endpoint
-- **Traceability:** `X-Trace-Id` is returned and propagated into logs
-- **Recovery:** Kafka consumer DLT persistence and replay API; this does not replay `outbox_events` rows that reached `FAILED`
-- **Health surface:** health/info/metrics/prometheus endpoints
+- **Traceability:** `X-Trace-Id` is returned, stored in MDC as `traceId`, and emitted in structured logs
+- **Recovery:** Kafka consumer DLT persistence/replay API plus failed outbox query/retry API
+- **Health surface:** health/info/metrics/prometheus endpoints plus liveness/readiness health groups
 
 ---
 
@@ -194,13 +198,124 @@ That means:
 
 ### Admin-facing
 - `PATCH /orders/{orderId}/status` — order state transition
+- `GET /admin/outbox/events/failed?limit=50` — inspect `FAILED` outbox events; `limit` is bounded to `1..200`
+- `POST /admin/outbox/events/{eventId}/retry` — reset a `FAILED` outbox event to `PENDING` for the existing publisher
 - `POST /dead-letters/{deadLetterEventId}/replay` — replay a dead-lettered Kafka consumer event; this is not an outbox `FAILED` recovery endpoint
 
 ### Operational
 - `GET /actuator/health`
+- `GET /actuator/health/liveness`
+- `GET /actuator/health/readiness`
 - `GET /actuator/info`
 - `GET /actuator/metrics`
 - `GET /actuator/prometheus`
+
+Health and info are public. Other Actuator endpoints and all admin APIs require `ROLE_ADMIN`.
+
+---
+
+## Outbox Failure Recovery Runbook
+
+Use this when order events stop publishing and `outbox_events.status = 'FAILED'` starts appearing.
+
+### 1. Discover the failure
+
+Check the operational metrics:
+
+```sh
+curl -c /tmp/onlineorder-admin-cookies \
+  -d "username=demo@laifood.com" \
+  -d "password=demo123" \
+  http://localhost:8080/login
+
+curl -b /tmp/onlineorder-admin-cookies \
+  http://localhost:8080/actuator/metrics/onlineorder.outbox.failed
+
+curl -b /tmp/onlineorder-admin-cookies \
+  http://localhost:8080/actuator/prometheus | grep onlineorder_outbox
+```
+
+Useful signals:
+- `onlineorder.outbox.failed` greater than `0`
+- `onlineorder.outbox.events{status="failed"}` greater than `0`
+- `onlineorder.outbox.backlog` not draining
+- `onlineorder.outbox.publish{result="failure"}` increasing
+
+### 2. Query failed events
+
+```sh
+curl -b /tmp/onlineorder-admin-cookies \
+  -H "X-Trace-Id: outbox-recovery-12345" \
+  "http://localhost:8080/admin/outbox/events/failed?limit=50"
+```
+
+Inspect `id`, `aggregate_id`, `event_type`, `attempts`, `last_error`, and `updated_at`. Fix the underlying cause first, such as Kafka connectivity, topic configuration, credentials, or serialization/runtime errors.
+
+### 3. Retry a failed event
+
+```sh
+curl -b /tmp/onlineorder-admin-cookies \
+  -X POST \
+  -H "X-Trace-Id: outbox-retry-12345" \
+  http://localhost:8080/admin/outbox/events/12345/retry
+```
+
+The retry endpoint only accepts `FAILED` events. It resets the row to `PENDING`, clears `last_error` and any stale `published_at`, resets `attempts` to `0`, and leaves the original payload, topic, key, and event id intact. The existing scheduled publisher then handles republish; the Kafka consumer dedup path remains unchanged.
+
+### 4. Verify recovery
+
+After the next publisher run:
+- the event should move from `PENDING` / `PROCESSING` to `PUBLISHED`
+- `onlineorder.outbox.failed` should decrease for retried events
+- `onlineorder.outbox.backlog` should drain
+- `onlineorder.outbox.publish{result="success"}` should increase
+- order notification side effects should remain deduplicated through `processed_events`
+
+If the event returns to `FAILED`, check `last_error` again and continue from the root cause, not by repeatedly retrying blindly.
+
+---
+
+## Observability
+
+### Trace correlation
+
+Every HTTP request gets an `X-Trace-Id` response header. If the client sends a valid `X-Trace-Id`, the backend reuses it; otherwise it generates a UUID. The same value is placed in MDC as `traceId`, so request logs, checkout logs, outbox retry logs, rate-limit warnings, and DLT logs can be correlated.
+
+Console logs use Spring Boot structured JSON logging by default:
+
+```yaml
+logging:
+  structured:
+    format:
+      console: ${LOG_STRUCTURED_FORMAT_CONSOLE:logstash}
+```
+
+The default `logstash` JSON format includes MDC fields, including `traceId`. Set `LOG_STRUCTURED_FORMAT_CONSOLE` per environment if another Spring Boot structured format is preferred.
+
+### Key metrics
+
+- `onlineorder.checkout.requests{result="success",status="paid|placed|..."}` — successful checkout attempts
+- `onlineorder.checkout.requests{result="failure",reason="..."}` — failed checkout attempts
+- `onlineorder.outbox.events{status="pending|processing|published|failed"}` — outbox rows by publisher state
+- `onlineorder.outbox.backlog` — `PENDING + PROCESSING` outbox rows
+- `onlineorder.outbox.failed` — outbox rows requiring operator action
+- `onlineorder.outbox.publish{topic="...",result="success|failure"}` — publisher send results
+- `onlineorder.dead_letter.total` — persisted Kafka DLT rows in known replay states
+- `onlineorder.dead_letter.events{replay_status="pending|replay_failed|replayed"}` — DLT rows by replay status
+- `onlineorder.dead_letter.stored{source_topic="..."}` — DLT store counter
+- `onlineorder.dead_letter.replay{result="success|failure"}` — DLT replay attempts
+- `onlineorder.security.rate_limit.rejected{route="..."}` — rejected rate-limited requests
+- `onlineorder.security.rate_limit.store_failure{route="..."}` — Redis rate-limit store fail-open events
+
+### Health and scrape endpoints
+
+- `GET /actuator/health` — aggregate health
+- `GET /actuator/health/liveness` — process liveness
+- `GET /actuator/health/readiness` — readiness with `readinessState`, database, and Redis
+- `GET /actuator/metrics` — metric discovery
+- `GET /actuator/prometheus` — Prometheus scrape format
+
+For troubleshooting, start with the trace id from the failed request, then check checkout/outbox/DLT/rate-limit metrics, then use the failed outbox or DLT admin endpoints when asynchronous work needs operator recovery.
 
 ---
 
@@ -297,8 +412,8 @@ This project is intentionally strong on correctness patterns but still limited i
 - payment is simulated with local request validation; there is no real payment gateway authorization, capture, webhook, or callback
 - message delivery semantics are at-least-once plus consumer idempotency, not end-to-end exactly-once delivery
 - outbox retry does not currently have a `next_attempt_at` column or backoff schedule; before `app.outbox.max-attempts` is reached, failed events may be retried quickly on a later publisher run
-- `outbox_events` rows that reach `FAILED` are not automatically scanned by the publisher and there is no current manual replay / recovery API for those FAILED outbox rows
-- there is no current alerting mechanism for outbox events that reach `FAILED`
+- `outbox_events` rows that reach `FAILED` are not automatically scanned by the publisher; an admin must explicitly reset them with the outbox retry endpoint after fixing the root cause
+- there is no built-in alert manager; operators should alert from the exposed outbox failed/backlog metrics
 - there is no real `inventory` table, `stock` field, stock reservation, or stock decrement logic
 - because inventory is not implemented, the README should not be read as claiming insufficient-stock checkout failure, oversell prevention, duplicate-request-safe stock decrement, or an order + inventory + outbox rollback guarantee
 - H2 is only a lightweight fallback profile; production-style runtime state is designed around PostgreSQL + Redis + Kafka

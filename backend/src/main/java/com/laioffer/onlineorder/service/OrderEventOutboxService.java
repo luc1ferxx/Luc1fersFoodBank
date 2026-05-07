@@ -5,11 +5,17 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OutboxEventEntity;
+import com.laioffer.onlineorder.exception.BadRequestException;
+import com.laioffer.onlineorder.exception.ConflictException;
+import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
+import com.laioffer.onlineorder.model.OutboxEventDto;
 import com.laioffer.onlineorder.repository.OutboxEventRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,6 +29,8 @@ import java.util.UUID;
 
 @Service
 public class OrderEventOutboxService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(OrderEventOutboxService.class);
 
     private static final String OUTBOX_STATUS_PENDING = "PENDING";
     private static final String OUTBOX_STATUS_PROCESSING = "PROCESSING";
@@ -147,6 +155,48 @@ public class OrderEventOutboxService {
                 now,
                 abbreviatedError
         );
+    }
+
+
+    public List<OutboxEventDto> getFailedEvents(int limit) {
+        int normalizedLimit = Math.max(1, Math.min(limit, 200));
+        return outboxEventRepository.findByStatusOrderByUpdatedAtAsc(OUTBOX_STATUS_FAILED, normalizedLimit)
+                .stream()
+                .map(OutboxEventDto::new)
+                .toList();
+    }
+
+
+    @Transactional
+    public OutboxEventDto retryFailedEvent(Long eventId) {
+        OutboxEventEntity event = outboxEventRepository.lockById(eventId);
+        if (event == null) {
+            throw new ResourceNotFoundException("Outbox event not found");
+        }
+        if (!OUTBOX_STATUS_FAILED.equals(event.status())) {
+            throw new BadRequestException("Only FAILED outbox events can be retried");
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        int updated = outboxEventRepository.resetFailedForRetry(
+                eventId,
+                OUTBOX_STATUS_FAILED,
+                OUTBOX_STATUS_PENDING,
+                now
+        );
+        if (updated != 1) {
+            throw new ConflictException("Unable to reset outbox event for retry");
+        }
+        LOGGER.info(
+                "Failed outbox event {} reset to PENDING for retry: aggregate_type={}, aggregate_id={}, event_type={}",
+                event.id(),
+                event.aggregateType(),
+                event.aggregateId(),
+                event.eventType()
+        );
+        return outboxEventRepository.findById(eventId)
+                .map(OutboxEventDto::new)
+                .orElseThrow(() -> new ResourceNotFoundException("Outbox event not found"));
     }
 
 

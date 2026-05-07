@@ -75,7 +75,7 @@ public class CartController {
     @PostMapping("/cart/checkout")
     public OrderDto checkout(
             Principal principal,
-            @RequestHeader("Idempotency-Key") String idempotencyKey
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey
     ) {
         CustomerEntity customer = customerService.getCustomerByEmail(principal.getName());
         return cartService.checkoutWithIdempotency(customer.id(), "PLACED", idempotencyKey);

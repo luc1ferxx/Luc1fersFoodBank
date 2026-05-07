@@ -4,6 +4,7 @@ package com.laioffer.onlineorder;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.PaymentCheckoutBody;
+import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.PaymentService;
 import org.junit.jupiter.api.Assertions;
@@ -25,12 +26,15 @@ public class PaymentServiceTests {
     @Mock
     private CartService cartService;
 
+    @Mock
+    private ApplicationMetricsService metricsService;
+
     private PaymentService paymentService;
 
 
     @BeforeEach
     void setup() {
-        paymentService = new PaymentService(cartService);
+        paymentService = new PaymentService(cartService, metricsService);
     }
 
 
@@ -70,5 +74,6 @@ public class PaymentServiceTests {
 
         Assertions.assertThrows(BadRequestException.class, () -> paymentService.payAndCheckout(1L, "key-1", body));
         Mockito.verifyNoInteractions(cartService);
+        Mockito.verify(metricsService).recordCheckoutFailure("BadRequestException");
     }
 }

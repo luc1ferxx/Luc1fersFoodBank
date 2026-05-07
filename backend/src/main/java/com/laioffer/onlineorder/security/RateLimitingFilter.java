@@ -116,6 +116,9 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         if (HttpMethod.POST.matches(method) && path.matches("^/dead-letters/\\d+/replay$")) {
             return new RateLimitRule("dead-letter-replay", 10, false);
         }
+        if (HttpMethod.POST.matches(method) && path.matches("^/admin/outbox/events/\\d+/retry$")) {
+            return new RateLimitRule("outbox-retry", 10, false);
+        }
         if (HttpMethod.PATCH.matches(method) && path.matches("^/orders/\\d+/status$")) {
             return new RateLimitRule("order-status", 30, false);
         }

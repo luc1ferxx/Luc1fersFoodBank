@@ -17,7 +17,26 @@ public class ApplicationMetricsService {
 
 
     public void recordCheckout(String status) {
+        recordCheckoutSuccess(status);
         meterRegistry.counter("onlineorder.checkout.completed", "status", normalize(status)).increment();
+    }
+
+
+    public void recordCheckoutSuccess(String status) {
+        meterRegistry.counter(
+                "onlineorder.checkout.requests",
+                "result", "success",
+                "status", normalize(status)
+        ).increment();
+    }
+
+
+    public void recordCheckoutFailure(String reason) {
+        meterRegistry.counter(
+                "onlineorder.checkout.requests",
+                "result", "failure",
+                "reason", normalize(reason)
+        ).increment();
     }
 
 
