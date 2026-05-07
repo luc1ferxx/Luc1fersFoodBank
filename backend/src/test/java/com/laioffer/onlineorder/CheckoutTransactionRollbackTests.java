@@ -41,6 +41,7 @@ class CheckoutTransactionRollbackTests {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
+        registry.add("spring.flyway.locations", () -> "classpath:db/migration,classpath:db/demo");
         registry.add("spring.session.store-type", () -> "none");
         registry.add("spring.cache.type", () -> "none");
         registry.add("app.kafka.enabled", () -> "false");
