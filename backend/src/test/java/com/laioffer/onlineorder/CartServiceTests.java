@@ -16,7 +16,9 @@ import com.laioffer.onlineorder.repository.MenuItemRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderItemRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
+import com.laioffer.onlineorder.service.CartItemQuantityUpdater;
 import com.laioffer.onlineorder.service.CartService;
+import com.laioffer.onlineorder.service.IdempotencyRequestInitializer;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,10 +48,16 @@ public class CartServiceTests {
     private IdempotencyRequestRepository idempotencyRequestRepository;
 
     @Mock
+    private IdempotencyRequestInitializer idempotencyRequestInitializer;
+
+    @Mock
     private MenuItemRepository menuItemRepository;
 
     @Mock
     private OrderItemRepository orderItemRepository;
+
+    @Mock
+    private CartItemQuantityUpdater cartItemQuantityUpdater;
 
     @Mock
     private OrderRepository orderRepository;
@@ -71,8 +79,10 @@ public class CartServiceTests {
         cartService = new CartService(
                 cartRepository,
                 idempotencyRequestRepository,
+                idempotencyRequestInitializer,
                 menuItemRepository,
                 orderItemRepository,
+                cartItemQuantityUpdater,
                 orderRepository,
                 orderHistoryItemRepository,
                 orderEventOutboxService,
@@ -95,7 +105,7 @@ public class CartServiceTests {
 
         cartService.addMenuItemToCart(customerId, menuItemId);
 
-        Mockito.verify(orderItemRepository).incrementQuantity(cartId, menuItemId, 10.0);
+        Mockito.verify(cartItemQuantityUpdater).incrementQuantity(cartId, menuItemId, 10.0);
         Mockito.verify(cartRepository).updateTotalPrice(cartId, 10.0);
     }
 
@@ -262,7 +272,7 @@ public class CartServiceTests {
         OrderDto orderDto = cartService.checkoutWithIdempotency(customerId, "PAID", "key-1", "hash-1");
 
         Assertions.assertEquals(orderId, orderDto.id());
-        Mockito.verify(idempotencyRequestRepository).insertIfAbsent(
+        Mockito.verify(idempotencyRequestInitializer).insertIfAbsent(
                 Mockito.eq(customerId),
                 Mockito.eq("checkout:paid"),
                 Mockito.eq("key-1"),

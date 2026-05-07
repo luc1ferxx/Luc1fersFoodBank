@@ -107,6 +107,48 @@ class AuthenticationFlowTests {
     }
 
     @Test
+    void h2DemoCheckout_shouldAddCartItemAndReturnPaidOrder() {
+        ResponseEntity<String> loginResponse = login("demo@laifood.com", "demo123");
+        Assertions.assertEquals(HttpStatus.OK, loginResponse.getStatusCode());
+        String sessionCookie = extractSessionCookie(loginResponse);
+        Assertions.assertNotNull(sessionCookie);
+
+        HttpHeaders cartHeaders = jsonHeadersWithCookie(sessionCookie);
+        ResponseEntity<Void> addToCartResponse = restTemplate.postForEntity(
+                url("/cart"),
+                new HttpEntity<>(Map.of("menu_id", 1), cartHeaders),
+                Void.class
+        );
+        Assertions.assertEquals(HttpStatus.OK, addToCartResponse.getStatusCode());
+
+        ResponseEntity<Map> cartResponse = restTemplate.exchange(
+                url("/cart"),
+                org.springframework.http.HttpMethod.GET,
+                new HttpEntity<>(headersWithCookie(sessionCookie)),
+                Map.class
+        );
+        Assertions.assertEquals(HttpStatus.OK, cartResponse.getStatusCode());
+        Assertions.assertEquals(4.89, ((Number) cartResponse.getBody().get("total_price")).doubleValue(), 0.01);
+
+        HttpHeaders checkoutHeaders = jsonHeadersWithCookie(sessionCookie);
+        checkoutHeaders.set("Idempotency-Key", "h2-demo-checkout-" + System.nanoTime());
+        ResponseEntity<Map> checkoutResponse = restTemplate.postForEntity(
+                url("/payments/checkout"),
+                new HttpEntity<>(Map.of(
+                        "cardholder_name", "Demo User",
+                        "card_number", "4242424242424242",
+                        "expiry", "12/30",
+                        "cvv", "123"
+                ), checkoutHeaders),
+                Map.class
+        );
+
+        Assertions.assertEquals(HttpStatus.OK, checkoutResponse.getStatusCode());
+        Assertions.assertEquals("PAID", checkoutResponse.getBody().get("status"));
+        Assertions.assertEquals(4.89, ((Number) checkoutResponse.getBody().get("total_price")).doubleValue(), 0.01);
+    }
+
+    @Test
     void repeatedFailedLogins_shouldLockAccount_untilLockExpires_thenSuccessfulLoginShouldResetState() {
         String email = "login-" + System.nanoTime() + "@example.com";
         String password = "demo123";
@@ -178,6 +220,26 @@ class AuthenticationFlowTests {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         return new HttpEntity<>(body, headers);
+    }
+
+    private HttpHeaders jsonHeadersWithCookie(String sessionCookie) {
+        HttpHeaders headers = headersWithCookie(sessionCookie);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return headers;
+    }
+
+    private HttpHeaders headersWithCookie(String sessionCookie) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.add(HttpHeaders.COOKIE, sessionCookie);
+        return headers;
+    }
+
+    private String extractSessionCookie(ResponseEntity<String> response) {
+        String rawCookie = response.getHeaders().getFirst(HttpHeaders.SET_COOKIE);
+        if (rawCookie == null) {
+            return null;
+        }
+        return rawCookie.split(";", 2)[0];
     }
 
     private String url(String path) {

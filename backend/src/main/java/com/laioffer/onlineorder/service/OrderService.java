@@ -45,6 +45,7 @@ public class OrderService {
 
     private final ApplicationMetricsService metricsService;
     private final IdempotencyRequestRepository idempotencyRequestRepository;
+    private final IdempotencyRequestInitializer idempotencyRequestInitializer;
     private final OrderEventOutboxService orderEventOutboxService;
     private final OrderRepository orderRepository;
     private final OrderHistoryItemRepository orderHistoryItemRepository;
@@ -55,13 +56,15 @@ public class OrderService {
             OrderHistoryItemRepository orderHistoryItemRepository,
             OrderEventOutboxService orderEventOutboxService,
             ApplicationMetricsService metricsService,
-            IdempotencyRequestRepository idempotencyRequestRepository
+            IdempotencyRequestRepository idempotencyRequestRepository,
+            IdempotencyRequestInitializer idempotencyRequestInitializer
     ) {
         this.orderRepository = orderRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
         this.orderEventOutboxService = orderEventOutboxService;
         this.metricsService = metricsService;
         this.idempotencyRequestRepository = idempotencyRequestRepository;
+        this.idempotencyRequestInitializer = idempotencyRequestInitializer;
     }
 
 
@@ -168,7 +171,7 @@ public class OrderService {
             Supplier<OrderDto> operation
     ) {
         LocalDateTime now = LocalDateTime.now();
-        int inserted = idempotencyRequestRepository.insertIfAbsent(
+        int inserted = idempotencyRequestInitializer.insertIfAbsent(
                 actorCustomerId,
                 scope,
                 idempotencyKey,

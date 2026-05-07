@@ -49,8 +49,10 @@ public class CartService {
 
     private final CartRepository cartRepository;
     private final IdempotencyRequestRepository idempotencyRequestRepository;
+    private final IdempotencyRequestInitializer idempotencyRequestInitializer;
     private final MenuItemRepository menuItemRepository;
     private final OrderItemRepository orderItemRepository;
+    private final CartItemQuantityUpdater cartItemQuantityUpdater;
     private final OrderRepository orderRepository;
     private final OrderHistoryItemRepository orderHistoryItemRepository;
     private final OrderEventOutboxService orderEventOutboxService;
@@ -60,8 +62,10 @@ public class CartService {
     public CartService(
             CartRepository cartRepository,
             IdempotencyRequestRepository idempotencyRequestRepository,
+            IdempotencyRequestInitializer idempotencyRequestInitializer,
             MenuItemRepository menuItemRepository,
             OrderItemRepository orderItemRepository,
+            CartItemQuantityUpdater cartItemQuantityUpdater,
             OrderRepository orderRepository,
             OrderHistoryItemRepository orderHistoryItemRepository,
             OrderEventOutboxService orderEventOutboxService,
@@ -69,8 +73,10 @@ public class CartService {
     ) {
         this.cartRepository = cartRepository;
         this.idempotencyRequestRepository = idempotencyRequestRepository;
+        this.idempotencyRequestInitializer = idempotencyRequestInitializer;
         this.menuItemRepository = menuItemRepository;
         this.orderItemRepository = orderItemRepository;
+        this.cartItemQuantityUpdater = cartItemQuantityUpdater;
         this.orderRepository = orderRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
         this.orderEventOutboxService = orderEventOutboxService;
@@ -82,7 +88,7 @@ public class CartService {
     public void addMenuItemToCart(long customerId, long menuItemId) {
         CartEntity cart = getRequiredLockedCart(customerId);
         MenuItemEntity menuItem = getRequiredMenuItem(menuItemId);
-        orderItemRepository.incrementQuantity(cart.id(), menuItem.id(), menuItem.price());
+        cartItemQuantityUpdater.incrementQuantity(cart.id(), menuItem.id(), menuItem.price());
         syncCartTotal(cart.id());
     }
 
@@ -169,7 +175,7 @@ public class CartService {
             LocalDateTime now = LocalDateTime.now();
             String scope = buildScope(normalizedStatus);
 
-            idempotencyRequestRepository.insertIfAbsent(
+            idempotencyRequestInitializer.insertIfAbsent(
                     customerId,
                     scope,
                     normalizedKey,
