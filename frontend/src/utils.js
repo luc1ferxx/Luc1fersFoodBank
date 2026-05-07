@@ -1,10 +1,55 @@
-const handleResponse = async (response, fallbackMessage) => {
+export class ApiError extends Error {
+  constructor(message, { status, traceId, body } = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.traceId = traceId;
+    this.body = body;
+  }
+}
+
+const statusMessages = {
+  400: "The request is invalid. Check the fields and try again.",
+  401: "Sign in to continue.",
+  403: "This account is not allowed to perform that action.",
+  404: "The requested record was not found.",
+  409: "The server rejected this state change. Refresh and try again.",
+  429: "Too many requests. Wait a moment and try again.",
+  500: "The server failed to complete the request.",
+};
+
+const parseErrorMessage = (body, fallbackMessage, status) => {
+  if (!body) {
+    return statusMessages[status] || fallbackMessage;
+  }
+
+  try {
+    const parsed = JSON.parse(body);
+    return parsed.message || parsed.error || statusMessages[status] || fallbackMessage;
+  } catch {
+    return body || statusMessages[status] || fallbackMessage;
+  }
+};
+
+const request = async (url, options = {}, fallbackMessage = "Request failed") => {
+  const response = await fetch(url, {
+    credentials: "include",
+    ...options,
+    headers: options.headers || undefined,
+  });
+  const traceId = response.headers.get("X-Trace-Id");
+
   if (response.status < 200 || response.status >= 300) {
-    const messageText = await response.text();
-    throw Error(messageText || fallbackMessage);
+    const body = await response.text();
+    throw new ApiError(parseErrorMessage(body, fallbackMessage, response.status), {
+      status: response.status,
+      traceId,
+      body,
+    });
   }
 
   const contentType = response.headers.get("content-type");
+
   if (contentType && contentType.includes("application/json")) {
     return response.json();
   }
@@ -28,114 +73,152 @@ export const login = (credentials) => {
     password: credentials.password,
   });
 
-  return fetch("/login", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+  return request(
+    "/login",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+      },
+      body: payload.toString(),
     },
-    body: payload.toString(),
-  }).then((response) => handleResponse(response, "Fail to log in"));
+    "Fail to log in"
+  );
 };
 
-export const logout = () => {
-  return fetch("/logout", {
-    method: "POST",
-  }).then((response) => handleResponse(response, "Fail to log out"));
-};
+export const logout = () =>
+  request("/logout", { method: "POST" }, "Fail to log out");
 
-export const signup = (data) => {
-  return fetch("/signup", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+export const signup = (data) =>
+  request(
+    "/signup",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(data),
     },
-    body: JSON.stringify(data),
-  }).then((response) => handleResponse(response, "Fail to sign up"));
-};
-
-export const getCurrentUser = () => {
-  return fetch("/me").then((response) =>
-    handleResponse(response, "Fail to load your session")
+    "Fail to sign up"
   );
-};
 
-export const getMenus = (restaurantId) => {
-  return fetch(`/restaurant/${restaurantId}/menu`).then((response) =>
-    handleResponse(response, "Fail to get menus")
-  );
-};
+export const getCurrentUser = () =>
+  request("/me", undefined, "Fail to load your session");
 
-export const getRestaurants = () => {
-  return fetch("/restaurants/menu").then((response) =>
-    handleResponse(response, "Fail to get restaurants")
-  );
-};
+export const getMenus = (restaurantId) =>
+  request(`/restaurant/${restaurantId}/menu`, undefined, "Fail to get menus");
 
-export const getCart = () => {
-  return fetch("/cart").then((response) =>
-    handleResponse(response, "Fail to get shopping cart data")
-  );
-};
+export const getRestaurants = () =>
+  request("/restaurants/menu", undefined, "Fail to get restaurants");
 
-export const checkout = (idempotencyKey = createIdempotencyKey()) => {
-  return fetch("/cart/checkout", {
-    method: "POST",
-    headers: {
-      "Idempotency-Key": idempotencyKey,
+export const getCart = () =>
+  request("/cart", undefined, "Fail to get shopping cart data");
+
+export const checkout = (idempotencyKey = createIdempotencyKey()) =>
+  request(
+    "/cart/checkout",
+    {
+      method: "POST",
+      headers: {
+        "Idempotency-Key": idempotencyKey,
+      },
     },
-  }).then((response) => handleResponse(response, "Fail to checkout"));
-};
+    "Fail to checkout"
+  );
 
 export const checkoutWithPayment = (
   paymentDetails,
   idempotencyKey = createIdempotencyKey()
-) => {
-  return fetch("/payments/checkout", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Idempotency-Key": idempotencyKey,
+) =>
+  request(
+    "/payments/checkout",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
+      },
+      body: JSON.stringify(paymentDetails),
     },
-    body: JSON.stringify(paymentDetails),
-  }).then((response) =>
-    handleResponse(response, "Fail to complete payment")
+    "Fail to complete payment"
   );
-};
 
-export const addItemToCart = (itemId) => {
-  return fetch("/cart", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+export const addItemToCart = (itemId) =>
+  request(
+    "/cart",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ menu_id: itemId }),
     },
-    body: JSON.stringify({ menu_id: itemId }),
-  }).then((response) =>
-    handleResponse(response, "Fail to add menu item to shopping cart")
+    "Fail to add menu item to shopping cart"
   );
-};
 
-export const updateCartItem = (orderItemId, quantity) => {
-  return fetch(`/cart/items/${orderItemId}`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
+export const updateCartItem = (orderItemId, quantity) =>
+  request(
+    `/cart/items/${orderItemId}`,
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ quantity }),
     },
-    body: JSON.stringify({ quantity }),
-  }).then((response) =>
-    handleResponse(response, "Fail to update shopping cart item")
+    "Fail to update shopping cart item"
   );
-};
 
-export const removeCartItem = (orderItemId) => {
-  return fetch(`/cart/items/${orderItemId}`, {
-    method: "DELETE",
-  }).then((response) =>
-    handleResponse(response, "Fail to remove shopping cart item")
+export const removeCartItem = (orderItemId) =>
+  request(
+    `/cart/items/${orderItemId}`,
+    {
+      method: "DELETE",
+    },
+    "Fail to remove shopping cart item"
   );
-};
 
-export const getOrders = () => {
-  return fetch("/orders").then((response) =>
-    handleResponse(response, "Fail to load your orders")
+export const getOrders = () =>
+  request("/orders", undefined, "Fail to load your orders");
+
+export const cancelOrder = (orderId, idempotencyKey = createIdempotencyKey()) =>
+  request(
+    `/orders/${orderId}/cancel`,
+    {
+      method: "POST",
+      headers: {
+        "Idempotency-Key": idempotencyKey,
+      },
+    },
+    "Fail to cancel the order"
   );
-};
+
+export const getNotifications = () =>
+  request("/notifications", undefined, "Fail to load notifications");
+
+export const updateOrderStatus = (
+  orderId,
+  status,
+  idempotencyKey = createIdempotencyKey()
+) =>
+  request(
+    `/orders/${orderId}/status`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
+      },
+      body: JSON.stringify({ status }),
+    },
+    "Fail to update order status"
+  );
+
+export const replayDeadLetter = (deadLetterEventId) =>
+  request(
+    `/dead-letters/${deadLetterEventId}/replay`,
+    {
+      method: "POST",
+    },
+    "Fail to replay the dead-letter event"
+  );
