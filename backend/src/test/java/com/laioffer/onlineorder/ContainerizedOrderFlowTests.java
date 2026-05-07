@@ -63,7 +63,7 @@ class ContainerizedOrderFlowTests {
         registry.add("spring.data.redis.host", REDIS::getHost);
         registry.add("spring.data.redis.port", REDIS::getFirstMappedPort);
         registry.add("spring.kafka.bootstrap-servers", KAFKA::getBootstrapServers);
-        registry.add("spring.sql.init.mode", () -> "always");
+        registry.add("spring.flyway.locations", () -> "classpath:db/migration,classpath:db/demo");
         registry.add("app.kafka.enabled", () -> "true");
         registry.add("app.outbox.publisher-enabled", () -> "true");
         registry.add("app.outbox.publish-interval", () -> "500ms");

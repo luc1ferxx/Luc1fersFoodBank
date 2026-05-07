@@ -42,8 +42,11 @@ spring:
       path: /h2-console
   sql:
     init:
-      mode: ${INIT_DB:never}
-      schema-locations: "classpath:database-init.sql"
+      mode: never
+  flyway:
+    enabled: ${FLYWAY_ENABLED:true}
+    locations: ${FLYWAY_LOCATIONS:classpath:db/migration}
+    baseline-on-migrate: ${FLYWAY_BASELINE_ON_MIGRATE:false}
   session:
     store-type: redis
     redis:

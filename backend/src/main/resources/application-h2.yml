@@ -2,10 +2,12 @@ spring:
   cache:
     type: redis
   datasource:
-    url: ${DATABASE_URL:jdbc:h2:mem:onlineorder;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE}
+    url: ${DATABASE_URL:jdbc:h2:mem:onlineorder-${random.uuid};MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE}
     username: ${DATABASE_USERNAME:sa}
     password: ${DATABASE_PASSWORD:}
     driver-class-name: ${DATABASE_DRIVER:org.h2.Driver}
+  flyway:
+    locations: ${FLYWAY_LOCATIONS:classpath:db/migration,classpath:db/demo}
   h2:
     console:
       enabled: true
@@ -14,7 +16,7 @@ spring:
     store-type: none
   sql:
     init:
-      mode: always
+      mode: never
 
 app:
   kafka:

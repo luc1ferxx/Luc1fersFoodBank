@@ -53,7 +53,6 @@ class OutboxReliabilityIntegrationTests {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
-        registry.add("spring.sql.init.mode", () -> "always");
         registry.add("spring.session.store-type", () -> "none");
         registry.add("spring.cache.type", () -> "none");
         registry.add("app.kafka.enabled", () -> "false");

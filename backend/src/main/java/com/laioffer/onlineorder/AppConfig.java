@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder;
 
 
+import com.laioffer.onlineorder.error.ApiErrorResponseWriter;
 import com.laioffer.onlineorder.security.RateLimitingFilter;
 import com.laioffer.onlineorder.service.CustomerService;
 import org.springframework.boot.autoconfigure.security.servlet.PathRequest;
@@ -19,7 +20,6 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.provisioning.JdbcUserDetailsManager;
 import org.springframework.security.provisioning.UserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.security.web.authentication.logout.HttpStatusReturningLogoutSuccessHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
@@ -62,7 +62,8 @@ public class AppConfig {
     public SecurityFilterChain filterChain(
             HttpSecurity http,
             RateLimitingFilter rateLimitingFilter,
-            CustomerService customerService
+            CustomerService customerService,
+            ApiErrorResponseWriter apiErrorResponseWriter
     ) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
@@ -88,6 +89,7 @@ public class AppConfig {
                                 .requestMatchers(EndpointRequest.to("health", "info")).permitAll()
                                 .requestMatchers(EndpointRequest.toAnyEndpoint()).hasRole("ADMIN")
                                 .requestMatchers("/h2-console/**").permitAll()
+                                .requestMatchers(HttpMethod.GET, "/v3/api-docs/**", "/swagger-ui.html", "/swagger-ui/**").permitAll()
                                 .requestMatchers(HttpMethod.GET, "/", "/index.html", "/*.json", "/*.png", "/static/**").permitAll()
                                 .requestMatchers(HttpMethod.POST, "/login", "/logout", "/signup").permitAll()
                                 .requestMatchers(HttpMethod.GET, "/restaurants/**", "/restaurant/**").permitAll()
@@ -98,7 +100,22 @@ public class AppConfig {
                                 .anyRequest().authenticated()
                 )
                 .exceptionHandling(exception -> exception
-                        .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED))
+                        .authenticationEntryPoint((request, response, ex) ->
+                                apiErrorResponseWriter.write(
+                                        request,
+                                        response,
+                                        HttpStatus.UNAUTHORIZED,
+                                        "UNAUTHORIZED",
+                                        "Authentication required"
+                                ))
+                        .accessDeniedHandler((request, response, ex) ->
+                                apiErrorResponseWriter.write(
+                                        request,
+                                        response,
+                                        HttpStatus.FORBIDDEN,
+                                        "FORBIDDEN",
+                                        "Access denied"
+                                ))
                 )
                 .sessionManagement(session -> session
                         .sessionFixation(sessionFixation -> sessionFixation.migrateSession())
@@ -112,7 +129,13 @@ public class AppConfig {
                             if (!(ex instanceof LockedException) && !(ex instanceof DisabledException)) {
                                 customerService.recordFailedLoginAttempt(req.getParameter("username"));
                             }
-                            res.sendError(HttpStatus.UNAUTHORIZED.value(), "Invalid email or password");
+                            apiErrorResponseWriter.write(
+                                    req,
+                                    res,
+                                    HttpStatus.UNAUTHORIZED,
+                                    "UNAUTHORIZED",
+                                    "Invalid email or password"
+                            );
                         })
                 )
                 .logout(logout -> logout

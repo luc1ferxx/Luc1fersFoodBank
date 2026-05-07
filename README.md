@@ -209,8 +209,28 @@ That means:
 - `GET /actuator/info`
 - `GET /actuator/metrics`
 - `GET /actuator/prometheus`
+- `GET /v3/api-docs` — OpenAPI JSON
+- `GET /swagger-ui/index.html` — Swagger UI
 
 Health and info are public. Other Actuator endpoints and all admin APIs require `ROLE_ADMIN`.
+OpenAPI docs and Swagger UI are public so local and CI consumers can inspect the API contract without an authenticated browser session.
+
+### Error response shape
+
+API errors use a consistent JSON body:
+
+```json
+{
+  "code": "VALIDATION_FAILED",
+  "message": "Request validation failed",
+  "trace_id": "trace-12345",
+  "status": 400,
+  "path": "/signup",
+  "timestamp": "2026-05-07T05:00:00Z"
+}
+```
+
+The `trace_id` value matches the `X-Trace-Id` response header when a valid trace header is supplied by the client.
 
 ---
 
@@ -330,11 +350,20 @@ docker compose up -d
 ### Run backend
 ```powershell
 cd backend
-$env:INIT_DB="always"  # local/demo reset only; database-init.sql drops and recreates tables
 gradlew.bat bootRun
 ```
 
-The production-safe default is `INIT_DB=never`, so the destructive `database-init.sql` is not run unless you explicitly opt in. Use `INIT_DB=always` only for local/demo/test database initialization or reset, not against a database whose data must be preserved. The project still uses SQL init rather than a migration framework; production environments should translate schema changes, including status `CHECK` constraints and foreign keys, into formal Flyway/Liquibase-style migrations before rollout.
+Flyway applies the production-shaped schema from `backend/src/main/resources/db/migration` on startup. Normal startup is non-destructive and does not drop or recreate existing tables.
+
+To include the demo account, restaurants, and menu data when running against local PostgreSQL, add the demo Flyway callback location:
+
+```powershell
+cd backend
+$env:FLYWAY_LOCATIONS="classpath:db/migration,classpath:db/demo"
+gradlew.bat bootRun
+```
+
+The `h2` profile includes that demo seed callback by default. `INIT_DB=always` is no longer a schema reset path. For a disposable local PostgreSQL reset, stop the backend, confirm the local database has no data you need, then recreate the `onlineorder` database or delete only the PostgreSQL Compose volume declared in `backend/docker-compose.yml` as `onlineorder-pg-local`. Rerun the backend afterward so Flyway can apply migrations again.
 
 ### Run frontend dev server
 ```powershell
@@ -357,6 +386,7 @@ http://localhost:8080
 - Email: `demo@laifood.com`
 - Password: `demo123`
 - Roles: `ROLE_USER`, `ROLE_ADMIN`
+- Availability: seeded by the `h2` profile and by local PostgreSQL runs that include `classpath:db/demo` in `FLYWAY_LOCATIONS`
 
 ---
 
@@ -408,7 +438,7 @@ Important test environment notes:
 
 This project is intentionally strong on correctness patterns but still limited in product scope.
 
-- schema initialization still uses `database-init.sql`, not Flyway or Liquibase
+- schema is managed by Flyway migrations; migration rollback policy and operational rollout process are still intentionally lightweight
 - payment is simulated with local request validation; there is no real payment gateway authorization, capture, webhook, or callback
 - message delivery semantics are at-least-once plus consumer idempotency, not end-to-end exactly-once delivery
 - outbox retry does not currently have a `next_attempt_at` column or backoff schedule; before `app.outbox.max-attempts` is reached, failed events may be retried quickly on a later publisher run

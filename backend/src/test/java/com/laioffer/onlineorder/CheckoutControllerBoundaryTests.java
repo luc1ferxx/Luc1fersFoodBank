@@ -101,6 +101,31 @@ class CheckoutControllerBoundaryTests {
     }
 
 
+    @Test
+    void paymentCheckout_whenPaymentFieldsAreInvalid_shouldDelegateToServiceValidation() throws Exception {
+        CustomerEntity customer = customer();
+        Mockito.when(customerService.getCustomerByEmail("buyer@example.com")).thenReturn(customer);
+        Mockito.when(paymentService.payAndCheckout(Mockito.eq(customer.id()), Mockito.eq("key-1"), Mockito.any(PaymentCheckoutBody.class)))
+                .thenThrow(new BadRequestException("Cardholder name is required"));
+
+        paymentMockMvc.perform(post("/payments/checkout")
+                        .principal(principal())
+                        .header("Idempotency-Key", "key-1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "cardholderName": "",
+                                  "cardNumber": "4242424242424242",
+                                  "expiry": "12/30",
+                                  "cvv": "123"
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
+
+        Mockito.verify(paymentService).payAndCheckout(Mockito.eq(customer.id()), Mockito.eq("key-1"), Mockito.any(PaymentCheckoutBody.class));
+    }
+
+
     private Principal principal() {
         return () -> "buyer@example.com";
     }

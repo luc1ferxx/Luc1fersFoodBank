@@ -6,6 +6,7 @@ import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.UpdateOrderStatusBody;
 import com.laioffer.onlineorder.service.CustomerService;
 import com.laioffer.onlineorder.service.OrderService;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -43,7 +44,7 @@ public class OrderController {
     public OrderDto updateOrderStatus(
             Principal principal,
             @PathVariable Long orderId,
-            @RequestBody UpdateOrderStatusBody body,
+            @Valid @RequestBody UpdateOrderStatusBody body,
             @RequestHeader("Idempotency-Key") String idempotencyKey
     ) {
         CustomerEntity actor = customerService.getCustomerByEmail(principal.getName());

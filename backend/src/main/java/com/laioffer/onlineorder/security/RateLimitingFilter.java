@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.security;
 
 
+import com.laioffer.onlineorder.error.ApiErrorResponseWriter;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -33,18 +34,21 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     private final Duration window;
     private final StringRedisTemplate redisTemplate;
     private final ApplicationMetricsService metricsService;
+    private final ApiErrorResponseWriter apiErrorResponseWriter;
 
 
     public RateLimitingFilter(
             @Value("${app.security.rate-limit.enabled:true}") boolean enabled,
             @Value("${app.security.rate-limit.window:1m}") Duration window,
             StringRedisTemplate redisTemplate,
-            ApplicationMetricsService metricsService
+            ApplicationMetricsService metricsService,
+            ApiErrorResponseWriter apiErrorResponseWriter
     ) {
         this.enabled = enabled;
         this.window = window;
         this.redisTemplate = redisTemplate;
         this.metricsService = metricsService;
+        this.apiErrorResponseWriter = apiErrorResponseWriter;
     }
 
 
@@ -66,10 +70,14 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         }
 
         if (!allow(request, rule)) {
-            response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
-            response.setContentType("application/json");
-            response.getWriter().write("{\"message\":\"Too many requests\"}");
             metricsService.recordRateLimitRejection(rule.routeKey());
+            apiErrorResponseWriter.write(
+                    request,
+                    response,
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    "RATE_LIMITED",
+                    "Too many requests"
+            );
             return;
         }
 

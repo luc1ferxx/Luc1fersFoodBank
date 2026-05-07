@@ -8,6 +8,7 @@ import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.UpdateCartItemBody;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.CustomerService;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -45,7 +46,7 @@ public class CartController {
 
 
     @PostMapping("/cart")
-    public void addToCart(Principal principal, @RequestBody AddToCartBody body) {
+    public void addToCart(Principal principal, @Valid @RequestBody AddToCartBody body) {
         CustomerEntity customer = customerService.getCustomerByEmail(principal.getName());
         cartService.addMenuItemToCart(customer.id(), body.menuId());
     }
@@ -55,7 +56,7 @@ public class CartController {
     public void updateCartItem(
             Principal principal,
             @PathVariable("orderItemId") Long orderItemId,
-            @RequestBody UpdateCartItemBody body
+            @Valid @RequestBody UpdateCartItemBody body
     ) {
         CustomerEntity customer = customerService.getCustomerByEmail(principal.getName());
         cartService.updateOrderItemQuantity(customer.id(), orderItemId, body.quantity());
