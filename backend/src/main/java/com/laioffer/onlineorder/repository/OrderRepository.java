@@ -14,6 +14,15 @@ public interface OrderRepository extends ListCrudRepository<OrderEntity, Long> {
 
     List<OrderEntity> findAllByCustomerIdOrderByCreatedAtDesc(Long customerId);
 
+    @Query("""
+            SELECT *
+            FROM orders
+            WHERE customer_id = :customerId
+            ORDER BY created_at DESC, id DESC
+            LIMIT :limit
+            """)
+    List<OrderEntity> findPageByCustomerIdOrderByCreatedAtDesc(Long customerId, int limit);
+
     Optional<OrderEntity> findByIdAndCustomerId(Long id, Long customerId);
 
     @Query("""

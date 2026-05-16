@@ -25,6 +25,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @SpringBootTest
@@ -139,7 +140,7 @@ class OrderStatusTransitionRollbackTests {
                 now,
                 now
         ));
-        cartRepository.save(new CartEntity(null, customer.id(), 0.0));
+        cartRepository.save(new CartEntity(null, customer.id(), BigDecimal.ZERO));
         MenuItemEntity menuItem = menuItemRepository.findById(1L).orElseThrow();
         OrderEntity order = orderRepository.save(new OrderEntity(null, customer.id(), menuItem.price(), status, now));
         orderHistoryItemRepository.save(new OrderHistoryItemEntity(

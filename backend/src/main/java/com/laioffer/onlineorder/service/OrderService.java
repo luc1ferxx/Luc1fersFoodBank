@@ -24,7 +24,9 @@ import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 
@@ -69,10 +71,16 @@ public class OrderService {
 
 
     public List<OrderDto> getOrdersByCustomerId(Long customerId) {
-        List<OrderEntity> orders = orderRepository.findAllByCustomerIdOrderByCreatedAtDesc(customerId);
+        return getOrdersByCustomerId(customerId, 50);
+    }
+
+
+    public List<OrderDto> getOrdersByCustomerId(Long customerId, int limit) {
+        List<OrderEntity> orders = orderRepository.findPageByCustomerIdOrderByCreatedAtDesc(customerId, normalizeLimit(limit));
+        Map<Long, List<OrderHistoryItemDto>> itemsByOrderId = getOrderItemsByOrderId(orders);
         List<OrderDto> results = new ArrayList<>();
         for (OrderEntity order : orders) {
-            results.add(getOrderDto(order));
+            results.add(new OrderDto(order, itemsByOrderId.getOrDefault(order.id(), List.of())));
         }
         return results;
     }
@@ -243,6 +251,27 @@ public class OrderService {
             itemDtos.add(new OrderHistoryItemDto(orderItem));
         }
         return itemDtos;
+    }
+
+
+    private Map<Long, List<OrderHistoryItemDto>> getOrderItemsByOrderId(List<OrderEntity> orders) {
+        List<Long> orderIds = orders.stream()
+                .map(OrderEntity::id)
+                .toList();
+        Map<Long, List<OrderHistoryItemDto>> itemsByOrderId = new HashMap<>();
+        if (orderIds.isEmpty()) {
+            return itemsByOrderId;
+        }
+        for (OrderHistoryItemEntity item : orderHistoryItemRepository.findAllByOrderIdInOrderByOrderIdAscIdAsc(orderIds)) {
+            itemsByOrderId.computeIfAbsent(item.orderId(), ignored -> new ArrayList<>())
+                    .add(new OrderHistoryItemDto(item));
+        }
+        return itemsByOrderId;
+    }
+
+
+    private int normalizeLimit(int limit) {
+        return Math.max(1, Math.min(limit, 100));
     }
 
 

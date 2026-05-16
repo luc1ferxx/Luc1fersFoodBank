@@ -14,6 +14,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
 
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -103,10 +104,15 @@ class OrderNotificationServiceTests {
                 new OrderEventPayload(
                         customerId,
                         status,
-                        22.0,
+                        amount("22.0"),
                         occurredAt,
-                        List.of(new OrderHistoryItemDto(1L, orderId, 2L, 10.0, 1, "Burger", "Classic", "image"))
+                        List.of(new OrderHistoryItemDto(1L, orderId, 2L, amount("10.0"), 1, "Burger", "Classic", "image"))
                 )
         );
+    }
+
+
+    private BigDecimal amount(String value) {
+        return new BigDecimal(value);
     }
 }

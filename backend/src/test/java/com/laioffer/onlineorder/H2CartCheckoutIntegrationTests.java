@@ -16,6 +16,9 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 
+import java.math.BigDecimal;
+
+
 @SpringBootTest
 @ActiveProfiles("h2")
 class H2CartCheckoutIntegrationTests {
@@ -50,7 +53,7 @@ class H2CartCheckoutIntegrationTests {
         CartDto cart = cartService.getCart(customerId);
         Assertions.assertEquals(1, cart.orderItems().size());
         Assertions.assertEquals(2, cart.orderItems().get(0).quantity());
-        Assertions.assertEquals(9.78, cart.totalPrice(), 0.01);
+        Assertions.assertEquals(0, amount("9.78").compareTo(cart.totalPrice()));
 
         OrderDto paidOrder = paymentService.payAndCheckout(
                 customerId,
@@ -64,7 +67,7 @@ class H2CartCheckoutIntegrationTests {
         );
 
         Assertions.assertEquals("PAID", paidOrder.status());
-        Assertions.assertEquals(9.78, paidOrder.totalPrice(), 0.01);
+        Assertions.assertEquals(0, amount("9.78").compareTo(paidOrder.totalPrice()));
         Assertions.assertEquals(1, paidOrder.items().size());
         Assertions.assertEquals(2, paidOrder.items().get(0).quantity());
         Assertions.assertTrue(cartService.getCart(customerId).orderItems().isEmpty());
@@ -76,5 +79,10 @@ class H2CartCheckoutIntegrationTests {
                 Long.class,
                 email
         );
+    }
+
+
+    private BigDecimal amount(String value) {
+        return new BigDecimal(value);
     }
 }

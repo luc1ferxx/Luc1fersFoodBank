@@ -43,4 +43,14 @@ public interface OrderNotificationRepository extends ListCrudRepository<OrderNot
 
 
     List<OrderNotificationEntity> findAllByCustomerIdOrderByCreatedAtDesc(Long customerId);
+
+
+    @Query("""
+            SELECT *
+            FROM order_notifications
+            WHERE customer_id = :customerId
+            ORDER BY created_at DESC, id DESC
+            LIMIT :limit
+            """)
+    List<OrderNotificationEntity> findPageByCustomerIdOrderByCreatedAtDesc(Long customerId, int limit);
 }

@@ -21,6 +21,7 @@ import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -64,14 +65,14 @@ class OrderServiceTests {
 
     @Test
     void transitionOrderStatus_shouldAdvanceThroughAllowedState() {
-        OrderEntity paidOrder = new OrderEntity(5L, 1L, 19.0, "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
-        OrderEntity acceptedOrder = new OrderEntity(5L, 1L, 19.0, "ACCEPTED", paidOrder.createdAt());
+        OrderEntity paidOrder = new OrderEntity(5L, 1L, amount("19.0"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
+        OrderEntity acceptedOrder = new OrderEntity(5L, 1L, amount("19.0"), "ACCEPTED", paidOrder.createdAt());
         OrderHistoryItemEntity historyItem = new OrderHistoryItemEntity(
                 6L,
                 5L,
                 3L,
                 2L,
-                19.0,
+                amount("19.0"),
                 1,
                 "Burger",
                 "Classic burger",
@@ -92,11 +93,16 @@ class OrderServiceTests {
 
     @Test
     void cancelOrder_shouldRejectInvalidTransition() {
-        OrderEntity completedOrder = new OrderEntity(5L, 1L, 19.0, "COMPLETED", LocalDateTime.of(2026, 4, 4, 12, 0));
+        OrderEntity completedOrder = new OrderEntity(5L, 1L, amount("19.0"), "COMPLETED", LocalDateTime.of(2026, 4, 4, 12, 0));
 
         Mockito.when(orderRepository.lockByIdAndCustomerId(5L, 1L)).thenReturn(completedOrder);
 
         Assertions.assertThrows(ConflictException.class, () -> orderService.cancelOrder(1L, 5L));
         Mockito.verify(orderRepository, Mockito.never()).save(Mockito.any());
+    }
+
+
+    private BigDecimal amount(String value) {
+        return new BigDecimal(value);
     }
 }

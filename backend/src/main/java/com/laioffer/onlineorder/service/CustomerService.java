@@ -16,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DataIntegrityViolationException;
 
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 
@@ -60,7 +61,7 @@ public class CustomerService {
             if (savedCustomer == null) {
                 throw new ConflictException("Unable to create customer profile");
             }
-            CartEntity cart = new CartEntity(null, savedCustomer.id(), 0.0);
+            CartEntity cart = new CartEntity(null, savedCustomer.id(), BigDecimal.ZERO);
             cartRepository.save(cart);
         } catch (DataIntegrityViolationException ex) {
             throw new ConflictException("Email already exists");

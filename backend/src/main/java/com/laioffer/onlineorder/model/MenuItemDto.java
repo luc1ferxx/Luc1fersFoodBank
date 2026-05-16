@@ -4,11 +4,14 @@ package com.laioffer.onlineorder.model;
 import com.laioffer.onlineorder.entity.MenuItemEntity;
 
 
+import java.math.BigDecimal;
+
+
 public record MenuItemDto(
         Long id,
         String name,
         String description,
-        Double price,
+        BigDecimal price,
         String imageUrl
 ) {
 

@@ -40,11 +40,21 @@ public class OrderNotificationService {
 
 
     public List<OrderNotificationDto> getNotificationsByCustomerId(Long customerId) {
+        return getNotificationsByCustomerId(customerId, 50);
+    }
+
+
+    public List<OrderNotificationDto> getNotificationsByCustomerId(Long customerId, int limit) {
         List<OrderNotificationDto> results = new ArrayList<>();
-        for (OrderNotificationEntity entity : orderNotificationRepository.findAllByCustomerIdOrderByCreatedAtDesc(customerId)) {
+        for (OrderNotificationEntity entity : orderNotificationRepository.findPageByCustomerIdOrderByCreatedAtDesc(customerId, normalizeLimit(limit))) {
             results.add(new OrderNotificationDto(entity));
         }
         return results;
+    }
+
+
+    private int normalizeLimit(int limit) {
+        return Math.max(1, Math.min(limit, 100));
     }
 
 

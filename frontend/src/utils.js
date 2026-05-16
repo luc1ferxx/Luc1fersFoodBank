@@ -178,8 +178,8 @@ export const removeCartItem = (orderItemId) =>
     "Fail to remove shopping cart item"
   );
 
-export const getOrders = () =>
-  request("/orders", undefined, "Fail to load your orders");
+export const getOrders = (limit = 50) =>
+  request(`/orders?limit=${encodeURIComponent(limit)}`, undefined, "Fail to load your orders");
 
 export const cancelOrder = (orderId, idempotencyKey = createIdempotencyKey()) =>
   request(
@@ -193,8 +193,12 @@ export const cancelOrder = (orderId, idempotencyKey = createIdempotencyKey()) =>
     "Fail to cancel the order"
   );
 
-export const getNotifications = () =>
-  request("/notifications", undefined, "Fail to load notifications");
+export const getNotifications = (limit = 50) =>
+  request(
+    `/notifications?limit=${encodeURIComponent(limit)}`,
+    undefined,
+    "Fail to load notifications"
+  );
 
 export const updateOrderStatus = (
   orderId,

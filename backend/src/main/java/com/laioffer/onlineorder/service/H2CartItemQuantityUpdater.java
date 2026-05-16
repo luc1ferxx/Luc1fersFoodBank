@@ -7,6 +7,9 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 
+import java.math.BigDecimal;
+
+
 @Service
 @Profile("h2")
 public class H2CartItemQuantityUpdater implements CartItemQuantityUpdater {
@@ -20,7 +23,7 @@ public class H2CartItemQuantityUpdater implements CartItemQuantityUpdater {
 
 
     @Override
-    public void incrementQuantity(Long cartId, Long menuItemId, Double price) {
+    public void incrementQuantity(Long cartId, Long menuItemId, BigDecimal price) {
         OrderItemEntity existingItem = orderItemRepository.findByCartIdAndMenuItemId(cartId, menuItemId);
 
         if (existingItem == null) {

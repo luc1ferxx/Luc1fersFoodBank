@@ -33,6 +33,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -251,7 +252,7 @@ class OutboxReliabilityIntegrationTests {
                 now,
                 now
         ));
-        cartRepository.save(new CartEntity(null, customer.id(), 0.0));
+        cartRepository.save(new CartEntity(null, customer.id(), BigDecimal.ZERO));
         MenuItemEntity menuItem = menuItemRepository.findById(1L).orElseThrow();
         OrderEntity order = orderRepository.save(new OrderEntity(null, customer.id(), menuItem.price(), status, now));
         OrderHistoryItemEntity historyItem = orderHistoryItemRepository.save(new OrderHistoryItemEntity(
@@ -296,7 +297,7 @@ class OutboxReliabilityIntegrationTests {
     private record SeededOrder(
             Long customerId,
             Long orderId,
-            Double totalPrice,
+            BigDecimal totalPrice,
             LocalDateTime createdAt,
             OrderHistoryItemDto itemDto
     ) {

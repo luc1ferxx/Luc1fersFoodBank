@@ -16,6 +16,7 @@ import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -47,7 +48,7 @@ class OrderEventConsumerTests {
                 new OrderEventPayload(
                         3L,
                         "PLACED",
-                        15.0,
+                        amount("15.0"),
                         occurredAt,
                         List.of()
                 )
@@ -84,5 +85,10 @@ class OrderEventConsumerTests {
                 "payload",
                 "processing failed"
         );
+    }
+
+
+    private BigDecimal amount(String value) {
+        return new BigDecimal(value);
     }
 }

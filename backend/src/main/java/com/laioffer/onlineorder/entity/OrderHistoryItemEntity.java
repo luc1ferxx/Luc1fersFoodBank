@@ -6,6 +6,9 @@ import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
 
 
+import java.math.BigDecimal;
+
+
 @Table("order_history_items")
 public record OrderHistoryItemEntity(
         @Id
@@ -18,7 +21,7 @@ public record OrderHistoryItemEntity(
         @Column("restaurant_id")
         Long restaurantId,
         @Column("price")
-        Double price,
+        BigDecimal price,
         @Column("quantity")
         Integer quantity,
         @Column("menu_item_name")

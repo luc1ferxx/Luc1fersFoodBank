@@ -28,6 +28,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -35,7 +36,9 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 
@@ -137,7 +140,7 @@ public class CartService {
     public void clearCart(Long customerId) {
         CartEntity cart = getRequiredLockedCart(customerId);
         orderItemRepository.deleteByCartId(cart.id());
-        cartRepository.updateTotalPrice(cart.id(), 0.0);
+        cartRepository.updateTotalPrice(cart.id(), BigDecimal.ZERO);
     }
 
 
@@ -235,8 +238,9 @@ public class CartService {
 
         List<OrderHistoryItemEntity> orderHistoryItems = new ArrayList<>();
         List<OrderHistoryItemDto> orderHistoryItemDtos = new ArrayList<>();
+        Map<Long, MenuItemEntity> menuItemsById = getRequiredMenuItemsById(cartItems);
         for (OrderItemEntity cartItem : cartItems) {
-            MenuItemEntity menuItem = getRequiredMenuItem(cartItem.menuItemId());
+            MenuItemEntity menuItem = menuItemsById.get(cartItem.menuItemId());
             OrderHistoryItemEntity orderHistoryItem = new OrderHistoryItemEntity(
                     null,
                     savedOrder.id(),
@@ -257,7 +261,7 @@ public class CartService {
 
         orderEventOutboxService.enqueueOrderEvent(savedOrder, orderHistoryItemDtos, idempotencyKey);
         orderItemRepository.deleteByCartId(cart.id());
-        cartRepository.updateTotalPrice(cart.id(), 0.0);
+        cartRepository.updateTotalPrice(cart.id(), BigDecimal.ZERO);
 
         return new OrderDto(savedOrder, orderHistoryItemDtos);
     }
@@ -325,8 +329,9 @@ public class CartService {
     private CartDto buildCartDto(CartEntity cart) {
         List<OrderItemEntity> orderItems = orderItemRepository.getAllByCartId(cart.id());
         List<OrderItemDto> orderItemDtos = new ArrayList<>();
+        Map<Long, MenuItemEntity> menuItemsById = getRequiredMenuItemsById(orderItems);
         for (OrderItemEntity orderItem : orderItems) {
-            MenuItemEntity menuItem = getRequiredMenuItem(orderItem.menuItemId());
+            MenuItemEntity menuItem = menuItemsById.get(orderItem.menuItemId());
             orderItemDtos.add(new OrderItemDto(orderItem, menuItem));
         }
         return new CartDto(cart, orderItemDtos);
@@ -334,8 +339,29 @@ public class CartService {
 
 
     private void syncCartTotal(Long cartId) {
-        Double totalPrice = orderItemRepository.getTotalPriceByCartId(cartId);
+        BigDecimal totalPrice = orderItemRepository.getTotalPriceByCartId(cartId);
         cartRepository.updateTotalPrice(cartId, totalPrice);
+    }
+
+
+    private Map<Long, MenuItemEntity> getRequiredMenuItemsById(List<OrderItemEntity> orderItems) {
+        List<Long> menuItemIds = orderItems.stream()
+                .map(OrderItemEntity::menuItemId)
+                .distinct()
+                .toList();
+        if (menuItemIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, MenuItemEntity> menuItemsById = new HashMap<>();
+        for (MenuItemEntity menuItem : menuItemRepository.findAllById(menuItemIds)) {
+            menuItemsById.put(menuItem.id(), menuItem);
+        }
+        for (Long menuItemId : menuItemIds) {
+            if (!menuItemsById.containsKey(menuItemId)) {
+                throw new ResourceNotFoundException("Menu item not found");
+            }
+        }
+        return menuItemsById;
     }
 
 
@@ -409,7 +435,7 @@ public class CartService {
                     .append(':')
                     .append(itemSnapshot.quantity())
                     .append(':')
-                    .append(itemSnapshot.price());
+                    .append(formatAmountForHash(itemSnapshot.price()));
         }
 
         try {
@@ -422,6 +448,11 @@ public class CartService {
     }
 
 
-    private record CheckoutItemSnapshot(Long menuItemId, Integer quantity, Double price) {
+    private String formatAmountForHash(BigDecimal amount) {
+        return amount.stripTrailingZeros().toPlainString();
+    }
+
+
+    private record CheckoutItemSnapshot(Long menuItemId, Integer quantity, BigDecimal price) {
     }
 }

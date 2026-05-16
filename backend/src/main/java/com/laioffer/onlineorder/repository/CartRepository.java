@@ -7,6 +7,9 @@ import org.springframework.data.jdbc.repository.query.Query;
 import org.springframework.data.repository.ListCrudRepository;
 
 
+import java.math.BigDecimal;
+
+
 public interface CartRepository extends ListCrudRepository<CartEntity, Long> {
 
 
@@ -19,5 +22,5 @@ public interface CartRepository extends ListCrudRepository<CartEntity, Long> {
 
     @Modifying
     @Query("UPDATE carts SET total_price = :totalPrice WHERE id = :cartId")
-    void updateTotalPrice(Long cartId, Double totalPrice);
+    void updateTotalPrice(Long cartId, BigDecimal totalPrice);
 }

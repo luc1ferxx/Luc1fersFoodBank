@@ -23,6 +23,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -113,7 +114,7 @@ class CheckoutTransactionRollbackTests {
                 now,
                 now
         ));
-        CartEntity cart = cartRepository.save(new CartEntity(null, customer.id(), 0.0));
+        CartEntity cart = cartRepository.save(new CartEntity(null, customer.id(), BigDecimal.ZERO));
         MenuItemEntity menuItem = menuItemRepository.findById(1L).orElseThrow();
         orderItemRepository.save(new OrderItemEntity(null, menuItem.id(), cart.id(), menuItem.price(), 1));
         cartRepository.updateTotalPrice(cart.id(), menuItem.price());
@@ -168,6 +169,6 @@ class CheckoutTransactionRollbackTests {
         return count == null ? 0 : count;
     }
 
-    private record TestCustomer(Long customerId, Long cartId, Double expectedCartTotal) {
+    private record TestCustomer(Long customerId, Long cartId, BigDecimal expectedCartTotal) {
     }
 }

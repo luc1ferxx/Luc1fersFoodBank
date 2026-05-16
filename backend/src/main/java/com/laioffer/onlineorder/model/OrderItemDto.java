@@ -5,11 +5,14 @@ import com.laioffer.onlineorder.entity.MenuItemEntity;
 import com.laioffer.onlineorder.entity.OrderItemEntity;
 
 
+import java.math.BigDecimal;
+
+
 public record OrderItemDto(
         Long orderItemId,
         Long menuItemId,
         Long restaurantId,
-        Double price,
+        BigDecimal price,
         Integer quantity,
         String menuItemName,
         String menuItemDescription,

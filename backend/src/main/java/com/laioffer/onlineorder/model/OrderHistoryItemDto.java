@@ -4,11 +4,14 @@ package com.laioffer.onlineorder.model;
 import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 
 
+import java.math.BigDecimal;
+
+
 public record OrderHistoryItemDto(
         Long id,
         Long menuItemId,
         Long restaurantId,
-        Double price,
+        BigDecimal price,
         Integer quantity,
         String menuItemName,
         String menuItemDescription,

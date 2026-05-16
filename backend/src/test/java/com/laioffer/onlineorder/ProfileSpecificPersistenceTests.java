@@ -18,6 +18,7 @@ import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 
@@ -35,9 +36,9 @@ class ProfileSpecificPersistenceTests {
     void postgresCartItemQuantityUpdater_shouldDelegateToAtomicRepositoryUpsert() {
         PostgresCartItemQuantityUpdater updater = new PostgresCartItemQuantityUpdater(orderItemRepository);
 
-        updater.incrementQuantity(1L, 2L, 4.89);
+        updater.incrementQuantity(1L, 2L, amount("4.89"));
 
-        Mockito.verify(orderItemRepository).incrementQuantity(1L, 2L, 4.89);
+        Mockito.verify(orderItemRepository).incrementQuantity(1L, 2L, amount("4.89"));
     }
 
 
@@ -45,7 +46,7 @@ class ProfileSpecificPersistenceTests {
     void h2CartItemQuantityUpdater_shouldInsertNewItemWithoutPostgresUpsertSql() {
         H2CartItemQuantityUpdater updater = new H2CartItemQuantityUpdater(orderItemRepository);
 
-        updater.incrementQuantity(1L, 2L, 4.89);
+        updater.incrementQuantity(1L, 2L, amount("4.89"));
 
         ArgumentCaptor<OrderItemEntity> itemCaptor = ArgumentCaptor.forClass(OrderItemEntity.class);
         Mockito.verify(orderItemRepository).save(itemCaptor.capture());
@@ -53,9 +54,9 @@ class ProfileSpecificPersistenceTests {
         Assertions.assertNull(savedItem.id());
         Assertions.assertEquals(1L, savedItem.cartId());
         Assertions.assertEquals(2L, savedItem.menuItemId());
-        Assertions.assertEquals(4.89, savedItem.price());
+        Assertions.assertEquals(amount("4.89"), savedItem.price());
         Assertions.assertEquals(1, savedItem.quantity());
-        Mockito.verify(orderItemRepository, Mockito.never()).incrementQuantity(Mockito.anyLong(), Mockito.anyLong(), Mockito.anyDouble());
+        Mockito.verify(orderItemRepository, Mockito.never()).incrementQuantity(Mockito.anyLong(), Mockito.anyLong(), Mockito.any(BigDecimal.class));
     }
 
 
@@ -63,9 +64,9 @@ class ProfileSpecificPersistenceTests {
     void h2CartItemQuantityUpdater_shouldUpdateExistingItemWithoutPostgresUpsertSql() {
         H2CartItemQuantityUpdater updater = new H2CartItemQuantityUpdater(orderItemRepository);
         Mockito.when(orderItemRepository.findByCartIdAndMenuItemId(1L, 2L))
-                .thenReturn(new OrderItemEntity(3L, 2L, 1L, 3.50, 2));
+                .thenReturn(new OrderItemEntity(3L, 2L, 1L, amount("3.50"), 2));
 
-        updater.incrementQuantity(1L, 2L, 4.89);
+        updater.incrementQuantity(1L, 2L, amount("4.89"));
 
         ArgumentCaptor<OrderItemEntity> itemCaptor = ArgumentCaptor.forClass(OrderItemEntity.class);
         Mockito.verify(orderItemRepository).save(itemCaptor.capture());
@@ -73,9 +74,9 @@ class ProfileSpecificPersistenceTests {
         Assertions.assertEquals(3L, savedItem.id());
         Assertions.assertEquals(1L, savedItem.cartId());
         Assertions.assertEquals(2L, savedItem.menuItemId());
-        Assertions.assertEquals(4.89, savedItem.price());
+        Assertions.assertEquals(amount("4.89"), savedItem.price());
         Assertions.assertEquals(3, savedItem.quantity());
-        Mockito.verify(orderItemRepository, Mockito.never()).incrementQuantity(Mockito.anyLong(), Mockito.anyLong(), Mockito.anyDouble());
+        Mockito.verify(orderItemRepository, Mockito.never()).incrementQuantity(Mockito.anyLong(), Mockito.anyLong(), Mockito.any(BigDecimal.class));
     }
 
 
@@ -155,5 +156,10 @@ class ProfileSpecificPersistenceTests {
                 Mockito.any(LocalDateTime.class),
                 Mockito.any(LocalDateTime.class)
         );
+    }
+
+
+    private BigDecimal amount(String value) {
+        return new BigDecimal(value);
     }
 }

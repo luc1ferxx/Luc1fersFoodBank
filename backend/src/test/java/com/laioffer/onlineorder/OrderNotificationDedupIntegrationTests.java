@@ -21,6 +21,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -106,7 +107,7 @@ class OrderNotificationDedupIntegrationTests {
                 now,
                 now
         ));
-        OrderEntity order = orderRepository.save(new OrderEntity(null, customer.id(), 22.0, status, now));
+        OrderEntity order = orderRepository.save(new OrderEntity(null, customer.id(), amount("22.0"), status, now));
         return new SeededOrder(customer.id(), order.id());
     }
 
@@ -122,7 +123,7 @@ class OrderNotificationDedupIntegrationTests {
                 occurredAt,
                 eventId,
                 "idem-" + eventId,
-                new OrderEventPayload(customerId, status, 22.0, occurredAt, List.of())
+                new OrderEventPayload(customerId, status, amount("22.0"), occurredAt, List.of())
         );
     }
 
@@ -139,5 +140,10 @@ class OrderNotificationDedupIntegrationTests {
 
 
     private record SeededOrder(Long customerId, Long orderId) {
+    }
+
+
+    private BigDecimal amount(String value) {
+        return new BigDecimal(value);
     }
 }

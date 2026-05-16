@@ -6,6 +6,9 @@ import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
 
 
+import java.math.BigDecimal;
+
+
 @Table("menu_items")
 public record MenuItemEntity(
         @Id
@@ -18,7 +21,7 @@ public record MenuItemEntity(
         @Column("description")
         String description,
         @Column("price")
-        Double price,
+        BigDecimal price,
         @Column("image_url")
         String imageUrl
 ) {

@@ -7,6 +7,7 @@ import org.springframework.data.jdbc.repository.query.Query;
 import org.springframework.data.repository.ListCrudRepository;
 
 
+import java.math.BigDecimal;
 import java.util.List;
 
 
@@ -28,7 +29,7 @@ public interface OrderItemRepository extends ListCrudRepository<OrderItemEntity,
                 price = EXCLUDED.price,
                 quantity = order_items.quantity + 1
             """)
-    void incrementQuantity(Long cartId, Long menuItemId, Double price);
+    void incrementQuantity(Long cartId, Long menuItemId, BigDecimal price);
 
 
     @Query("""
@@ -36,7 +37,7 @@ public interface OrderItemRepository extends ListCrudRepository<OrderItemEntity,
             FROM order_items
             WHERE cart_id = :cartId
             """)
-    Double getTotalPriceByCartId(Long cartId);
+    BigDecimal getTotalPriceByCartId(Long cartId);
 
 
     @Modifying

@@ -6,6 +6,7 @@ import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
 
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 
@@ -17,7 +18,7 @@ public record OrderEntity(
         @Column("customer_id")
         Long customerId,
         @Column("total_price")
-        Double totalPrice,
+        BigDecimal totalPrice,
         @Column("status")
         String status,
         @Column("created_at")

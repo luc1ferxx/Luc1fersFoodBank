@@ -16,6 +16,7 @@ import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -48,7 +49,7 @@ public class PaymentServiceTests {
         );
         OrderDto paidOrder = new OrderDto(
                 5L,
-                42.0,
+                amount("42.0"),
                 "PAID",
                 LocalDateTime.of(2026, 4, 4, 12, 0),
                 List.of()
@@ -75,5 +76,10 @@ public class PaymentServiceTests {
         Assertions.assertThrows(BadRequestException.class, () -> paymentService.payAndCheckout(1L, "key-1", body));
         Mockito.verifyNoInteractions(cartService);
         Mockito.verify(metricsService).recordCheckoutFailure("BadRequestException");
+    }
+
+
+    private BigDecimal amount(String value) {
+        return new BigDecimal(value);
     }
 }

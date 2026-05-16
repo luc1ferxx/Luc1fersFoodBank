@@ -5,6 +5,7 @@ import {
   checkoutWithPayment,
   createIdempotencyKey,
   getNotifications,
+  getOrders,
   replayDeadLetter,
   updateOrderStatus,
 } from "./utils";
@@ -38,6 +39,7 @@ test("API helpers use the backend-supported endpoints and idempotency headers", 
   );
   await cancelOrder(101, "cancel-key-1");
   await updateOrderStatus(101, "ACCEPTED", "status-key-1");
+  await getOrders();
   await getNotifications();
   await replayDeadLetter(7);
 
@@ -77,11 +79,16 @@ test("API helpers use the backend-supported endpoints and idempotency headers", 
   );
   expect(fetchMock).toHaveBeenNthCalledWith(
     4,
-    "/notifications",
+    "/orders?limit=50",
     expect.objectContaining({ credentials: "include" })
   );
   expect(fetchMock).toHaveBeenNthCalledWith(
     5,
+    "/notifications?limit=50",
+    expect.objectContaining({ credentials: "include" })
+  );
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    6,
     "/dead-letters/7/replay",
     expect.objectContaining({
       method: "POST",

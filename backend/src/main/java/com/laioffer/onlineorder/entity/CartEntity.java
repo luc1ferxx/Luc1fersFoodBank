@@ -6,6 +6,9 @@ import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
 
 
+import java.math.BigDecimal;
+
+
 @Table("carts")
 public record CartEntity(
         @Id
@@ -14,6 +17,6 @@ public record CartEntity(
         @Column("customer_id")
         Long customerId,
         @Column("total_price")
-        Double totalPrice
+        BigDecimal totalPrice
 ) {
 }

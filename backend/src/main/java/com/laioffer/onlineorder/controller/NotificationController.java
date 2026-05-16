@@ -6,6 +6,7 @@ import com.laioffer.onlineorder.model.OrderNotificationDto;
 import com.laioffer.onlineorder.service.CustomerService;
 import com.laioffer.onlineorder.service.OrderNotificationService;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 
@@ -30,8 +31,11 @@ public class NotificationController {
 
 
     @GetMapping("/notifications")
-    public List<OrderNotificationDto> getNotifications(Principal principal) {
+    public List<OrderNotificationDto> getNotifications(
+            Principal principal,
+            @RequestParam(defaultValue = "50") int limit
+    ) {
         CustomerEntity customer = customerService.getCustomerByEmail(principal.getName());
-        return orderNotificationService.getNotificationsByCustomerId(customer.id());
+        return orderNotificationService.getNotificationsByCustomerId(customer.id(), limit);
     }
 }
