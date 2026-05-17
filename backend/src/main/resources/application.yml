@@ -87,7 +87,7 @@ app:
   security:
     rate-limit:
       enabled: ${SECURITY_RATE_LIMIT_ENABLED:true}
-      window: ${SECURITY_RATE_LIMIT_WINDOW:1m}
+      bucket-ttl: ${SECURITY_RATE_LIMIT_BUCKET_TTL:${SECURITY_RATE_LIMIT_WINDOW:2m}}
 
 management:
   endpoints:

@@ -7,28 +7,28 @@ import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 import java.security.Principal;
+import java.time.Duration;
+import java.util.List;
 
 class RateLimitingFilterTests {
 
     @Test
     void shouldRateLimitCheckoutByAuthenticatedUserInsteadOfIpAddress() throws Exception {
         StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
-        @SuppressWarnings("unchecked")
-        ValueOperations<String, String> valueOperations = Mockito.mock(ValueOperations.class);
-        Mockito.when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        Mockito.when(valueOperations.increment(Mockito.anyString())).thenReturn(1L);
+        allowRedisRequest(redisTemplate);
 
         RateLimitingFilter filter = new RateLimitingFilter(
                 true,
-                java.time.Duration.ofMinutes(1),
+                Duration.ofMinutes(2),
                 redisTemplate,
                 Mockito.mock(ApplicationMetricsService.class),
                 errorResponseWriter()
@@ -42,22 +42,25 @@ class RateLimitingFilterTests {
         filter.doFilter(request, response, new MockFilterChain());
 
         Assertions.assertEquals(HttpServletResponse.SC_OK, response.getStatus());
-        Mockito.verify(valueOperations).increment(Mockito.contains(":user:user@example.com:"));
-        Mockito.verify(valueOperations, Mockito.never()).increment(Mockito.contains(":10.0.0.5:"));
+        Assertions.assertEquals(
+                "onlineorder:rate-limit:payment-checkout:user:user@example.com",
+                capturedRedisKey(redisTemplate)
+        );
     }
 
     @Test
     void shouldFailOpenWhenRedisRateLimitStoreIsUnavailable() throws Exception {
         StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
         ApplicationMetricsService metricsService = Mockito.mock(ApplicationMetricsService.class);
-        @SuppressWarnings("unchecked")
-        ValueOperations<String, String> valueOperations = Mockito.mock(ValueOperations.class);
-        Mockito.when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        Mockito.when(valueOperations.increment(Mockito.anyString())).thenThrow(new RuntimeException("redis unavailable"));
+        Mockito.when(redisTemplate.execute(
+                Mockito.<RedisScript<Long>>any(),
+                Mockito.<List<String>>any(),
+                Mockito.any(Object[].class)
+        )).thenThrow(new RuntimeException("redis unavailable"));
 
         RateLimitingFilter filter = new RateLimitingFilter(
                 true,
-                java.time.Duration.ofMinutes(1),
+                Duration.ofMinutes(2),
                 redisTemplate,
                 metricsService,
                 errorResponseWriter()
@@ -76,14 +79,11 @@ class RateLimitingFilterTests {
     @Test
     void shouldKeepAnonymousLoginRateLimitBoundToRemoteIpAddress() throws Exception {
         StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
-        @SuppressWarnings("unchecked")
-        ValueOperations<String, String> valueOperations = Mockito.mock(ValueOperations.class);
-        Mockito.when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        Mockito.when(valueOperations.increment(Mockito.anyString())).thenReturn(1L);
+        allowRedisRequest(redisTemplate);
 
         RateLimitingFilter filter = new RateLimitingFilter(
                 true,
-                java.time.Duration.ofMinutes(1),
+                Duration.ofMinutes(2),
                 redisTemplate,
                 Mockito.mock(ApplicationMetricsService.class),
                 errorResponseWriter()
@@ -97,22 +97,25 @@ class RateLimitingFilterTests {
         filter.doFilter(request, response, new MockFilterChain());
 
         Assertions.assertEquals(HttpServletResponse.SC_OK, response.getStatus());
-        Mockito.verify(valueOperations).increment(Mockito.contains(":ip:10.0.0.5:"));
-        Mockito.verify(valueOperations, Mockito.never()).increment(Mockito.contains("203.0.113.10"));
+        Assertions.assertEquals(
+                "onlineorder:rate-limit:login:ip:10.0.0.5",
+                capturedRedisKey(redisTemplate)
+        );
     }
 
     @Test
     void shouldReturnUnifiedErrorResponseWhenRateLimitIsExceeded() throws Exception {
         StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
         ApplicationMetricsService metricsService = Mockito.mock(ApplicationMetricsService.class);
-        @SuppressWarnings("unchecked")
-        ValueOperations<String, String> valueOperations = Mockito.mock(ValueOperations.class);
-        Mockito.when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        Mockito.when(valueOperations.increment(Mockito.anyString())).thenReturn(11L);
+        Mockito.when(redisTemplate.execute(
+                Mockito.<RedisScript<Long>>any(),
+                Mockito.<List<String>>any(),
+                Mockito.any(Object[].class)
+        )).thenReturn(0L);
 
         RateLimitingFilter filter = new RateLimitingFilter(
                 true,
-                java.time.Duration.ofMinutes(1),
+                Duration.ofMinutes(2),
                 redisTemplate,
                 metricsService,
                 errorResponseWriter()
@@ -130,6 +133,67 @@ class RateLimitingFilterTests {
         Assertions.assertTrue(response.getContentAsString().contains("\"code\":\"RATE_LIMITED\""));
         Assertions.assertTrue(response.getContentAsString().contains("\"trace_id\":\"trace-rate-12345\""));
         Mockito.verify(metricsService).recordRateLimitRejection("login");
+    }
+
+
+    @Test
+    void shouldPassTokenBucketParametersToRedisScript() throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        allowRedisRequest(redisTemplate);
+
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                Mockito.mock(ApplicationMetricsService.class),
+                errorResponseWriter()
+        );
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/signup");
+        request.setRemoteAddr("10.0.0.5");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        Object[] args = capturedRedisArgs(redisTemplate);
+        Assertions.assertEquals("5", args[0]);
+        Assertions.assertEquals("1", args[1]);
+        Assertions.assertEquals("12000", args[2]);
+        Assertions.assertEquals("1", args[3]);
+        Assertions.assertTrue(Long.parseLong(String.valueOf(args[4])) > 0);
+        Assertions.assertEquals("120", args[5]);
+    }
+
+
+    private void allowRedisRequest(StringRedisTemplate redisTemplate) {
+        Mockito.when(redisTemplate.execute(
+                Mockito.<RedisScript<Long>>any(),
+                Mockito.<List<String>>any(),
+                Mockito.any(Object[].class)
+        )).thenReturn(1L);
+    }
+
+
+    private String capturedRedisKey(StringRedisTemplate redisTemplate) {
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> keysCaptor = ArgumentCaptor.forClass(List.class);
+        Mockito.verify(redisTemplate).execute(
+                Mockito.<RedisScript<Long>>any(),
+                keysCaptor.capture(),
+                Mockito.any(Object[].class)
+        );
+        return keysCaptor.getValue().get(0);
+    }
+
+
+    private Object[] capturedRedisArgs(StringRedisTemplate redisTemplate) {
+        ArgumentCaptor<Object[]> argsCaptor = ArgumentCaptor.forClass(Object[].class);
+        Mockito.verify(redisTemplate).execute(
+                Mockito.<RedisScript<Long>>any(),
+                Mockito.<List<String>>any(),
+                argsCaptor.capture()
+        );
+        return argsCaptor.getValue();
     }
 
     private ApiErrorResponseWriter errorResponseWriter() {

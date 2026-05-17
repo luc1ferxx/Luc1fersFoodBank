@@ -11,6 +11,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
@@ -23,15 +25,52 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 
 
 @Component
 public class RateLimitingFilter extends OncePerRequestFilter {
 
     private static final Logger logger = LoggerFactory.getLogger(RateLimitingFilter.class);
+    private static final RedisScript<Long> TOKEN_BUCKET_SCRIPT = new DefaultRedisScript<>("""
+            local key = KEYS[1]
+            local capacity = tonumber(ARGV[1])
+            local refill_tokens = tonumber(ARGV[2])
+            local refill_period_millis = tonumber(ARGV[3])
+            local cost = tonumber(ARGV[4])
+            local now_millis = tonumber(ARGV[5])
+            local ttl_seconds = tonumber(ARGV[6])
+
+            local bucket = redis.call('HMGET', key, 'tokens', 'updated_at_ms')
+            local tokens = tonumber(bucket[1])
+            local updated_at = tonumber(bucket[2])
+
+            if tokens == nil then
+                tokens = capacity
+            end
+            if updated_at == nil then
+                updated_at = now_millis
+            end
+
+            local elapsed = math.max(0, now_millis - updated_at)
+            if refill_period_millis > 0 and refill_tokens > 0 and elapsed > 0 then
+                local refill = (elapsed / refill_period_millis) * refill_tokens
+                tokens = math.min(capacity, tokens + refill)
+            end
+
+            local allowed = 0
+            if tokens >= cost then
+                tokens = tokens - cost
+                allowed = 1
+            end
+
+            redis.call('HSET', key, 'tokens', tokens, 'updated_at_ms', now_millis)
+            redis.call('EXPIRE', key, ttl_seconds)
+            return allowed
+            """, Long.class);
 
     private final boolean enabled;
-    private final Duration window;
+    private final Duration bucketTtl;
     private final StringRedisTemplate redisTemplate;
     private final ApplicationMetricsService metricsService;
     private final ApiErrorResponseWriter apiErrorResponseWriter;
@@ -39,13 +78,13 @@ public class RateLimitingFilter extends OncePerRequestFilter {
 
     public RateLimitingFilter(
             @Value("${app.security.rate-limit.enabled:true}") boolean enabled,
-            @Value("${app.security.rate-limit.window:1m}") Duration window,
+            @Value("${app.security.rate-limit.bucket-ttl:${app.security.rate-limit.window:2m}}") Duration bucketTtl,
             StringRedisTemplate redisTemplate,
             ApplicationMetricsService metricsService,
             ApiErrorResponseWriter apiErrorResponseWriter
     ) {
         this.enabled = enabled;
-        this.window = window;
+        this.bucketTtl = bucketTtl;
         this.redisTemplate = redisTemplate;
         this.metricsService = metricsService;
         this.apiErrorResponseWriter = apiErrorResponseWriter;
@@ -87,17 +126,24 @@ public class RateLimitingFilter extends OncePerRequestFilter {
 
     private boolean allow(HttpServletRequest request, RateLimitRule rule) {
         Instant now = Instant.now();
-        long windowMillis = Math.max(window.toMillis(), 1000L);
-        long windowBucket = now.toEpochMilli() / windowMillis;
-        String redisKey = "onlineorder:rate-limit:" + rule.routeKey() + ":" + resolveRateLimitSubject(request, rule) + ":" + windowBucket;
+        String redisKey = "onlineorder:rate-limit:" + rule.routeKey() + ":" + resolveRateLimitSubject(request, rule);
 
         try {
-            Long count = redisTemplate.opsForValue().increment(redisKey);
-            if (count != null && count == 1L) {
-                redisTemplate.expire(redisKey, window.plusSeconds(1));
+            Long allowed = redisTemplate.execute(
+                    TOKEN_BUCKET_SCRIPT,
+                    List.of(redisKey),
+                    String.valueOf(rule.capacity()),
+                    String.valueOf(rule.refillTokens()),
+                    String.valueOf(Math.max(rule.refillPeriod().toMillis(), 1L)),
+                    String.valueOf(rule.cost()),
+                    String.valueOf(now.toEpochMilli()),
+                    String.valueOf(resolveTtlSeconds(rule))
+            );
+            if (allowed == null) {
+                metricsService.recordRateLimitStoreFailure(rule.routeKey());
+                return true;
             }
-
-            return count == null || count <= rule.limit();
+            return allowed == 1L;
         } catch (RuntimeException ex) {
             logger.warn("Rate-limit store unavailable for route {} and key {}. Failing open.", rule.routeKey(), redisKey, ex);
             metricsService.recordRateLimitStoreFailure(rule.routeKey());
@@ -110,27 +156,34 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         String method = request.getMethod();
         String path = request.getRequestURI();
         if (HttpMethod.POST.matches(method) && "/login".equals(path)) {
-            return new RateLimitRule("login", 10, true);
+            return new RateLimitRule("login", 10, 1, Duration.ofSeconds(6), 1, true);
         }
         if (HttpMethod.POST.matches(method) && "/signup".equals(path)) {
-            return new RateLimitRule("signup", 5, true);
+            return new RateLimitRule("signup", 5, 1, Duration.ofSeconds(12), 1, true);
         }
         if (HttpMethod.POST.matches(method) && "/cart/checkout".equals(path)) {
-            return new RateLimitRule("cart-checkout", 20, false);
+            return new RateLimitRule("cart-checkout", 20, 1, Duration.ofSeconds(3), 1, false);
         }
         if (HttpMethod.POST.matches(method) && "/payments/checkout".equals(path)) {
-            return new RateLimitRule("payment-checkout", 20, false);
+            return new RateLimitRule("payment-checkout", 10, 1, Duration.ofSeconds(6), 1, false);
         }
         if (HttpMethod.POST.matches(method) && path.matches("^/dead-letters/\\d+/replay$")) {
-            return new RateLimitRule("dead-letter-replay", 10, false);
+            return new RateLimitRule("dead-letter-replay", 10, 1, Duration.ofSeconds(6), 1, false);
         }
         if (HttpMethod.POST.matches(method) && path.matches("^/admin/outbox/events/\\d+/retry$")) {
-            return new RateLimitRule("outbox-retry", 10, false);
+            return new RateLimitRule("outbox-retry", 10, 1, Duration.ofSeconds(6), 1, false);
         }
         if (HttpMethod.PATCH.matches(method) && path.matches("^/orders/\\d+/status$")) {
-            return new RateLimitRule("order-status", 30, false);
+            return new RateLimitRule("order-status", 30, 1, Duration.ofSeconds(2), 1, false);
         }
         return null;
+    }
+
+
+    private long resolveTtlSeconds(RateLimitRule rule) {
+        long fullRefillMillis = Math.max(1L, rule.refillPeriod().toMillis()) * rule.capacity() / Math.max(1, rule.refillTokens());
+        long ruleTtlSeconds = Duration.ofMillis(fullRefillMillis).plus(rule.refillPeriod()).toSeconds();
+        return Math.max(Math.max(bucketTtl.toSeconds(), ruleTtlSeconds), 1L);
     }
 
 
@@ -161,6 +214,13 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     }
 
 
-    private record RateLimitRule(String routeKey, int limit, boolean ipBound) {
+    private record RateLimitRule(
+            String routeKey,
+            int capacity,
+            int refillTokens,
+            Duration refillPeriod,
+            int cost,
+            boolean ipBound
+    ) {
     }
 }
