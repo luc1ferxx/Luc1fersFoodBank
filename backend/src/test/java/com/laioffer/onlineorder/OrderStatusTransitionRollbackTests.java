@@ -81,7 +81,7 @@ class OrderStatusTransitionRollbackTests {
         SeededOrder seededOrder = createOrderWithHistory("PAID");
         Mockito.doThrow(new IllegalStateException("forced outbox failure during status transition"))
                 .when(orderEventOutboxService)
-                .enqueueOrderEvent(Mockito.any(), Mockito.anyList(), Mockito.isNull());
+                .enqueueOrderEvent(Mockito.any(), Mockito.anyList(), Mockito.isNull(), Mockito.any());
 
         IllegalStateException ex = Assertions.assertThrows(
                 IllegalStateException.class,
@@ -101,7 +101,7 @@ class OrderStatusTransitionRollbackTests {
         SeededOrder seededOrder = createOrderWithHistory("PAID");
         Mockito.doThrow(new IllegalStateException("forced outbox failure during idempotent status transition"))
                 .when(orderEventOutboxService)
-                .enqueueOrderEvent(Mockito.any(), Mockito.anyList(), Mockito.isNull());
+                .enqueueOrderEvent(Mockito.any(), Mockito.anyList(), Mockito.isNull(), Mockito.any());
 
         IllegalStateException ex = Assertions.assertThrows(
                 IllegalStateException.class,

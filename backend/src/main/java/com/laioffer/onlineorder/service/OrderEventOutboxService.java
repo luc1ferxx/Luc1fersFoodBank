@@ -62,14 +62,18 @@ public class OrderEventOutboxService {
     }
 
 
-    public void enqueueOrderEvent(OrderEntity order, List<OrderHistoryItemDto> items) {
-        enqueueOrderEvent(order, items, null);
-    }
-
-
-    public void enqueueOrderEvent(OrderEntity order, List<OrderHistoryItemDto> items, String idempotencyKey) {
+    /**
+     * @param occurredAt when the change this event describes happened: the order creation time for a
+     *                   new order, or the transition time for a status change
+     */
+    public void enqueueOrderEvent(
+            OrderEntity order,
+            List<OrderHistoryItemDto> items,
+            String idempotencyKey,
+            LocalDateTime occurredAt
+    ) {
         String eventType = resolveEventType(order.status());
-        LocalDateTime occurredAt = order.createdAt() == null ? LocalDateTime.now() : order.createdAt();
+        LocalDateTime eventTime = occurredAt == null ? LocalDateTime.now() : occurredAt;
         String eventId = UUID.randomUUID().toString();
         String normalizedIdempotencyKey = normalizeNullable(idempotencyKey);
         OrderEventEnvelope envelope = new OrderEventEnvelope(
@@ -78,14 +82,14 @@ public class OrderEventOutboxService {
                 eventType,
                 "ORDER",
                 order.id(),
-                occurredAt,
+                eventTime,
                 normalizedIdempotencyKey == null ? eventId : normalizedIdempotencyKey,
                 normalizedIdempotencyKey,
                 new OrderEventPayload(
                         order.customerId(),
                         order.status(),
                         order.totalPrice(),
-                        occurredAt,
+                        order.createdAt(),
                         items
                 )
         );

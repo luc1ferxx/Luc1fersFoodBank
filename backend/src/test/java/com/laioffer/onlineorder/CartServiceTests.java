@@ -204,7 +204,7 @@ public class CartServiceTests {
         Assertions.assertEquals(orderId, orderDto.id());
         Assertions.assertEquals("PLACED", orderDto.status());
         Assertions.assertEquals(1, orderDto.items().size());
-        Mockito.verify(orderEventOutboxService).enqueueOrderEvent(savedOrder, orderDto.items(), null);
+        Mockito.verify(orderEventOutboxService).enqueueOrderEvent(savedOrder, orderDto.items(), null, savedOrder.createdAt());
         Mockito.verify(metricsService).recordCheckoutSuccess("PLACED");
         Mockito.verify(orderItemRepository).deleteByCartId(cartId);
         Mockito.verify(cartRepository).updateTotalPrice(cartId, BigDecimal.ZERO);

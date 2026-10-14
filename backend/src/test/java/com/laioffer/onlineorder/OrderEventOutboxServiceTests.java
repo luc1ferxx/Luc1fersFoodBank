@@ -1,18 +1,22 @@
 package com.laioffer.onlineorder;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OutboxEventEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.model.OutboxEventDto;
 import com.laioffer.onlineorder.repository.OutboxEventRepository;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -20,6 +24,39 @@ import java.util.Optional;
 
 @ExtendWith(MockitoExtension.class)
 class OrderEventOutboxServiceTests {
+
+    @Test
+    void enqueueOrderEvent_forStatusChange_shouldReportTransitionTimeNotOrderCreationTime() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        LocalDateTime createdAt = LocalDateTime.of(2026, 4, 25, 12, 0);
+        LocalDateTime transitionedAt = LocalDateTime.of(2026, 4, 25, 12, 45, 30);
+        OrderEntity acceptedOrder = new OrderEntity(10L, 3L, new BigDecimal("19.00"), "ACCEPTED", createdAt);
+
+        service.enqueueOrderEvent(acceptedOrder, List.of(), null, transitionedAt);
+
+        OrderEventEnvelope envelope = service.readEnvelope(savedOutboxEvent(repository).payload());
+        Assertions.assertEquals("order.accepted", envelope.eventType());
+        Assertions.assertEquals(transitionedAt, envelope.occurredAt());
+        Assertions.assertEquals(createdAt, envelope.data().createdAt());
+    }
+
+
+    @Test
+    void enqueueOrderEvent_forNewOrder_shouldReportCreationTime() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        LocalDateTime createdAt = LocalDateTime.of(2026, 4, 25, 12, 0);
+        OrderEntity placedOrder = new OrderEntity(10L, 3L, new BigDecimal("19.00"), "PLACED", createdAt);
+
+        service.enqueueOrderEvent(placedOrder, List.of(), "checkout-key", createdAt);
+
+        OrderEventEnvelope envelope = service.readEnvelope(savedOutboxEvent(repository).payload());
+        Assertions.assertEquals(createdAt, envelope.occurredAt());
+        Assertions.assertEquals(createdAt, envelope.data().createdAt());
+        Assertions.assertEquals("checkout-key", envelope.idempotencyKey());
+    }
+
 
     @Test
     void markRetryableFailure_whenAttemptsReachMax_shouldMarkFailed() {
@@ -163,6 +200,13 @@ class OrderEventOutboxServiceTests {
                 new ObjectMapper().findAndRegisterModules(),
                 repository
         );
+    }
+
+
+    private OutboxEventEntity savedOutboxEvent(OutboxEventRepository repository) {
+        ArgumentCaptor<OutboxEventEntity> captor = ArgumentCaptor.forClass(OutboxEventEntity.class);
+        Mockito.verify(repository).save(captor.capture());
+        return captor.getValue();
     }
 
 

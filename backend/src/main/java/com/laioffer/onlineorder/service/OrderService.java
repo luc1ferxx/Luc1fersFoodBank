@@ -223,6 +223,7 @@ public class OrderService {
             return getOrderDto(currentOrder);
         }
 
+        LocalDateTime transitionedAt = LocalDateTime.now();
         OrderEntity updatedOrder = orderRepository.save(new OrderEntity(
                 currentOrder.id(),
                 currentOrder.customerId(),
@@ -231,7 +232,7 @@ public class OrderService {
                 currentOrder.createdAt()
         ));
         List<OrderHistoryItemDto> items = getOrderItems(updatedOrder.id());
-        orderEventOutboxService.enqueueOrderEvent(updatedOrder, items, null);
+        orderEventOutboxService.enqueueOrderEvent(updatedOrder, items, null, transitionedAt);
         metricsService.recordOrderTransition(currentStatus.name(), targetStatus.name());
         return new OrderDto(updatedOrder, items);
     }

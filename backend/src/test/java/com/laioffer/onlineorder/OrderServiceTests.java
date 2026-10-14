@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -83,10 +84,21 @@ class OrderServiceTests {
         Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class))).thenReturn(acceptedOrder);
         Mockito.when(orderHistoryItemRepository.findAllByOrderIdOrderByIdAsc(5L)).thenReturn(List.of(historyItem));
 
+        LocalDateTime beforeTransition = LocalDateTime.now();
         OrderDto result = orderService.transitionOrderStatus(5L, "ACCEPTED");
+        LocalDateTime afterTransition = LocalDateTime.now();
 
         Assertions.assertEquals("ACCEPTED", result.status());
-        Mockito.verify(orderEventOutboxService).enqueueOrderEvent(Mockito.eq(acceptedOrder), Mockito.anyList(), Mockito.isNull());
+        ArgumentCaptor<LocalDateTime> occurredAt = ArgumentCaptor.forClass(LocalDateTime.class);
+        Mockito.verify(orderEventOutboxService).enqueueOrderEvent(
+                Mockito.eq(acceptedOrder),
+                Mockito.anyList(),
+                Mockito.isNull(),
+                occurredAt.capture()
+        );
+        Assertions.assertNotEquals(paidOrder.createdAt(), occurredAt.getValue());
+        Assertions.assertFalse(occurredAt.getValue().isBefore(beforeTransition));
+        Assertions.assertFalse(occurredAt.getValue().isAfter(afterTransition));
         Mockito.verify(metricsService).recordOrderTransition("PAID", "ACCEPTED");
     }
 

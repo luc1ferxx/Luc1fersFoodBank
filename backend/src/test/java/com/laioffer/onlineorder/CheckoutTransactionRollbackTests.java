@@ -77,7 +77,7 @@ class CheckoutTransactionRollbackTests {
         TestCustomer testCustomer = createCustomerWithOneItemInCart();
         Mockito.doThrow(new IllegalStateException("forced outbox failure"))
                 .when(orderEventOutboxService)
-                .enqueueOrderEvent(Mockito.any(), Mockito.anyList(), Mockito.any());
+                .enqueueOrderEvent(Mockito.any(), Mockito.anyList(), Mockito.any(), Mockito.any());
 
         IllegalStateException ex = Assertions.assertThrows(
                 IllegalStateException.class,

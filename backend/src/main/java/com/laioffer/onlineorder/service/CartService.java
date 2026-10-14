@@ -259,7 +259,7 @@ public class CartService {
             orderHistoryItemDtos.add(new OrderHistoryItemDto(savedItem));
         }
 
-        orderEventOutboxService.enqueueOrderEvent(savedOrder, orderHistoryItemDtos, idempotencyKey);
+        orderEventOutboxService.enqueueOrderEvent(savedOrder, orderHistoryItemDtos, idempotencyKey, savedOrder.createdAt());
         orderItemRepository.deleteByCartId(cart.id());
         cartRepository.updateTotalPrice(cart.id(), BigDecimal.ZERO);
 
