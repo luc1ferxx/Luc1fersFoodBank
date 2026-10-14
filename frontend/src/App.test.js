@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 import {
   cancelOrder,
@@ -157,4 +157,49 @@ test("guests can browse restaurants and menu items before signing in", async () 
       expect.objectContaining({ credentials: "include" })
     );
   });
+});
+
+test("successful signup resets the form and switches to login without an error", async () => {
+  const fetchMock = jest.spyOn(global, "fetch").mockImplementation((url) => {
+    if (url === "/me") {
+      return Promise.resolve(new Response("", { status: 401 }));
+    }
+
+    if (url === "/signup") {
+      return Promise.resolve(new Response(null, { status: 201 }));
+    }
+
+    if (url === "/restaurants/menu") {
+      return Promise.resolve(jsonResponse([]));
+    }
+
+    return Promise.resolve(jsonResponse({ order_items: [], total_price: 0 }));
+  });
+
+  render(<App />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Signup" }));
+  fireEvent.change(screen.getByLabelText("Email"), { target: { value: "new@example.com" } });
+  fireEvent.change(screen.getByLabelText("Password"), { target: { value: "secret123" } });
+  fireEvent.change(screen.getByLabelText("First name"), { target: { value: "New" } });
+  fireEvent.change(screen.getByLabelText("Last name"), { target: { value: "User" } });
+  fireEvent.submit(screen.getByRole("button", { name: "Create account" }).closest("form"));
+
+  expect(
+    await screen.findByText("Account created. Sign in with the new credentials.")
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/signup",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        email: "new@example.com",
+        password: "secret123",
+        first_name: "New",
+        last_name: "User",
+      }),
+    })
+  );
 });

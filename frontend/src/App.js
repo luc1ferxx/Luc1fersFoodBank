@@ -396,7 +396,9 @@ function App() {
 
   const handleSignup = (event) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    // React clears event.currentTarget once the handler returns, so keep the form for the async callback.
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     const data = {
       email: String(form.get("email") || "").trim(),
       password: String(form.get("password") || ""),
@@ -414,7 +416,7 @@ function App() {
     setAuthMessage("");
     signup(data)
       .then(() => {
-        event.currentTarget.reset();
+        formElement.reset();
         setAuthMode("login");
         setAuthMessage("Account created. Sign in with the new credentials.");
       })
