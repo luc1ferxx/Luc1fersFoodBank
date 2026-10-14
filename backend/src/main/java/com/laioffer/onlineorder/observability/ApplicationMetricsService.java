@@ -90,6 +90,15 @@ public class ApplicationMetricsService {
     }
 
 
+    public void recordCacheError(String cacheName, String operation) {
+        meterRegistry.counter(
+                "onlineorder.cache.errors",
+                "cache", normalize(cacheName),
+                "operation", normalize(operation)
+        ).increment();
+    }
+
+
     private String normalize(String value) {
         if (value == null || value.isBlank()) {
             return "unknown";
