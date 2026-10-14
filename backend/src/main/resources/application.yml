@@ -68,6 +68,8 @@ app:
     publish-timeout: ${KAFKA_PUBLISH_TIMEOUT:5s}
     listener-retries: ${KAFKA_LISTENER_RETRIES:3}
     listener-backoff: ${KAFKA_LISTENER_BACKOFF:1s}
+    dlt-listener-backoff-initial: ${KAFKA_DLT_LISTENER_BACKOFF_INITIAL:1s}
+    dlt-listener-backoff-max: ${KAFKA_DLT_LISTENER_BACKOFF_MAX:30s}
   outbox:
     publisher-enabled: ${OUTBOX_PUBLISHER_ENABLED:${KAFKA_ENABLED:true}}
     batch-size: ${OUTBOX_BATCH_SIZE:20}

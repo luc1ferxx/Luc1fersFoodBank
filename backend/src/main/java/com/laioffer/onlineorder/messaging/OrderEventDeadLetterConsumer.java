@@ -25,7 +25,11 @@ public class OrderEventDeadLetterConsumer {
     }
 
 
-    @KafkaListener(topics = "${app.kafka.order-dlt-topic}", groupId = "${app.kafka.order-dlt-group}")
+    @KafkaListener(
+            topics = "${app.kafka.order-dlt-topic}",
+            groupId = "${app.kafka.order-dlt-group}",
+            containerFactory = "deadLetterKafkaListenerContainerFactory"
+    )
     public void consume(
             String payload,
             @Header(KafkaHeaders.RECEIVED_TOPIC) String deadLetterTopic,
