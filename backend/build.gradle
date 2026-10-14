@@ -67,6 +67,8 @@ tasks.register('buildFrontend', Exec) {
     inputs.files(
             fileTree("${frontendDir}/src"),
             fileTree("${frontendDir}/public"),
+            fileTree("${frontendDir}/scripts"),
+            "${frontendDir}/.env.production",
             "${frontendDir}/package.json",
             "${frontendDir}/package-lock.json"
     )

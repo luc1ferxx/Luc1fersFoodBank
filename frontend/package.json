@@ -16,6 +16,7 @@
   "scripts": {
     "start": "node --openssl-legacy-provider ./node_modules/react-scripts/scripts/start.js",
     "build": "node --openssl-legacy-provider ./node_modules/react-scripts/scripts/build.js",
+    "postbuild": "node scripts/verify-csp-build.js",
     "test": "node --openssl-legacy-provider ./node_modules/react-scripts/scripts/test.js",
     "eject": "react-scripts eject",
     "deploy:backend": "npm run build && node scripts/sync-build-to-backend.js"
