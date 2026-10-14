@@ -19,7 +19,9 @@ import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 
 import java.io.IOException;
@@ -154,7 +156,7 @@ public class RateLimitingFilter extends OncePerRequestFilter {
 
     private RateLimitRule resolveRule(HttpServletRequest request) {
         String method = request.getMethod();
-        String path = request.getRequestURI();
+        String path = resolveRequestPath(request);
         if (HttpMethod.POST.matches(method) && "/login".equals(path)) {
             return new RateLimitRule("login", 10, 1, Duration.ofSeconds(6), 1, true);
         }
@@ -177,6 +179,26 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             return new RateLimitRule("order-status", 30, 1, Duration.ofSeconds(2), 1, false);
         }
         return null;
+    }
+
+
+    /**
+     * Matches the path the handlers see rather than the raw request URI, so that
+     * percent-encoded ({@code /%6Cogin}), path-parameter ({@code /login;x=1}),
+     * duplicate-slash or dot-segment variants cannot bypass a rule.
+     */
+    static String resolveRequestPath(HttpServletRequest request) {
+        String path;
+        try {
+            path = UrlPathHelper.defaultInstance.getPathWithinApplication(request);
+        } catch (IllegalArgumentException ex) {
+            path = request.getRequestURI();
+        }
+        path = StringUtils.cleanPath(path).replaceAll("/{2,}", "/");
+        if (path.length() > 1 && path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        return path;
     }
 
 

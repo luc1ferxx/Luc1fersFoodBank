@@ -7,6 +7,8 @@ import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -162,6 +164,121 @@ class RateLimitingFilterTests {
         Assertions.assertEquals("1", args[3]);
         Assertions.assertTrue(Long.parseLong(String.valueOf(args[4])) > 0);
         Assertions.assertEquals("120", args[5]);
+    }
+
+
+    @ParameterizedTest
+    @CsvSource({
+            "POST, /%6Cogin, login",
+            "POST, /%6C%6F%67%69%6E, login",
+            "POST, /login;jsessionid=abc, login",
+            "POST, //login, login",
+            "POST, /login/, login",
+            "POST, /./login, login",
+            "POST, /%73ignup, signup",
+            "POST, /cart/%63heckout, cart-checkout",
+            "POST, /cart//checkout, cart-checkout",
+            "POST, /payments/%63heckout, payment-checkout",
+            "POST, /dead-letters/%31%32/replay, dead-letter-replay",
+            "POST, /admin/outbox/events/7/%72etry, outbox-retry",
+            "PATCH, /orders/%34%32/status, order-status"
+    })
+    void shouldApplyRateLimitRuleToEncodedAndNonNormalizedPaths(String method, String uri, String routeKey) throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        allowRedisRequest(redisTemplate);
+
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                Mockito.mock(ApplicationMetricsService.class),
+                errorResponseWriter()
+        );
+
+        MockHttpServletRequest request = new MockHttpServletRequest(method, uri);
+        request.setRemoteAddr("10.0.0.5");
+
+        filter.doFilter(request, new MockHttpServletResponse(), new MockFilterChain());
+
+        Assertions.assertEquals(
+                "onlineorder:rate-limit:" + routeKey + ":ip:10.0.0.5",
+                capturedRedisKey(redisTemplate)
+        );
+    }
+
+
+    @Test
+    void shouldRejectPercentEncodedLoginWhenBucketIsEmpty() throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        ApplicationMetricsService metricsService = Mockito.mock(ApplicationMetricsService.class);
+        Mockito.when(redisTemplate.execute(
+                Mockito.<RedisScript<Long>>any(),
+                Mockito.<List<String>>any(),
+                Mockito.any(Object[].class)
+        )).thenReturn(0L);
+
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                metricsService,
+                errorResponseWriter()
+        );
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/%6Cogin");
+        request.setRemoteAddr("10.0.0.5");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+
+        filter.doFilter(request, response, chain);
+
+        Assertions.assertEquals(429, response.getStatus());
+        Assertions.assertNull(chain.getRequest());
+        Mockito.verify(metricsService).recordRateLimitRejection("login");
+    }
+
+
+    @Test
+    void shouldMatchRulesRelativeToTheServletContextPath() throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        allowRedisRequest(redisTemplate);
+
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                Mockito.mock(ApplicationMetricsService.class),
+                errorResponseWriter()
+        );
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/app/%6Cogin");
+        request.setContextPath("/app");
+        request.setRemoteAddr("10.0.0.5");
+
+        filter.doFilter(request, new MockHttpServletResponse(), new MockFilterChain());
+
+        Assertions.assertEquals("onlineorder:rate-limit:login:ip:10.0.0.5", capturedRedisKey(redisTemplate));
+    }
+
+
+    @Test
+    void shouldNotRateLimitPathsThatOnlyResembleLimitedRoutes() throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                Mockito.mock(ApplicationMetricsService.class),
+                errorResponseWriter()
+        );
+
+        for (String uri : List.of("/loginx", "/login/extra", "/%6Cogins", "/dead-letters/abc/replay")) {
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(new MockHttpServletRequest("POST", uri), response, new MockFilterChain());
+            Assertions.assertEquals(HttpServletResponse.SC_OK, response.getStatus(), uri);
+        }
+        Mockito.verifyNoInteractions(redisTemplate);
     }
 
 
