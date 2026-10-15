@@ -23,25 +23,38 @@ public interface DeadLetterEventRepository extends ListCrudRepository<DeadLetter
     @Query("""
             SELECT COUNT(*)
             FROM dead_letter_events
-            WHERE replay_status IN (:pendingStatus, :failedStatus, :replayedStatus)
+            WHERE replay_status IN (:pendingStatus, :replayingStatus, :failedStatus, :replayedStatus)
             """)
-    long countByReplayStatuses(String pendingStatus, String failedStatus, String replayedStatus);
+    long countByReplayStatuses(String pendingStatus, String replayingStatus, String failedStatus, String replayedStatus);
 
 
+    /**
+     * Claims a dead letter for one replay attempt: PENDING or REPLAY_FAILED becomes REPLAYING and the attempt is
+     * counted here, before the send. Returns 0 when the row is in any other status, so a replay already in flight
+     * (or completed) cannot be claimed a second time.
+     */
+    @Modifying
     @Query("""
-            SELECT *
-            FROM dead_letter_events
+            UPDATE dead_letter_events
+            SET replay_status = :replayingStatus,
+                replay_attempts = replay_attempts + 1,
+                updated_at = :updatedAt
             WHERE id = :id
-            FOR UPDATE
+              AND replay_status IN (:pendingStatus, :failedStatus)
             """)
-    DeadLetterEventEntity lockById(Long id);
+    int claimForReplay(
+            Long id,
+            String replayingStatus,
+            String pendingStatus,
+            String failedStatus,
+            LocalDateTime updatedAt
+    );
 
 
     @Modifying
     @Query("""
             UPDATE dead_letter_events
             SET replay_status = :replayStatus,
-                replay_attempts = replay_attempts + 1,
                 replayed_at = :replayedAt,
                 updated_at = :updatedAt,
                 last_replay_error = NULL
@@ -54,7 +67,6 @@ public interface DeadLetterEventRepository extends ListCrudRepository<DeadLetter
     @Query("""
             UPDATE dead_letter_events
             SET replay_status = :replayStatus,
-                replay_attempts = replay_attempts + 1,
                 updated_at = :updatedAt,
                 last_replay_error = :lastReplayError
             WHERE id = :id

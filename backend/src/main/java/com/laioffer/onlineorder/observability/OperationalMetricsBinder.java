@@ -18,6 +18,7 @@ public class OperationalMetricsBinder implements MeterBinder {
     private static final String OUTBOX_STATUS_PUBLISHED = "PUBLISHED";
 
     private static final String REPLAY_STATUS_PENDING = "PENDING";
+    private static final String REPLAY_STATUS_REPLAYING = "REPLAYING";
     private static final String REPLAY_STATUS_FAILED = "REPLAY_FAILED";
     private static final String REPLAY_STATUS_REPLAYED = "REPLAYED";
 
@@ -52,6 +53,7 @@ public class OperationalMetricsBinder implements MeterBinder {
                 .description("Total persisted Kafka dead-letter events")
                 .register(registry);
         bindDeadLetterStatus(registry, REPLAY_STATUS_PENDING, "pending");
+        bindDeadLetterStatus(registry, REPLAY_STATUS_REPLAYING, "replaying");
         bindDeadLetterStatus(registry, REPLAY_STATUS_FAILED, "replay_failed");
         bindDeadLetterStatus(registry, REPLAY_STATUS_REPLAYED, "replayed");
     }
@@ -86,6 +88,7 @@ public class OperationalMetricsBinder implements MeterBinder {
     private long countDeadLetterTotal() {
         return deadLetterEventRepository.countByReplayStatuses(
                 REPLAY_STATUS_PENDING,
+                REPLAY_STATUS_REPLAYING,
                 REPLAY_STATUS_FAILED,
                 REPLAY_STATUS_REPLAYED
         );

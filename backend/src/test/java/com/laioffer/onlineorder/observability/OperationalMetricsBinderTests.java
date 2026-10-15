@@ -21,8 +21,9 @@ class OperationalMetricsBinderTests {
         Mockito.when(outboxEventRepository.countByStatus("FAILED")).thenReturn(3L);
         Mockito.when(outboxEventRepository.countByStatus("PUBLISHED")).thenReturn(11L);
         Mockito.when(outboxEventRepository.countByStatuses("PENDING", "PROCESSING")).thenReturn(6L);
-        Mockito.when(deadLetterEventRepository.countByReplayStatuses("PENDING", "REPLAY_FAILED", "REPLAYED")).thenReturn(5L);
+        Mockito.when(deadLetterEventRepository.countByReplayStatuses("PENDING", "REPLAYING", "REPLAY_FAILED", "REPLAYED")).thenReturn(6L);
         Mockito.when(deadLetterEventRepository.countByReplayStatus("PENDING")).thenReturn(2L);
+        Mockito.when(deadLetterEventRepository.countByReplayStatus("REPLAYING")).thenReturn(1L);
         Mockito.when(deadLetterEventRepository.countByReplayStatus("REPLAY_FAILED")).thenReturn(1L);
         Mockito.when(deadLetterEventRepository.countByReplayStatus("REPLAYED")).thenReturn(2L);
 
@@ -34,8 +35,9 @@ class OperationalMetricsBinderTests {
         Assertions.assertEquals(11.0, meterRegistry.get("onlineorder.outbox.events").tag("status", "published").gauge().value());
         Assertions.assertEquals(6.0, meterRegistry.get("onlineorder.outbox.backlog").gauge().value());
         Assertions.assertEquals(3.0, meterRegistry.get("onlineorder.outbox.failed").gauge().value());
-        Assertions.assertEquals(5.0, meterRegistry.get("onlineorder.dead_letter.total").gauge().value());
+        Assertions.assertEquals(6.0, meterRegistry.get("onlineorder.dead_letter.total").gauge().value());
         Assertions.assertEquals(2.0, meterRegistry.get("onlineorder.dead_letter.events").tag("replay_status", "pending").gauge().value());
+        Assertions.assertEquals(1.0, meterRegistry.get("onlineorder.dead_letter.events").tag("replay_status", "replaying").gauge().value());
         Assertions.assertEquals(1.0, meterRegistry.get("onlineorder.dead_letter.events").tag("replay_status", "replay_failed").gauge().value());
         Assertions.assertEquals(2.0, meterRegistry.get("onlineorder.dead_letter.events").tag("replay_status", "replayed").gauge().value());
     }
