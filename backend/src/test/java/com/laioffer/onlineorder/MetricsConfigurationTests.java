@@ -66,6 +66,19 @@ class MetricsConfigurationTests {
         assertSample(scrape, "tomcat_threads_busy_threads\\{");
         assertSample(scrape, "http_server_requests_seconds_bucket\\{[^}]*le=\"0\\.25\"");
         assertSample(scrape, "http_server_requests_seconds_bucket\\{[^}]*le=\"2\\.0\"");
+
+        // The six SLO boundaries plus +Inf would satisfy the two samples above on their own; the
+        // percentiles histogram is what adds the finer buckets that p95/p99 queries need.
+        long menuBucketBoundaries = scrape.lines()
+                .filter(line -> line.startsWith("http_server_requests_seconds_bucket{"))
+                .filter(line -> line.contains("uri=\"/restaurants/menu\""))
+                .map(line -> line.replaceAll(".*le=\"([^\"]+)\".*", "$1"))
+                .distinct()
+                .count();
+        Assertions.assertTrue(
+                menuBucketBoundaries > 7,
+                () -> "Expected percentiles-histogram buckets for http.server.requests, found " + menuBucketBoundaries
+        );
     }
 
 

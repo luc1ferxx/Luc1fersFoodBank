@@ -7,15 +7,21 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.RecoverableDataAccessException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.transaction.CannotCreateTransactionException;
+import org.springframework.util.backoff.BackOff;
 import org.springframework.util.backoff.ExponentialBackOff;
 import org.springframework.util.backoff.FixedBackOff;
 
 
+import java.sql.SQLTransientException;
 import java.time.Duration;
 import java.util.Map;
 
@@ -33,6 +39,8 @@ public class KafkaListenerConfig {
             @Value("${app.kafka.order-dlt-topic}") String deadLetterTopic,
             @Value("${app.kafka.listener-retries:3}") long retries,
             @Value("${app.kafka.listener-backoff:1s}") Duration backOff,
+            @Value("${app.kafka.listener-transient-backoff-max:30s}") Duration transientMaxBackOff,
+            @Value("${app.kafka.listener-transient-retry-timeout:5m}") Duration transientRetryTimeout,
             @Value("${app.kafka.listener-concurrency:${app.kafka.partitions:3}}") int concurrency
     ) {
         ConcurrentKafkaListenerContainerFactory<String, String> factory =
@@ -48,8 +56,47 @@ public class KafkaListenerConfig {
                 recoverer,
                 new FixedBackOff(backOff.toMillis(), retries)
         );
+        errorHandler.setBackOffFunction((record, ex) -> isTransientDatabaseFailure(ex)
+                ? transientDatabaseBackOff(backOff, transientMaxBackOff, transientRetryTimeout)
+                : null);
         factory.setCommonErrorHandler(errorHandler);
         return factory;
+    }
+
+
+    /**
+     * Order events that fail because the database is briefly unavailable get a longer retry budget than
+     * listener-retries before they are dead-lettered. The listener shares the Hikari pool with HTTP requests,
+     * and its 2s connection-timeout makes every attempt fail fast while the pool is saturated, so a few fixed
+     * retries would move events to the DLT after ~11s of overload. The backoff grows from listener-backoff to
+     * transientMaxBackOff and stops once transientRetryTimeout has been spent waiting.
+     */
+    static BackOff transientDatabaseBackOff(Duration backOff, Duration transientMaxBackOff, Duration transientRetryTimeout) {
+        long initialIntervalMillis = Math.max(1L, backOff.toMillis());
+        ExponentialBackOff transientBackOff = new ExponentialBackOff(initialIntervalMillis, 2.0);
+        transientBackOff.setMaxInterval(Math.max(initialIntervalMillis, transientMaxBackOff.toMillis()));
+        transientBackOff.setMaxElapsedTime(transientRetryTimeout.toMillis());
+        return transientBackOff;
+    }
+
+
+    /**
+     * No pooled connection in time (pool saturated or database down), lock or statement timeouts, deadlocks
+     * and lost connections. The listener wraps the failure, so the whole cause chain is checked.
+     */
+    static boolean isTransientDatabaseFailure(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof CannotCreateTransactionException
+                    || current instanceof TransientDataAccessException
+                    || current instanceof DataAccessResourceFailureException
+                    || current instanceof RecoverableDataAccessException
+                    || current instanceof SQLTransientException) {
+                return true;
+            }
+            current = current.getCause() == current ? null : current.getCause();
+        }
+        return false;
     }
 
 

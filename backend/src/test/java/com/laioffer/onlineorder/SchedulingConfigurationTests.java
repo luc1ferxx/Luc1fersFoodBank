@@ -7,7 +7,6 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.task.TaskSchedulingAutoConfiguration;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -52,7 +51,9 @@ class SchedulingConfigurationTests {
 
     @Test
     void blockedJob_shouldNotStarveOtherScheduledJobs() {
-        contextRunner.run(context -> {
+        // Only this test registers the jobs and releases the blocking one, so the other contexts do not wait
+        // out the scheduler's 10s shutdown timeout on close.
+        contextRunner.withBean(ScheduledJobs.class).run(context -> {
             ScheduledJobs jobs = context.getBean(ScheduledJobs.class);
             try {
                 Assertions.assertTrue(jobs.blockingJobStarted.await(5, TimeUnit.SECONDS));
@@ -73,11 +74,6 @@ class SchedulingConfigurationTests {
     @Configuration(proxyBeanMethods = false)
     @EnableScheduling
     static class SchedulingTestConfiguration {
-
-        @Bean
-        ScheduledJobs scheduledJobs() {
-            return new ScheduledJobs();
-        }
     }
 
 

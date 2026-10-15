@@ -2,6 +2,7 @@ package com.laioffer.onlineorder;
 
 
 import com.zaxxer.hikari.HikariDataSource;
+import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -15,6 +16,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 
+import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -42,7 +44,7 @@ class DatabaseTimeoutConfigurationTests {
         postgresContext().run(context -> {
             HikariDataSource dataSource = context.getBean(HikariDataSource.class);
 
-            // Flyway already ran the schema migrations and the demo seed through this pool.
+            // Flyway already ran the schema migrations and the demo seed against the same database.
             Assertions.assertTrue(new JdbcTemplate(dataSource).queryForObject("SELECT COUNT(*) FROM restaurants", Integer.class) > 0);
 
             List<Connection> connections = new ArrayList<>();
@@ -58,6 +60,22 @@ class DatabaseTimeoutConfigurationTests {
                 for (Connection connection : connections) {
                     connection.close();
                 }
+            }
+        });
+    }
+
+
+    @Test
+    void flywayConnections_shouldNotCarryTheRequestTimeouts() {
+        postgresContext().run(context -> {
+            DataSource migrationDataSource = context.getBean(Flyway.class).getConfiguration().getDataSource();
+
+            Assertions.assertNotSame(context.getBean(HikariDataSource.class), migrationDataSource);
+            // SET LOCAL cannot raise the timeout for a non-transactional migration such as
+            // CREATE INDEX CONCURRENTLY, so migrations must not start with the request timeouts.
+            try (Connection connection = migrationDataSource.getConnection()) {
+                Assertions.assertEquals("0", show(connection, "statement_timeout"));
+                Assertions.assertEquals("0", show(connection, "lock_timeout"));
             }
         });
     }

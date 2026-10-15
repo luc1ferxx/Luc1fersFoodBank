@@ -2,6 +2,8 @@ spring:
   cache:
     type: redis
   datasource:
+    # DB_CLOSE_DELAY=-1 is required for an in-memory URL: Flyway migrates over its own connection, and H2
+    # would drop the database when that connection closes before the pool opens one.
     url: ${DATABASE_URL:jdbc:h2:mem:onlineorder-${random.uuid};MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE}
     username: ${DATABASE_USERNAME:sa}
     password: ${DATABASE_PASSWORD:}

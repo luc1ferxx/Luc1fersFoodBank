@@ -5,9 +5,11 @@ import com.laioffer.onlineorder.error.ApiErrorResponseFactory;
 import com.laioffer.onlineorder.error.ApiExceptionHandler;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -101,6 +103,26 @@ class ConnectionPoolConfigurationTests {
 
 
     @Test
+    void flyway_shouldMigrateOverItsOwnConnectionsWithoutTheRequestTimeouts() {
+        contextRunner
+                .withConfiguration(AutoConfigurations.of(FlywayAutoConfiguration.class))
+                .withPropertyValues("spring.profiles.active=h2")
+                .run(context -> {
+                    HikariDataSource pool = context.getBean(HikariDataSource.class);
+                    DataSource migrationDataSource = context.getBean(Flyway.class).getConfiguration().getDataSource();
+
+                    Assertions.assertNotSame(pool, migrationDataSource);
+                    Assertions.assertFalse(migrationDataSource instanceof HikariDataSource);
+                    // Same database: the schema and demo seed Flyway applied are visible through the pool.
+                    Assertions.assertTrue(new JdbcTemplate(pool).queryForObject("SELECT COUNT(*) FROM restaurants", Integer.class) > 0);
+                    Assertions.assertEquals("10000", queryTimeout(new JdbcTemplate(pool)));
+                    // A slow migration, including a non-transactional one, is not cancelled by the request timeout.
+                    Assertions.assertEquals("0", queryTimeout(new JdbcTemplate(migrationDataSource)));
+                });
+    }
+
+
+    @Test
     void exhaustedPool_shouldAnswer503WithTheApiErrorShape() throws Exception {
         HikariConfig config = new HikariConfig();
         config.setJdbcUrl("jdbc:h2:mem:pool-exhaustion-" + UUID.randomUUID());
@@ -122,6 +144,14 @@ class ConnectionPoolConfigurationTests {
                         .andExpect(MockMvcResultMatchers.jsonPath("$.path").value(path));
             }
         }
+    }
+
+
+    private static String queryTimeout(JdbcTemplate jdbcTemplate) {
+        return jdbcTemplate.queryForObject(
+                "SELECT setting_value FROM information_schema.settings WHERE setting_name = 'QUERY_TIMEOUT'",
+                String.class
+        );
     }
 
 

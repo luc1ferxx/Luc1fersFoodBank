@@ -82,11 +82,10 @@ spring:
       connection-timeout: ${DATABASE_POOL_CONNECTION_TIMEOUT_MS:2000}
       # Milliseconds; kept below connection-timeout so a dead-connection check cannot outlast it.
       validation-timeout: ${DATABASE_POOL_VALIDATION_TIMEOUT_MS:1000}
-      # Runs once on every new pooled connection, including the ones Flyway migrates with. Unitless
-      # values are milliseconds in PostgreSQL. Kept out of the JDBC URL because DATABASE_URL can be
-      # overridden. A migration that needs longer than the statement timeout must start with
-      # SET LOCAL statement_timeout = ... (Flyway runs each PostgreSQL migration in a transaction).
-      # The h2 profile overrides this with H2's own settings.
+      # Runs once on every new pooled connection. Unitless values are milliseconds in PostgreSQL. Kept out
+      # of the JDBC URL because DATABASE_URL can be overridden. Flyway does not use the pool (see
+      # spring.flyway.user), so migrations are not bound by these request-path timeouts. The h2 profile
+      # overrides this with H2's own settings.
       connection-init-sql: "SET statement_timeout = ${DATABASE_STATEMENT_TIMEOUT_MS:10000}; SET lock_timeout = ${DATABASE_LOCK_TIMEOUT_MS:3000}"
   h2:
     console:
@@ -99,6 +98,11 @@ spring:
     enabled: ${FLYWAY_ENABLED:true}
     locations: ${FLYWAY_LOCATIONS:classpath:db/migration}
     baseline-on-migrate: ${FLYWAY_BASELINE_ON_MIGRATE:false}
+    # Setting the user makes Boot give Flyway its own unpooled connections, derived from the application
+    # DataSource (same URL and password), so migrations do not run with the pool's statement_timeout and
+    # lock_timeout. SET LOCAL could not raise them for non-transactional migrations such as
+    # CREATE INDEX CONCURRENTLY.
+    user: ${spring.datasource.username}
   session:
     store-type: redis
     redis:
@@ -132,6 +136,13 @@ app:
     listener-concurrency: ${KAFKA_LISTENER_CONCURRENCY:${KAFKA_ORDER_TOPIC_PARTITIONS:3}}
     listener-retries: ${KAFKA_LISTENER_RETRIES:3}
     listener-backoff: ${KAFKA_LISTENER_BACKOFF:1s}
+    # Transient database failures (no pooled connection within the 2s connection-timeout, lock or statement
+    # timeouts) would exhaust listener-retries after ~11s of pool saturation and dead-letter the event. They
+    # are retried instead with a backoff growing from listener-backoff to listener-transient-backoff-max until
+    # listener-transient-retry-timeout has been spent waiting. KAFKA_LISTENER_RETRIES=0 turns off these retries too.
+    # The consumer sleeps between attempts, so the backoff must stay well below max.poll.interval.ms (5m).
+    listener-transient-backoff-max: ${KAFKA_LISTENER_TRANSIENT_BACKOFF_MAX:30s}
+    listener-transient-retry-timeout: ${KAFKA_LISTENER_TRANSIENT_RETRY_TIMEOUT:5m}
     dlt-listener-backoff-initial: ${KAFKA_DLT_LISTENER_BACKOFF_INITIAL:1s}
     dlt-listener-backoff-max: ${KAFKA_DLT_LISTENER_BACKOFF_MAX:30s}
   outbox:
