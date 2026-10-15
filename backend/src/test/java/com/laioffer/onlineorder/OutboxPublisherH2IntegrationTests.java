@@ -142,7 +142,7 @@ class OutboxPublisherH2IntegrationTests {
         Mockito.verify(kafkaTemplate, Mockito.times(1)).send(Mockito.anyString(), Mockito.anyString(), Mockito.anyString());
         Map<String, Object> failed = event(first);
         Assertions.assertEquals("PENDING", failed.get("status"));
-        Assertions.assertEquals(1, failed.get("attempts"));
+        Assertions.assertEquals(0, failed.get("attempts"));
         Assertions.assertTrue(failed.get("last_error").toString().contains("not present in metadata"));
         for (Long releasedId : List.of(second, third)) {
             Map<String, Object> released = event(releasedId);
@@ -167,6 +167,21 @@ class OutboxPublisherH2IntegrationTests {
         Assertions.assertEquals(0, event(claimedWithoutAttempts).get("attempts"));
         Assertions.assertEquals("PUBLISHED", event(published).get("status"));
         Assertions.assertEquals(1, event(published).get("attempts"));
+    }
+
+
+    @Test
+    void releaseFailedClaims_shouldReturnOnlyProcessingEventsToPendingWithTheirError() {
+        Long claimed = insertEvent("order-1", "PROCESSING", 2);
+        Long published = insertEvent("order-2", "PUBLISHED", 1);
+
+        orderEventOutboxService.releaseFailedClaims(List.of(claimed, published), "Kafka timed out");
+
+        Assertions.assertEquals("PENDING", event(claimed).get("status"));
+        Assertions.assertEquals(1, event(claimed).get("attempts"));
+        Assertions.assertEquals("Kafka timed out", event(claimed).get("last_error"));
+        Assertions.assertEquals("PUBLISHED", event(published).get("status"));
+        Assertions.assertNull(event(published).get("last_error"));
     }
 
 

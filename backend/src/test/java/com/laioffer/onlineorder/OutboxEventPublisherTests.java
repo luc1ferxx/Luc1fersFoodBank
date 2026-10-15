@@ -5,6 +5,11 @@ import com.laioffer.onlineorder.entity.OutboxEventEntity;
 import com.laioffer.onlineorder.messaging.OutboxEventPublisher;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.errors.InterruptException;
+import org.apache.kafka.common.errors.RecordTooLargeException;
+import org.apache.kafka.common.errors.TimeoutException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -12,6 +17,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.kafka.KafkaException;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaProducerException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 
@@ -24,6 +34,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 
@@ -138,7 +149,8 @@ class OutboxEventPublisherTests {
         publisher.publishPendingEvents();
 
         Mockito.verify(orderEventOutboxService).claimNextBatch();
-        Mockito.verifyNoInteractions(kafkaTemplate, metricsService);
+        Mockito.verify(kafkaTemplate, Mockito.never()).send(Mockito.anyString(), Mockito.anyString(), Mockito.anyString());
+        Mockito.verifyNoInteractions(metricsService);
         Mockito.verify(orderEventOutboxService, Mockito.never()).markPublished(Mockito.anyList());
     }
 
@@ -172,21 +184,25 @@ class OutboxEventPublisherTests {
         OutboxEventEntity first = event(1L, "order-1");
         OutboxEventEntity otherOrder = event(2L, "order-2");
         OutboxEventEntity second = event(3L, "order-1");
+        OutboxEventEntity otherOrderSecond = event(4L, "order-2");
         CompletableFuture<SendResult<String, String>> firstSend = new CompletableFuture<>();
         OutboxEventPublisher publisher = newPublisher(10, Duration.ofSeconds(5));
-        Mockito.when(orderEventOutboxService.claimNextBatch()).thenReturn(List.of(first, otherOrder, second));
+        Mockito.when(orderEventOutboxService.claimNextBatch())
+                .thenReturn(List.of(first, otherOrder, second, otherOrderSecond));
         Mockito.when(kafkaTemplate.send(first.topic(), first.eventKey(), first.payload())).thenReturn(firstSend);
         Mockito.when(kafkaTemplate.send(otherOrder.topic(), otherOrder.eventKey(), otherOrder.payload()))
                 .thenAnswer(invocation -> {
                     firstSend.completeExceptionally(new IllegalStateException("Record rejected"));
                     return CompletableFuture.completedFuture(null);
                 });
+        Mockito.when(kafkaTemplate.send(otherOrderSecond.topic(), otherOrderSecond.eventKey(), otherOrderSecond.payload()))
+                .thenReturn(CompletableFuture.completedFuture(null));
 
         publisher.publishPendingEvents();
 
         Mockito.verify(kafkaTemplate, Mockito.never()).send(second.topic(), second.eventKey(), second.payload());
         Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(1L), Mockito.contains("Record rejected"));
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(2L));
+        Mockito.verify(orderEventOutboxService).markPublished(List.of(2L, 4L));
         Mockito.verify(orderEventOutboxService).releaseClaims(List.of(3L));
     }
 
@@ -228,7 +244,7 @@ class OutboxEventPublisherTests {
 
 
     @Test
-    void publishPendingEvents_whenBrokerIsDown_shouldReleaseUnsentEventsAndBackOff() {
+    void publishPendingEvents_whenBrokerIsDown_shouldReleaseEventsWithoutUsingAttemptsAndBackOff() {
         OutboxEventEntity first = event(1L, "1");
         OutboxEventEntity second = event(2L, "2");
         OutboxEventEntity third = event(3L, "3");
@@ -236,7 +252,10 @@ class OutboxEventPublisherTests {
         Mockito.when(orderEventOutboxService.claimNextBatch())
                 .thenReturn(List.of(first, second, third), List.of(first, second), List.of());
         Mockito.when(kafkaTemplate.send(first.topic(), first.eventKey(), first.payload()))
-                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("Topic not present in metadata")))
+                .thenReturn(CompletableFuture.failedFuture(new KafkaException(
+                        "Send failed",
+                        new TimeoutException("Topic order-events not present in metadata after 5000 ms.")
+                )))
                 .thenReturn(CompletableFuture.completedFuture(null));
         Mockito.when(kafkaTemplate.send(second.topic(), second.eventKey(), second.payload()))
                 .thenReturn(CompletableFuture.completedFuture(null));
@@ -244,8 +263,11 @@ class OutboxEventPublisherTests {
         publisher.publishPendingEvents();
 
         Mockito.verify(kafkaTemplate, Mockito.times(1)).send(Mockito.anyString(), Mockito.anyString(), Mockito.anyString());
-        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(1L), Mockito.contains("Topic not present"));
+        Mockito.verify(orderEventOutboxService)
+                .releaseFailedClaims(Mockito.eq(List.of(1L)), Mockito.contains("not present in metadata"));
         Mockito.verify(orderEventOutboxService).releaseClaims(List.of(2L, 3L));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
+        Mockito.verify(metricsService).recordOutboxPublishResult(first.topic(), false);
         Mockito.verify(orderEventOutboxService, Mockito.times(1)).claimNextBatch();
 
         clock.advance(PUBLISH_INTERVAL.minusMillis(1));
@@ -324,8 +346,57 @@ class OutboxEventPublisherTests {
 
 
     @Test
+    void publishPendingEvents_whenRunSucceedsAfterFailures_shouldRestartBackoffAtPublishInterval() {
+        OutboxEventEntity event = event(1L, "1");
+        OutboxEventPublisher publisher = newPublisher(10, Duration.ofSeconds(5));
+        Mockito.when(orderEventOutboxService.claimNextBatch()).thenReturn(List.of(event));
+        Mockito.when(kafkaTemplate.send(event.topic(), event.eventKey(), event.payload()))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("Kafka unavailable")))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("Kafka unavailable")))
+                .thenReturn(CompletableFuture.completedFuture(null))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("Kafka unavailable")))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        publisher.publishPendingEvents();
+        clock.advance(PUBLISH_INTERVAL);
+        publisher.publishPendingEvents();
+        clock.advance(PUBLISH_INTERVAL.multipliedBy(2));
+        publisher.publishPendingEvents();
+        publisher.publishPendingEvents();
+
+        Mockito.verify(orderEventOutboxService, Mockito.times(4)).claimNextBatch();
+
+        clock.advance(PUBLISH_INTERVAL.minusMillis(1));
+        publisher.publishPendingEvents();
+
+        Mockito.verify(orderEventOutboxService, Mockito.times(4)).claimNextBatch();
+
+        clock.advance(Duration.ofMillis(1));
+        publisher.publishPendingEvents();
+
+        Mockito.verify(orderEventOutboxService, Mockito.times(5)).claimNextBatch();
+    }
+
+
+    @Test
+    void publishPendingEvents_whenWallClockIsSetBack_shouldNotStretchBackoff() {
+        OutboxEventEntity event = event(1L, "1");
+        OutboxEventPublisher publisher = newPublisher(10, Duration.ofSeconds(5));
+        Mockito.when(orderEventOutboxService.claimNextBatch()).thenReturn(List.of(event), List.of());
+        Mockito.when(kafkaTemplate.send(event.topic(), event.eventKey(), event.payload()))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("Kafka unavailable")));
+
+        publisher.publishPendingEvents();
+        clock.advance(Duration.ofHours(-1));
+        publisher.publishPendingEvents();
+
+        Mockito.verify(orderEventOutboxService, Mockito.times(2)).claimNextBatch();
+    }
+
+
+    @Test
     @Timeout(10)
-    void publishPendingEvents_whenAcknowledgementTimesOut_shouldMarkEventRetryable() {
+    void publishPendingEvents_whenAcknowledgementTimesOut_shouldReleaseEventWithoutUsingAttempt() {
         OutboxEventEntity event = event(1L, "1");
         OutboxEventPublisher publisher = newPublisher(10, Duration.ofMillis(200));
         Mockito.when(orderEventOutboxService.claimNextBatch()).thenReturn(List.of(event));
@@ -334,15 +405,158 @@ class OutboxEventPublisherTests {
 
         publisher.publishPendingEvents();
 
-        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(1L), Mockito.contains("did not acknowledge"));
+        Mockito.verify(orderEventOutboxService)
+                .releaseFailedClaims(Mockito.eq(List.of(1L)), Mockito.contains("did not acknowledge"));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
         Mockito.verify(metricsService).recordOutboxPublishResult(event.topic(), false);
         Mockito.verify(orderEventOutboxService, Mockito.never()).markPublished(Mockito.anyList());
     }
 
 
     @Test
+    void publishPendingEvents_whenBrokerFailsAcceptedSends_shouldReleaseEventsWithoutUsingAttemptsAndBackOff() {
+        OutboxEventEntity first = event(1L, "order-1");
+        OutboxEventEntity otherOrder = event(2L, "order-2");
+        OutboxEventEntity second = event(3L, "order-1");
+        CompletableFuture<SendResult<String, String>> firstSend = new CompletableFuture<>();
+        OutboxEventPublisher publisher = newPublisher(10, Duration.ofSeconds(5));
+        Mockito.when(orderEventOutboxService.claimNextBatch()).thenReturn(List.of(first, otherOrder, second));
+        Mockito.when(kafkaTemplate.send(first.topic(), first.eventKey(), first.payload())).thenReturn(firstSend);
+        Mockito.when(kafkaTemplate.send(otherOrder.topic(), otherOrder.eventKey(), otherOrder.payload()))
+                .thenAnswer(invocation -> {
+                    firstSend.completeExceptionally(new KafkaProducerException(
+                            new ProducerRecord<>(first.topic(), first.eventKey(), first.payload()),
+                            "Failed to send",
+                            new TimeoutException("Expiring 1 record(s) for order-events-0: 10000 ms has passed")
+                    ));
+                    return CompletableFuture.completedFuture(null);
+                });
+
+        publisher.publishPendingEvents();
+
+        Mockito.verify(orderEventOutboxService)
+                .releaseFailedClaims(Mockito.eq(List.of(1L)), Mockito.contains("Expiring 1 record(s)"));
+        Mockito.verify(orderEventOutboxService).markPublished(List.of(2L));
+        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(3L));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
+        Mockito.verify(kafkaTemplate, Mockito.never()).send(second.topic(), second.eventKey(), second.payload());
+
+        publisher.publishPendingEvents();
+
+        Mockito.verify(orderEventOutboxService, Mockito.times(1)).claimNextBatch();
+    }
+
+
+    @Test
+    void publishPendingEvents_whenRecordIsRejected_shouldKeepPublishingOtherKeysWithoutBackingOff() {
+        OutboxEventEntity tooLarge = event(1L, "order-1");
+        OutboxEventEntity laterWithSameKey = event(2L, "order-1");
+        OutboxEventEntity otherOrder = event(3L, "order-2");
+        OutboxEventEntity thirdOrder = event(4L, "order-3");
+        OutboxEventPublisher publisher = newPublisher(10, Duration.ofSeconds(5));
+        Mockito.when(orderEventOutboxService.claimNextBatch())
+                .thenReturn(List.of(tooLarge, laterWithSameKey, otherOrder, thirdOrder), List.of());
+        Mockito.when(kafkaTemplate.send(tooLarge.topic(), tooLarge.eventKey(), tooLarge.payload()))
+                .thenThrow(new KafkaException(
+                        "Send failed",
+                        new RecordTooLargeException("The message is 2000000 bytes when serialized")
+                ));
+        Mockito.when(kafkaTemplate.send(otherOrder.topic(), otherOrder.eventKey(), otherOrder.payload()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        Mockito.when(kafkaTemplate.send(thirdOrder.topic(), thirdOrder.eventKey(), thirdOrder.payload()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        publisher.publishPendingEvents();
+
+        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(1L), Mockito.contains("RecordTooLarge"));
+        Mockito.verify(kafkaTemplate, Mockito.never())
+                .send(laterWithSameKey.topic(), laterWithSameKey.eventKey(), laterWithSameKey.payload());
+        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(2L));
+        Mockito.verify(orderEventOutboxService).markPublished(List.of(3L, 4L));
+
+        publisher.publishPendingEvents();
+
+        Mockito.verify(orderEventOutboxService, Mockito.times(2)).claimNextBatch();
+    }
+
+
+    @Test
+    void publishPendingEvents_whenConsecutiveSendsAreRejected_shouldStopBatchAndBackOff() {
+        OutboxEventEntity first = event(1L, "order-1");
+        OutboxEventEntity second = event(2L, "order-2");
+        OutboxEventEntity third = event(3L, "order-3");
+        OutboxEventPublisher publisher = newPublisher(10, Duration.ofSeconds(5));
+        Mockito.when(orderEventOutboxService.claimNextBatch()).thenReturn(List.of(first, second, third));
+        Mockito.when(kafkaTemplate.send(Mockito.anyString(), Mockito.anyString(), Mockito.anyString()))
+                .thenThrow(new KafkaException("Send failed", new RecordTooLargeException("The message is too large")));
+
+        publisher.publishPendingEvents();
+
+        Mockito.verify(kafkaTemplate, Mockito.never()).send(third.topic(), third.eventKey(), third.payload());
+        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(1L), Mockito.contains("too large"));
+        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(2L), Mockito.contains("too large"));
+        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(3L));
+
+        publisher.publishPendingEvents();
+
+        Mockito.verify(orderEventOutboxService, Mockito.times(1)).claimNextBatch();
+    }
+
+
+    @Test
     @Timeout(10)
-    void publishPendingEvents_whenInterruptedWhileWaiting_shouldKeepUnconfirmedEventsClaimed() {
+    void publishPendingEvents_whenDeadlinePassesWithUnacknowledgedKey_shouldReleaseLaterWavesWithoutSending() {
+        OutboxEventEntity unacknowledged = event(1L, "order-1");
+        OutboxEventEntity otherOrder = event(2L, "order-2");
+        OutboxEventEntity second = event(3L, "order-1");
+        OutboxEventEntity otherOrderSecond = event(4L, "order-2");
+        OutboxEventPublisher publisher = newPublisher(4, Duration.ofMillis(200));
+        Mockito.when(orderEventOutboxService.claimNextBatch())
+                .thenReturn(List.of(unacknowledged, otherOrder, second, otherOrderSecond), List.of());
+        Mockito.when(kafkaTemplate.send(unacknowledged.topic(), unacknowledged.eventKey(), unacknowledged.payload()))
+                .thenReturn(new CompletableFuture<>());
+        Mockito.when(kafkaTemplate.send(otherOrder.topic(), otherOrder.eventKey(), otherOrder.payload()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        publisher.publishPendingEvents();
+
+        Mockito.verify(kafkaTemplate, Mockito.never())
+                .send(otherOrderSecond.topic(), otherOrderSecond.eventKey(), otherOrderSecond.payload());
+        Mockito.verify(orderEventOutboxService)
+                .releaseFailedClaims(Mockito.eq(List.of(1L)), Mockito.contains("did not acknowledge"));
+        Mockito.verify(orderEventOutboxService).markPublished(List.of(2L));
+        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(3L, 4L));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
+        Mockito.verify(orderEventOutboxService, Mockito.times(1)).claimNextBatch();
+    }
+
+
+    @Test
+    @Timeout(10)
+    void publishPendingEvents_whenDeadlinePassesWhileSending_shouldReleaseUnsentEventsAndStopDraining() {
+        OutboxEventEntity slowSend = event(1L, "order-1");
+        OutboxEventEntity second = event(2L, "order-1");
+        OutboxEventPublisher publisher = newPublisher(2, Duration.ofMillis(200));
+        Mockito.when(orderEventOutboxService.claimNextBatch()).thenReturn(List.of(slowSend, second), List.of());
+        Mockito.when(kafkaTemplate.send(slowSend.topic(), slowSend.eventKey(), slowSend.payload()))
+                .thenAnswer(invocation -> {
+                    // A send blocked on metadata or buffer space outlives the batch deadline.
+                    Thread.sleep(300);
+                    return CompletableFuture.completedFuture(null);
+                });
+
+        publisher.publishPendingEvents();
+
+        Mockito.verify(kafkaTemplate, Mockito.never()).send(second.topic(), second.eventKey(), second.payload());
+        Mockito.verify(orderEventOutboxService).markPublished(List.of(1L));
+        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(2L));
+        Mockito.verify(orderEventOutboxService, Mockito.times(1)).claimNextBatch();
+    }
+
+
+    @Test
+    @Timeout(10)
+    void publishPendingEvents_whenInterruptedWhileWaiting_shouldKeepUnconfirmedEventsClaimedAndReleaseUnsentOnes() {
         OutboxEventEntity acknowledged = event(1L, "1");
         OutboxEventEntity unconfirmed = event(2L, "2");
         OutboxEventEntity laterWithSameKey = event(3L, "2");
@@ -370,7 +584,78 @@ class OutboxEventPublisherTests {
         Mockito.verify(orderEventOutboxService, Mockito.times(1)).claimNextBatch();
         Mockito.verify(orderEventOutboxService).markPublished(List.of(1L));
         Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
-        Mockito.verify(orderEventOutboxService, Mockito.never()).releaseClaims(Mockito.anyList());
+        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(3L));
+    }
+
+
+    @Test
+    @Timeout(10)
+    void publishPendingEvents_whenInterruptedWhileSending_shouldReleaseUnsentEventsWithoutUsingAttempts() {
+        OutboxEventEntity interruptedSend = event(1L, "1");
+        OutboxEventEntity otherOrder = event(2L, "2");
+        OutboxEventPublisher publisher = newPublisher(10, Duration.ofSeconds(5));
+        Mockito.when(orderEventOutboxService.claimNextBatch()).thenReturn(List.of(interruptedSend, otherOrder));
+        Mockito.when(kafkaTemplate.send(interruptedSend.topic(), interruptedSend.eventKey(), interruptedSend.payload()))
+                .thenAnswer(invocation -> {
+                    throw new InterruptException("Interrupted while waiting for topic metadata");
+                });
+
+        boolean interruptedAfterRun;
+        try {
+            publisher.publishPendingEvents();
+        } finally {
+            interruptedAfterRun = Thread.interrupted();
+        }
+
+        Assertions.assertTrue(interruptedAfterRun);
+        Mockito.verify(kafkaTemplate, Mockito.never()).send(otherOrder.topic(), otherOrder.eventKey(), otherOrder.payload());
+        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(1L, 2L));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
+        Mockito.verify(orderEventOutboxService, Mockito.times(1)).claimNextBatch();
+    }
+
+
+    @Test
+    void publishPendingEvents_whenRecordingAnOutcomeFails_shouldStillRecordTheOthers() {
+        OutboxEventEntity acknowledged = event(1L, "1");
+        OutboxEventEntity rejected = event(2L, "2");
+        OutboxEventEntity laterWithSameKey = event(3L, "2");
+        OutboxEventPublisher publisher = newPublisher(10, Duration.ofSeconds(5));
+        Mockito.when(orderEventOutboxService.claimNextBatch())
+                .thenReturn(List.of(acknowledged, rejected, laterWithSameKey));
+        Mockito.when(kafkaTemplate.send(acknowledged.topic(), acknowledged.eventKey(), acknowledged.payload()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        Mockito.when(kafkaTemplate.send(rejected.topic(), rejected.eventKey(), rejected.payload()))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("Record rejected")));
+        Mockito.doThrow(new IllegalStateException("Database unavailable"))
+                .when(orderEventOutboxService).markPublished(List.of(1L));
+
+        IllegalStateException failure = Assertions.assertThrows(
+                IllegalStateException.class,
+                publisher::publishPendingEvents
+        );
+
+        Assertions.assertEquals("Database unavailable", failure.getMessage());
+        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(2L), Mockito.contains("Record rejected"));
+        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(3L));
+    }
+
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void constructor_whenClaimTimeoutDoesNotCoverProducerMaxBlock_shouldWarn(CapturedOutput output) {
+        Mockito.when(kafkaTemplate.getProducerFactory()).thenReturn(
+                new DefaultKafkaProducerFactory<>(Map.of(ProducerConfig.MAX_BLOCK_MS_CONFIG, "5000")),
+                new DefaultKafkaProducerFactory<>(Map.of(ProducerConfig.MAX_BLOCK_MS_CONFIG, "60000"))
+        );
+
+        newPublisher(10, Duration.ofSeconds(12));
+
+        Assertions.assertFalse(output.getAll().contains("app.outbox.claim-timeout"));
+
+        newPublisher(10, Duration.ofSeconds(12));
+
+        Assertions.assertTrue(output.getAll().contains("max.block.ms (PT1M)"));
     }
 
 

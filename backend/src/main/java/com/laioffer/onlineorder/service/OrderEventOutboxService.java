@@ -160,6 +160,26 @@ public class OrderEventOutboxService {
     }
 
 
+    /**
+     * Returns claimed events whose send failed for a transient reason, such as a Kafka outage, to PENDING without
+     * counting the claim as an attempt, and records the error.
+     */
+    @Transactional
+    public void releaseFailedClaims(List<Long> eventIds, String lastError) {
+        if (eventIds.isEmpty()) {
+            return;
+        }
+
+        outboxEventRepository.releaseFailedClaims(
+                eventIds,
+                OUTBOX_STATUS_PROCESSING,
+                OUTBOX_STATUS_PENDING,
+                LocalDateTime.now(),
+                abbreviate(lastError)
+        );
+    }
+
+
     @Transactional
     public void markRetryableFailure(Long eventId, String lastError) {
         LocalDateTime now = LocalDateTime.now();

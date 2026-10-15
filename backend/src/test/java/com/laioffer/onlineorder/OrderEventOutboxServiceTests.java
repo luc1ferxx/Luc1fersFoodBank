@@ -144,6 +144,25 @@ class OrderEventOutboxServiceTests {
 
 
     @Test
+    void releaseFailedClaims_shouldReturnProcessingEventsToPendingWithAbbreviatedError() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+
+        service.releaseFailedClaims(List.of(4L, 5L), "x".repeat(1200));
+        service.releaseFailedClaims(List.of(), "Kafka unavailable");
+
+        Mockito.verify(repository, Mockito.times(1)).releaseFailedClaims(
+                Mockito.eq(List.of(4L, 5L)),
+                Mockito.eq("PROCESSING"),
+                Mockito.eq("PENDING"),
+                Mockito.any(LocalDateTime.class),
+                Mockito.eq("x".repeat(1000))
+        );
+        Mockito.verifyNoMoreInteractions(repository);
+    }
+
+
+    @Test
     void markRetryableFailure_whenAttemptsReachMax_shouldMarkFailed() {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
         OrderEventOutboxService service = new OrderEventOutboxService(

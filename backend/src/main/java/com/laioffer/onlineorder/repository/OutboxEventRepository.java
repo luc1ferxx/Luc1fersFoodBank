@@ -108,6 +108,29 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
     int releaseClaims(List<Long> ids, String processingStatus, String pendingStatus, LocalDateTime updatedAt);
 
 
+    /**
+     * Returns claimed events whose send failed for a transient reason to PENDING, gives back the attempt the claim
+     * counted and records the error. Rows that are no longer PROCESSING are left alone.
+     */
+    @Modifying
+    @Query("""
+            UPDATE outbox_events
+            SET status = :pendingStatus,
+                attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+                updated_at = :updatedAt,
+                last_error = :lastError
+            WHERE id IN (:ids)
+              AND status = :processingStatus
+            """)
+    int releaseFailedClaims(
+            List<Long> ids,
+            String processingStatus,
+            String pendingStatus,
+            LocalDateTime updatedAt,
+            String lastError
+    );
+
+
     @Modifying
     @Query("""
             UPDATE outbox_events
