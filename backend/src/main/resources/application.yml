@@ -47,7 +47,7 @@ spring:
         request.timeout.ms: ${KAFKA_PRODUCER_REQUEST_TIMEOUT_MS:5000}
         # Upper bound for reporting success or failure of a record after send() returns. Kafka requires
         # delivery.timeout.ms >= linger.ms + request.timeout.ms, and app.kafka.publish-timeout must stay
-        # >= this value so the outbox does not give up on a record the producer may still deliver.
+        # >= max.block.ms + this value so the outbox does not give up on a record the producer may still deliver.
         delivery.timeout.ms: ${KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS:10000}
     consumer:
       group-id: ${KAFKA_CONSUMER_GROUP:onlineorder}
@@ -130,8 +130,8 @@ app:
     partitions: ${KAFKA_ORDER_TOPIC_PARTITIONS:3}
     replicas: ${KAFKA_ORDER_TOPIC_REPLICAS:1}
     # Batch-wide deadline for the outbox publisher's Kafka acks; must stay >= the producer's
-    # delivery.timeout.ms (10s).
-    publish-timeout: ${KAFKA_PUBLISH_TIMEOUT:12s}
+    # max.block.ms + delivery.timeout.ms (5s + 10s), and below app.outbox.claim-timeout.
+    publish-timeout: ${KAFKA_PUBLISH_TIMEOUT:15s}
     # One consumer thread per partition for the order topic and its DLT; extra threads would sit idle.
     listener-concurrency: ${KAFKA_LISTENER_CONCURRENCY:${KAFKA_ORDER_TOPIC_PARTITIONS:3}}
     listener-retries: ${KAFKA_LISTENER_RETRIES:3}
@@ -167,6 +167,8 @@ app:
     processed-event-retention: ${CLEANUP_PROCESSED_EVENT_RETENTION:14d}
     idempotency-retention: ${CLEANUP_IDEMPOTENCY_RETENTION:3d}
     dead-letter-retention: ${CLEANUP_DEAD_LETTER_RETENTION:30d}
+    # Rows per DELETE statement; each statement must finish well within the pool's statement_timeout.
+    batch-size: ${CLEANUP_BATCH_SIZE:5000}
   security:
     rate-limit:
       enabled: ${SECURITY_RATE_LIMIT_ENABLED:true}

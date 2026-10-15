@@ -170,8 +170,14 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
     @Modifying
     @Query("""
             DELETE FROM outbox_events
-            WHERE status = :status
-              AND published_at < :publishedBefore
+            WHERE id IN (
+                SELECT id
+                FROM outbox_events
+                WHERE status = :status
+                  AND published_at < :publishedBefore
+                ORDER BY id
+                LIMIT :batchSize
+            )
             """)
-    int deleteByStatusAndPublishedAtBefore(String status, LocalDateTime publishedBefore);
+    int deleteByStatusAndPublishedAtBefore(String status, LocalDateTime publishedBefore, int batchSize);
 }

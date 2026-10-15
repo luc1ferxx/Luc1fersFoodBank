@@ -48,7 +48,13 @@ public interface ProcessedEventRepository extends ListCrudRepository<ProcessedEv
     @Modifying
     @Query("""
             DELETE FROM processed_events
-            WHERE processed_at < :processedBefore
+            WHERE id IN (
+                SELECT id
+                FROM processed_events
+                WHERE processed_at < :processedBefore
+                ORDER BY id
+                LIMIT :batchSize
+            )
             """)
-    int deleteByProcessedAtBefore(LocalDateTime processedBefore);
+    int deleteByProcessedAtBefore(LocalDateTime processedBefore, int batchSize);
 }

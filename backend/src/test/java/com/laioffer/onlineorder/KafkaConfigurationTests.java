@@ -83,10 +83,18 @@ class KafkaConfigurationTests {
             Duration publishTimeout = Binder.get(context.getEnvironment())
                     .bind("app.kafka.publish-timeout", Duration.class)
                     .get();
-            Assertions.assertEquals(Duration.ofSeconds(12), publishTimeout);
+            Assertions.assertEquals(Duration.ofSeconds(15), publishTimeout);
+            // The first send of a batch can block for max.block.ms before delivery.timeout.ms starts.
             Assertions.assertTrue(
-                    publishTimeout.toMillis() >= deliveryTimeoutMs,
+                    publishTimeout.toMillis() >= parsed.getLong(ProducerConfig.MAX_BLOCK_MS_CONFIG) + deliveryTimeoutMs,
                     "The outbox must not give up on a record the producer may still deliver"
+            );
+            Duration claimTimeout = Binder.get(context.getEnvironment())
+                    .bind("app.outbox.claim-timeout", Duration.class)
+                    .get();
+            Assertions.assertTrue(
+                    claimTimeout.compareTo(publishTimeout.plusMillis(parsed.getLong(ProducerConfig.MAX_BLOCK_MS_CONFIG))) > 0,
+                    "A batch must finish before its claims expire and are handed to another publisher"
             );
         });
     }
@@ -179,6 +187,27 @@ class KafkaConfigurationTests {
 
                     // Once the transient retry budget is spent, the event still goes to the DLT.
                     Assertions.assertTrue(handleUntilRecovered(errorHandler, poolExhausted, consumer, 100) > 0);
+                    Mockito.verify(kafkaTemplate).send(Mockito.<ProducerRecord<String, String>>any());
+                });
+    }
+
+
+    @Test
+    // Spring Kafka recovers right away when the default backoff allows no retries, so the transient backoff
+    // function never runs; application.yml documents KAFKA_LISTENER_RETRIES=0 as the off switch.
+    void orderListener_shouldDeadLetterTransientFailuresRightAwayWhenRetriesAreDisabled() {
+        KafkaTemplate<String, String> kafkaTemplate = deadLetterTemplate();
+        contextRunner
+                .withBean(KafkaTemplate.class, () -> kafkaTemplate)
+                .withPropertyValues("KAFKA_LISTENER_RETRIES=0", "KAFKA_LISTENER_BACKOFF=1ms")
+                .run(context -> {
+                    CommonErrorHandler errorHandler = orderEventErrorHandler(context);
+                    Exception poolExhausted = listenerFailure(new CannotCreateTransactionException(
+                            "Could not open JDBC Connection for transaction",
+                            new SQLTransientConnectionException("onlineorder-db - Connection is not available, request timed out after 2000ms.")
+                    ));
+
+                    Assertions.assertEquals(1, handleUntilRecovered(errorHandler, poolExhausted, Mockito.mock(Consumer.class), 100));
                     Mockito.verify(kafkaTemplate).send(Mockito.<ProducerRecord<String, String>>any());
                 });
     }

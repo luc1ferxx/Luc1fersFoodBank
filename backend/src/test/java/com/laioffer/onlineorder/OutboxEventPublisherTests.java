@@ -649,11 +649,11 @@ class OutboxEventPublisherTests {
                 new DefaultKafkaProducerFactory<>(Map.of(ProducerConfig.MAX_BLOCK_MS_CONFIG, "60000"))
         );
 
-        newPublisher(10, Duration.ofSeconds(12));
+        newPublisher(10, Duration.ofSeconds(15));
 
         Assertions.assertFalse(output.getAll().contains("app.outbox.claim-timeout"));
 
-        newPublisher(10, Duration.ofSeconds(12));
+        newPublisher(10, Duration.ofSeconds(15));
 
         Assertions.assertTrue(output.getAll().contains("max.block.ms (PT1M)"));
     }

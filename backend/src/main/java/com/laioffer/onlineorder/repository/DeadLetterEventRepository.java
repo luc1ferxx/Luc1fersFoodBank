@@ -65,8 +65,14 @@ public interface DeadLetterEventRepository extends ListCrudRepository<DeadLetter
     @Modifying
     @Query("""
             DELETE FROM dead_letter_events
-            WHERE replay_status = :replayStatus
-              AND updated_at < :updatedBefore
+            WHERE id IN (
+                SELECT id
+                FROM dead_letter_events
+                WHERE replay_status = :replayStatus
+                  AND updated_at < :updatedBefore
+                ORDER BY id
+                LIMIT :batchSize
+            )
             """)
-    int deleteByReplayStatusAndUpdatedAtBefore(String replayStatus, LocalDateTime updatedBefore);
+    int deleteByReplayStatusAndUpdatedAtBefore(String replayStatus, LocalDateTime updatedBefore, int batchSize);
 }

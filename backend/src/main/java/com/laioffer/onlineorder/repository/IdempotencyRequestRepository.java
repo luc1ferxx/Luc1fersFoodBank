@@ -76,7 +76,13 @@ public interface IdempotencyRequestRepository extends ListCrudRepository<Idempot
     @Modifying
     @Query("""
             DELETE FROM idempotency_requests
-            WHERE updated_at < :updatedBefore
+            WHERE id IN (
+                SELECT id
+                FROM idempotency_requests
+                WHERE updated_at < :updatedBefore
+                ORDER BY id
+                LIMIT :batchSize
+            )
             """)
-    int deleteByUpdatedAtBefore(LocalDateTime updatedBefore);
+    int deleteByUpdatedAtBefore(LocalDateTime updatedBefore, int batchSize);
 }

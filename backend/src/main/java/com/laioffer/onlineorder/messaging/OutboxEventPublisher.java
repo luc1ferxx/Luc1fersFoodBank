@@ -99,7 +99,7 @@ public class OutboxEventPublisher {
     @Autowired
     public OutboxEventPublisher(
             KafkaTemplate<String, String> kafkaTemplate,
-            @Value("${app.kafka.publish-timeout:12s}") Duration publishTimeout,
+            @Value("${app.kafka.publish-timeout:15s}") Duration publishTimeout,
             @Value("${app.outbox.batch-size:200}") int batchSize,
             @Value("${app.outbox.publish-interval:500ms}") Duration publishInterval,
             @Value("${app.outbox.claim-timeout:30s}") Duration claimTimeout,

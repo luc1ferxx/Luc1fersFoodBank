@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.function.IntUnaryOperator;
 
 
 @Service
@@ -28,6 +29,7 @@ public class MaintenanceCleanupService {
     private final Duration processedEventRetention;
     private final Duration idempotencyRetention;
     private final Duration deadLetterRetention;
+    private final int batchSize;
     private final OutboxEventRepository outboxEventRepository;
     private final ProcessedEventRepository processedEventRepository;
     private final IdempotencyRequestRepository idempotencyRequestRepository;
@@ -40,6 +42,7 @@ public class MaintenanceCleanupService {
             @Value("${app.cleanup.processed-event-retention:14d}") Duration processedEventRetention,
             @Value("${app.cleanup.idempotency-retention:3d}") Duration idempotencyRetention,
             @Value("${app.cleanup.dead-letter-retention:30d}") Duration deadLetterRetention,
+            @Value("${app.cleanup.batch-size:5000}") int batchSize,
             OutboxEventRepository outboxEventRepository,
             ProcessedEventRepository processedEventRepository,
             IdempotencyRequestRepository idempotencyRequestRepository,
@@ -50,6 +53,7 @@ public class MaintenanceCleanupService {
         this.processedEventRetention = processedEventRetention;
         this.idempotencyRetention = idempotencyRetention;
         this.deadLetterRetention = deadLetterRetention;
+        this.batchSize = Math.max(1, batchSize);
         this.outboxEventRepository = outboxEventRepository;
         this.processedEventRepository = processedEventRepository;
         this.idempotencyRequestRepository = idempotencyRequestRepository;
@@ -67,16 +71,28 @@ public class MaintenanceCleanupService {
         }
 
         LocalDateTime now = LocalDateTime.now();
-        int deletedOutbox = outboxEventRepository.deleteByStatusAndPublishedAtBefore(
+        LocalDateTime outboxCutoff = now.minus(outboxRetention);
+        LocalDateTime processedCutoff = now.minus(processedEventRetention);
+        LocalDateTime idempotencyCutoff = now.minus(idempotencyRetention);
+        LocalDateTime deadLetterCutoff = now.minus(deadLetterRetention);
+        int deletedOutbox = deleteInBatches(limit -> outboxEventRepository.deleteByStatusAndPublishedAtBefore(
                 OUTBOX_STATUS_PUBLISHED,
-                now.minus(outboxRetention)
-        );
-        int deletedProcessed = processedEventRepository.deleteByProcessedAtBefore(now.minus(processedEventRetention));
-        int deletedIdempotency = idempotencyRequestRepository.deleteByUpdatedAtBefore(now.minus(idempotencyRetention));
-        int deletedDeadLetters = deadLetterEventRepository.deleteByReplayStatusAndUpdatedAtBefore(
+                outboxCutoff,
+                limit
+        ));
+        int deletedProcessed = deleteInBatches(limit -> processedEventRepository.deleteByProcessedAtBefore(
+                processedCutoff,
+                limit
+        ));
+        int deletedIdempotency = deleteInBatches(limit -> idempotencyRequestRepository.deleteByUpdatedAtBefore(
+                idempotencyCutoff,
+                limit
+        ));
+        int deletedDeadLetters = deleteInBatches(limit -> deadLetterEventRepository.deleteByReplayStatusAndUpdatedAtBefore(
                 DEAD_LETTER_STATUS_REPLAYED,
-                now.minus(deadLetterRetention)
-        );
+                deadLetterCutoff,
+                limit
+        ));
 
         LOGGER.info(
                 "Maintenance cleanup finished: outbox={}, processed_events={}, idempotency_requests={}, dead_letters={}",
@@ -85,5 +101,21 @@ public class MaintenanceCleanupService {
                 deletedIdempotency,
                 deletedDeadLetters
         );
+    }
+
+
+    /**
+     * Deletes in short statements of at most batch-size rows, so a large backlog neither runs into the pool's
+     * statement_timeout nor holds its row locks in one long transaction.
+     */
+    private int deleteInBatches(IntUnaryOperator deleteBatch) {
+        int deleted = 0;
+        while (true) {
+            int deletedInBatch = deleteBatch.applyAsInt(batchSize);
+            deleted += deletedInBatch;
+            if (deletedInBatch < batchSize || Thread.currentThread().isInterrupted()) {
+                return deleted;
+            }
+        }
     }
 }
