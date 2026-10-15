@@ -13,6 +13,14 @@ import java.time.LocalDateTime;
 public interface ProcessedEventRepository extends ListCrudRepository<ProcessedEventEntity, Long> {
 
 
+    /**
+     * Inserts the row unless (consumer_name, dedup_key) is already present and returns the rows inserted: 1 or 0.
+     * <p>
+     * The ON CONFLICT clause deliberately names no conflict target. H2 in PostgreSQL mode (the {@code h2}
+     * profile) only parses the target-less form, and on this table the two forms are equivalent on PostgreSQL:
+     * the only unique constraint is {@code uq_processed_event_consumer_dedup} and the serial primary key cannot
+     * conflict on insert. Keep it that way if another unique constraint is ever added here.
+     */
     @Modifying
     @Query("""
             INSERT INTO processed_events (
@@ -32,7 +40,7 @@ public interface ProcessedEventRepository extends ListCrudRepository<ProcessedEv
                 :aggregateId,
                 :processedAt
             )
-            ON CONFLICT (consumer_name, dedup_key) DO NOTHING
+            ON CONFLICT DO NOTHING
             """)
     int insertIfAbsent(
             String consumerName,
