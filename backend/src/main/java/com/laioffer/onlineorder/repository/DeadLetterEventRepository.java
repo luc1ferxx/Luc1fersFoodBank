@@ -29,6 +29,53 @@ public interface DeadLetterEventRepository extends ListCrudRepository<DeadLetter
 
 
     /**
+     * The most recent dead letter stored for an event, or null. Rows stored before the event id was recorded have
+     * a NULL event id and are never matched.
+     */
+    @Query("""
+            SELECT *
+            FROM dead_letter_events
+            WHERE event_id = :eventId
+            ORDER BY id DESC
+            LIMIT 1
+            """)
+    DeadLetterEventEntity findLatestByEventId(String eventId);
+
+
+    /**
+     * Records that an event already stored as a dead letter was dead-lettered again. The new error replaces the
+     * stored one. A row whose replay was sent (REPLAYED, or REPLAYING while that replay's outcome is pending) goes
+     * to REPLAY_FAILED with {@code lastReplayError}, so the operator sees the replay did not take and the row can
+     * be replayed again; a row that was never replayed keeps its status. Attempts are left alone: no replay was
+     * attempted. The whole decision is one statement, so it cannot lose a race with the replay's own updates.
+     */
+    @Modifying
+    @Query("""
+            UPDATE dead_letter_events
+            SET error_message = :errorMessage,
+                last_replay_error = CASE
+                    WHEN replay_status IN (:replayedStatus, :replayingStatus) THEN :lastReplayError
+                    ELSE last_replay_error
+                END,
+                replay_status = CASE
+                    WHEN replay_status IN (:replayedStatus, :replayingStatus) THEN :failedStatus
+                    ELSE replay_status
+                END,
+                updated_at = :updatedAt
+            WHERE id = :id
+            """)
+    int markDeadLetteredAgain(
+            Long id,
+            String replayedStatus,
+            String replayingStatus,
+            String failedStatus,
+            String errorMessage,
+            String lastReplayError,
+            LocalDateTime updatedAt
+    );
+
+
+    /**
      * Claims a dead letter for one replay attempt: PENDING or REPLAY_FAILED becomes REPLAYING and the attempt is
      * counted here, before the send. Returns 0 when the row is in any other status, so a replay already in flight
      * (or completed) cannot be claimed a second time. A REPLAYING claim whose {@code updated_at} is at or before

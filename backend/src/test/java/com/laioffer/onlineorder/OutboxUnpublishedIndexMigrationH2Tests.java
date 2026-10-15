@@ -2,6 +2,8 @@ package com.laioffer.onlineorder;
 
 
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationInfo;
+import org.flywaydb.core.api.MigrationState;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -11,6 +13,7 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Arrays;
 import java.util.UUID;
 
 
@@ -27,7 +30,11 @@ class OutboxUnpublishedIndexMigrationH2Tests {
                     .load();
             flyway.migrate();
 
-            Assertions.assertEquals("3", flyway.info().current().getVersion().getVersion());
+            MigrationInfo version3 = Arrays.stream(flyway.info().applied())
+                    .filter(info -> "3".equals(info.getVersion().getVersion()))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("version 3 was not recorded on H2"));
+            Assertions.assertEquals(MigrationState.SUCCESS, version3.getState());
             try (Statement statement = keepAlive.createStatement();
                  ResultSet resultSet = statement.executeQuery(
                          "SELECT COUNT(*) FROM information_schema.indexes WHERE LOWER(index_name) = 'idx_outbox_events_unpublished_id'")) {

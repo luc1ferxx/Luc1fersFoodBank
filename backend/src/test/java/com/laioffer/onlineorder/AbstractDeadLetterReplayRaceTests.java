@@ -202,6 +202,7 @@ abstract class AbstractDeadLetterReplayRaceTests {
                 TOPIC,
                 "order-events.dlt",
                 KEY,
+                "evt-race",
                 PAYLOAD,
                 "processing failed",
                 "PENDING",

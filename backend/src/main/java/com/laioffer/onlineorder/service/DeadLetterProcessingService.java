@@ -13,6 +13,14 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 
 
+/**
+ * Persists records from the dead-letter topic.
+ *
+ * <p>An event envelope is identified by its event id. The first time an event is dead-lettered a row is stored;
+ * every later dead letter for the same event (a duplicate delivery, or the event failing again after an operator
+ * replayed it) updates that row instead of being dropped, so a replay that fails downstream is visible. Payloads
+ * that are not envelopes are deduplicated by content hash through the processed-events table as before.
+ */
 @Service
 public class DeadLetterProcessingService {
 
@@ -36,25 +44,27 @@ public class DeadLetterProcessingService {
 
     @Transactional
     public void handle(String sourceTopic, String deadLetterTopic, String messageKey, String payload, String errorMessage) {
-        OrderEventEnvelope envelope = tryReadEnvelope(payload);
-        if (envelope != null) {
-            if (!processedEventService.markIfUnseen(DEAD_LETTER_CONSUMER, envelope)) {
+        String eventId = eventIdOf(tryReadEnvelope(payload));
+        if (eventId != null) {
+            if (deadLetterEventService.recordAgainIfKnown(sourceTopic, eventId, errorMessage)) {
                 return;
             }
-        } else {
-            String dedupKey = "raw:" + sha256(payload);
-            if (!processedEventService.markIfUnseen(
-                    DEAD_LETTER_CONSUMER,
-                    dedupKey,
-                    null,
-                    "dead-letter",
-                    null,
-                    null
-            )) {
-                return;
-            }
+            deadLetterEventService.record(sourceTopic, deadLetterTopic, messageKey, eventId, payload, errorMessage);
+            return;
         }
-        deadLetterEventService.record(sourceTopic, deadLetterTopic, messageKey, payload, errorMessage);
+
+        String dedupKey = "raw:" + sha256(payload);
+        if (!processedEventService.markIfUnseen(
+                DEAD_LETTER_CONSUMER,
+                dedupKey,
+                null,
+                "dead-letter",
+                null,
+                null
+        )) {
+            return;
+        }
+        deadLetterEventService.record(sourceTopic, deadLetterTopic, messageKey, null, payload, errorMessage);
     }
 
 
@@ -64,6 +74,14 @@ public class DeadLetterProcessingService {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+
+    private String eventIdOf(OrderEventEnvelope envelope) {
+        if (envelope == null || envelope.eventId() == null || envelope.eventId().isBlank()) {
+            return null;
+        }
+        return envelope.eventId().trim();
     }
 
 

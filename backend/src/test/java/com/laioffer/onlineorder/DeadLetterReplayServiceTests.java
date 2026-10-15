@@ -385,6 +385,7 @@ class DeadLetterReplayServiceTests {
                 sourceTopic,
                 "order-events.dlt",
                 KEY,
+                "evt-7",
                 PAYLOAD,
                 "processing failed",
                 replayStatus,

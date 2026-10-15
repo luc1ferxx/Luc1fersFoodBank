@@ -20,6 +20,8 @@ public record DeadLetterEventEntity(
         String deadLetterTopic,
         @Column("message_key")
         String messageKey,
+        @Column("event_id")
+        String eventId,
         @Column("payload")
         String payload,
         @Column("error_message")
