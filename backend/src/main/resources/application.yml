@@ -159,6 +159,10 @@ app:
     failure-backoff-max: ${OUTBOX_FAILURE_BACKOFF_MAX:60s}
   dlt:
     replay-timeout: ${DLT_REPLAY_TIMEOUT:5s}
+    # A replay claim (REPLAYING) that was never resolved, because the process died or the database was
+    # unreachable after the send, can be claimed again once it is this old. Must exceed the longest
+    # possible send: the producer's max.block.ms (5s) plus replay-timeout.
+    replay-claim-timeout: ${DLT_REPLAY_CLAIM_TIMEOUT:30s}
   cleanup:
     enabled: ${CLEANUP_ENABLED:true}
     fixed-delay-ms: ${CLEANUP_FIXED_DELAY_MS:3600000}

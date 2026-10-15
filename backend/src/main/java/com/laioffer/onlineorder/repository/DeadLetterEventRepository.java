@@ -31,26 +31,38 @@ public interface DeadLetterEventRepository extends ListCrudRepository<DeadLetter
     /**
      * Claims a dead letter for one replay attempt: PENDING or REPLAY_FAILED becomes REPLAYING and the attempt is
      * counted here, before the send. Returns 0 when the row is in any other status, so a replay already in flight
-     * (or completed) cannot be claimed a second time.
+     * (or completed) cannot be claimed a second time. A REPLAYING claim whose {@code updated_at} is at or before
+     * {@code staleBefore} was never resolved (the replay crashed or could not reach the database after its send)
+     * and may be claimed again.
+     *
+     * <p>{@code claimedAt} becomes the row's {@code updated_at} and identifies this claim: the mark queries below
+     * only touch the row while it still carries it.
      */
     @Modifying
     @Query("""
             UPDATE dead_letter_events
             SET replay_status = :replayingStatus,
                 replay_attempts = replay_attempts + 1,
-                updated_at = :updatedAt
+                updated_at = :claimedAt
             WHERE id = :id
-              AND replay_status IN (:pendingStatus, :failedStatus)
+              AND (replay_status IN (:pendingStatus, :failedStatus)
+                   OR (replay_status = :replayingStatus AND updated_at <= :staleBefore))
             """)
     int claimForReplay(
             Long id,
             String replayingStatus,
             String pendingStatus,
             String failedStatus,
-            LocalDateTime updatedAt
+            LocalDateTime staleBefore,
+            LocalDateTime claimedAt
     );
 
 
+    /**
+     * Records a successful replay for the claim identified by {@code claimedStatus} and {@code claimedAt}. Returns
+     * 0 when the row no longer belongs to that claim (it was dead-lettered again, or claimed by a later replay after
+     * the claim went stale); the row is then left as it is.
+     */
     @Modifying
     @Query("""
             UPDATE dead_letter_events
@@ -59,10 +71,23 @@ public interface DeadLetterEventRepository extends ListCrudRepository<DeadLetter
                 updated_at = :updatedAt,
                 last_replay_error = NULL
             WHERE id = :id
+              AND replay_status = :claimedStatus
+              AND updated_at = :claimedAt
             """)
-    void markReplayed(Long id, String replayStatus, LocalDateTime replayedAt, LocalDateTime updatedAt);
+    int markReplayed(
+            Long id,
+            String replayStatus,
+            String claimedStatus,
+            LocalDateTime claimedAt,
+            LocalDateTime replayedAt,
+            LocalDateTime updatedAt
+    );
 
 
+    /**
+     * Records a failed replay for the claim identified by {@code claimedStatus} and {@code claimedAt}. Returns 0
+     * when the row no longer belongs to that claim, so a late failure can never overwrite a later replay's result.
+     */
     @Modifying
     @Query("""
             UPDATE dead_letter_events
@@ -70,8 +95,17 @@ public interface DeadLetterEventRepository extends ListCrudRepository<DeadLetter
                 updated_at = :updatedAt,
                 last_replay_error = :lastReplayError
             WHERE id = :id
+              AND replay_status = :claimedStatus
+              AND updated_at = :claimedAt
             """)
-    void markReplayFailed(Long id, String replayStatus, LocalDateTime updatedAt, String lastReplayError);
+    int markReplayFailed(
+            Long id,
+            String replayStatus,
+            String claimedStatus,
+            LocalDateTime claimedAt,
+            LocalDateTime updatedAt,
+            String lastReplayError
+    );
 
 
     @Modifying

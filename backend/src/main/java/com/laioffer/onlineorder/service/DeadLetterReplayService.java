@@ -22,6 +22,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.concurrent.TimeUnit;
 
 
@@ -32,6 +33,12 @@ import java.util.concurrent.TimeUnit;
  * claims the row (PENDING or REPLAY_FAILED to REPLAYING, counting the attempt), the send runs with no transaction or
  * row lock held, and a second short transaction records REPLAYED or REPLAY_FAILED. Holding a {@code FOR UPDATE} lock
  * and a pooled connection across the send pinned both for the whole replay timeout whenever Kafka was slow.
+ *
+ * <p>Every update after the claim is a compare-and-set on the claim itself (status REPLAYING and the claim
+ * timestamp), so a replay whose outcome arrives late cannot overwrite what a later replay recorded. A claim that is
+ * never resolved, because the process died or the database was unreachable after the send, can be claimed again
+ * once it is older than {@code app.dlt.replay-claim-timeout}; that timeout must exceed the longest possible send
+ * (the producer's max.block.ms plus {@code app.dlt.replay-timeout}).
  */
 @Service
 @ConditionalOnProperty(name = "app.kafka.enabled", havingValue = "true", matchIfMissing = true)
@@ -45,6 +52,7 @@ public class DeadLetterReplayService {
     private static final Logger LOGGER = LoggerFactory.getLogger(DeadLetterReplayService.class);
 
     private final Duration replayTimeout;
+    private final Duration replayClaimTimeout;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final DeadLetterEventRepository deadLetterEventRepository;
     private final ApplicationMetricsService metricsService;
@@ -54,23 +62,39 @@ public class DeadLetterReplayService {
     @Autowired
     public DeadLetterReplayService(
             @Value("${app.dlt.replay-timeout:5s}") Duration replayTimeout,
+            @Value("${app.dlt.replay-claim-timeout:30s}") Duration replayClaimTimeout,
             KafkaTemplate<String, String> kafkaTemplate,
             DeadLetterEventRepository deadLetterEventRepository,
             ApplicationMetricsService metricsService,
             PlatformTransactionManager transactionManager
     ) {
-        this(replayTimeout, kafkaTemplate, deadLetterEventRepository, metricsService, new TransactionTemplate(transactionManager));
+        this(
+                replayTimeout,
+                replayClaimTimeout,
+                kafkaTemplate,
+                deadLetterEventRepository,
+                metricsService,
+                new TransactionTemplate(transactionManager)
+        );
     }
 
 
     public DeadLetterReplayService(
             Duration replayTimeout,
+            Duration replayClaimTimeout,
             KafkaTemplate<String, String> kafkaTemplate,
             DeadLetterEventRepository deadLetterEventRepository,
             ApplicationMetricsService metricsService,
             TransactionOperations transactionOperations
     ) {
+        if (replayClaimTimeout.compareTo(replayTimeout) <= 0) {
+            throw new IllegalArgumentException(
+                    "app.dlt.replay-claim-timeout (" + replayClaimTimeout + ") must exceed app.dlt.replay-timeout ("
+                            + replayTimeout + ") plus the producer's max.block.ms, or a slow replay could be claimed twice"
+            );
+        }
         this.replayTimeout = replayTimeout;
+        this.replayClaimTimeout = replayClaimTimeout;
         this.kafkaTemplate = kafkaTemplate;
         this.deadLetterEventRepository = deadLetterEventRepository;
         this.metricsService = metricsService;
@@ -93,7 +117,7 @@ public class DeadLetterReplayService {
         } catch (RuntimeException sendFailure) {
             IllegalStateException replayFailure = new IllegalStateException("Unable to replay dead-letter event", sendFailure);
             try {
-                transactionOperations.executeWithoutResult(status -> markReplayFailed(deadLetterEventId, rootMessage(sendFailure)));
+                transactionOperations.executeWithoutResult(status -> markReplayFailed(claim, rootMessage(sendFailure)));
             } catch (RuntimeException markFailure) {
                 LOGGER.warn("Unable to record the failed replay of dead-letter event {}", deadLetterEventId, markFailure);
                 replayFailure.addSuppressed(markFailure);
@@ -102,7 +126,7 @@ public class DeadLetterReplayService {
             throw replayFailure;
         }
 
-        DeadLetterEventEntity replayed = transactionOperations.execute(status -> markReplayed(deadLetterEventId));
+        DeadLetterEventEntity replayed = transactionOperations.execute(status -> markReplayed(claim));
         if (replayed == null) {
             throw new IllegalStateException("Replay transaction completed without a dead-letter event");
         }
@@ -124,12 +148,16 @@ public class DeadLetterReplayService {
             throw new BadRequestException("Dead-letter event does not have a source topic");
         }
 
+        // Millisecond precision survives the round trip through every supported database, so the stored
+        // updated_at compares equal to this value in the guarded mark queries.
+        LocalDateTime claimedAt = LocalDateTime.now().truncatedTo(ChronoUnit.MILLIS);
         int claimed = deadLetterEventRepository.claimForReplay(
                 deadLetterEventId,
                 REPLAY_STATUS_REPLAYING,
                 REPLAY_STATUS_PENDING,
                 REPLAY_STATUS_REPLAY_FAILED,
-                LocalDateTime.now()
+                claimedAt.minus(replayClaimTimeout),
+                claimedAt
         );
         if (claimed == 0) {
             DeadLetterEventEntity current = deadLetterEventRepository.findById(deadLetterEventId)
@@ -144,8 +172,11 @@ public class DeadLetterReplayService {
                     "Dead-letter event cannot be replayed from replay status " + current.replayStatus()
             );
         }
-        return Claim.claimed(deadLetterEventRepository.findById(deadLetterEventId)
-                .orElseThrow(() -> new ResourceNotFoundException("Dead-letter event not found after claim")));
+        return Claim.claimed(
+                deadLetterEventRepository.findById(deadLetterEventId)
+                        .orElseThrow(() -> new ResourceNotFoundException("Dead-letter event not found after claim")),
+                claimedAt
+        );
     }
 
 
@@ -166,21 +197,45 @@ public class DeadLetterReplayService {
     }
 
 
-    private DeadLetterEventEntity markReplayed(Long deadLetterEventId) {
+    private DeadLetterEventEntity markReplayed(Claim claim) {
+        Long deadLetterEventId = claim.event().id();
         LocalDateTime now = LocalDateTime.now();
-        deadLetterEventRepository.markReplayed(deadLetterEventId, REPLAY_STATUS_REPLAYED, now, now);
+        int updated = deadLetterEventRepository.markReplayed(
+                deadLetterEventId,
+                REPLAY_STATUS_REPLAYED,
+                REPLAY_STATUS_REPLAYING,
+                claim.claimedAt(),
+                now,
+                now
+        );
+        if (updated == 0) {
+            LOGGER.warn(
+                    "Dead-letter event {} was replayed but no longer belongs to this claim; leaving its current status",
+                    deadLetterEventId
+            );
+        }
         return deadLetterEventRepository.findById(deadLetterEventId)
                 .orElseThrow(() -> new ResourceNotFoundException("Dead-letter event not found after replay"));
     }
 
 
-    private void markReplayFailed(Long deadLetterEventId, String errorMessage) {
-        deadLetterEventRepository.markReplayFailed(
+    private void markReplayFailed(Claim claim, String errorMessage) {
+        Long deadLetterEventId = claim.event().id();
+        int updated = deadLetterEventRepository.markReplayFailed(
                 deadLetterEventId,
                 REPLAY_STATUS_REPLAY_FAILED,
+                REPLAY_STATUS_REPLAYING,
+                claim.claimedAt(),
                 LocalDateTime.now(),
                 abbreviate(errorMessage)
         );
+        if (updated == 0) {
+            LOGGER.warn(
+                    "Replay of dead-letter event {} failed ({}) but the row no longer belongs to this claim; leaving its current status",
+                    deadLetterEventId,
+                    errorMessage
+            );
+        }
     }
 
 
@@ -213,15 +268,15 @@ public class DeadLetterReplayService {
     }
 
 
-    private record Claim(boolean claimed, DeadLetterEventEntity event) {
+    private record Claim(boolean claimed, DeadLetterEventEntity event, LocalDateTime claimedAt) {
 
-        static Claim claimed(DeadLetterEventEntity event) {
-            return new Claim(true, event);
+        static Claim claimed(DeadLetterEventEntity event, LocalDateTime claimedAt) {
+            return new Claim(true, event, claimedAt);
         }
 
 
         static Claim alreadyReplayed(DeadLetterEventEntity event) {
-            return new Claim(false, event);
+            return new Claim(false, event, null);
         }
     }
 }

@@ -12,6 +12,7 @@ import com.laioffer.onlineorder.service.DeadLetterReplayService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -61,27 +62,129 @@ class DeadLetterReplayServiceTests {
                 Mockito.eq("REPLAYING"),
                 Mockito.eq("PENDING"),
                 Mockito.eq("REPLAY_FAILED"),
+                Mockito.any(LocalDateTime.class),
                 Mockito.any(LocalDateTime.class)
         )).thenReturn(1);
         Mockito.when(kafkaTemplate.send(TOPIC, KEY, PAYLOAD)).thenReturn(CompletableFuture.completedFuture(null));
+        Mockito.when(deadLetterEventRepository.markReplayed(
+                Mockito.eq(7L),
+                Mockito.eq("REPLAYED"),
+                Mockito.eq("REPLAYING"),
+                Mockito.any(LocalDateTime.class),
+                Mockito.any(LocalDateTime.class),
+                Mockito.any(LocalDateTime.class)
+        )).thenReturn(1);
 
         DeadLetterReplayDto dto = service.replay(7L);
 
         Assertions.assertEquals("REPLAYED", dto.replayStatus());
         Assertions.assertEquals(1, dto.replayAttempts());
         Mockito.verify(metricsService).recordDeadLetterReplay(true);
-        Mockito.verify(deadLetterEventRepository).markReplayed(
-                Mockito.eq(7L),
-                Mockito.eq("REPLAYED"),
-                Mockito.any(LocalDateTime.class),
-                Mockito.any(LocalDateTime.class)
-        );
         Mockito.verify(deadLetterEventRepository, Mockito.never()).markReplayFailed(
-                Mockito.anyLong(),
-                Mockito.anyString(),
-                Mockito.any(LocalDateTime.class),
-                Mockito.anyString()
+                Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class), Mockito.anyString()
         );
+    }
+
+
+    @Test
+    void replay_shouldGuardTheClaimWithTheTimestampItWrote() {
+        DeadLetterEventEntity pending = buildEvent("PENDING", 0, null, null, TOPIC);
+        DeadLetterEventEntity claimed = buildEvent("REPLAYING", 1, null, null, TOPIC);
+        DeadLetterEventEntity replayed = buildEvent("REPLAYED", 1, LocalDateTime.of(2026, 4, 4, 12, 5), null, TOPIC);
+        DeadLetterReplayService service = service(new RecordingTransactions());
+        ArgumentCaptor<LocalDateTime> claimedAt = ArgumentCaptor.forClass(LocalDateTime.class);
+        ArgumentCaptor<LocalDateTime> staleBefore = ArgumentCaptor.forClass(LocalDateTime.class);
+        ArgumentCaptor<LocalDateTime> guardedAt = ArgumentCaptor.forClass(LocalDateTime.class);
+
+        Mockito.when(deadLetterEventRepository.findById(7L))
+                .thenReturn(Optional.of(pending), Optional.of(claimed), Optional.of(replayed));
+        Mockito.when(deadLetterEventRepository.claimForReplay(
+                Mockito.eq(7L), Mockito.eq("REPLAYING"), Mockito.eq("PENDING"), Mockito.eq("REPLAY_FAILED"),
+                staleBefore.capture(), claimedAt.capture()
+        )).thenReturn(1);
+        Mockito.when(kafkaTemplate.send(TOPIC, KEY, PAYLOAD)).thenReturn(CompletableFuture.completedFuture(null));
+        Mockito.when(deadLetterEventRepository.markReplayed(
+                Mockito.eq(7L), Mockito.eq("REPLAYED"), Mockito.eq("REPLAYING"), guardedAt.capture(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
+        )).thenReturn(1);
+
+        service.replay(7L);
+
+        Assertions.assertEquals(claimedAt.getValue(), guardedAt.getValue(), "the mark must be fenced on the claim timestamp");
+        Assertions.assertEquals(claimedAt.getValue().minusSeconds(30), staleBefore.getValue());
+        Assertions.assertEquals(0, claimedAt.getValue().getNano() % 1_000_000, "the claim timestamp is millisecond precise");
+    }
+
+
+    @Test
+    void replay_shouldReturnTheCurrentRowWhenTheClaimNoLongerBelongsToItAfterASuccessfulSend() {
+        DeadLetterEventEntity pending = buildEvent("PENDING", 0, null, null, TOPIC);
+        DeadLetterEventEntity claimed = buildEvent("REPLAYING", 1, null, null, TOPIC);
+        DeadLetterEventEntity deadLetteredAgain = buildEvent("REPLAY_FAILED", 1, LocalDateTime.of(2026, 4, 4, 12, 5), "failed again", TOPIC);
+        DeadLetterReplayService service = service(new RecordingTransactions());
+
+        Mockito.when(deadLetterEventRepository.findById(7L))
+                .thenReturn(Optional.of(pending), Optional.of(claimed), Optional.of(deadLetteredAgain));
+        Mockito.when(deadLetterEventRepository.claimForReplay(
+                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
+        )).thenReturn(1);
+        Mockito.when(kafkaTemplate.send(TOPIC, KEY, PAYLOAD)).thenReturn(CompletableFuture.completedFuture(null));
+        Mockito.when(deadLetterEventRepository.markReplayed(
+                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
+        )).thenReturn(0);
+
+        DeadLetterReplayDto dto = service.replay(7L);
+
+        Assertions.assertEquals("REPLAY_FAILED", dto.replayStatus());
+        Assertions.assertEquals("failed again", dto.lastReplayError());
+        Mockito.verify(deadLetterEventRepository, Mockito.never()).markReplayFailed(
+                Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class), Mockito.anyString()
+        );
+    }
+
+
+    @Test
+    void replay_shouldStillFailWhenALateFailureFindsTheRowClaimedByAnotherReplay() {
+        DeadLetterEventEntity pending = buildEvent("PENDING", 0, null, null, TOPIC);
+        DeadLetterEventEntity claimed = buildEvent("REPLAYING", 1, null, null, TOPIC);
+        DeadLetterReplayService service = service(new RecordingTransactions());
+
+        Mockito.when(deadLetterEventRepository.findById(7L)).thenReturn(Optional.of(pending), Optional.of(claimed));
+        Mockito.when(deadLetterEventRepository.claimForReplay(
+                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
+        )).thenReturn(1);
+        Mockito.when(kafkaTemplate.send(TOPIC, KEY, PAYLOAD))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("Kafka unavailable")));
+        Mockito.when(deadLetterEventRepository.markReplayFailed(
+                Mockito.eq(7L), Mockito.eq("REPLAY_FAILED"), Mockito.eq("REPLAYING"),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class), Mockito.anyString()
+        )).thenReturn(0);
+
+        Assertions.assertThrows(IllegalStateException.class, () -> service.replay(7L));
+
+        Mockito.verify(metricsService).recordDeadLetterReplay(false);
+        Mockito.verify(deadLetterEventRepository, Mockito.never()).markReplayed(
+                Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
+        );
+    }
+
+
+    @Test
+    void constructor_shouldRejectAClaimTimeoutThatDoesNotExceedTheReplayTimeout() {
+        Assertions.assertThrows(IllegalArgumentException.class, () -> new DeadLetterReplayService(
+                Duration.ofSeconds(5),
+                Duration.ofSeconds(5),
+                kafkaTemplate,
+                deadLetterEventRepository,
+                metricsService,
+                new RecordingTransactions()
+        ));
     }
 
 
@@ -98,7 +201,8 @@ class DeadLetterReplayServiceTests {
         Mockito.when(deadLetterEventRepository.findById(7L))
                 .thenReturn(Optional.of(pending), Optional.of(claimed), Optional.of(replayed));
         Mockito.when(deadLetterEventRepository.claimForReplay(
-                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(), Mockito.any(LocalDateTime.class)
+                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
         )).thenAnswer(invocation -> {
             order.add("claim");
             return 1;
@@ -108,12 +212,13 @@ class DeadLetterReplayServiceTests {
             transactionDepthDuringSend.add(transactions.depth);
             return CompletableFuture.completedFuture(null);
         });
-        Mockito.doAnswer(invocation -> {
+        Mockito.when(deadLetterEventRepository.markReplayed(
+                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
+        )).thenAnswer(invocation -> {
             order.add("markReplayed");
-            return null;
-        }).when(deadLetterEventRepository).markReplayed(
-                Mockito.eq(7L), Mockito.anyString(), Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
-        );
+            return 1;
+        });
 
         service.replay(7L);
 
@@ -134,23 +239,27 @@ class DeadLetterReplayServiceTests {
 
         Mockito.when(deadLetterEventRepository.findById(7L)).thenReturn(Optional.of(pending), Optional.of(claimed));
         Mockito.when(deadLetterEventRepository.claimForReplay(
-                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(), Mockito.any(LocalDateTime.class)
+                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
         )).thenReturn(1);
         Mockito.when(kafkaTemplate.send(TOPIC, KEY, PAYLOAD))
                 .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("Kafka unavailable")));
+        Mockito.when(deadLetterEventRepository.markReplayFailed(
+                Mockito.eq(7L),
+                Mockito.eq("REPLAY_FAILED"),
+                Mockito.eq("REPLAYING"),
+                Mockito.any(LocalDateTime.class),
+                Mockito.any(LocalDateTime.class),
+                Mockito.contains("Kafka unavailable")
+        )).thenReturn(1);
 
         IllegalStateException ex = Assertions.assertThrows(IllegalStateException.class, () -> service.replay(7L));
 
         Assertions.assertTrue(ex.getMessage().contains("Unable to replay dead-letter event"));
         Mockito.verify(metricsService).recordDeadLetterReplay(false);
-        Mockito.verify(deadLetterEventRepository).markReplayFailed(
-                Mockito.eq(7L),
-                Mockito.eq("REPLAY_FAILED"),
-                Mockito.any(LocalDateTime.class),
-                Mockito.contains("Kafka unavailable")
-        );
         Mockito.verify(deadLetterEventRepository, Mockito.never()).markReplayed(
-                Mockito.anyLong(), Mockito.anyString(), Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
+                Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
         );
         Assertions.assertEquals(2, transactions.started);
         Assertions.assertEquals(List.of("markReplayFailed"), transactions.callsIn(1));
@@ -170,10 +279,12 @@ class DeadLetterReplayServiceTests {
         Mockito.verify(metricsService).recordDeadLetterReplay(true);
         Mockito.verifyNoInteractions(kafkaTemplate);
         Mockito.verify(deadLetterEventRepository, Mockito.never()).claimForReplay(
-                Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(), Mockito.any(LocalDateTime.class)
+                Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
         );
         Mockito.verify(deadLetterEventRepository, Mockito.never()).markReplayed(
-                Mockito.anyLong(), Mockito.anyString(), Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
+                Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
         );
     }
 
@@ -186,14 +297,16 @@ class DeadLetterReplayServiceTests {
 
         Mockito.when(deadLetterEventRepository.findById(7L)).thenReturn(Optional.of(pending), Optional.of(inFlight));
         Mockito.when(deadLetterEventRepository.claimForReplay(
-                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(), Mockito.any(LocalDateTime.class)
+                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
         )).thenReturn(0);
 
         Assertions.assertThrows(ConflictException.class, () -> service.replay(7L));
 
         Mockito.verifyNoInteractions(kafkaTemplate, metricsService);
         Mockito.verify(deadLetterEventRepository, Mockito.never()).markReplayFailed(
-                Mockito.anyLong(), Mockito.anyString(), Mockito.any(LocalDateTime.class), Mockito.anyString()
+                Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class), Mockito.anyString()
         );
     }
 
@@ -206,7 +319,8 @@ class DeadLetterReplayServiceTests {
 
         Mockito.when(deadLetterEventRepository.findById(7L)).thenReturn(Optional.of(pending), Optional.of(replayed));
         Mockito.when(deadLetterEventRepository.claimForReplay(
-                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(), Mockito.any(LocalDateTime.class)
+                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
         )).thenReturn(0);
 
         DeadLetterReplayDto dto = service.replay(7L);
@@ -226,7 +340,8 @@ class DeadLetterReplayServiceTests {
         Assertions.assertThrows(BadRequestException.class, () -> service.replay(7L));
         Mockito.verifyNoInteractions(kafkaTemplate, metricsService);
         Mockito.verify(deadLetterEventRepository, Mockito.never()).claimForReplay(
-                Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(), Mockito.any(LocalDateTime.class)
+                Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
         );
     }
 
@@ -240,7 +355,8 @@ class DeadLetterReplayServiceTests {
         Assertions.assertThrows(ResourceNotFoundException.class, () -> service.replay(7L));
         Mockito.verifyNoInteractions(kafkaTemplate, metricsService);
         Mockito.verify(deadLetterEventRepository, Mockito.never()).markReplayFailed(
-                Mockito.anyLong(), Mockito.anyString(), Mockito.any(LocalDateTime.class), Mockito.anyString()
+                Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class), Mockito.anyString()
         );
     }
 
@@ -248,6 +364,7 @@ class DeadLetterReplayServiceTests {
     private DeadLetterReplayService service(TransactionOperations transactionOperations) {
         return new DeadLetterReplayService(
                 Duration.ofSeconds(5),
+                Duration.ofSeconds(30),
                 kafkaTemplate,
                 deadLetterEventRepository,
                 metricsService,
