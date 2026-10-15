@@ -101,9 +101,14 @@ class OutboxReliabilityIntegrationTests {
     @SuppressWarnings("unchecked")
     void setup() {
         kafkaTemplate = Mockito.mock(KafkaTemplate.class);
+        // A zero failure backoff lets each test retry right away instead of waiting out the pause.
         publisher = new OutboxEventPublisher(
                 kafkaTemplate,
                 Duration.ofSeconds(5),
+                20,
+                Duration.ofMillis(500),
+                Duration.ofSeconds(30),
+                Duration.ZERO,
                 orderEventOutboxService,
                 metricsService
         );

@@ -46,7 +46,7 @@ public class OrderEventOutboxService {
 
 
     public OrderEventOutboxService(
-            @Value("${app.outbox.batch-size:20}") int batchSize,
+            @Value("${app.outbox.batch-size:200}") int batchSize,
             @Value("${app.outbox.claim-timeout:30s}") Duration claimTimeout,
             @Value("${app.outbox.max-attempts:10}") int maxAttempts,
             @Value("${app.kafka.order-topic}") String orderTopic,
@@ -124,17 +124,39 @@ public class OrderEventOutboxService {
                 batchSize
         );
 
-        for (OutboxEventEntity event : events) {
-            outboxEventRepository.markProcessing(event.id(), OUTBOX_STATUS_PROCESSING, now);
+        if (!events.isEmpty()) {
+            outboxEventRepository.markProcessing(eventIds(events), OUTBOX_STATUS_PROCESSING, now);
         }
         return events;
     }
 
 
     @Transactional
-    public void markPublished(Long eventId) {
+    public void markPublished(List<Long> eventIds) {
+        if (eventIds.isEmpty()) {
+            return;
+        }
+
         LocalDateTime now = LocalDateTime.now();
-        outboxEventRepository.markPublished(eventId, OUTBOX_STATUS_PUBLISHED, now, now);
+        outboxEventRepository.markPublished(eventIds, OUTBOX_STATUS_PUBLISHED, now, now);
+    }
+
+
+    /**
+     * Returns claimed events that were never sent to PENDING without counting the claim as an attempt.
+     */
+    @Transactional
+    public void releaseClaims(List<Long> eventIds) {
+        if (eventIds.isEmpty()) {
+            return;
+        }
+
+        outboxEventRepository.releaseClaims(
+                eventIds,
+                OUTBOX_STATUS_PROCESSING,
+                OUTBOX_STATUS_PENDING,
+                LocalDateTime.now()
+        );
     }
 
 
@@ -210,6 +232,13 @@ public class OrderEventOutboxService {
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("Unable to deserialize order event payload", ex);
         }
+    }
+
+
+    private List<Long> eventIds(List<OutboxEventEntity> events) {
+        return events.stream()
+                .map(OutboxEventEntity::id)
+                .toList();
     }
 
 

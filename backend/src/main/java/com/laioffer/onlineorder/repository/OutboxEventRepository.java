@@ -75,9 +75,9 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
                 attempts = attempts + 1,
                 updated_at = :updatedAt,
                 last_error = NULL
-            WHERE id = :id
+            WHERE id IN (:ids)
             """)
-    void markProcessing(Long id, String status, LocalDateTime updatedAt);
+    int markProcessing(List<Long> ids, String status, LocalDateTime updatedAt);
 
 
     @Modifying
@@ -87,9 +87,25 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
                 updated_at = :updatedAt,
                 published_at = :publishedAt,
                 last_error = NULL
-            WHERE id = :id
+            WHERE id IN (:ids)
             """)
-    void markPublished(Long id, String status, LocalDateTime updatedAt, LocalDateTime publishedAt);
+    int markPublished(List<Long> ids, String status, LocalDateTime updatedAt, LocalDateTime publishedAt);
+
+
+    /**
+     * Returns claimed events that were never sent to PENDING and gives back the attempt the claim counted.
+     * Rows that are no longer PROCESSING are left alone.
+     */
+    @Modifying
+    @Query("""
+            UPDATE outbox_events
+            SET status = :pendingStatus,
+                attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+                updated_at = :updatedAt
+            WHERE id IN (:ids)
+              AND status = :processingStatus
+            """)
+    int releaseClaims(List<Long> ids, String processingStatus, String pendingStatus, LocalDateTime updatedAt);
 
 
     @Modifying

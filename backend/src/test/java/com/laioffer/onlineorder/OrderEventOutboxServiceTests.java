@@ -59,6 +59,91 @@ class OrderEventOutboxServiceTests {
 
 
     @Test
+    void claimNextBatch_shouldMarkClaimedEventsProcessingWithOneBulkUpdate() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        List<OutboxEventEntity> lockedEvents = List.of(eventWithId(1L), eventWithId(2L), eventWithId(3L));
+        Mockito.when(repository.lockNextBatchReadyToPublish(
+                Mockito.eq("PENDING"),
+                Mockito.eq("PROCESSING"),
+                Mockito.any(LocalDateTime.class),
+                Mockito.eq(20)
+        )).thenReturn(lockedEvents);
+
+        List<OutboxEventEntity> claimedEvents = service.claimNextBatch();
+
+        Assertions.assertEquals(lockedEvents, claimedEvents);
+        Mockito.verify(repository, Mockito.times(1)).markProcessing(
+                Mockito.eq(List.of(1L, 2L, 3L)),
+                Mockito.eq("PROCESSING"),
+                Mockito.any(LocalDateTime.class)
+        );
+        Mockito.verify(repository, Mockito.times(1)).markProcessing(
+                Mockito.anyList(),
+                Mockito.anyString(),
+                Mockito.any(LocalDateTime.class)
+        );
+    }
+
+
+    @Test
+    void claimNextBatch_whenNothingIsReady_shouldNotUpdateEvents() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        Mockito.when(repository.lockNextBatchReadyToPublish(
+                Mockito.eq("PENDING"),
+                Mockito.eq("PROCESSING"),
+                Mockito.any(LocalDateTime.class),
+                Mockito.eq(20)
+        )).thenReturn(List.of());
+
+        Assertions.assertTrue(service.claimNextBatch().isEmpty());
+
+        Mockito.verify(repository, Mockito.never()).markProcessing(
+                Mockito.anyList(),
+                Mockito.anyString(),
+                Mockito.any(LocalDateTime.class)
+        );
+    }
+
+
+    @Test
+    void markPublished_shouldMarkAllEventsPublishedWithOneBulkUpdate() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+
+        service.markPublished(List.of(1L, 2L));
+        service.markPublished(List.of());
+
+        Mockito.verify(repository, Mockito.times(1)).markPublished(
+                Mockito.eq(List.of(1L, 2L)),
+                Mockito.eq("PUBLISHED"),
+                Mockito.any(LocalDateTime.class),
+                Mockito.any(LocalDateTime.class)
+        );
+        Mockito.verifyNoMoreInteractions(repository);
+    }
+
+
+    @Test
+    void releaseClaims_shouldReturnProcessingEventsToPending() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+
+        service.releaseClaims(List.of(4L, 5L));
+        service.releaseClaims(List.of());
+
+        Mockito.verify(repository, Mockito.times(1)).releaseClaims(
+                Mockito.eq(List.of(4L, 5L)),
+                Mockito.eq("PROCESSING"),
+                Mockito.eq("PENDING"),
+                Mockito.any(LocalDateTime.class)
+        );
+        Mockito.verifyNoMoreInteractions(repository);
+    }
+
+
+    @Test
     void markRetryableFailure_whenAttemptsReachMax_shouldMarkFailed() {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
         OrderEventOutboxService service = new OrderEventOutboxService(
@@ -207,6 +292,27 @@ class OrderEventOutboxServiceTests {
         ArgumentCaptor<OutboxEventEntity> captor = ArgumentCaptor.forClass(OutboxEventEntity.class);
         Mockito.verify(repository).save(captor.capture());
         return captor.getValue();
+    }
+
+
+    private OutboxEventEntity eventWithId(Long id) {
+        LocalDateTime now = LocalDateTime.of(2026, 4, 25, 12, 0);
+        return new OutboxEventEntity(
+                id,
+                "ORDER",
+                10L,
+                "evt-" + id,
+                "order-events",
+                "10",
+                "order.created",
+                "{}",
+                "PENDING",
+                0,
+                null,
+                now,
+                now,
+                null
+        );
     }
 
 
