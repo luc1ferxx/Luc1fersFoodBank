@@ -6,6 +6,10 @@ spring:
     username: ${DATABASE_USERNAME:sa}
     password: ${DATABASE_PASSWORD:}
     driver-class-name: ${DATABASE_DRIVER:org.h2.Driver}
+    hikari:
+      # H2's own session settings (milliseconds) instead of PostgreSQL's SET statement_timeout and
+      # SET lock_timeout, with the same overrides as the default profile.
+      connection-init-sql: "SET QUERY_TIMEOUT ${DATABASE_STATEMENT_TIMEOUT_MS:10000}; SET LOCK_TIMEOUT ${DATABASE_LOCK_TIMEOUT_MS:3000}"
   flyway:
     locations: ${FLYWAY_LOCATIONS:classpath:db/migration,classpath:db/demo}
   h2:

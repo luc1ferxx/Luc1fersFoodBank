@@ -87,7 +87,7 @@ class DeadLetterListenerErrorHandlerTests {
         ));
 
         ConcurrentKafkaListenerContainerFactory<String, String> factory = new KafkaListenerConfig()
-                .deadLetterKafkaListenerContainerFactory(consumerFactory, Duration.ofMillis(1), Duration.ofMillis(2));
+                .deadLetterKafkaListenerContainerFactory(consumerFactory, Duration.ofMillis(1), Duration.ofMillis(2), 3);
         ConcurrentMessageListenerContainer<String, String> container = factory.createContainer("order-events.dlt");
         Consumer<?, ?> consumer = Mockito.mock(Consumer.class);
 

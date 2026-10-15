@@ -9,8 +9,10 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
@@ -20,6 +22,9 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+
+
+import java.sql.SQLTransientConnectionException;
 
 
 @RestControllerAdvice
@@ -93,6 +98,27 @@ public class ApiExceptionHandler {
             HttpServletRequest request
     ) {
         return build("METHOD_NOT_ALLOWED", safeMessage(ex, "Method not allowed"), HttpStatus.METHOD_NOT_ALLOWED, request);
+    }
+
+
+    /**
+     * HikariCP throws SQLTransientConnectionException when no connection frees up within its
+     * connection-timeout. Spring wraps it in CannotGetJdbcConnectionException (plain JDBC access) or
+     * CannotCreateTransactionException (@Transactional), and nested causes are matched too. Answering
+     * 503 tells clients and dashboards the request was shed under load, not that it hit a bug.
+     */
+    @ExceptionHandler({
+            CannotGetJdbcConnectionException.class,
+            CannotCreateTransactionException.class,
+            SQLTransientConnectionException.class
+    })
+    public ResponseEntity<ApiErrorResponse> handleDatabaseUnavailable(Exception ex, HttpServletRequest request) {
+        return build(
+                "SERVICE_UNAVAILABLE",
+                "Service temporarily unavailable, please retry",
+                HttpStatus.SERVICE_UNAVAILABLE,
+                request
+        );
     }
 
 

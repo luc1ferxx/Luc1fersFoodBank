@@ -32,11 +32,13 @@ public class KafkaListenerConfig {
             KafkaTemplate<String, String> kafkaTemplate,
             @Value("${app.kafka.order-dlt-topic}") String deadLetterTopic,
             @Value("${app.kafka.listener-retries:3}") long retries,
-            @Value("${app.kafka.listener-backoff:1s}") Duration backOff
+            @Value("${app.kafka.listener-backoff:1s}") Duration backOff,
+            @Value("${app.kafka.listener-concurrency:${app.kafka.partitions:3}}") int concurrency
     ) {
         ConcurrentKafkaListenerContainerFactory<String, String> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory((ConsumerFactory<String, String>) consumerFactory);
+        factory.setConcurrency(concurrency);
 
         DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(
                 kafkaTemplate,
@@ -56,11 +58,13 @@ public class KafkaListenerConfig {
     ConcurrentKafkaListenerContainerFactory<String, String> deadLetterKafkaListenerContainerFactory(
             ConsumerFactory<?, ?> consumerFactory,
             @Value("${app.kafka.dlt-listener-backoff-initial:1s}") Duration initialBackOff,
-            @Value("${app.kafka.dlt-listener-backoff-max:30s}") Duration maxBackOff
+            @Value("${app.kafka.dlt-listener-backoff-max:30s}") Duration maxBackOff,
+            @Value("${app.kafka.listener-concurrency:${app.kafka.partitions:3}}") int concurrency
     ) {
         ConcurrentKafkaListenerContainerFactory<String, String> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory((ConsumerFactory<String, String>) consumerFactory);
+        factory.setConcurrency(concurrency);
         factory.setCommonErrorHandler(deadLetterErrorHandler(initialBackOff, maxBackOff));
         return factory;
     }

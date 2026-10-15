@@ -6,6 +6,23 @@ server:
         http-only: true
         same-site: lax
         secure: ${SESSION_COOKIE_SECURE:false}
+  # Anonymous menu and restaurant reads are served from the Redis cache without a database connection
+  # (~15-20k req/s measured), so there are deliberately more request threads than the 30 Hikari
+  # connections. DB-bound requests (cart, checkout, orders) wait on Hikari for at most
+  # spring.datasource.hikari.connection-timeout and then fail fast with 503 instead of piling up.
+  tomcat:
+    threads:
+      max: ${SERVER_TOMCAT_THREADS_MAX:200}
+      min-spare: ${SERVER_TOMCAT_THREADS_MIN_SPARE:10}
+    max-connections: ${SERVER_TOMCAT_MAX_CONNECTIONS:8192}
+    # OS accept backlog used once max-connections are open.
+    accept-count: ${SERVER_TOMCAT_ACCEPT_COUNT:100}
+    # Time an accepted connection may take to send its request line; also the keep-alive idle timeout.
+    connection-timeout: ${SERVER_TOMCAT_CONNECTION_TIMEOUT:10s}
+    # Spring Boot disables Tomcat's MBean registry by default; the tomcat.threads.* and tomcat.global.*
+    # metrics are read from it.
+    mbeanregistry:
+      enabled: true
 
 spring:
   application:
@@ -18,7 +35,20 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
-      retries: 3
+      # Idempotent producer: retries cannot duplicate or reorder records within a partition. Retries are
+      # bounded by delivery.timeout.ms rather than a retry count.
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        # Longest send() blocks waiting for metadata or buffer space.
+        max.block.ms: ${KAFKA_PRODUCER_MAX_BLOCK_MS:5000}
+        linger.ms: ${KAFKA_PRODUCER_LINGER_MS:5}
+        request.timeout.ms: ${KAFKA_PRODUCER_REQUEST_TIMEOUT_MS:5000}
+        # Upper bound for reporting success or failure of a record after send() returns. Kafka requires
+        # delivery.timeout.ms >= linger.ms + request.timeout.ms, and app.kafka.publish-timeout must stay
+        # >= this value so the outbox does not give up on a record the producer may still deliver.
+        delivery.timeout.ms: ${KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS:10000}
     consumer:
       group-id: ${KAFKA_CONSUMER_GROUP:onlineorder}
       auto-offset-reset: earliest
@@ -30,13 +60,34 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
-      timeout: ${REDIS_TIMEOUT:2s}
+      # Command timeout. Sessions, the cache (falls back to the database on errors) and rate limiting
+      # (fails open) all call Redis on the request path, so a stalled Redis costs at most this per
+      # command instead of holding a request thread for seconds.
+      timeout: ${REDIS_TIMEOUT:500ms}
       connect-timeout: ${REDIS_CONNECT_TIMEOUT:1s}
   datasource:
     url: ${DATABASE_URL:jdbc:postgresql://${DATABASE_HOST:localhost}:${DATABASE_PORT:5433}/onlineorder}
     username: ${DATABASE_USERNAME:postgres}
     password: ${DATABASE_PASSWORD:secret}
     driver-class-name: ${DATABASE_DRIVER:org.postgresql.Driver}
+    hikari:
+      pool-name: onlineorder-db
+      # Fixed-size pool: minimum-idle is left unset, as HikariCP recommends. Load test on one 15-core
+      # machine: 10 connections gave ~750 orders/s with 182 requests waiting for a connection, 30 gave
+      # ~1000 orders/s. Kafka listeners, the outbox publisher and cleanup share this pool. Keep
+      # maximum-pool-size x instances below PostgreSQL max_connections (default 100).
+      maximum-pool-size: ${DATABASE_POOL_MAX_SIZE:30}
+      # Milliseconds: HikariCP takes plain longs here and duration strings such as 2s do not bind.
+      # A request that cannot get a connection in time fails fast with 503 SERVICE_UNAVAILABLE.
+      connection-timeout: ${DATABASE_POOL_CONNECTION_TIMEOUT_MS:2000}
+      # Milliseconds; kept below connection-timeout so a dead-connection check cannot outlast it.
+      validation-timeout: ${DATABASE_POOL_VALIDATION_TIMEOUT_MS:1000}
+      # Runs once on every new pooled connection, including the ones Flyway migrates with. Unitless
+      # values are milliseconds in PostgreSQL. Kept out of the JDBC URL because DATABASE_URL can be
+      # overridden. A migration that needs longer than the statement timeout must start with
+      # SET LOCAL statement_timeout = ... (Flyway runs each PostgreSQL migration in a transaction).
+      # The h2 profile overrides this with H2's own settings.
+      connection-init-sql: "SET statement_timeout = ${DATABASE_STATEMENT_TIMEOUT_MS:10000}; SET lock_timeout = ${DATABASE_LOCK_TIMEOUT_MS:3000}"
   h2:
     console:
       enabled: false
@@ -57,6 +108,14 @@ spring:
     redis:
       cache-null-values: false
       time-to-live: ${REDIS_CACHE_TTL:10m}
+  task:
+    scheduling:
+      # Spring's default scheduler has a single thread, so the hourly MaintenanceCleanupService run could
+      # block the outbox publisher. A fixed-delay job never overlaps itself, so extra threads only let
+      # different jobs run side by side.
+      pool:
+        size: ${TASK_SCHEDULING_POOL_SIZE:4}
+      thread-name-prefix: scheduling-
 
 app:
   kafka:
@@ -66,17 +125,27 @@ app:
     order-dlt-group: ${KAFKA_ORDER_DLT_GROUP:onlineorder-dlt}
     partitions: ${KAFKA_ORDER_TOPIC_PARTITIONS:3}
     replicas: ${KAFKA_ORDER_TOPIC_REPLICAS:1}
-    publish-timeout: ${KAFKA_PUBLISH_TIMEOUT:5s}
+    # Batch-wide deadline for the outbox publisher's Kafka acks; must stay >= the producer's
+    # delivery.timeout.ms (10s).
+    publish-timeout: ${KAFKA_PUBLISH_TIMEOUT:12s}
+    # One consumer thread per partition for the order topic and its DLT; extra threads would sit idle.
+    listener-concurrency: ${KAFKA_LISTENER_CONCURRENCY:${KAFKA_ORDER_TOPIC_PARTITIONS:3}}
     listener-retries: ${KAFKA_LISTENER_RETRIES:3}
     listener-backoff: ${KAFKA_LISTENER_BACKOFF:1s}
     dlt-listener-backoff-initial: ${KAFKA_DLT_LISTENER_BACKOFF_INITIAL:1s}
     dlt-listener-backoff-max: ${KAFKA_DLT_LISTENER_BACKOFF_MAX:30s}
   outbox:
     publisher-enabled: ${OUTBOX_PUBLISHER_ENABLED:${KAFKA_ENABLED:true}}
-    batch-size: ${OUTBOX_BATCH_SIZE:20}
-    publish-interval: ${OUTBOX_PUBLISH_INTERVAL:3s}
+    # 20 events every 3s capped the relay at ~6.7 events/s: after 166k orders 164k events were still
+    # PENDING (~7 hours to drain).
+    batch-size: ${OUTBOX_BATCH_SIZE:200}
+    publish-interval: ${OUTBOX_PUBLISH_INTERVAL:500ms}
+    # Lease on claimed events; longer than app.kafka.publish-timeout so a batch that is still being
+    # published is not claimed again.
     claim-timeout: ${OUTBOX_CLAIM_TIMEOUT:30s}
     max-attempts: ${OUTBOX_MAX_ATTEMPTS:10}
+    # Upper bound for the retry backoff after a failed publish.
+    failure-backoff-max: ${OUTBOX_FAILURE_BACKOFF_MAX:60s}
   dlt:
     replay-timeout: ${DLT_REPLAY_TIMEOUT:5s}
   cleanup:
@@ -110,6 +179,14 @@ management:
   metrics:
     tags:
       application: ${spring.application.name}
+    distribution:
+      # Publish histogram buckets so latency percentiles can be computed and aggregated in Prometheus.
+      percentiles-histogram:
+        http.server.requests: true
+        hikaricp.connections.acquire: true
+      # Exact buckets at the thresholds that matter; 2s is the Hikari connection-timeout.
+      slo:
+        http.server.requests: 50ms,100ms,250ms,500ms,1s,2s
   info:
     env:
       enabled: true
