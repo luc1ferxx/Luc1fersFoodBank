@@ -9,7 +9,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.context.ActiveProfiles;
@@ -27,7 +26,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * Spring Session is excluded so the servlet container's own session is used: any code path that calls
  * {@code request.getSession(true)} for an anonymous request leaves a {@link MockHttpSession} on the request,
- * which in production would be a session written to Redis.
+ * which in production would be a session written to Redis. MockMvc never writes a session cookie, so the
+ * no-Set-Cookie checks live in {@link AnonymousSessionStoreTests}, which runs the real Spring Session filter.
  */
 @SpringBootTest(properties = {
         "spring.autoconfigure.exclude=org.springframework.boot.autoconfigure.session.SessionAutoConfiguration"
@@ -124,11 +124,5 @@ class AnonymousSessionCreationTests {
 
     private void assertNoSessionCreated(MvcResult result) {
         Assertions.assertNull(result.getRequest().getSession(false));
-        for (String setCookie : result.getResponse().getHeaders(HttpHeaders.SET_COOKIE)) {
-            Assertions.assertFalse(
-                    setCookie.matches("^(SESSION|JSESSIONID)=[^;]+.*"),
-                    "Unexpected session cookie: " + setCookie
-            );
-        }
     }
 }

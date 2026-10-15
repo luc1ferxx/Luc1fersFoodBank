@@ -4,6 +4,8 @@ package com.laioffer.onlineorder;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -34,7 +36,8 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Runs the real servlet container and Spring Session filter over an in-memory session store instead of
  * Redis, so a session created by an anonymous request, including one created during the /error dispatch,
- * shows up as a stored session and a SESSION cookie.
+ * shows up as a stored session and a SESSION cookie. MockMvc never writes a session cookie, so this class
+ * is where the no-Set-Cookie checks can actually fail.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("h2")
@@ -64,16 +67,62 @@ class AnonymousSessionStoreTests {
     }
 
 
-    @Test
-    void anonymousGet_toProtectedEndpoint_shouldNotStoreSessionOrIssueSessionCookie() {
+    @ParameterizedTest
+    @ValueSource(strings = {"/cart", "/orders", "/me", "/notifications", "/actuator/metrics", "/unknown-spa-route"})
+    void anonymousGet_toProtectedPath_shouldNotStoreSessionOrIssueSessionCookie(String path) {
         ResponseEntity<String> response = restTemplate.exchange(
-                url("/me"),
+                url(path),
                 HttpMethod.GET,
                 new HttpEntity<>(browserHeaders()),
                 String.class
         );
 
         Assertions.assertEquals(HttpStatus.UNAUTHORIZED, response.getStatusCode());
+        assertNoSessionCreated(response);
+    }
+
+
+    @Test
+    void anonymousPost_toProtectedEndpoint_shouldNotStoreSessionOrIssueSessionCookie() {
+        HttpHeaders headers = browserHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/cart"),
+                HttpMethod.POST,
+                new HttpEntity<>("{\"menu_id\":1}", headers),
+                String.class
+        );
+
+        Assertions.assertEquals(HttpStatus.UNAUTHORIZED, response.getStatusCode());
+        assertNoSessionCreated(response);
+    }
+
+
+    @Test
+    void anonymousGet_toPublicEndpoint_shouldNotStoreSessionOrIssueSessionCookie() {
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/restaurants/menu"),
+                HttpMethod.GET,
+                new HttpEntity<>(browserHeaders()),
+                String.class
+        );
+
+        Assertions.assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertNoSessionCreated(response);
+    }
+
+
+    @Test
+    void anonymousLogout_shouldNotStoreSessionOrIssueSessionCookie() {
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/logout"),
+                HttpMethod.POST,
+                new HttpEntity<>(browserHeaders()),
+                String.class
+        );
+
+        Assertions.assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNoSessionCreated(response);
     }
 
@@ -149,6 +198,9 @@ class AnonymousSessionStoreTests {
     }
 
 
+    /**
+     * A cookie-clearing Set-Cookie with an empty value, as logout sends, is not a session cookie.
+     */
     private void assertNoSessionCreated(ResponseEntity<String> response) {
         Assertions.assertTrue(SESSIONS.isEmpty(), "Unexpected stored sessions: " + SESSIONS.keySet());
         Assertions.assertNull(extractSessionCookie(response));
