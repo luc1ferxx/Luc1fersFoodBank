@@ -13,6 +13,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.annotation.web.configurers.HeadersConfigurer;
+import org.springframework.security.config.annotation.web.configurers.RequestCacheConfigurer;
 import org.springframework.security.authentication.LockedException;
 import org.springframework.security.authentication.DisabledException;
 import org.springframework.security.crypto.factory.PasswordEncoderFactories;
@@ -117,6 +118,8 @@ public class AppConfig {
                                         "Access denied"
                                 ))
                 )
+                // JSON API: nothing redirects to a saved request after login, so do not create a session per anonymous 401.
+                .requestCache(RequestCacheConfigurer::disable)
                 .sessionManagement(session -> session
                         .sessionFixation(sessionFixation -> sessionFixation.migrateSession())
                 )

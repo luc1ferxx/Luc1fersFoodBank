@@ -14,7 +14,10 @@ services:
 
   redis:
     image: redis:7.4-alpine
-    command: redis-server --appendonly yes
+    # Every key the app writes has a TTL (sessions 30m, cache entries 10m, rate-limit buckets 2m), so
+    # volatile-lru evicts the least recently used of them when memory is full; the default noeviction
+    # would instead reject session and rate-limit writes once maxmemory is reached.
+    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-512mb} --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-volatile-lru}
     volumes:
       - onlineorder-redis-local:/data
     ports:
