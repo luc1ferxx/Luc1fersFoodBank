@@ -1,7 +1,7 @@
 package com.laioffer.onlineorder.fulfilment.timeout;
 
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.messaging.MerchantEventEnvelope;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.annotation.KafkaListener;

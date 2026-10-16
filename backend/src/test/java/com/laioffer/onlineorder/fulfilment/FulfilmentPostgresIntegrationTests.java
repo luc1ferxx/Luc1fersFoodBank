@@ -1097,11 +1097,7 @@ class FulfilmentPostgresIntegrationTests {
                 ORDER BY id DESC
                 LIMIT 1
                 """, String.class, orderId);
-        try {
-            return objectMapper.readValue(payload, MerchantEventEnvelope.class);
-        } catch (java.io.IOException ex) {
-            throw new IllegalStateException(ex);
-        }
+        return objectMapper.readValue(payload, MerchantEventEnvelope.class);
     }
 
 

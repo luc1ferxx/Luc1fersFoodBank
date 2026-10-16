@@ -1,8 +1,8 @@
 package com.laioffer.onlineorder;
 
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.audit.AuditActor;
 import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.entity.DeadLetterEventEntity;
@@ -194,13 +194,13 @@ class DeadLetterRedeliveryH2IntegrationTests {
             Assertions.assertEquals(String.valueOf(stored.id()), entry.get("target_id"));
         }
         JsonNode replayed = objectMapper.readTree((String) entries.get(0).get("details"));
-        Assertions.assertEquals("REPLAYED", replayed.get("outcome").asText());
+        Assertions.assertEquals("REPLAYED", replayed.get("outcome").asString());
         Assertions.assertEquals(1, replayed.get("attempt").asInt());
         Assertions.assertTrue(replayed.get("recorded").asBoolean());
-        Assertions.assertEquals("evt-redelivered", replayed.get("event_id").asText());
+        Assertions.assertEquals("evt-redelivered", replayed.get("event_id").asString());
         // The second request found the event replayed already and sent nothing.
         JsonNode alreadyReplayed = objectMapper.readTree((String) entries.get(1).get("details"));
-        Assertions.assertEquals("ALREADY_REPLAYED", alreadyReplayed.get("outcome").asText());
+        Assertions.assertEquals("ALREADY_REPLAYED", alreadyReplayed.get("outcome").asString());
     }
 
 

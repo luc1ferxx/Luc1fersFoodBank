@@ -1,8 +1,8 @@
 package com.laioffer.onlineorder;
 
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.audit.AuditActor;
 import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.model.OrderDto;
@@ -12,8 +12,8 @@ import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.micrometer.tracing.test.autoconfigure.AutoConfigureTracing;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -47,12 +47,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest(properties = {
         "spring.autoconfigure.exclude=" +
-                "org.springframework.boot.autoconfigure.session.SessionAutoConfiguration," +
-                "org.springframework.boot.autoconfigure.session.RedisSessionAutoConfiguration"
+                "org.springframework.boot.session.autoconfigure.SessionAutoConfiguration," +
+                "org.springframework.boot.session.data.redis.autoconfigure.SessionDataRedisAutoConfiguration"
 })
 @AutoConfigureMockMvc
 // Tracing propagation is off in Spring Boot tests unless asked for; the entries' trace_id needs W3C extraction.
-@AutoConfigureObservability(metrics = false)
+@AutoConfigureTracing
 @ActiveProfiles("h2")
 class AuditLogIntegrationTests {
 
@@ -115,10 +115,10 @@ class AuditLogIntegrationTests {
         Assertions.assertEquals("order.status.update", entry.get("action"));
         Assertions.assertEquals(traceId, entry.get("trace_id"));
         JsonNode details = objectMapper.readTree((String) entry.get("details"));
-        Assertions.assertEquals("PAID", details.get("from_status").asText());
-        Assertions.assertEquals("ACCEPTED", details.get("to_status").asText());
+        Assertions.assertEquals("PAID", details.get("from_status").asString());
+        Assertions.assertEquals("ACCEPTED", details.get("to_status").asString());
         Assertions.assertTrue(details.get("changed").asBoolean());
-        Assertions.assertEquals("audit-status-" + order.id(), details.get("idempotency_key").asText());
+        Assertions.assertEquals("audit-status-" + order.id(), details.get("idempotency_key").asString());
 
         // The order history carries the same admin and the same trace.
         Assertions.assertEquals(
@@ -147,8 +147,8 @@ class AuditLogIntegrationTests {
         Assertions.assertEquals(adminId(), ((Number) entries.get(0).get("actor_customer_id")).longValue());
         JsonNode details = objectMapper.readTree((String) entries.get(0).get("details"));
         Assertions.assertEquals(10, details.get("previous_attempts").asInt());
-        Assertions.assertEquals("Kafka unavailable", details.get("previous_last_error").asText());
-        Assertions.assertEquals("order.created", details.get("event_type").asText());
+        Assertions.assertEquals("Kafka unavailable", details.get("previous_last_error").asString());
+        Assertions.assertEquals("order.created", details.get("event_type").asString());
     }
 
 
@@ -173,13 +173,13 @@ class AuditLogIntegrationTests {
         Assertions.assertEquals("menu_item.update", menuEntry.get("action"));
         JsonNode menuDetails = objectMapper.readTree((String) menuEntry.get("details"));
         Assertions.assertEquals(restaurantId, menuDetails.get("restaurant_id").asLong());
-        Assertions.assertEquals("12.34", menuDetails.get("changes").get("price").asText());
+        Assertions.assertEquals("12.34", menuDetails.get("changes").get("price").asString());
         Assertions.assertFalse(menuDetails.get("changes").has("name"), "only the fields the request set");
 
         Map<String, Object> restaurantEntry = entriesFor("RESTAURANT", restaurantId).get(0);
         Assertions.assertEquals("restaurant.update", restaurantEntry.get("action"));
         Assertions.assertEquals("(408) 555-0199", objectMapper.readTree((String) restaurantEntry.get("details"))
-                .get("changes").get("phone").asText());
+                .get("changes").get("phone").asString());
     }
 
 
@@ -213,8 +213,8 @@ class AuditLogIntegrationTests {
             Assertions.assertEquals("ROLE_ADMIN", entry.get("actor_role"));
         }
         JsonNode delivered = objectMapper.readTree((String) entries.get(1).get("details"));
-        Assertions.assertEquals("PICKED_UP", delivered.get("from_status").asText());
-        Assertions.assertEquals("DELIVERED", delivered.get("to_status").asText());
+        Assertions.assertEquals("PICKED_UP", delivered.get("from_status").asString());
+        Assertions.assertEquals("DELIVERED", delivered.get("to_status").asString());
         Assertions.assertTrue(delivered.get("rider_id").asLong() > 0);
         Assertions.assertTrue(entriesFor("DELIVERY", 987_654_321L).isEmpty());
     }

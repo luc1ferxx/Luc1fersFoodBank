@@ -1,8 +1,8 @@
 package com.laioffer.onlineorder;
 
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -213,9 +213,9 @@ class ContainerizedOrderFlowTests {
         Assertions.assertEquals("ROLE_ADMIN", entry.get("actor_role"));
         Assertions.assertEquals("dead_letter.replay", entry.get("action"));
         JsonNode details = objectMapper.readTree((String) entry.get("details"));
-        Assertions.assertEquals("REPLAYED", details.get("outcome").asText());
+        Assertions.assertEquals("REPLAYED", details.get("outcome").asString());
         Assertions.assertEquals(1, details.get("attempt").asInt());
-        Assertions.assertEquals(topic, details.get("source_topic").asText());
+        Assertions.assertEquals(topic, details.get("source_topic").asString());
     }
 
 

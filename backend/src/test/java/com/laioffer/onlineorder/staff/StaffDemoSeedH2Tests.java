@@ -5,7 +5,7 @@ import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpSession;
@@ -34,8 +34,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest(properties = {
         "spring.autoconfigure.exclude=" +
-                "org.springframework.boot.autoconfigure.session.SessionAutoConfiguration," +
-                "org.springframework.boot.autoconfigure.session.RedisSessionAutoConfiguration"
+                "org.springframework.boot.session.autoconfigure.SessionAutoConfiguration," +
+                "org.springframework.boot.session.data.redis.autoconfigure.SessionDataRedisAutoConfiguration"
 })
 @AutoConfigureMockMvc
 @ActiveProfiles("h2")

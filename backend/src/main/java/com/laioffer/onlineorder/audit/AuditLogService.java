@@ -1,10 +1,10 @@
 package com.laioffer.onlineorder.audit;
 
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.TextNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.StringNode;
 import com.laioffer.onlineorder.observability.TraceIds;
 import io.micrometer.tracing.Tracer;
 import org.springframework.beans.factory.ObjectProvider;
@@ -105,7 +105,7 @@ public class AuditLogService {
         }
         try {
             return objectMapper.writeValueAsString(present);
-        } catch (JsonProcessingException ex) {
+        } catch (JacksonException ex) {
             throw new IllegalArgumentException("Audit details are not serializable", ex);
         }
     }
@@ -132,9 +132,9 @@ public class AuditLogService {
         }
         try {
             return objectMapper.readTree(details);
-        } catch (JsonProcessingException ex) {
+        } catch (JacksonException ex) {
             // Written by hand or by an older version: show it as it is stored.
-            return TextNode.valueOf(details);
+            return StringNode.valueOf(details);
         }
     }
 }

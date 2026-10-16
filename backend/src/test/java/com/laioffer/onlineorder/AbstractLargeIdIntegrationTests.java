@@ -1,7 +1,7 @@
 package com.laioffer.onlineorder;
 
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.audit.AuditActor;
 import com.laioffer.onlineorder.fulfilment.dispatch.DeliveryDto;
 import com.laioffer.onlineorder.fulfilment.dispatch.DispatchService;
@@ -138,7 +138,7 @@ abstract class AbstractLargeIdIntegrationTests {
 
         // The same catalog query reports the widened columns as BIGINT (so the filter above can match a type).
         for (String column : List.of("orders.id", "orders.customer_id", "deliveries.rider_id", "dispatch_orders.order_id",
-                "order_status_history.order_id", "audit_log.id")) {
+                "order_status_history.order_id", "audit_log.id", "riders.customer_id")) {
             String[] parts = column.split("\\.");
             Assertions.assertEquals("bigint", jdbcTemplate.queryForObject("""
                     SELECT LOWER(data_type)
@@ -170,8 +170,9 @@ abstract class AbstractLargeIdIntegrationTests {
                 "INSERT INTO merchant_accounts (customer_id, restaurant_id, created_at) VALUES (?, ?, ?)",
                 merchantCustomerId, restaurantId, LocalDateTime.now()
         );
-        long riderId = insertRider();
-        assertBeyondInt(restaurantId, menuItemId, customerId, merchantCustomerId, riderId,
+        long riderCustomerId = signUp("large-id-rider-");
+        long riderId = insertRider(riderCustomerId);
+        assertBeyondInt(restaurantId, menuItemId, customerId, merchantCustomerId, riderCustomerId, riderId,
                 idOf("SELECT id FROM carts WHERE customer_id = ?", customerId),
                 idOf("SELECT MAX(id) FROM authorities"),
                 idOf("SELECT id FROM merchant_accounts WHERE customer_id = ?", merchantCustomerId));
@@ -266,13 +267,20 @@ abstract class AbstractLargeIdIntegrationTests {
 
 
     /**
-     * A rider that dispatch picks: the only active one, so the other riders are switched off for this database.
+     * A rider that dispatch picks: the only active, on-duty one (V8), so the other riders are switched off for this
+     * database. It is bound to a login whose customer id is past the INTEGER range too (riders.customer_id, V8).
      */
-    private long insertRider() {
+    private long insertRider(long customerId) {
         String name = "Large Id Rider " + System.nanoTime();
-        jdbcTemplate.update("UPDATE riders SET active = FALSE");
-        jdbcTemplate.update("INSERT INTO riders (name, phone, active, active_deliveries) VALUES (?, NULL, TRUE, 0)", name);
-        return idOf("SELECT id FROM riders WHERE name = ?", name);
+        jdbcTemplate.update("UPDATE riders SET active = FALSE, on_duty = FALSE");
+        jdbcTemplate.update(
+                "INSERT INTO riders (name, phone, active, on_duty, active_deliveries, customer_id) "
+                        + "VALUES (?, NULL, TRUE, TRUE, 0, ?)",
+                name, customerId
+        );
+        long riderId = idOf("SELECT id FROM riders WHERE name = ?", name);
+        Assertions.assertEquals(customerId, idOf("SELECT customer_id FROM riders WHERE id = ?", riderId));
+        return riderId;
     }
 
 

@@ -48,8 +48,11 @@ public class AuditActorResolver {
         if (!(principal instanceof Authentication authentication)) {
             return AuditActor.ROLE_SYSTEM;
         }
+        // Only the ROLE_* authorities: Spring Security 7 adds FACTOR_PASSWORD to every password login, which must not
+        // become the fallback role below.
         Set<String> authorities = authentication.getAuthorities().stream()
                 .map(GrantedAuthority::getAuthority)
+                .filter(authority -> authority.startsWith("ROLE_"))
                 .collect(Collectors.toSet());
         for (String role : ROLES_BY_PRIVILEGE) {
             if (authorities.contains(role)) {

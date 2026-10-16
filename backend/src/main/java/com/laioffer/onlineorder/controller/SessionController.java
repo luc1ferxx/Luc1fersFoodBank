@@ -34,8 +34,10 @@ public class SessionController {
     @GetMapping("/me")
     public CurrentUserDto getCurrentUser(Authentication authentication) {
         CustomerEntity customer = customerService.getCustomerByEmail(authentication.getName());
+        // Only the ROLE_* authorities: Spring Security 7 adds FACTOR_PASSWORD to every password login.
         List<String> roles = authentication.getAuthorities().stream()
                 .map(GrantedAuthority::getAuthority)
+                .filter(authority -> authority.startsWith("ROLE_"))
                 .distinct()
                 .sorted()
                 .toList();

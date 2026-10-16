@@ -3,6 +3,7 @@ package com.laioffer.onlineorder;
 
 import com.laioffer.onlineorder.cache.CacheInvalidationMessage;
 import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
+import com.laioffer.onlineorder.messaging.MerchantEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -47,6 +48,7 @@ class JsonInputTypesTests {
     private static final List<Class<?>> CONSUMED_TYPES = List.of(
             OrderEventEnvelope.class,
             DeliveryEventEnvelope.class,
+            MerchantEventEnvelope.class,
             CacheInvalidationMessage.class
     );
 
