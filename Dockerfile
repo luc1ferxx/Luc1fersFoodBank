@@ -16,7 +16,7 @@ RUN npm run build
 
 
 # --- 2. Backend jar with the frontend embedded ---
-FROM gradle:8.14.3-jdk17-noble AS backend
+FROM gradle:9.8.1-jdk17-noble AS backend
 
 RUN install -d -o gradle -g gradle /workspace /workspace/backend /workspace/frontend
 WORKDIR /workspace/backend
