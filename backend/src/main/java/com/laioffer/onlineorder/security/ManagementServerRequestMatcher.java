@@ -10,7 +10,7 @@ import org.springframework.web.context.support.WebApplicationContextUtils;
 
 /**
  * Matches requests served by the separate management server, which exists only when management.server.port differs
- * from server.port (MANAGEMENT_SERVER_PORT=8081 in the container image and on Kubernetes).
+ * from server.port (MANAGEMENT_SERVER_PORT=8081 on Kubernetes and in deploy/observability).
  *
  * <p>That port serves nothing but the actuator endpoints and is reachable only inside the cluster (it is not part
  * of the Service or the Ingress), so Prometheus and the kubelet's probes can use it without a session. Requests on

@@ -219,9 +219,9 @@ The `h2` profile runs Flyway migrations and includes the demo seed callback by d
 | `GET` | `/v3/api-docs` | OpenAPI JSON |
 | `GET` | `/swagger-ui/index.html` | Swagger UI |
 
-With `MANAGEMENT_SERVER_PORT=8081` (the container image and Kubernetes) the `/actuator` endpoints move to that
-in-cluster port and need no session there; without it they stay on the application port and everything but health
-and info requires `ROLE_ADMIN`. See [docs/operations.md](docs/operations.md).
+With `MANAGEMENT_SERVER_PORT=8081` (set on Kubernetes and in the observability stack) the `/actuator` endpoints move
+to that in-cluster port and need no session there; without it they stay on the application port and everything but
+health and info requires `ROLE_ADMIN`. See [docs/operations.md](docs/operations.md).
 
 API errors use a consistent JSON shape and include the OpenTelemetry trace id, which is also returned in the
 `X-Trace-Id` header (send a W3C `traceparent` header to join an existing trace):

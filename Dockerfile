@@ -54,10 +54,10 @@ COPY --from=layers --chown=10001:10001 /layers/extracted/snapshot-dependencies/ 
 COPY --from=layers --chown=10001:10001 /layers/extracted/application/ ./
 
 # The heap follows the container memory limit; an OutOfMemoryError ends the process so the orchestrator restarts it.
-ENV JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -XX:InitialRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError" \
-    MANAGEMENT_SERVER_PORT=8081
+ENV JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -XX:InitialRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError"
 
-# 8080: application and UI. 8081: actuator (probes, Prometheus); keep it inside the cluster.
+# 8080: application and UI. 8081: actuator (probes, Prometheus) when the deployment sets MANAGEMENT_SERVER_PORT=8081,
+# as Kubernetes and deploy/observability do; keep it inside the cluster. Unset, the actuator stays on 8080.
 EXPOSE 8080 8081
 
 USER 10001:10001

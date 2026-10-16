@@ -3,6 +3,8 @@ import { check, group, sleep } from 'k6';
 import { Rate } from 'k6/metrics';
 
 const BASE_URL = (__ENV.BASE_URL || 'http://localhost:8080').replace(/\/+$/, '');
+// The actuator's base URL: BASE_URL unless the app serves it on a management port (MANAGEMENT_SERVER_PORT).
+const MANAGEMENT_URL = (__ENV.MANAGEMENT_URL || BASE_URL).replace(/\/+$/, '');
 const VU_COUNT = parsePositiveInt(__ENV.VUS || '50', 'VUS');
 const DURATION = __ENV.DURATION || '30s';
 const USER_COUNT = Math.max(parsePositiveInt(__ENV.USER_COUNT || '50', 'USER_COUNT'), 50);
@@ -92,7 +94,7 @@ export function setup() {
     });
   }
 
-  const health = http.get(`${BASE_URL}/actuator/health`, { tags: { name: 'GET /actuator/health setup' } });
+  const health = http.get(`${MANAGEMENT_URL}/actuator/health`, { tags: { name: 'GET /actuator/health setup' } });
   check(health, {
     'setup actuator health is reachable': (r) => r.status === 200,
     'setup actuator health reports UP': (r) => (parseJson(r) || {}).status === 'UP',
