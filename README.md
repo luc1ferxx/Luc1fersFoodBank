@@ -229,7 +229,7 @@ The `h2` profile runs Flyway migrations and includes the demo seed callback by d
 | `POST` | `/dead-letters/{deadLetterEventId}/replay` | Replay a stored dead-letter event |
 | `GET`, `POST` | `/admin/merchants`, `/admin/riders` | List or provision merchant and rider logins (see [Provisioning merchants and riders](#provisioning-merchants-and-riders)) |
 | `PATCH` | `/admin/merchants/{merchantId}`, `/admin/riders/{riderId}` | Activate or deactivate a merchant or rider, body `{"active": false}` |
-| `GET` | `/admin/audit-log?limit=50&before_id=` | Audit log of the admin actions above, newest first; pass the last entry's `id` as `before_id` for the next page |
+| `GET` | `/admin/audit-log?limit=50&before_id=` | Audit log of the admin actions above and of the riders' own changes (see [Order State](#order-state)), newest first; pass the last entry's `id` as `before_id` for the next page |
 
 ### Operational APIs
 
@@ -299,11 +299,17 @@ steps for the rider, also when an admin marked the delivery delivered through `/
 records that admin). Same-status no-ops and idempotent retries write nothing. `GET /orders/{orderId}/history` serves
 it; orders placed before V7_1 start with one `SYSTEM`/`backfill` row.
 
-Admin actions (status changes, outbox retries, dead-letter replays, catalog edits, the simulated rider actions) are
-also written to `audit_log` by `AuditLogService.record` in the action's transaction: the admin, the role, the action,
-its target, a JSON `details` object and the trace id. Refused actions add no entry, and neither do a retry of
-`PATCH /orders/{id}/status` with the same `Idempotency-Key` or a repeated simulated rider action, which change
-nothing. Every dead-letter replay request that is not refused is recorded with its outcome (`REPLAYED`,
+Admin actions (status changes, outbox retries, dead-letter replays, catalog edits, merchant and rider provisioning
+and activation, delivery reassignment, the simulated rider actions) and the riders' own changes (going on or off duty,
+picking up and delivering through `/rider/**`) are also written to `audit_log` by `AuditLogService.record` in the
+action's transaction: the login (`actor_customer_id`, the customer id of the admin's or the rider's login), the role
+(`ROLE_ADMIN`, `ROLE_RIDER`), the action, its target, a JSON `details` object and the trace id. The actions are
+`order.status.update`, `outbox_event.retry`, `dead_letter.replay`, `menu_item.update`, `restaurant.update`,
+`merchant.create`, `merchant.update`, `rider.create`, `rider.update`, `rider.availability`, `delivery.picked_up`,
+`delivery.delivered` and `delivery.reassign` (`AuditActions`); staff entries carry the login's customer id and email,
+never a password. Refused actions add no entry, and neither do a retry of `PATCH /orders/{id}/status` with the same
+`Idempotency-Key` or a repeated action that changes nothing (the same flag again, a delivery move that already
+happened). Every dead-letter replay request that is not refused is recorded with its outcome (`REPLAYED`,
 `REPLAY_FAILED`, or `ALREADY_REPLAYED` when the event had been replayed before and nothing was sent). All keys are
 64-bit (`BIGINT`) since V7; see [docs/operations.md](docs/operations.md) section 7 for the rollout of these
 migrations, which must not run next to pods of an older version.
@@ -538,6 +544,10 @@ password validation as `POST /signup`; an email any login already uses (in any l
 | `GET` | `/admin/riders` | | `rider_id`, `customer_id`, `email`, `first_name`, `last_name`, `name`, `phone`, `active`, `on_duty`, `active_deliveries`, `created_at` |
 | `PATCH` | `/admin/riders/{riderId}` | `{"active": false}` and/or `{"on_duty": true}` | the rider: a left-out flag keeps its value, deactivating also takes them off duty, and an inactive rider cannot be put on duty (`409 RIDER_INACTIVE`) |
 
+Every change here is in the audit log with the admin who made it (`merchant.create`, `merchant.update`,
+`rider.create`, `rider.update`; a rider's own `PUT /rider/me/availability` is `rider.availability` with the rider's
+login, see [Order State](#order-state)).
+
 Accounts are deactivated, never deleted. Deactivation takes effect on the account's next request without touching its
 session: the merchant and dispatch modules look the account up on every merchant or rider request and answer `403`
 for an inactive one, while `GET /me` still lists the role and shows `"active": false`. A deactivated merchant no
@@ -664,6 +674,11 @@ The test suite covers:
   unstaffed restaurant and the payment timeout (`FulfilmentTimeoutContainerTests`)
 - staff accounts: provisioning, `GET /me`, the role matrix, deactivation on the next request, dispatch to active
   on-duty riders only, and a rider never reaching another rider's delivery (`StaffAccountsPostgresIntegrationTests`)
+- 64-bit keys and the audit trails: an order with ids past 2^31 through checkout and fulfilment on PostgreSQL and H2
+  (`LargeId*IntegrationTests`), upgrading a populated V6 database (`KeyWideningMigration*Tests`), the online key swap
+  and history repair runbook (`SchemaRolloutPostgresTests`), order status history and its actors
+  (`OrderLifecycleCommandsTests`, `FulfilmentPostgresIntegrationTests`), the audit log of admin and staff actions
+  (`AuditLogIntegrationTests`, `StaffAuditIntegrationTests`), and `DELETE /cart` (`CartClearIntegrationTests`)
 
 Some integration tests use Testcontainers and require Docker. Tests annotated with `@Testcontainers(disabledWithoutDocker = true)` may skip when Docker is unavailable.
 

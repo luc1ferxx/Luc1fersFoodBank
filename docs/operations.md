@@ -198,6 +198,9 @@ Fulfilment staffing (README "Provisioning merchants and riders"):
   no active merchant account. They get no accept deadline and wait as `PAID` until a merchant is provisioned
   (`POST /admin/merchants`; the order is already in that restaurant's inbox) or an admin moves them.
 - The accept timeout is on by default (`FULFILMENT_ACCEPT_TIMEOUT_ENABLED=true`) and only covers staffed restaurants.
+- Who changed a staff account or a delivery is in `GET /admin/audit-log`: `merchant.create`, `merchant.update`,
+  `rider.create`, `rider.update` and `delivery.reassign` with the admin, `rider.availability` and the rider's own
+  `delivery.picked_up` / `delivery.delivered` with the rider's login (`ROLE_RIDER`).
 
 ## 3. Container image
 
@@ -377,8 +380,14 @@ beforehand lets it skip the scan.
 
 **V7_2, audit log.** A new, empty `audit_log` table; no lock on existing tables.
 
+**V8, staff accounts**, ships in the same release. It adds `merchant_accounts.active`/`updated_at` and
+`riders.on_duty` with constant defaults (catalog only on PostgreSQL 11+), `riders.customer_id BIGINT` with a unique
+constraint and a foreign key to `customers(id)`, and replaces the riders dispatch index. Both tables hold one row per
+merchant or rider, so the locks are short. The no-older-pods rule below covers it too: an older pod ignores
+`riders.on_duty` and would assign riders who are off duty.
+
 Neither `order_status_history` nor `audit_log` has a retention job (`MaintenanceCleanupService` leaves them alone):
-both are records to keep. They grow by one row per status change and per audited admin action. Query them by order
+both are records to keep. They grow by one row per status change and per audited admin or staff action. Query them by order
 (`idx_order_status_history_order_id_id`), by target or by actor (`idx_audit_log_target_id`, `idx_audit_log_actor_id`).
 Each row carries the OpenTelemetry trace id of the request or job that wrote it (`trace_id`, null when no span was
 in scope), the same id as the `X-Trace-Id` header and the logs.
