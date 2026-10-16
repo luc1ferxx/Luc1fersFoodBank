@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { AuthPanel } from "../components/AuthPanel";
+import { CartConflictDialog } from "../components/CartConflictDialog";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { OperationsPanel, type OperationsTab } from "../components/OperationsPanel";
 import { RestaurantBrowser } from "../components/RestaurantBrowser";
@@ -69,6 +70,7 @@ export function OrderingPage({
           signedIn={signedIn}
           cart={cart}
         />
+        <CartConflictDialog cart={cart} restaurants={menu.restaurants} />
       </ErrorBoundary>
 
       <aside className="side-workbench" aria-label="Account and order tools">

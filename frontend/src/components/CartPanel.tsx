@@ -177,16 +177,28 @@ export function CartPanel({
         <>
           <Alert tone="danger">{cart.error}</Alert>
           {lines.length ? (
-            <div className="cart-lines">
-              {lines.map((item) => (
-                <CartLine
-                  key={item.order_item_id}
-                  item={item}
-                  pending={cart.pendingCartItemId === item.order_item_id}
-                  onSetQuantity={cart.setLineQuantity}
-                />
-              ))}
-            </div>
+            <>
+              <div className="cart-lines">
+                {lines.map((item) => (
+                  <CartLine
+                    key={item.order_item_id}
+                    item={item}
+                    pending={cart.clearing || cart.pendingCartItemId === item.order_item_id}
+                    onSetQuantity={cart.setLineQuantity}
+                  />
+                ))}
+              </div>
+              <div className="cart-actions">
+                <button
+                  className="ghost-button"
+                  type="button"
+                  disabled={cart.clearing || checkout.pending}
+                  onClick={cart.removeAll}
+                >
+                  {cart.clearing ? "Clearing..." : "Clear cart"}
+                </button>
+              </div>
+            </>
           ) : (
             <div className="empty-state">Your cart is empty. Checkout is disabled.</div>
           )}

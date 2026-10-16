@@ -1,19 +1,39 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { isAbortError } from "../api/client";
-import type { Cart, CartItem, CurrentUser } from "../api/dto";
-import { addItemToCart, getCart, removeCartItem, updateCartItem } from "../api/endpoints";
+import { hasErrorCode, isAbortError } from "../api/client";
+import { type Cart, type CartItem, type CurrentUser, ERROR_CODES, type MenuItem } from "../api/dto";
+import {
+  addItemToCart,
+  clearCart,
+  getCart,
+  removeCartItem,
+  updateCartItem,
+} from "../api/endpoints";
 import { EMPTY_CART, buildCartItemMap, countCartItems, errorCopy } from "../lib/format";
 import { useLatestRequest } from "./useLatestRequest";
+
+/** An add the backend refused because the cart holds another restaurant's items. */
+export interface CartConflict {
+  item: MenuItem;
+}
 
 /**
  * The signed-in user's cart. Every mutation re-reads the cart from the server, and
  * only the newest read may update the screen.
+ *
+ * A cart holds one restaurant's items. When an add comes back 409
+ * CART_RESTAURANT_CONFLICT the hook exposes `conflict` instead of an error, so the UI
+ * can offer to clear the cart and add the item: `resolveConflict()` runs DELETE /cart
+ * and then retries the add; `dismissConflict()` leaves the cart alone.
  */
 export function useCart(user: CurrentUser | null, requireSession: (message: string) => void) {
   const [cart, setCart] = useState<Cart>(EMPTY_CART);
   const [error, setError] = useState("");
   const [pendingMenuItemId, setPendingMenuItemId] = useState<number | null>(null);
   const [pendingCartItemId, setPendingCartItemId] = useState<number | null>(null);
+  const [clearing, setClearing] = useState(false);
+  const [conflict, setConflict] = useState<CartConflict | null>(null);
+  const [conflictPending, setConflictPending] = useState(false);
+  const [conflictError, setConflictError] = useState("");
   const nextCartSignal = useLatestRequest();
 
   const refresh = useCallback(() => {
@@ -40,6 +60,8 @@ export function useCart(user: CurrentUser | null, requireSession: (message: stri
 
   const itemsByMenuId = useMemo(() => buildCartItemMap(cart), [cart]);
   const itemCount = useMemo(() => countCartItems(cart), [cart]);
+  // The restaurant whose items the cart holds, if any (a cart never mixes restaurants).
+  const cartRestaurantId = cart.order_items[0]?.restaurant_id ?? null;
 
   const runMenuItemChange = useCallback(
     (menuItemId: number, change: () => Promise<void>, fallback: string) => {
@@ -53,15 +75,69 @@ export function useCart(user: CurrentUser | null, requireSession: (message: stri
   );
 
   const addItem = useCallback(
-    (menuItemId: number) => {
+    (item: MenuItem) => {
       if (!user) {
         requireSession("Sign in to add menu items to your cart.");
         return Promise.resolve();
       }
-      return runMenuItemChange(menuItemId, () => addItemToCart(menuItemId), "Unable to add item.");
+      setPendingMenuItemId(item.id);
+      return addItemToCart(item.id)
+        .then(refresh)
+        .catch((requestError: unknown) => {
+          if (hasErrorCode(requestError, ERROR_CODES.cartRestaurantConflict)) {
+            setConflictError("");
+            setConflict({ item });
+            // The cart on screen may be stale (another tab); show the one the server has.
+            return refresh();
+          }
+          setError(errorCopy(requestError, "Unable to add item."));
+          return undefined;
+        })
+        .finally(() => setPendingMenuItemId(null));
     },
-    [requireSession, runMenuItemChange, user],
+    [refresh, requireSession, user],
   );
+
+  const dismissConflict = useCallback(() => {
+    if (!conflictPending) {
+      setConflict(null);
+      setConflictError("");
+    }
+  }, [conflictPending]);
+
+  const resolveConflict = useCallback(async () => {
+    if (!conflict || conflictPending) {
+      return;
+    }
+    const { item } = conflict;
+    setConflictPending(true);
+    setConflictError("");
+
+    try {
+      await clearCart();
+    } catch (requestError) {
+      // Nothing changed on the server: keep the dialog open so the user can retry or cancel.
+      setConflictError(errorCopy(requestError, "Unable to clear the cart."));
+      setConflictPending(false);
+      return;
+    }
+
+    let addError: unknown = null;
+    try {
+      await addItemToCart(item.id);
+    } catch (requestError) {
+      addError = requestError;
+    }
+    // The cart is empty or holds the new item now; show it before reporting a failed add.
+    await refresh();
+    setConflict(null);
+    setConflictPending(false);
+    if (addError !== null) {
+      setError(
+        `Your cart was cleared, but ${item.name} was not added. ${errorCopy(addError, "Unable to add item.")}`,
+      );
+    }
+  }, [conflict, conflictPending, refresh]);
 
   const decreaseItem = useCallback(
     (menuItemId: number) => {
@@ -98,6 +174,17 @@ export function useCart(user: CurrentUser | null, requireSession: (message: stri
     [refresh],
   );
 
+  /** DELETE /cart, then re-read it. */
+  const removeAll = useCallback(() => {
+    setClearing(true);
+    return clearCart()
+      .then(refresh)
+      .catch((requestError: unknown) =>
+        setError(errorCopy(requestError, "Unable to clear the cart.")),
+      )
+      .finally(() => setClearing(false));
+  }, [refresh]);
+
   // Checkout empties the cart on the server; drop any read that is still in flight.
   const clear = useCallback(() => {
     nextCartSignal();
@@ -109,11 +196,19 @@ export function useCart(user: CurrentUser | null, requireSession: (message: stri
     error,
     itemCount,
     itemsByMenuId,
+    cartRestaurantId,
     pendingMenuItemId,
     pendingCartItemId,
+    clearing,
+    conflict,
+    conflictPending,
+    conflictError,
     addItem,
     decreaseItem,
     setLineQuantity,
+    removeAll,
+    resolveConflict,
+    dismissConflict,
     clear,
   };
 }

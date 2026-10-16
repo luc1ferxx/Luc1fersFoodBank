@@ -102,6 +102,15 @@ export const getCart = async ({ signal }: RequestControl = {}): Promise<Cart> =>
     "cart",
   );
 
+/** Empties the signed-in customer's cart (204, idempotent). */
+export const clearCart = async () => {
+  await request("/cart", {
+    method: "DELETE",
+    fallbackMessage: "Fail to clear the shopping cart",
+  });
+};
+
+/** Fails with 409 CART_RESTAURANT_CONFLICT when the cart holds another restaurant's items. */
 export const addItemToCart = async (menuItemId: number) => {
   await request("/cart", {
     method: "POST",

@@ -7,7 +7,7 @@ interface MenuCardProps {
   signedIn: boolean;
   quantity: number;
   pending: boolean;
-  onAdd: (menuItemId: number) => void;
+  onAdd: (item: MenuItem) => void;
   onDecrease: (menuItemId: number) => void;
 }
 
@@ -42,7 +42,7 @@ export function MenuCard({ item, signedIn, quantity, pending, onAdd, onDecrease 
               <button
                 type="button"
                 disabled={pending}
-                onClick={() => onAdd(item.id)}
+                onClick={() => onAdd(item)}
                 aria-label={`Increase ${item.name}`}
               >
                 +
@@ -53,7 +53,7 @@ export function MenuCard({ item, signedIn, quantity, pending, onAdd, onDecrease 
               className="primary-button"
               type="button"
               disabled={pending}
-              onClick={() => onAdd(item.id)}
+              onClick={() => onAdd(item)}
             >
               {signedIn ? "Add to cart" : "Sign in to add"}
             </button>

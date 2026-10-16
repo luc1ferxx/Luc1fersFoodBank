@@ -221,6 +221,11 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
         if (!menuItem) {
           return apiError(404, "Menu item not found");
         }
+        if (state.cart.order_items.some((item) => item.restaurant_id !== menuItem.restaurant_id)) {
+          return apiError(409, "Your cart already has items from another restaurant.", {
+            code: "CART_RESTAURANT_CONFLICT",
+          });
+        }
         const existing = state.cart.order_items.find((item) => item.menu_item_id === menuId);
         if (existing) {
           existing.quantity += 1;
@@ -238,6 +243,15 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
         }
         recomputeTotal(state.cart);
         return new Response(null, { status: 200 });
+      }),
+    ],
+    [
+      "DELETE",
+      /^\/cart$/,
+      protectedRoute(() => {
+        state.cart.order_items = [];
+        recomputeTotal(state.cart);
+        return new Response(null, { status: 204 });
       }),
     ],
     [

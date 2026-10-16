@@ -17,6 +17,12 @@ export const ORDER_STATUSES = [
 ] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
+/** Machine-readable `code` values of backend error bodies that the UI reacts to. */
+export const ERROR_CODES = {
+  /** POST /cart: the cart already holds items of another restaurant (409). */
+  cartRestaurantConflict: "CART_RESTAURANT_CONFLICT",
+} as const;
+
 /** The OrderStatus spelled by `value` (e.g. a <select> value), or null. */
 export const parseOrderStatus = (value: string): OrderStatus | null =>
   ORDER_STATUSES.find((status) => status === value) ?? null;
