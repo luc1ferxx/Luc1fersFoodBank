@@ -70,7 +70,9 @@ tasks.register('buildFrontend', Exec) {
             fileTree("${frontendDir}/scripts"),
             "${frontendDir}/.env.production",
             "${frontendDir}/package.json",
-            "${frontendDir}/package-lock.json"
+            "${frontendDir}/package-lock.json",
+            "${frontendDir}/index.html",
+            "${frontendDir}/vite.config.js"
     )
     outputs.dir(frontendBuildDir)
 
