@@ -324,16 +324,8 @@ Rollout caveat: on PostgreSQL `ALTER COLUMN ... TYPE bigint` rewrites the table 
 `ACCESS EXCLUSIVE` lock (reads and writes wait) and validates the foreign keys that point at it again. Flyway runs V7
 in one transaction, so every table stays locked until the whole migration commits. V7 alters each table with one
 statement (one rewrite per table), which is fine for empty and small databases. For large tables, widen them online
-first, one table at a time, and let V7 skip them:
-
-1. `ALTER TABLE orders ADD COLUMN id_new BIGINT` (catalog only) and a trigger that copies `id` into it on insert and
-   update; the same for every column that references it (`order_history_items.order_id_new`, ...).
-2. Backfill in batches (`UPDATE ... SET id_new = id WHERE id BETWEEN ? AND ? AND id_new IS NULL`), then
-   `CREATE UNIQUE INDEX CONCURRENTLY` on the new key.
-3. In one short transaction: drop the old primary key and foreign keys, swap the columns by renaming, add the primary
-   key `USING INDEX`, move the sequence (`ALTER SEQUENCE orders_id_seq AS bigint OWNED BY orders.id` and the column
-   default), and add the foreign keys back `NOT VALID`.
-4. `ALTER TABLE ... VALIDATE CONSTRAINT` (no write lock), then drop the old columns and the trigger.
+first ("Widening large tables ahead of V7" below) and let V7 skip them. Either way the release must not run next to
+pods of an older version ("Deploying the release with V7-V7_2" below).
 
 How urgent it is: `SELECT sequencename, last_value FROM pg_sequences` against 2,147,483,647. V7 cannot be undone
 safely once an id passes that value.
@@ -351,3 +343,96 @@ both are records to keep. They grow by one row per status change and per audited
 (`idx_order_status_history_order_id_id`), by target or by actor (`idx_audit_log_target_id`, `idx_audit_log_actor_id`).
 Each row carries the OpenTelemetry trace id of the request or job that wrote it (`trace_id`, null when no span was
 in scope), the same id as the `X-Trace-Id` header and the logs.
+
+### Deploying the release with V7-V7_2
+
+Roll this release out with no pod of an older version running. The Deployment's `RollingUpdate` (`maxSurge: 1`,
+`maxUnavailable: 0`) keeps the old pods serving HTTP, consuming Kafka and running the deadline poller while the first
+new pod migrates, and that goes wrong twice:
+
+- V7 locks table after table inside one transaction while the old pods hold row locks. Every query on a table it
+  waits for queues behind it, and an old transaction that holds a lock V7 still needs while waiting for a table V7
+  already locked ends in a deadlock, which can abort the migration.
+- After V7_1 commits, the old code keeps changing order status without an `order_status_history` row and without
+  moving `orders.updated_at` (its UPDATE does not know the column), and the orders it places get no history at all:
+  the V7_1 backfill only covers the orders that existed when it ran, so `GET /orders/{id}/history` returns `[]` for
+  them.
+
+Step 1 belongs in the release commit. Staging deploys on its own once the image is published, so scale it down
+(step 2) before pushing the tag; scale production down before approving its deployment.
+
+1. Add `"SPRING_FLYWAY_INITSQLS=SET lock_timeout = '10s'"` to the overlay's `configMapGenerator` literals. It only
+   applies to Flyway's connections and can stay: when another client (a report, a backup, a `psql` session) holds a
+   lock, V7 fails and rolls back after 10 s instead of queueing all traffic behind it, and the pod retries on restart.
+2. Scale to zero and wait for the old pods to drain:
+   `kubectl -n <ns> scale deployment/onlineorder --replicas=0`, then
+   `kubectl -n <ns> wait --for=delete pod -l app.kubernetes.io/name=onlineorder --timeout=120s`. The
+   HorizontalPodAutoscaler leaves a Deployment at zero replicas alone until it is scaled up again.
+3. Let the release apply the new image (a rollout of zero replicas completes at once), then
+   `kubectl -n <ns> scale deployment/onlineorder --replicas=1` and wait until the pod is ready: it runs V7-V7_2 alone.
+4. Scale to the HorizontalPodAutoscaler's `minReplicas`; the autoscaler takes over again.
+5. Check that every order has a history and that its latest row matches its status. Both counts must be 0, and stay
+   0 afterwards:
+
+   ```sql
+   SELECT COUNT(*) FROM orders o
+   WHERE NOT EXISTS (SELECT 1 FROM order_status_history h WHERE h.order_id = o.id);
+
+   SELECT COUNT(*) FROM orders o
+   JOIN LATERAL (SELECT h.to_status FROM order_status_history h WHERE h.order_id = o.id
+                 ORDER BY h.id DESC LIMIT 1) latest ON TRUE
+   WHERE latest.to_status <> o.status;
+   ```
+
+If pods of an older version did run next to the new one (a rolling update happened anyway), run
+`backend/src/main/resources/db/ops/repair_order_history.sql` once the rollout has finished (usage in its header). It
+adds a `SYSTEM`/`backfill` row for each order without history (`updated_at` = `created_at`, as V7_1) and for each
+status change an old pod left out (`updated_at` = the repair time), and a second run changes nothing. Who made those
+changes, and when, is lost. `SchemaRolloutPostgresTests` runs it against PostgreSQL.
+
+### Widening large tables ahead of V7
+
+Widen a large table online, one table at a time, before the release; V7 then skips its columns (it only widens
+columns that are still `integer`, and the sequence). The procedure drops and recreates every constraint and index on
+the swapped columns: PostgreSQL drops each index and constraint that involves a column when the column is dropped,
+and the code depends on them. Without them checkout and add-to-cart fail ("there is no unique or exclusion constraint
+matching the ON CONFLICT specification" for `uq_idempotency_request` and `uk_order_item_cart_menu`), and the
+fulfilment consumers' target-less `ON CONFLICT DO NOTHING` silently inserts duplicates (`uq_delivery_order`: a
+redelivered `order.accepted` would assign a second rider; also `uq_merchant_order_order`,
+`uq_order_deadline_order_type`, `dispatch_orders_pkey`, `uq_notification_order_event`). `SchemaRolloutPostgresTests`
+runs the procedure for `orders` (a key other tables reference) and `idempotency_requests` (an `ON CONFLICT` target).
+
+0. Inventory: `psql -X -A -t -v ON_ERROR_STOP=1 -f backend/src/main/resources/db/ops/key_dependents.sql > before.txt`
+   lists every constraint and index on a key column with its definition. The ones that matter for a table are its own
+   rows and the foreign keys of other tables that reference it (`REFERENCES orders(id)` for `orders`:
+   `fk_history_order`, `fk_notification_order`, `fk_idempotency_order`).
+1. Add the new columns (catalog only), for example
+   `ALTER TABLE orders ADD COLUMN id_new BIGINT, ADD COLUMN customer_id_new BIGINT, ADD COLUMN restaurant_id_new BIGINT`,
+   and a `BEFORE INSERT OR UPDATE` trigger that copies each key column into its `_new` column.
+2. Backfill in batches (`UPDATE orders SET id_new = id WHERE id BETWEEN ? AND ? AND id_new IS NULL`; the trigger fills
+   the other columns). Then, without a long lock:
+   - for each `NOT NULL` column, `ADD CONSTRAINT orders_id_new_not_null CHECK (id_new IS NOT NULL) NOT VALID` and
+     `VALIDATE CONSTRAINT` it, so that `SET NOT NULL` in the swap does not scan the table under the lock;
+   - for the primary key and for every index and unique constraint of the inventory, the same index on the new
+     columns with `CREATE [UNIQUE] INDEX CONCURRENTLY`, the same column order and the same `WHERE` for a partial
+     index: `orders_pkey_new ON orders (id_new)`, `idx_orders_customer_created_id_new ON orders (customer_id_new,
+     created_at, id_new)`, `uq_idempotency_request_new ON idempotency_requests (customer_id_new, scope,
+     idempotency_key)`, ...
+3. Swap in one short transaction: `SET LOCAL lock_timeout = '5s'`, `LOCK TABLE` the table and the tables whose
+   foreign keys reference it `IN ACCESS EXCLUSIVE MODE`, then
+   - drop the referencing foreign keys of the other tables, then the table's primary key, unique constraints, foreign
+     keys and plain indexes on the old columns;
+   - drop the trigger: it names the `_new` columns, so after the renames every insert would fail;
+   - rename each old column to `<column>_old` and each new one to `<column>`; `SET NOT NULL` on the new ones (the
+     validated CHECK skips the scan; drop the CHECK afterwards) and `DROP NOT NULL` on the old ones, which new rows no
+     longer fill; move the sequence, which would otherwise be dropped with the old column:
+     `ALTER COLUMN id_old DROP DEFAULT`, `ALTER SEQUENCE orders_id_seq AS bigint OWNED BY orders.id`,
+     `ALTER COLUMN id SET DEFAULT nextval('orders_id_seq')`;
+   - put every inventory entry back under its old name: `ADD CONSTRAINT orders_pkey PRIMARY KEY USING INDEX
+     orders_pkey_new`, `ADD CONSTRAINT uq_idempotency_request UNIQUE USING INDEX uq_idempotency_request_new` for each
+     unique constraint, `ALTER INDEX idx_orders_customer_created_id_new RENAME TO idx_orders_customer_created_id` for
+     each plain index, and each foreign key (the table's own and the referencing ones) with the inventory's definition
+     plus `NOT VALID`.
+4. `ALTER TABLE ... VALIDATE CONSTRAINT` each of those foreign keys (no write lock). Run the inventory again into
+   `after.txt`: `diff before.txt after.txt` must print nothing, which also proves that the `ON CONFLICT` targets are
+   back. Then drop the old columns.
