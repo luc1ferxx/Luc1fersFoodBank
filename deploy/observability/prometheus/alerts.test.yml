@@ -137,3 +137,65 @@ tests:
             exp_annotations:
               summary: Requests keep waiting for a database connection on app:8081
               description: Threads have been waiting for a pooled connection for 5 minutes (9 now). Requests that wait longer than the 2s connection-timeout fail with 503.
+
+  # onlineorder.dead_letter.stored is registered by the first dead letter, so its series starts at 1.
+  - name: first dead letter after a start
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_dead_letter_stored_total{application="OnlineOrder", instance="app:8081", source_topic="order-events"}'
+        values: '_ _ _ 1x30'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Order events are being dead-lettered
+              description: Events were stored as dead letters in the last 15 minutes. Inspect them and replay with POST /dead-letters/{id}/replay once the consumer is fixed.
+      # Resolves once the window no longer holds the event.
+      - eval_time: 25m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts: []
+
+  - name: later dead letters on an existing series
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_dead_letter_stored_total{application="OnlineOrder", instance="app:8081", source_topic="order-events"}'
+        values: '1x24 2x10'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts: []
+      - eval_time: 27m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Order events are being dead-lettered
+              description: Events were stored as dead letters in the last 15 minutes. Inspect them and replay with POST /dead-letters/{id}/replay once the consumer is fixed.
+
+  # A restarted pod gets a new instance label; its counter starts over at 1 while the old series goes stale.
+  - name: first dead letter on a replacement instance
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_dead_letter_stored_total{application="OnlineOrder", instance="10.0.0.1:8081", source_topic="order-events"}'
+        values: '3x19 stale'
+      - series: 'onlineorder_dead_letter_stored_total{application="OnlineOrder", instance="10.0.0.2:8081", source_topic="order-events"}'
+        values: '_x25 1x10'
+    alert_rule_test:
+      - eval_time: 22m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts: []
+      - eval_time: 27m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Order events are being dead-lettered
+              description: Events were stored as dead letters in the last 15 minutes. Inspect them and replay with POST /dead-letters/{id}/replay once the consumer is fixed.

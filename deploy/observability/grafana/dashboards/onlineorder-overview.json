@@ -477,7 +477,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(increase(onlineorder_dead_letter_stored_total{application=\"OnlineOrder\", instance=~\"$instance\"}[$__range])) or vector(0)",
+          "expr": "(sum(increase(onlineorder_dead_letter_stored_total{application=\"OnlineOrder\", instance=~\"$instance\"}[$__range])) or vector(0)) + (sum(min_over_time(onlineorder_dead_letter_stored_total{application=\"OnlineOrder\", instance=~\"$instance\"}[$__range]) unless onlineorder_dead_letter_stored_total{application=\"OnlineOrder\", instance=~\"$instance\"} offset $__range) or vector(0))",
           "instant": false,
           "range": true
         }

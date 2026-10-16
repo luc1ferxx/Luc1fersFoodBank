@@ -122,13 +122,24 @@ groups:
           summary: Outbox events reached FAILED
           description: '{{ $value }} outbox event(s) used up app.outbox.max-attempts. Fix the cause, then retry them with POST /admin/outbox/events/{id}/retry.'
 
+      # The counter is registered by the first dead letter an instance stores, so its series starts at 1 and
+      # increase() cannot see that first event. The second branch catches a series that appeared within the window
+      # (the first dead letter after a start, or of a new source topic); increase() covers the rest, counter resets
+      # included.
       - alert: OnlineOrderDeadLettersGrowing
-        expr: sum(increase(onlineorder_dead_letter_stored_total{application="OnlineOrder"}[15m])) > 0
+        expr: |
+          sum(increase(onlineorder_dead_letter_stored_total{application="OnlineOrder"}[15m])) > 0
+          or
+          count(
+            onlineorder_dead_letter_stored_total{application="OnlineOrder"}
+            unless
+            onlineorder_dead_letter_stored_total{application="OnlineOrder"} offset 15m
+          ) > 0
         labels:
           severity: warning
         annotations:
           summary: Order events are being dead-lettered
-          description: '{{ $value | humanize }} event(s) were stored as dead letters in the last 15 minutes. Inspect them and replay with POST /dead-letters/{id}/replay once the consumer is fixed.'
+          description: Events were stored as dead letters in the last 15 minutes. Inspect them and replay with POST /dead-letters/{id}/replay once the consumer is fixed.
 
       - alert: OnlineOrderHikariPendingSustained
         expr: max by (instance) (hikaricp_connections_pending{application="OnlineOrder", pool="onlineorder-db"}) > 0
