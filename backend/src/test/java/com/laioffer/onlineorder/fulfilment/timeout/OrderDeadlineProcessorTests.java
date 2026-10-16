@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.fulfilment.timeout;
 
 
+import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
@@ -64,7 +65,7 @@ class OrderDeadlineProcessorTests {
         Mockito.when(orderDeadlineRepository.claimNextDue(Mockito.any()))
                 .thenReturn(deadline(1L, 10L, "ACCEPT"))
                 .thenReturn(null);
-        Mockito.when(orderLifecycleCommands.cancelIfStillIn(10L, OrderStatus.PAID, "MERCHANT_TIMEOUT"))
+        Mockito.when(orderLifecycleCommands.cancelIfStillIn(10L, OrderStatus.PAID, "MERCHANT_TIMEOUT", OrderActor.system()))
                 .thenReturn(Optional.of(cancelledOrder(10L, "MERCHANT_TIMEOUT")));
 
         Assertions.assertEquals(1, processor.fireDueDeadlines());
@@ -81,7 +82,7 @@ class OrderDeadlineProcessorTests {
         Mockito.when(orderDeadlineRepository.claimNextDue(Mockito.any()))
                 .thenReturn(deadline(2L, 11L, "PAYMENT"))
                 .thenReturn(null);
-        Mockito.when(orderLifecycleCommands.cancelIfStillIn(11L, OrderStatus.PLACED, "PAYMENT_TIMEOUT"))
+        Mockito.when(orderLifecycleCommands.cancelIfStillIn(11L, OrderStatus.PLACED, "PAYMENT_TIMEOUT", OrderActor.system()))
                 .thenReturn(Optional.of(cancelledOrder(11L, "PAYMENT_TIMEOUT")));
 
         processor.fireDueDeadlines();
@@ -97,7 +98,7 @@ class OrderDeadlineProcessorTests {
         Mockito.when(orderDeadlineRepository.claimNextDue(Mockito.any()))
                 .thenReturn(deadline(1L, 10L, "ACCEPT"))
                 .thenReturn(null);
-        Mockito.when(orderLifecycleCommands.cancelIfStillIn(10L, OrderStatus.PAID, "MERCHANT_TIMEOUT"))
+        Mockito.when(orderLifecycleCommands.cancelIfStillIn(10L, OrderStatus.PAID, "MERCHANT_TIMEOUT", OrderActor.system()))
                 .thenReturn(Optional.empty());
 
         processor.fireDueDeadlines();
@@ -117,13 +118,13 @@ class OrderDeadlineProcessorTests {
                 .thenReturn(deadline(1L, 10L, "ACCEPT"))
                 .thenReturn(deadline(2L, 11L, "PAYMENT"))
                 .thenReturn(null);
-        Mockito.when(orderLifecycleCommands.cancelIfStillIn(11L, OrderStatus.PLACED, "PAYMENT_TIMEOUT"))
+        Mockito.when(orderLifecycleCommands.cancelIfStillIn(11L, OrderStatus.PLACED, "PAYMENT_TIMEOUT", OrderActor.system()))
                 .thenReturn(Optional.of(cancelledOrder(11L, "PAYMENT_TIMEOUT")));
 
         Assertions.assertEquals(2, acceptTimeoutOff.fireDueDeadlines());
 
         Mockito.verify(orderLifecycleCommands, Mockito.never())
-                .cancelIfStillIn(Mockito.eq(10L), Mockito.any(), Mockito.anyString());
+                .cancelIfStillIn(Mockito.eq(10L), Mockito.any(), Mockito.anyString(), Mockito.any());
         Mockito.verify(orderDeadlineRepository).deleteById(1L);
         Mockito.verify(metricsService).recordFulfilmentTimeout("ACCEPT", "skipped");
         Mockito.verify(metricsService, Mockito.never()).recordMerchantDecision(Mockito.anyString());
@@ -139,9 +140,9 @@ class OrderDeadlineProcessorTests {
                 .thenReturn(deadline(1L, 10L, "ACCEPT"))
                 .thenReturn(deadline(2L, 11L, "ACCEPT"))
                 .thenReturn(null);
-        Mockito.when(orderLifecycleCommands.cancelIfStillIn(10L, OrderStatus.PAID, "MERCHANT_TIMEOUT"))
+        Mockito.when(orderLifecycleCommands.cancelIfStillIn(10L, OrderStatus.PAID, "MERCHANT_TIMEOUT", OrderActor.system()))
                 .thenThrow(new CannotAcquireLockException("lock timeout"));
-        Mockito.when(orderLifecycleCommands.cancelIfStillIn(11L, OrderStatus.PAID, "MERCHANT_TIMEOUT"))
+        Mockito.when(orderLifecycleCommands.cancelIfStillIn(11L, OrderStatus.PAID, "MERCHANT_TIMEOUT", OrderActor.system()))
                 .thenReturn(Optional.of(cancelledOrder(11L, "MERCHANT_TIMEOUT")));
 
         LocalDateTime before = LocalDateTime.now();
@@ -167,7 +168,7 @@ class OrderDeadlineProcessorTests {
                 true);
         Mockito.when(orderDeadlineRepository.claimNextDue(Mockito.any()))
                 .thenReturn(deadline(1L, 10L, "ACCEPT"), deadline(2L, 11L, "ACCEPT"), deadline(3L, 12L, "ACCEPT"));
-        Mockito.when(orderLifecycleCommands.cancelIfStillIn(Mockito.anyLong(), Mockito.any(), Mockito.anyString()))
+        Mockito.when(orderLifecycleCommands.cancelIfStillIn(Mockito.anyLong(), Mockito.any(), Mockito.anyString(), Mockito.eq(OrderActor.system())))
                 .thenReturn(Optional.empty());
 
         Assertions.assertEquals(2, smallBatches.fireDueDeadlines());

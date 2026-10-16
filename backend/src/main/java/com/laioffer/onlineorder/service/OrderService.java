@@ -299,35 +299,6 @@ public class OrderService implements OrderLifecycleCommands {
     }
 
 
-    // The overloads without an actor are the interface's defaults, overridden here so that a call through the bean's
-    // proxy also starts the transaction itself.
-    @Override
-    @Transactional
-    public RestaurantOrderTransition transitionRestaurantOrder(
-            Long orderId,
-            Long restaurantId,
-            OrderStatus requiredStatus,
-            OrderStatus targetStatus,
-            String cancelReason
-    ) {
-        return transitionRestaurantOrder(orderId, restaurantId, requiredStatus, targetStatus, cancelReason, OrderActor.system());
-    }
-
-
-    @Override
-    @Transactional
-    public Optional<OrderDto> cancelIfStillIn(Long orderId, OrderStatus expectedStatus, String cancelReason) {
-        return cancelIfStillIn(orderId, expectedStatus, cancelReason, OrderActor.system());
-    }
-
-
-    @Override
-    @Transactional
-    public DeliveryCompletion completeDeliveredOrder(Long orderId) {
-        return completeDeliveredOrder(orderId, OrderActor.system());
-    }
-
-
     @Override
     @Transactional
     public RestaurantOrderTransition transitionRestaurantOrder(

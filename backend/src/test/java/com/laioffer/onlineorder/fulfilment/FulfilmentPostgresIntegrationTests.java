@@ -8,6 +8,7 @@ import com.laioffer.onlineorder.fulfilment.merchant.MerchantInboxService;
 import com.laioffer.onlineorder.fulfilment.notification.DeliveryNotificationService;
 import com.laioffer.onlineorder.fulfilment.order.DeliveryCompletionService;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantOrderService;
+import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineProcessor;
 import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineService;
@@ -336,7 +337,7 @@ class FulfilmentPostgresIntegrationTests {
                     }
                 }));
                 Future<Boolean> timeout = executor.submit(awaiting(start, () -> orderLifecycleCommands.cancelIfStillIn(
-                        order.orderId(), OrderStatus.PAID, OrderLifecycleCommands.MERCHANT_TIMEOUT).isPresent()));
+                        order.orderId(), OrderStatus.PAID, OrderLifecycleCommands.MERCHANT_TIMEOUT, OrderActor.system()).isPresent()));
                 start.countDown();
 
                 String acceptResult = accept.get(20, TimeUnit.SECONDS);
@@ -579,7 +580,7 @@ class FulfilmentPostgresIntegrationTests {
     void customerCancellingAnAcceptedOrder_shouldCancelTheDeliveryAndReleaseTheRider() {
         PaidOrder order = paidOrderAt("Fashion Wok");
         orderLifecycleCommands.transitionRestaurantOrder(
-                order.orderId(), order.restaurantId(), OrderStatus.PAID, OrderStatus.ACCEPTED, null);
+                order.orderId(), order.restaurantId(), OrderStatus.PAID, OrderStatus.ACCEPTED, null, OrderActor.system());
         int totalLoadBefore = totalRiderLoad();
         deliverOrderEvent(order.orderId(), "order.accepted", dispatchService::handle);
         Assertions.assertEquals(totalLoadBefore + 1, totalRiderLoad());
@@ -604,7 +605,7 @@ class FulfilmentPostgresIntegrationTests {
         for (int i = 0; i < 6; i++) {
             PaidOrder order = paidOrderAt(i % 2 == 0 ? "SGD Tofu House" : "Burger King");
             orderLifecycleCommands.transitionRestaurantOrder(
-                    order.orderId(), order.restaurantId(), OrderStatus.PAID, OrderStatus.ACCEPTED, null);
+                    order.orderId(), order.restaurantId(), OrderStatus.PAID, OrderStatus.ACCEPTED, null, OrderActor.system());
             acceptedEvents.add(latestOrderEvent(order.orderId(), "order.accepted"));
         }
         int totalLoadBefore = totalRiderLoad();
@@ -760,7 +761,7 @@ class FulfilmentPostgresIntegrationTests {
     void orderAcceptedReplayedAfterTheOrderWasCancelled_shouldAssignNoRider() {
         PaidOrder order = paidOrderAt("Burger King");
         orderLifecycleCommands.transitionRestaurantOrder(
-                order.orderId(), order.restaurantId(), OrderStatus.PAID, OrderStatus.ACCEPTED, null);
+                order.orderId(), order.restaurantId(), OrderStatus.PAID, OrderStatus.ACCEPTED, null, OrderActor.system());
         OrderEventEnvelope accepted = latestOrderEvent(order.orderId(), "order.accepted");
         orderService.cancelOrder(order.customerId(), order.orderId());
         int totalLoadBefore = totalRiderLoad();
@@ -791,7 +792,7 @@ class FulfilmentPostgresIntegrationTests {
             for (int round = 0; round < 8; round++) {
                 PaidOrder order = paidOrderAt(round % 2 == 0 ? "Fashion Wok" : "SGD Tofu House");
                 orderLifecycleCommands.transitionRestaurantOrder(
-                        order.orderId(), order.restaurantId(), OrderStatus.PAID, OrderStatus.ACCEPTED, null);
+                        order.orderId(), order.restaurantId(), OrderStatus.PAID, OrderStatus.ACCEPTED, null, OrderActor.system());
                 orderService.cancelOrder(order.customerId(), order.orderId());
                 OrderEventEnvelope accepted = latestOrderEvent(order.orderId(), "order.accepted");
                 OrderEventEnvelope cancelled = latestOrderEvent(order.orderId(), "order.cancelled");

@@ -19,8 +19,9 @@ import java.util.Optional;
  * row lock and exactly one of them wins; the loser sees the winner's status. A command that changes nothing (a
  * repeat, or an order no longer in the expected status) writes no history row.
  *
- * <p>Each command takes the {@link OrderActor} recorded in the order history. The overloads without an actor are kept
- * for existing callers and record {@link OrderActor#system()}.
+ * <p>Each command takes the {@link OrderActor} recorded in the order history, and there are deliberately no overloads
+ * without one: a new caller has to name its actor ({@link OrderActor#system()} for jobs such as the deadline
+ * timeouts) instead of silently recording SYSTEM for a merchant's or a rider's action.
  */
 public interface OrderLifecycleCommands {
 
@@ -61,36 +62,14 @@ public interface OrderLifecycleCommands {
 
 
     /**
-     * {@link #transitionRestaurantOrder(Long, Long, OrderStatus, OrderStatus, String, OrderActor)} recorded as SYSTEM.
-     */
-    default RestaurantOrderTransition transitionRestaurantOrder(
-            Long orderId,
-            Long restaurantId,
-            OrderStatus requiredStatus,
-            OrderStatus targetStatus,
-            String cancelReason
-    ) {
-        return transitionRestaurantOrder(orderId, restaurantId, requiredStatus, targetStatus, cancelReason, OrderActor.system());
-    }
-
-
-    /**
      * Cancels the order only while it is still in {@code expectedStatus}: a timeout must not cancel an order that was
      * paid or accepted in the meantime, even though ACCEPTED -> CANCELLED is a valid transition.
      *
+     * @param actor recorded in the order history; {@link OrderActor#system()} for the deadline timeouts
      * @return the cancelled order, or empty when the order does not exist or is no longer in {@code expectedStatus}
      * (nothing changed)
      */
     Optional<OrderDto> cancelIfStillIn(Long orderId, OrderStatus expectedStatus, String cancelReason, OrderActor actor);
-
-
-    /**
-     * {@link #cancelIfStillIn(Long, OrderStatus, String, OrderActor)} recorded as SYSTEM, the actor of the deadline
-     * timeouts.
-     */
-    default Optional<OrderDto> cancelIfStillIn(Long orderId, OrderStatus expectedStatus, String cancelReason) {
-        return cancelIfStillIn(orderId, expectedStatus, cancelReason, OrderActor.system());
-    }
 
 
     /**
@@ -104,14 +83,6 @@ public interface OrderLifecycleCommands {
      * @param actor recorded for each step, normally {@link OrderActor#rider(Long)} of the delivering rider
      */
     DeliveryCompletion completeDeliveredOrder(Long orderId, OrderActor actor);
-
-
-    /**
-     * {@link #completeDeliveredOrder(Long, OrderActor)} recorded as SYSTEM.
-     */
-    default DeliveryCompletion completeDeliveredOrder(Long orderId) {
-        return completeDeliveredOrder(orderId, OrderActor.system());
-    }
 
 
     /**
