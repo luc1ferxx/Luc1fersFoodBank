@@ -11,9 +11,13 @@ export const NOTIFICATION_POLL_MS = 15000;
 /**
  * Order notifications for the signed-in user, polled every 15 seconds while polling
  * is enabled. Polling stops while the tab is hidden and catches up with one
- * immediate request when the tab becomes visible again.
+ * immediate request when the tab becomes visible again. It also stops while the
+ * ordering page is not the shown workspace (`shown: false`).
  */
-export function useNotifications(user: CurrentUser | null) {
+export function useNotifications(
+  user: CurrentUser | null,
+  { shown = true }: { shown?: boolean } = {},
+) {
   const [notifications, setNotifications] = useState<OrderNotification[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -48,7 +52,7 @@ export function useNotifications(user: CurrentUser | null) {
   }, [load]);
 
   usePolling(() => void load(), {
-    enabled: Boolean(user) && polling,
+    enabled: Boolean(user) && polling && shown,
     intervalMs: NOTIFICATION_POLL_MS,
   });
 

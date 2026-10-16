@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { AuthPanel } from "../components/AuthPanel";
 import { CartConflictDialog } from "../components/CartConflictDialog";
 import { ErrorBoundary } from "../components/ErrorBoundary";
@@ -18,12 +18,16 @@ interface OrderingPageProps {
   onSearchChange: (value: string) => void;
   activePanel: OperationsTab;
   onPanelChange: (panel: OperationsTab) => void;
+  /** False while another workspace is shown; the page stays mounted, hidden. */
+  active: boolean;
 }
 
 /**
- * Everything that belongs to one session. App renders it with key={user}, so
- * signing in, signing out, or an expired session remounts it with empty cart,
- * order, notification, and checkout state instead of resetting each piece by hand.
+ * Everything that belongs to one session. App renders it inside a shell keyed by
+ * the user, so signing in, signing out, or an expired session remounts it with empty
+ * cart, order, notification, and checkout state instead of resetting each piece by
+ * hand. Switching to another workspace only hides it: the checkout and cancel
+ * Idempotency-Keys of a failed attempt must survive for the retry.
  */
 export function OrderingPage({
   session,
@@ -32,12 +36,14 @@ export function OrderingPage({
   onSearchChange,
   activePanel,
   onPanelChange,
+  active,
 }: OrderingPageProps) {
   const { user, requireSession } = session;
   const signedIn = Boolean(user);
 
   const cart = useCart(user, requireSession);
-  const notifications = useNotifications(user);
+  const { refresh: refreshCart } = cart;
+  const notifications = useNotifications(user, { shown: active });
   const { load: loadNotifications } = notifications;
   const refreshNotifications = useCallback(() => {
     void loadNotifications();
@@ -49,6 +55,18 @@ export function OrderingPage({
     void loadOrders();
     void loadNotifications();
   }, [loadOrders, loadNotifications]);
+
+  // Shown again after another workspace: the data may have moved on meanwhile (an
+  // admin changed an order, say), so read it again. The retry keys are untouched.
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current && user) {
+      void refreshCart();
+      void loadOrders();
+      void loadNotifications();
+    }
+    wasActive.current = active;
+  }, [active, user, refreshCart, loadOrders, loadNotifications]);
 
   const checkout = useCheckout({
     user,

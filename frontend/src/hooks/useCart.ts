@@ -210,6 +210,7 @@ export function useCart(user: CurrentUser | null, requireSession: (message: stri
     resolveConflict,
     dismissConflict,
     clear,
+    refresh,
   };
 }
 
