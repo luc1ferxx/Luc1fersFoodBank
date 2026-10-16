@@ -2,7 +2,10 @@ package com.laioffer.onlineorder.fulfilment.merchant;
 
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.laioffer.onlineorder.messaging.MerchantEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
+import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,6 +35,15 @@ class MerchantInboxServiceTests {
     @Mock
     private ProcessedEventService processedEventService;
 
+    @Mock
+    private MerchantAccountRepository merchantAccountRepository;
+
+    @Mock
+    private OrderEventOutboxService outboxService;
+
+    @Mock
+    private ApplicationMetricsService metricsService;
+
     private MerchantInboxService service;
 
 
@@ -39,8 +51,12 @@ class MerchantInboxServiceTests {
     void setup() {
         service = new MerchantInboxService(
                 merchantOrderRepository,
+                merchantAccountRepository,
+                outboxService,
+                metricsService,
                 new ObjectMapper().findAndRegisterModules(),
-                processedEventService
+                processedEventService,
+                "merchant-events"
         );
     }
 
@@ -182,5 +198,65 @@ class MerchantInboxServiceTests {
                 Mockito.any()
         );
         assertEquals("MERCHANT_TIMEOUT", reason.getValue());
+    }
+    @Test
+    void orderPaid_atAStaffedRestaurant_shouldAnnounceItWithThePaymentTime() {
+        OrderEventEnvelope paid = orderEvent("order.paid", 10L, 2L, "PAID");
+        Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
+        Mockito.when(merchantOrderRepository.insertPaidOrderIfAbsent(
+                Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(), Mockito.anyString(),
+                Mockito.any(), Mockito.any())).thenReturn(1);
+        Mockito.when(merchantAccountRepository.countActiveByRestaurantId(2L)).thenReturn(2);
+
+        service.handle(paid);
+
+        ArgumentCaptor<Object> envelope = ArgumentCaptor.forClass(Object.class);
+        ArgumentCaptor<String> eventId = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(outboxService).enqueueEvent(
+                Mockito.eq("MERCHANT_ORDER"),
+                Mockito.eq(10L),
+                Mockito.eq("merchant-events"),
+                Mockito.eq("10"),
+                Mockito.eq("merchant.order_received"),
+                eventId.capture(),
+                envelope.capture()
+        );
+        MerchantEventEnvelope event = (MerchantEventEnvelope) envelope.getValue();
+        assertEquals(eventId.getValue(), event.eventId());
+        assertEquals("merchant.order_received", event.eventType());
+        assertEquals(10L, event.aggregateId());
+        assertEquals(paid.correlationId(), event.correlationId());
+        assertEquals(10L, event.data().orderId());
+        assertEquals(2L, event.data().restaurantId());
+        assertEquals(LocalDateTime.of(2026, 4, 4, 12, 0), event.data().paidAt());
+        assertEquals(2, event.data().activeMerchants());
+        Mockito.verify(metricsService).recordMerchantOrderReceived("staffed");
+    }
+
+
+    @Test
+    void orderPaid_atARestaurantWithoutAnActiveMerchant_shouldNotAnnounceIt() {
+        OrderEventEnvelope paid = orderEvent("order.paid", 10L, 2L, "PAID");
+        Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
+        Mockito.when(merchantOrderRepository.insertPaidOrderIfAbsent(
+                Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(), Mockito.anyString(),
+                Mockito.any(), Mockito.any())).thenReturn(1);
+        Mockito.when(merchantAccountRepository.countActiveByRestaurantId(2L)).thenReturn(0);
+
+        service.handle(paid);
+
+        Mockito.verifyNoInteractions(outboxService);
+        Mockito.verify(metricsService).recordMerchantOrderReceived("unstaffed");
+    }
+
+
+    @Test
+    void orderPaid_thatOnlyCompletesARowALaterEventCreated_shouldNotAnnounceIt() {
+        OrderEventEnvelope paid = orderEvent("order.paid", 10L, 2L, "PAID");
+        Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
+
+        service.handle(paid);
+
+        Mockito.verifyNoInteractions(outboxService, merchantAccountRepository, metricsService);
     }
 }

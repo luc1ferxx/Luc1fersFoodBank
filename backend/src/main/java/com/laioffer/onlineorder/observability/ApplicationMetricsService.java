@@ -61,6 +61,20 @@ public class ApplicationMetricsService {
 
 
     /**
+     * A paid order reached its restaurant's merchant inbox.
+     *
+     * @param staffing staffed (the restaurant had an active merchant account, so the order gets an accept deadline) or
+     *                 unstaffed (it has none: the order is never auto-cancelled and waits for a merchant or an admin)
+     */
+    public void recordMerchantOrderReceived(String staffing) {
+        meterRegistry.counter(
+                "onlineorder.fulfilment.merchant.orders_received",
+                "staffing", normalize(staffing)
+        ).increment();
+    }
+
+
+    /**
      * @param deadlineType PAYMENT or ACCEPT
      * @param result       cancelled (the order was still waiting) or skipped (it had moved on)
      */

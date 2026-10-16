@@ -173,8 +173,11 @@ app:
   fulfilment:
     # Delivery events published by the dispatch module (same partition count as the order topic).
     delivery-topic: ${KAFKA_DELIVERY_TOPIC:delivery-events}
+    # Merchant events (merchant.order_received) published by the merchant module, consumed by the timeout module.
+    merchant-topic: ${KAFKA_MERCHANT_TOPIC:merchant-events}
     merchant-group: ${FULFILMENT_MERCHANT_GROUP:onlineorder-merchant}
     timeout-group: ${FULFILMENT_TIMEOUT_GROUP:onlineorder-timeout}
+    timeout-merchant-group: ${FULFILMENT_TIMEOUT_MERCHANT_GROUP:onlineorder-timeout-merchant}
     dispatch-group: ${FULFILMENT_DISPATCH_GROUP:onlineorder-dispatch}
     order-delivery-group: ${FULFILMENT_ORDER_DELIVERY_GROUP:onlineorder-order-delivery}
     notification-delivery-group: ${FULFILMENT_NOTIFICATION_DELIVERY_GROUP:onlineorder-notification-delivery}
@@ -183,13 +186,14 @@ app:
     # a changed value applies to orders paid or placed after the change.
     accept-timeout: ${FULFILMENT_ACCEPT_TIMEOUT:10m}
     payment-timeout: ${FULFILMENT_PAYMENT_TIMEOUT:15m}
-    # Off by default: the accept timeout cancels every paid order no merchant accepts. Only turn it on where every
-    # restaurant has a merchant login that accepts orders (merchants are only seeded by the demo seed, and the frontend
-    # has no merchant screen yet). Switching it off also drops pending ACCEPT deadlines without cancelling.
-    accept-timeout-enabled: ${FULFILMENT_ACCEPT_TIMEOUT_ENABLED:false}
-    # Consumer threads per fulfilment listener (merchant, timeout, dispatch, order-delivery, notification-delivery).
-    # With Kafka on there are 7 listener containers (these 5, notifications, the DLT); each consumer thread holds a
-    # pooled database connection only while it handles a record, but all of them share the Hikari pool above.
+    # Only orders of a staffed restaurant (at least one active merchant account when the merchant inbox received the
+    # order) get an accept deadline; a restaurant without staff never gets its paid orders auto-cancelled. Switching it
+    # off also drops pending ACCEPT deadlines without cancelling.
+    accept-timeout-enabled: ${FULFILMENT_ACCEPT_TIMEOUT_ENABLED:true}
+    # Consumer threads per fulfilment listener (merchant, timeout, timeout-merchant, dispatch, order-delivery,
+    # notification-delivery). With Kafka on there are 8 listener containers (these 6, notifications, the DLT); each
+    # consumer thread holds a pooled database connection only while it handles a record, but all of them share the
+    # Hikari pool above.
     listener-concurrency: ${FULFILMENT_LISTENER_CONCURRENCY:${app.kafka.listener-concurrency}}
     deadline-poller:
       # Runs on its own thread, not on the shared scheduler the outbox publisher uses. Off wherever Kafka is off

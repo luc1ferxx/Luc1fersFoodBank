@@ -2,6 +2,8 @@ package com.laioffer.onlineorder.fulfilment.timeout;
 
 
 import com.laioffer.onlineorder.fulfilment.FulfilmentEvents;
+import com.laioffer.onlineorder.messaging.MerchantEventEnvelope;
+import com.laioffer.onlineorder.messaging.MerchantEventPayload;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.springframework.beans.factory.annotation.Value;
@@ -16,25 +18,28 @@ import java.util.Set;
 
 
 /**
- * Keeps the order deadlines in step with the order events (timeout consumer group):
+ * Keeps the order deadlines in step with the order and merchant events (timeout consumer groups):
  * <ul>
  *     <li>order.created: a PAYMENT deadline at the order time plus app.fulfilment.payment-timeout;</li>
- *     <li>order.paid: the PAYMENT deadline is dropped and, when app.fulfilment.accept-timeout-enabled is on, an
- *     ACCEPT deadline is set at the payment time plus app.fulfilment.accept-timeout;</li>
+ *     <li>order.paid: the PAYMENT deadline is dropped;</li>
+ *     <li>merchant.order_received (merchant topic, own consumer group): the merchant module saw the paid order arrive
+ *     at a restaurant with at least one active merchant account, so, when app.fulfilment.accept-timeout-enabled is on
+ *     (the default), an ACCEPT deadline is set at the payment time plus app.fulfilment.accept-timeout. A restaurant
+ *     without an active merchant gets no such event and its orders no ACCEPT deadline: nobody could accept them;</li>
  *     <li>any later order event: the order no longer waits for anything, so its deadlines are dropped.</li>
  * </ul>
- * Deadlines are measured from the event's occurredAt, so a consumer that lags does not extend them. Dropping a
- * deadline early only saves the poller a no-op: the poller cancels an order only while it is still in the status the
- * deadline waits in. Each event is applied once per consumer (processed_events, same transaction).
- *
- * <p>The accept timeout is off by default: it cancels every paid order nobody accepts, which is only right where every
- * restaurant has a merchant who accepts orders (merchant logins are not provisioned outside the demo seed, and the
- * frontend has no merchant screen yet). See README "Order fulfilment".
+ * Deadlines are measured from the event's occurredAt (the payment time for ACCEPT), so a consumer that lags does not
+ * extend them. Dropping a deadline early only saves the poller a no-op: the poller cancels an order only while it is
+ * still in the status the deadline waits in. That also covers a merchant.order_received handled after the order was
+ * accepted or cancelled (the two topics are consumed independently): its deadline fires as a no-op. Each event is
+ * applied once per consumer (processed_events, same transaction). The module never reads the merchant module's
+ * tables; the staffing decision reaches it only as that event. See README "Order fulfilment".
  */
 @Service
 public class OrderDeadlineService {
 
     static final String ORDER_TIMEOUT_CONSUMER = "order-timeout-consumer";
+    static final String MERCHANT_TIMEOUT_CONSUMER = "order-timeout-merchant-consumer";
 
     private static final List<String> ALL_DEADLINES = List.of(DeadlineType.PAYMENT.name(), DeadlineType.ACCEPT.name());
     private static final Set<String> HANDLED_EVENT_TYPES = Set.of(
@@ -58,7 +63,7 @@ public class OrderDeadlineService {
             ProcessedEventService processedEventService,
             @Value("${app.fulfilment.payment-timeout:15m}") Duration paymentTimeout,
             @Value("${app.fulfilment.accept-timeout:10m}") Duration acceptTimeout,
-            @Value("${app.fulfilment.accept-timeout-enabled:false}") boolean acceptTimeoutEnabled
+            @Value("${app.fulfilment.accept-timeout-enabled:true}") boolean acceptTimeoutEnabled
     ) {
         this.orderDeadlineRepository = orderDeadlineRepository;
         this.processedEventService = processedEventService;
@@ -91,18 +96,54 @@ public class OrderDeadlineService {
                     occurredAt.plus(paymentTimeout),
                     now
             );
-            case FulfilmentEvents.ORDER_PAID -> {
-                orderDeadlineRepository.deleteByOrderIdAndDeadlineTypes(orderId, List.of(DeadlineType.PAYMENT.name()));
-                if (acceptTimeoutEnabled) {
-                    orderDeadlineRepository.insertIfAbsent(
-                            orderId,
-                            DeadlineType.ACCEPT.name(),
-                            occurredAt.plus(acceptTimeout),
-                            now
-                    );
-                }
-            }
+            case FulfilmentEvents.ORDER_PAID ->
+                    orderDeadlineRepository.deleteByOrderIdAndDeadlineTypes(orderId, List.of(DeadlineType.PAYMENT.name()));
             default -> orderDeadlineRepository.deleteByOrderIdAndDeadlineTypes(orderId, ALL_DEADLINES);
         }
+    }
+
+
+    /**
+     * merchant.order_received: the paid order reached a staffed restaurant; sets its ACCEPT deadline from the payment
+     * time. A duplicate (or a copy under a new event id) adds no second deadline: (order_id, deadline_type) is unique.
+     *
+     * @throws IllegalArgumentException for an event without an event id or order id (retried, then dead-lettered)
+     */
+    @Transactional
+    public void handle(MerchantEventEnvelope event) {
+        if (event == null || !FulfilmentEvents.MERCHANT_ORDER_RECEIVED.equals(event.eventType())) {
+            return;
+        }
+        if (event.eventId() == null || event.eventId().isBlank()) {
+            throw new IllegalArgumentException("Event id is required");
+        }
+        MerchantEventPayload data = event.data();
+        if (data == null || data.orderId() == null) {
+            throw new IllegalArgumentException("Merchant event is missing the order id");
+        }
+        if (!processedEventService.markIfUnseen(
+                MERCHANT_TIMEOUT_CONSUMER,
+                event.eventId(),
+                event.eventId(),
+                event.eventType(),
+                event.aggregateType(),
+                event.aggregateId()
+        )) {
+            return;
+        }
+        if (!acceptTimeoutEnabled) {
+            return;
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime paidAt = data.paidAt() != null
+                ? data.paidAt()
+                : event.occurredAt() != null ? event.occurredAt() : now;
+        orderDeadlineRepository.insertIfAbsent(
+                data.orderId(),
+                DeadlineType.ACCEPT.name(),
+                paidAt.plus(acceptTimeout),
+                now
+        );
     }
 }

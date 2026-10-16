@@ -27,7 +27,8 @@ import java.util.concurrent.atomic.AtomicReference;
  *     <li>delete the deadline.</li>
  * </ol>
  * An ACCEPT deadline that is due while app.fulfilment.accept-timeout-enabled is off (it was switched off after the
- * deadline was set) is dropped without cancelling the order.
+ * deadline was set) is dropped without cancelling the order. ACCEPT deadlines only exist for orders of restaurants
+ * that had an active merchant account when the order arrived (see {@link OrderDeadlineService}).
  *
  * <p>The cancel, its order.cancelled outbox event and the deadline delete commit together. When firing fails (for
  * example a lock timeout on the order row), the deadline is moved app.fulfilment.deadline-poller.retry-backoff into
@@ -54,7 +55,7 @@ public class OrderDeadlineProcessor {
             PlatformTransactionManager transactionManager,
             @Value("${app.fulfilment.deadline-poller.batch-size:100}") int batchSize,
             @Value("${app.fulfilment.deadline-poller.retry-backoff:30s}") Duration retryBackoff,
-            @Value("${app.fulfilment.accept-timeout-enabled:false}") boolean acceptTimeoutEnabled
+            @Value("${app.fulfilment.accept-timeout-enabled:true}") boolean acceptTimeoutEnabled
     ) {
         this.orderDeadlineRepository = orderDeadlineRepository;
         this.orderLifecycleCommands = orderLifecycleCommands;
