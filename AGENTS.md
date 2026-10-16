@@ -106,7 +106,7 @@ k6 run load-tests/order-flow.js
 
 Optional environment variables include `BASE_URL`, `VUS`, `DURATION`, `USER_COUNT`, `USER_PASSWORD`, and `USER_PREFIX`.
 
-`load-tests/catalog-read.js` is an anonymous read-only benchmark for the cached catalog endpoints (`BASE_URL`, `VUS`, `DURATION`; `CONDITIONAL=true` sends `If-None-Match`).
+`load-tests/catalog-read.js` is an anonymous read-only benchmark for the cached catalog endpoints (`BASE_URL`, `VUS`, `DURATION`; `CONDITIONAL=true` sends `If-None-Match`). Run it against the isolated compose project in `load-tests/catalog-bench.compose.yml` (ports 45433/46379; usage in the file header) and remove that project afterwards with `docker compose -f load-tests/catalog-bench.compose.yml down`.
 
 ## Edit Guidelines
 

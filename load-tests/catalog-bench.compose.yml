@@ -1,0 +1,39 @@
+# Throwaway PostgreSQL and Redis for load-tests/catalog-read.js. It is its own compose project on unusual host
+# ports, so it can run next to backend/docker-compose.yml (5433, 6379) without touching that data; nothing is
+# persisted.
+#
+#   docker compose -f load-tests/catalog-bench.compose.yml up -d --wait
+#   (cd backend && ./gradlew bootJar -x buildFrontend -x syncFrontendBuild --no-daemon)
+#   (cd backend && SERVER_PORT=18080 DATABASE_PORT=45433 REDIS_PORT=46379 KAFKA_ENABLED=false \
+#     SECURITY_RATE_LIMIT_ENABLED=false FLYWAY_LOCATIONS=classpath:db/migration,classpath:db/demo \
+#     java -jar build/libs/OnlineOrder-0.0.1-SNAPSHOT.jar)
+#   BASE_URL=http://localhost:18080 VUS=50 DURATION=30s k6 run load-tests/catalog-read.js
+#   docker compose -f load-tests/catalog-bench.compose.yml down
+name: onlineorder-catalog-bench
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: onlineorder
+      POSTGRES_PASSWORD: secret
+    ports:
+      - "45433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d onlineorder"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "46379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
