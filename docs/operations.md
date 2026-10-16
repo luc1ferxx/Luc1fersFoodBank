@@ -35,7 +35,13 @@ outgoing Kafka records.
   ```
 
   Rows written before V6, or written outside a traced request, have no context and start a new trace. Rows inserted
-  with a hand-written `INSERT` bypass the callback; insert through the repository instead.
+  with a hand-written `INSERT` bypass the callback; insert through the repository instead. V6 only adds a nullable
+  column and does not depend on V5; a database that applied V6 before V5 existed (a branch merged ahead of the one
+  owning V5) fails Flyway validation once V5 arrives: start once with `SPRING_FLYWAY_OUT_OF_ORDER=true`, or recreate
+  a disposable local database.
+- Tracing never changes whether or how often the publisher sends an event: failures to start, scope or end a relay
+  span are logged at debug level and the event is sent anyway. KafkaTemplate's own send observation belongs to
+  spring-kafka; an observation handler that throws inside it fails that send like a broker error would.
 - The outbox poller's own scheduled-run spans (twice a second, nothing under them) are not exported; its
   `tasks.scheduled.execution` timer is kept.
 - Relay spans carry `outbox.event_id`, `outbox.aggregate_type` and `outbox.aggregate_id`, so Tempo can find the trace
@@ -49,20 +55,25 @@ exporter).
 ### Logs
 
 Console logs are logstash JSON (`LOG_STRUCTURED_FORMAT_CONSOLE`). Every line written inside a span carries `traceId`
-and `spanId`, including the outbox publisher and the Kafka listeners, so a trace id from `X-Trace-Id` finds the
-request's log lines and the asynchronous work it caused.
+and `spanId`, so a trace id from `X-Trace-Id` finds the request's log lines and the asynchronous work it caused: the
+Kafka listeners, and the outbox publisher's per-event lines ("Failed to publish outbox event ..."), which are written
+with the event's relay span in scope. The publisher's run-level lines (backoff, resume) cover many events at once and
+carry the trace id of the scheduled run, whose spans are not exported.
 
 ### Metrics and the management port
 
-`MANAGEMENT_SERVER_PORT=8081` (set in the image and on Kubernetes) moves the actuator to its own port:
+`MANAGEMENT_SERVER_PORT=8081` (set by the Kubernetes ConfigMap and the `app` profile of `deploy/observability`; the
+image itself does not set it) moves the actuator to its own port:
 
 | Port | Serves | Access |
 | --- | --- | --- |
 | 8080 | API, UI | `/actuator/**` is not served here |
 | 8081 | `/actuator/health/{liveness,readiness}`, `/actuator/prometheus`, `/actuator/metrics`, `/actuator/info` | no session needed; reachable only inside the cluster (not in the Service, the Ingress or the public network) |
 
-Without the variable (local `bootRun`, tests, the k6 script) the actuator stays on 8080 and everything but `health`
-and `info` needs `ROLE_ADMIN`, as before.
+Without the variable (local `bootRun`, tests, a plain `docker run` of the image) the actuator stays on 8080 and
+everything but `health` and `info` needs `ROLE_ADMIN`, as before. The k6 script checks `/actuator/health` on
+`BASE_URL`; against a deployment with the management port, pass `MANAGEMENT_URL` too (for example
+`MANAGEMENT_URL=http://localhost:8081`).
 
 Application metrics on top of Spring Boot's (HTTP, Hikari, Tomcat, JVM, Kafka client):
 
@@ -71,7 +82,7 @@ Application metrics on top of Spring Boot's (HTTP, Hikari, Tomcat, JVM, Kafka cl
 | `onlineorder_outbox_oldest_pending_age_seconds` | Age of the oldest PENDING/PROCESSING outbox event, 0 when none. One index entry of the V3 partial index per scrape |
 | `onlineorder_outbox_backlog`, `onlineorder_outbox_events{status}`, `onlineorder_outbox_failed` | Outbox rows by status |
 | `onlineorder_outbox_publish_total{result}` | Publisher results |
-| `onlineorder_outbox_relay_seconds` | Time from relay start to the Kafka acknowledgement |
+| `onlineorder_outbox_relay_seconds` | Time from relay start until the publisher has the Kafka acknowledgement or the failure |
 | `onlineorder_dead_letter_stored_total`, `onlineorder_dead_letter_events{replay_status}`, `onlineorder_dead_letter_replay_total` | Dead letters |
 | `onlineorder_checkout_requests_total{result}` | Checkout results |
 
@@ -146,7 +157,7 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 | `OnlineOrderLatencySLOSlowBurn` | > 6% slower than 500ms over 6h and 30m, for 15m | warning |
 | `OnlineOrderOutboxBacklogStale` / `...Critical` | oldest unpublished event > 2 min / > 15 min, for 5m | warning / critical |
 | `OnlineOrderOutboxEventsFailed` | any FAILED outbox event for 1m; retry with `POST /admin/outbox/events/{id}/retry` | warning |
-| `OnlineOrderDeadLettersGrowing` | a dead letter stored in the last 15m; replay with `POST /dead-letters/{id}/replay` | warning |
+| `OnlineOrderDeadLettersGrowing` | a dead letter stored in the last 15m, including the first one after a start (the counter series appears at 1); replay with `POST /dead-letters/{id}/replay` | warning |
 | `OnlineOrderHikariPendingSustained` | threads waiting for a connection for 5m | warning |
 | `OnlineOrderHikariConnectionTimeouts` | connection requests timed out (503) in the last 5m | warning |
 | `OnlineOrderKafkaConsumerLag` | a consumer client > 1000 records behind for 10m | warning |
@@ -168,9 +179,13 @@ docker run --rm --entrypoint /bin/promtool -v "$PWD:/etc/prometheus:ro" -w /etc/
 The root `Dockerfile` builds the frontend in `node:20.20.2-bookworm-slim` (`npm ci --legacy-peer-deps`,
 `npm run build`), the jar in `gradle:8.14.3-jdk17-noble` (the npm-based `buildFrontend` task is skipped there and the
 stage's build output is embedded instead), extracts Spring Boot layers with `-Djarmode=tools`, and runs on
-`eclipse-temurin:17.0.20_8-jre-noble` as uid 10001 with `JAVA_OPTS="-XX:MaxRAMPercentage=75.0
--XX:InitialRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError"` (override `JAVA_OPTS` to change them) and
-`MANAGEMENT_SERVER_PORT=8081`. Ports: 8080 application, 8081 management.
+`eclipse-temurin:17.0.20.1_1-jre-noble` as uid 10001 with `JAVA_OPTS="-XX:MaxRAMPercentage=75.0
+-XX:InitialRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError"` (override `JAVA_OPTS` to change them). Ports: 8080
+application, 8081 management when the deployment sets `MANAGEMENT_SERVER_PORT=8081`.
+
+`backend/Dockerfile` packages a jar built beforehand (`cd backend && ./gradlew bootJar`, then `docker build backend`)
+on the same pinned Java 17 runtime, layered and non-root. Use `docker build --platform linux/amd64 backend` to build
+for another architecture.
 
 ```sh
 docker build -t onlineorder:local .
@@ -229,7 +244,7 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
 | `DATABASE_POOL_MAX_SIZE` | 30 | ConfigMap (prod 20) |
 | `REDIS_HOST`, `REDIS_PORT`, `SPRING_DATA_REDIS_PASSWORD` | localhost:6379 | ConfigMap / Secret |
 | `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_ORDER_TOPIC_REPLICAS` | localhost:9092, 1 | ConfigMap (3 replicas) |
-| `MANAGEMENT_SERVER_PORT` | unset (actuator on 8080) | image, ConfigMap: 8081 |
+| `MANAGEMENT_SERVER_PORT` | unset (actuator on 8080) | ConfigMap and observability compose: 8081 |
 | `TRACING_EXPORT_ENABLED` | false | ConfigMap: true |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `http://localhost:4318/v1/traces` | ConfigMap: in-cluster collector |
 | `TRACING_SAMPLING_PROBABILITY` | 0.1 | overlays |
@@ -249,8 +264,10 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
   `backend-test-reports`, also on failure.
   - Coverage minimums: 87% lines, 72% branches (measured 88.6% / 73.9% with Docker available). Without Docker the
     container suites skip and the verification fails; raise the minimums as coverage grows.
-  - SpotBugs scans production classes; `backend/config/spotbugs/exclude.xml` is the reviewed baseline (narrow
-    pattern + class entries with a reason). New findings fail the build.
+  - SpotBugs scans production classes; `backend/config/spotbugs/exclude.xml` is the reviewed baseline. Its first entry
+    excludes `EI_EXPOSE_REP`/`EI_EXPOSE_REP2` for every class (constructor-injected beans and records carrying
+    lists, 46 of the 49 findings at introduction, and any later ones of those two patterns); the other entries are
+    pattern + class. New findings of any other pattern fail the build.
 - `config-lint`: promtool check and rule tests, compose config, dashboard JSON, kustomize + kubeconform for base and
   both overlays, actionlint.
 - `frontend-build` and `package-backend`: unchanged.
@@ -281,7 +298,11 @@ Code scanning results (CodeQL, the release's Trivy SARIF) need a public reposito
    `overlays/prod`. Configure the `production` environment with required reviewers so the job waits for an approval,
    and give it its own `KUBE_CONFIG`.
 
-Known state when the gate was added (2026-10-16): a Trivy scan of the image built from this commit reports fixable
-HIGH/CRITICAL findings in the Spring Boot 3.5.6 dependency set (Tomcat, Spring Framework/Security, Netty, Jackson,
-pgjdbc and others) and in the base image's OpenSSL. The release fails until those are upgraded (Spring Boot 3.5.x
-patch release, pgjdbc, base image) or individually accepted in `.trivyignore`.
+State on 2026-10-16: the image scan found 45 fixable HIGH/CRITICAL findings with Spring Boot 3.5.6, pgjdbc 42.7.7
+and the `17.0.20_8` base image. After Spring Boot 3.5.16, pgjdbc 42.7.14, the `17.0.20.1_1` base image and the
+patch overrides at the top of `backend/build.gradle` (Tomcat 10.1.61, Netty 4.1.139, Jackson 2.21.7, lz4-java
+1.11.4) it passes the gate with two accepted exceptions in `.trivyignore`: CVE-2026-47884 and CVE-2026-47890 in
+spring-webmvc 6.2.19, fixed only in Spring Framework 7 (the Spring Boot 4 migration) and not reachable here (no XSLT
+views, no Server-Sent Events with view fragments). They expire on 2027-01-31, when the gate fails again unless they
+are fixed or reviewed. The overrides pin versions above what Spring Boot manages: drop each once Spring Boot manages
+that version or a later one, or it holds the dependency back.
