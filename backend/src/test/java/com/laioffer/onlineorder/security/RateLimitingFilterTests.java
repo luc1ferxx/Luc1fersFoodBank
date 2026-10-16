@@ -167,6 +167,39 @@ class RateLimitingFilterTests {
     }
 
 
+    @Test
+    void shouldRateLimitAdminCatalogUpdatesByUserButNotOtherMethodsOrPaths() throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        allowRedisRequest(redisTemplate);
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                Mockito.mock(ApplicationMetricsService.class),
+                errorResponseWriter()
+        );
+
+        for (String[] request : List.of(
+                new String[]{"GET", "/admin/menu-items/5"},
+                new String[]{"PATCH", "/admin/menu-items/abc"},
+                new String[]{"PATCH", "/admin/restaurants/3/menu"}
+        )) {
+            filter.doFilter(new MockHttpServletRequest(request[0], request[1]), new MockHttpServletResponse(), new MockFilterChain());
+        }
+        Mockito.verifyNoInteractions(redisTemplate);
+
+        MockHttpServletRequest update = new MockHttpServletRequest("PATCH", "/admin/restaurants/3");
+        update.setRemoteAddr("10.0.0.5");
+        update.setUserPrincipal((Principal) () -> "Admin@Example.com");
+        filter.doFilter(update, new MockHttpServletResponse(), new MockFilterChain());
+
+        Assertions.assertEquals("onlineorder:rate-limit:admin-catalog:user:admin@example.com", capturedRedisKey(redisTemplate));
+        Object[] args = capturedRedisArgs(redisTemplate);
+        Assertions.assertEquals("30", args[0]);
+        Assertions.assertEquals("2000", args[2]);
+    }
+
+
     @ParameterizedTest
     @CsvSource({
             "POST, /%6Cogin, login",
@@ -179,6 +212,8 @@ class RateLimitingFilterTests {
             "POST, /cart/%63heckout, cart-checkout",
             "POST, /cart//checkout, cart-checkout",
             "POST, /payments/%63heckout, payment-checkout",
+            "PATCH, /admin/menu-items/%35, admin-catalog",
+            "PATCH, /admin//restaurants/3/, admin-catalog",
             "POST, /dead-letters/%31%32/replay, dead-letter-replay",
             "POST, /admin/outbox/events/7/%72etry, outbox-retry",
             "PATCH, /orders/%34%32/status, order-status"
