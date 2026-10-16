@@ -185,6 +185,9 @@ app:
     l2:
       # Each Redis write gets TTL * [1 - jitter, 1 + jitter] so entries loaded together do not expire together.
       ttl-jitter: ${CACHE_L2_TTL_JITTER:0.15}
+    # Second eviction after an admin catalog write, for a reader that cached the old row right after the
+    # first after-commit eviction. 0 disables it.
+    delayed-double-delete: ${CACHE_DELAYED_DOUBLE_DELETE:1s}
   security:
     rate-limit:
       enabled: ${SECURITY_RATE_LIMIT_ENABLED:true}

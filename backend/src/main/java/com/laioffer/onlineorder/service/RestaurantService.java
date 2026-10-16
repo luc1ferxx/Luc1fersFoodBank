@@ -1,11 +1,16 @@
 package com.laioffer.onlineorder.service;
 
 
+import com.laioffer.onlineorder.cache.CatalogCacheInvalidator;
 import com.laioffer.onlineorder.cache.CatalogCaches;
+import com.laioffer.onlineorder.exception.BadRequestException;
+import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.model.CatalogRestaurantDto;
+import com.laioffer.onlineorder.model.UpdateRestaurantBody;
 import com.laioffer.onlineorder.repository.RestaurantRepository;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 
 import java.util.List;
@@ -16,10 +21,14 @@ public class RestaurantService {
 
 
     private final RestaurantRepository restaurantRepository;
+    private final CatalogCacheInvalidator cacheInvalidator;
 
 
-    public RestaurantService(RestaurantRepository restaurantRepository) {
+    public RestaurantService(
+            RestaurantRepository restaurantRepository,
+            CatalogCacheInvalidator cacheInvalidator) {
         this.restaurantRepository = restaurantRepository;
+        this.cacheInvalidator = cacheInvalidator;
     }
 
 
@@ -34,4 +43,28 @@ public class RestaurantService {
                 .toList();
     }
 
+
+    /**
+     * Updates the restaurant's basic fields and evicts the cached restaurant list after the commit.
+     */
+    @Transactional
+    public CatalogRestaurantDto updateRestaurant(long restaurantId, UpdateRestaurantBody body) {
+        if (body.hasNoChanges()) {
+            throw new BadRequestException("At least one of name, address, phone or image_url is required");
+        }
+        int updatedRows = restaurantRepository.updateBasicFields(
+                restaurantId,
+                body.name(),
+                body.address(),
+                body.phone(),
+                body.imageUrl()
+        );
+        if (updatedRows == 0) {
+            throw new ResourceNotFoundException("Restaurant not found");
+        }
+        cacheInvalidator.evictRestaurantsAfterCommit();
+        return restaurantRepository.findById(restaurantId)
+                .map(CatalogRestaurantDto::new)
+                .orElseThrow(() -> new ResourceNotFoundException("Restaurant not found"));
+    }
 }

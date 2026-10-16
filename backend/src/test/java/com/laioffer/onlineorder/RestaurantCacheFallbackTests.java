@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder;
 
 
+import com.laioffer.onlineorder.cache.CatalogCacheInvalidator;
 import com.laioffer.onlineorder.cache.CatalogCaches;
 import com.laioffer.onlineorder.cache.TwoLevelCacheManager;
 import com.laioffer.onlineorder.entity.MenuItemEntity;
@@ -133,6 +134,7 @@ class RestaurantCacheFallbackTests {
     @Import({
             CacheConfig.class,
             RedisConfig.class,
+            CatalogCacheInvalidator.class,
             RestaurantService.class,
             MenuItemService.class,
             CatalogService.class

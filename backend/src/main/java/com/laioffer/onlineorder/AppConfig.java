@@ -96,6 +96,7 @@ public class AppConfig {
                                 .requestMatchers(HttpMethod.GET, "/restaurants/**", "/restaurant/**").permitAll()
                                 .requestMatchers(HttpMethod.GET, "/admin/outbox/events/failed").hasRole("ADMIN")
                                 .requestMatchers(HttpMethod.POST, "/admin/outbox/events/*/retry").hasRole("ADMIN")
+                                .requestMatchers(HttpMethod.PATCH, "/admin/menu-items/*", "/admin/restaurants/*").hasRole("ADMIN")
                                 .requestMatchers(HttpMethod.PATCH, "/orders/*/status").hasRole("ADMIN")
                                 .requestMatchers(HttpMethod.POST, "/dead-letters/*/replay").hasRole("ADMIN")
                                 .anyRequest().authenticated()
