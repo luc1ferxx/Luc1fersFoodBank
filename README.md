@@ -95,7 +95,7 @@ sequenceDiagram
 
 | Layer | Stack |
 | --- | --- |
-| Frontend | React 19, Vite, Vitest + React Testing Library, ESLint + Prettier, browser session cookies |
+| Frontend | React 19, strict TypeScript, Vite, Vitest + React Testing Library, ESLint (typescript-eslint) + Prettier, browser session cookies |
 | Backend | Java 17, Spring Boot, Spring MVC, Spring Security, Spring Data JDBC, Gradle |
 | Data | PostgreSQL, Flyway migrations, H2 fallback profile |
 | Runtime state | Redis for Spring Session, cache, and distributed rate-limit counters |
@@ -153,6 +153,23 @@ Open:
 - Frontend dev server: [http://localhost:3000](http://localhost:3000)
 - Backend / embedded UI: [http://localhost:8080](http://localhost:8080)
 - Swagger UI: [http://localhost:8080/swagger-ui/index.html](http://localhost:8080/swagger-ui/index.html)
+
+### Frontend workspaces
+
+After sign-in the UI reads `roles` from `GET /me` and opens one workspace per role. Users with several roles switch
+between them with the tabs under the header; guests and logins without a known role get the ordering page.
+
+| Role | Workspace |
+| --- | --- |
+| `ROLE_USER`, guests | Order food: menus, cart, checkout, orders with their status history (`GET /orders/{id}/history`), notifications. Adding another restaurant's item (`409 CART_RESTAURANT_CONFLICT`) asks whether to clear the cart (`DELETE /cart`) and add it. |
+| `ROLE_MERCHANT` | Merchant console: the restaurant's orders (`GET /merchant/orders`, status filter), accept, reject with a reason, mark preparing. |
+| `ROLE_RIDER` | Rider console: on-duty switch, the rider's own deliveries, picked up and delivered. |
+| `ROLE_ADMIN` | Admin console: list, create, and deactivate merchants (restaurant picked from the catalog) and riders; the manual order-status change and dead-letter replay. |
+
+Switching workspaces keeps the ordering page and the admin console as they were, so a checkout, cancel, or status
+change retried after a switch reuses its Idempotency-Key. The merchant and rider consoles poll every 15 seconds while
+the tab is visible. A deactivated merchant or rider (the backend answers `403` on `/merchant/**` and `/rider/**`) gets
+a notice instead of the raw error, polling stops, and Refresh checks again.
 
 ### Demo Account
 
@@ -616,13 +633,13 @@ Run the normal backend verification path:
 (cd backend && ./gradlew test -x buildFrontend -x syncFrontendBuild --no-daemon)
 ```
 
-Check, test, and build the React app:
+Type-check, lint, test, and build the React app:
 
 ```sh
-(cd frontend && npm run lint && npm test && npm run build)
+(cd frontend && npm run typecheck && npm run lint && npm test && npm run build)
 ```
 
-`npm test` runs Vitest with jsdom and React Testing Library against an in-memory fake API (login, cart, checkout success and failure, Idempotency-Key reuse on retry, session expiry, stale menu responses, notification polling). `npm run build` writes `frontend/build` and fails if `index.html` contains an inline script, which the backend CSP would block.
+`npm run typecheck` runs `tsc --noEmit` (strict TypeScript). `npm test` runs Vitest with jsdom and React Testing Library against an in-memory fake API (login, cart and the clear-cart dialog, checkout success and failure, Idempotency-Key reuse on retry, session expiry, stale responses, polling, order status history, role-based workspaces, the merchant, rider, and admin consoles). `npm run build` writes `frontend/build` and fails if `index.html` contains an inline script, which the backend CSP would block.
 
 Build the backend jar with embedded frontend assets:
 
@@ -656,7 +673,7 @@ Some integration tests use Testcontainers and require Docker. Tests annotated wi
 
 ```text
 .
-|-- frontend/                         React + Vite client (api/, hooks/, components/, pages/)
+|-- frontend/                         React + TypeScript + Vite client (api/, hooks/, components/, pages/)
 |-- backend/                          Spring Boot application
 |   |-- src/main/java/.../controller   HTTP API surface
 |   |-- src/main/java/.../service      business logic and transactions
@@ -683,7 +700,7 @@ Some integration tests use Testcontainers and require Docker. Tests annotated wi
 | Run backend with demo seed | `cd backend && FLYWAY_LOCATIONS=classpath:db/migration,classpath:db/demo ./gradlew bootRun` |
 | Run backend with H2 profile | `cd backend && SPRING_PROFILES_ACTIVE=h2 ./gradlew bootRun` |
 | Start frontend dev server | `cd frontend && npm start` |
-| Lint and test frontend | `cd frontend && npm run lint && npm test` |
+| Type-check, lint and test frontend | `cd frontend && npm run typecheck && npm run lint && npm test` |
 | Build frontend | `cd frontend && npm run build` |
 | Copy frontend build into backend | `cd frontend && npm run deploy:backend` |
 | Build executable jar | `cd backend && ./gradlew bootJar --no-daemon` |
@@ -701,7 +718,7 @@ This project is intentionally strong on backend correctness patterns, but it is 
 
 - Payment is simulated with local request validation. There is no real payment provider, authorization, capture, webhook, or settlement flow.
 - There is no inventory reservation or stock decrement model.
-- The frontend is plain JavaScript (TypeScript is a follow-up) and only covers the customer and manual-admin flows; there is no merchant UI yet.
+- The merchant and rider consoles poll every 15 seconds instead of receiving pushed updates, and the rider console has no map, location, or ETA.
 - Kafka delivery is treated as at-least-once with consumer-side idempotency, not end-to-end exactly-once delivery.
 - Failed outbox rows require explicit admin retry after the underlying cause is fixed.
 - H2 is a lightweight local fallback, not the production-shaped runtime.

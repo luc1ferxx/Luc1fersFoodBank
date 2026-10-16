@@ -4,7 +4,7 @@
 
 - Full-stack food ordering app: React frontend in `frontend/`, Spring Boot backend in `backend/`.
 - Backend uses Java 17, Gradle wrapper 8.14.3, PostgreSQL, Redis, Kafka, Spring Session, Actuator, Flyway, and Testcontainers.
-- Frontend is React 19 built with Vite 8 (`@vitejs/plugin-react`), tested with Vitest + jsdom + React Testing Library, and linted with ESLint (flat config, react-hooks rules) + Prettier. No UI component library. CI and Docker use Node 20 (the locked Vite, Vitest, ESLint, and jsdom together need Node `^20.19.0 || ^22.13.0 || >=24`).
+- Frontend is React 19 in strict TypeScript (6.0; typescript-eslint supports `<6.1`, so not the TypeScript 7 native compiler yet) built with Vite 8 (`@vitejs/plugin-react`), tested with Vitest + jsdom + React Testing Library, and linted with ESLint (flat config, type-aware typescript-eslint, react-hooks rules) + Prettier. No UI component library. CI and Docker use Node 20 (the locked Vite, Vitest, ESLint, and jsdom together need Node `^20.19.0 || ^22.13.0 || >=24`).
 
 ## Common Commands
 
@@ -58,18 +58,20 @@ npm ci
 npm start
 ```
 
-The Vite dev server runs on `http://localhost:3000` and proxies the backend path prefixes listed in `frontend/src/api/proxyPaths.js` to `http://localhost:8080` (override with `DEV_PROXY_TARGET`). When the frontend starts calling a new backend path, add its prefix there; `src/api/client.test.js` fails otherwise.
+The Vite dev server runs on `http://localhost:3000` and proxies the backend path prefixes listed in `frontend/src/api/proxyPaths.ts` to `http://localhost:8080` (override with `DEV_PROXY_TARGET`). When the frontend starts calling a new backend path, add its prefix there; `src/api/client.test.ts` fails otherwise.
 
 ```sh
 cd frontend
-npm run lint   # ESLint + prettier --check
-npm test       # Vitest, single run
-npm run build  # vite build into frontend/build, then scripts/verify-csp-build.js
+npm run typecheck  # tsc --noEmit on tsconfig.app.json (src) and tsconfig.node.json (vite.config.ts, scripts/)
+npm run lint       # ESLint + prettier --check
+npm test           # Vitest, single run
+npm run build      # vite build into frontend/build, then scripts/verify-csp-build.js
 ```
 
-- The backend serves the build with `script-src 'self'`, so `build/index.html` must not contain inline scripts; the `postbuild` check and `src/cspBuild.test.js` enforce it. Hashed assets go to `build/static/` because the backend only permits anonymous GETs for `/static/**`.
+- TypeScript is `strict` with `noUncheckedIndexedAccess`. Backend JSON enters as `unknown` (`request()` in `src/api/client.ts`) and is decoded into the DTOs of `src/api/dto.ts` with the readers in `src/api/decode.ts`; ESLint rejects `any`, `as` casts (`as const` is fine), and `!`. A new endpoint gets a DTO interface plus decoder next to the others, matching the backend record's snake_case fields (nullable Java fields are `T | null`; the backend omits nulls). `scripts/*.js` stay JavaScript for Node 20 and are type-checked through JSDoc (`checkJs`).
+- The backend serves the build with `script-src 'self'`, so `build/index.html` must not contain inline scripts; the `postbuild` check and `src/cspBuild.test.ts` enforce it. Hashed assets go to `build/static/` because the backend only permits anonymous GETs for `/static/**`.
 - Client-side env vars must be prefixed `VITE_` and read through `import.meta.env` (none are used today).
-- Layout: `src/api/` (fetch wrapper with AbortSignal support, `ApiError`, central 401 -> `onUnauthorized`, endpoint functions that take an `Idempotency-Key`), `src/hooks/` (`useSession`, `useMenu`, `useCart`, `useCheckout`, `useOrders`, `useNotifications`, `useAdminTools`), `src/components/`, and `src/pages/OrderingPage.jsx`, which `App.jsx` keys by the signed-in user so session-scoped state resets on login, logout, or expiry. `src/test/fakeBackend.js` is the in-memory API used by the UI tests.
+- Layout: `src/api/` (fetch wrapper with AbortSignal support, `ApiError` with status/code/trace id, central 401 -> `onUnauthorized`, typed endpoint functions, some taking an `Idempotency-Key`), `src/hooks/`, `src/components/`, `src/lib/`, and `src/pages/`. `App.tsx` picks workspaces from the `/me` roles (`src/lib/workspaces.ts`): `OrderingPage` (customers and guests), `MerchantConsole` (`ROLE_MERCHANT`), `RiderConsole` (`ROLE_RIDER`), `AdminConsole` (`ROLE_ADMIN`: merchant/rider provisioning plus the order and DLT tools); a user with several roles switches between them. The workspaces sit in a shell keyed by the signed-in user, so session-scoped state and the workspace choice reset on login, logout, or expiry (also when the same user signs in again). A switch only hides `OrderingPage` and `AdminConsole` (`KEPT_MOUNTED` in `App.tsx`), so their retry keys and forms survive; the merchant and rider consoles remount. `src/test/fakeBackend.ts` (with `fakeFulfilment.ts`, `fakeAdmin.ts`, `fixtures.ts`) is the in-memory API used by the UI tests and models the role checks; `src/test/helpers.tsx` renders the app.
 
 ### Packaging and embedded frontend assets
 
@@ -92,7 +94,7 @@ This manually builds the frontend and copies `frontend/build` into `backend/src/
 ## CI and Release Workflows
 
 - `.github/workflows/ci.yml` runs:
-  - `npm ci`, `npm run lint`, `npm test`, and `npm run build` in `frontend/`
+  - `npm ci`, `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` in `frontend/`
   - `./gradlew test -x buildFrontend -x syncFrontendBuild --no-daemon` in `backend/`
   - `./gradlew bootJar --no-daemon` after installing frontend dependencies
 - `.github/workflows/release.yml` builds and publishes the root `Dockerfile` image to GHCR on `v*` tags or manual dispatch.
@@ -120,7 +122,7 @@ Optional environment variables include `BASE_URL`, `VUS`, `DURATION`, `USER_COUN
 - Catalog caching (`backend/src/main/java/com/laioffer/onlineorder/cache`, see README "Catalog Caching"): cached values are the `Catalog*Dto` records; bump the key version in `CatalogCaches` when one changes shape. Catalog writes must evict through `CatalogCacheInvalidator` (after commit), never by writing into the cache. New caches need a `TwoLevelCacheSpec`; unknown cache names are rejected. Redis outages are tested both refused (`CatalogRedisOutageIntegrationTests`) and hung (`CatalogRedisHangIntegrationTests`, which pauses its own Redis container); keep the hung case within its latency budget when changing the read path.
 - Treat checkout, cart mutation, order status changes, outbox publishing, idempotency, and DLT replay as correctness-sensitive paths; update focused tests when changing them.
 - Keys are 64-bit since V7: new tables use `BIGSERIAL`/`BIGINT` keys and `BIGINT` references. Every order status change goes through `OrderService`'s guarded transition, which writes the `order_status_history` row (with an `OrderActor`) and `orders.updated_at` in the same transaction; never update `orders.status` elsewhere. `OrderLifecycleCommands` has no overloads without an `OrderActor`: name the merchant, rider or `OrderActor.system()`. A new privileged admin action calls `AuditLogService.record(...)` from its transactional service method (propagation `MANDATORY`) and gets a name in `AuditActions`. Rollout notes for these migrations (no pods of an older version next to them, online key widening): `docs/operations.md` section 7; its operator SQL lives in `backend/src/main/resources/db/ops`, which Flyway never runs.
-- In the frontend, a retry of the same checkout, cancel, or status change must reuse its `Idempotency-Key` (see `useCheckout`, `useOrders`, `useAdminTools`), and responses for superseded requests must be dropped through `useLatestRequest`; `src/App.test.jsx` covers both.
+- In the frontend, a retry of the same checkout, cancel, or status change must reuse its `Idempotency-Key` (see `useCheckout`, `useOrders`, `useAdminTools`), and responses for superseded requests must be dropped through `useLatestRequest`; `src/App.test.tsx` covers both. Switching workspaces must not drop those keys (`src/Workspaces.test.tsx`). Merchant and rider commands send no key (the backend makes them idempotent by state). Polled lists go through `useLiveResource`, whose `applyAndReload` also drops a read that started before a command's result; a 403 there (the backend's answer for a deactivated merchant or rider) stops the polling and shows a notice instead. `src/pages/*.test.tsx` cover the consoles, including stale responses and deactivation.
 
 ## Order Fulfilment Modules
 

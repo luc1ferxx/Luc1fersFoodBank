@@ -286,7 +286,8 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
     pattern + class. New findings of any other pattern fail the build.
 - `config-lint`: promtool check and rule tests, compose config, dashboard JSON, kustomize + kubeconform for base and
   both overlays, actionlint.
-- `frontend-build` and `package-backend`: unchanged.
+- `frontend-build`: `npm ci`, `npm run typecheck` (strict TypeScript), `npm run lint`, `npm test`, `npm run build`.
+  `package-backend`: unchanged.
 
 Other workflows:
 
