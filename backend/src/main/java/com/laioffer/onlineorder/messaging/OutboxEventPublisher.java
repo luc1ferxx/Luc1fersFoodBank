@@ -250,13 +250,17 @@ public class OutboxEventPublisher {
      * observation ends when the send completes. Failures are rethrown or returned unchanged.
      */
     private CompletableFuture<SendResult<String, String>> sendInTraceOf(OutboxEventEntity event) {
-        Observation relay = OutboxTracing.startRelay(observationRegistry, event);
+        Observation relay = startRelay(event);
         CompletableFuture<SendResult<String, String>> future;
         try (Observation.Scope ignored = relay.openScope()) {
             future = kafkaTemplate.send(event.topic(), event.eventKey(), event.payload());
         } catch (RuntimeException ex) {
-            relay.error(ex);
-            relay.stop();
+            try {
+                relay.error(ex);
+                relay.stop();
+            } catch (RuntimeException tracingFailure) {
+                ex.addSuppressed(tracingFailure);
+            }
             throw ex;
         }
 
@@ -271,6 +275,20 @@ public class OutboxEventPublisher {
             relay.stop();
         });
         return future;
+    }
+
+
+    /**
+     * Tracing must never decide whether an event is published: if the relay observation cannot be started, the event
+     * is sent untraced.
+     */
+    private Observation startRelay(OutboxEventEntity event) {
+        try {
+            return OutboxTracing.startRelay(observationRegistry, event);
+        } catch (RuntimeException ex) {
+            LOGGER.debug("Could not start the trace relay for outbox event {}; sending it untraced", event.id(), ex);
+            return Observation.NOOP;
+        }
     }
 
 
