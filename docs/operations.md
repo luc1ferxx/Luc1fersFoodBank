@@ -306,3 +306,48 @@ spring-webmvc 6.2.19, fixed only in Spring Framework 7 (the Spring Boot 4 migrat
 views, no Server-Sent Events with view fragments). They expire on 2027-01-31, when the gate fails again unless they
 are fixed or reviewed. The overrides pin versions above what Spring Boot manages: drop each once Spring Boot manages
 that version or a later one, or it holds the dependency back.
+
+## 7. Schema changes: 64-bit keys and the audit trails
+
+Migrations V7, V7_1 and V7_2 change existing tables. All three run on PostgreSQL and on H2 (the `h2` profile runs
+the same list).
+
+**V7, 64-bit keys** (`backend/src/main/java/db/migration/V7__Widen_keys_to_bigint.java`). Every primary key and id
+reference of V1-V6 (`orders.customer_id`, `order_items.cart_id`, `deliveries.rider_id`, `dispatch_orders.order_id`,
+...) becomes `BIGINT`, and so do the `SERIAL` sequences behind them (`ALTER SEQUENCE ... AS bigint`, catalog only).
+It is a Java migration because H2 needs `ALTER COLUMN id SET MAXVALUE` on its identity columns instead. Columns that
+are already `BIGINT` are skipped. New tables use `BIGSERIAL` keys and `BIGINT` references. `LargeId*IntegrationTests`
+run an order whose ids, and the ids around it, are past 2^31 through checkout, fulfilment and both audit trails;
+`KeyWideningMigration*Tests` upgrade a populated V6 database whose orders sequence has run out.
+
+Rollout caveat: on PostgreSQL `ALTER COLUMN ... TYPE bigint` rewrites the table and its indexes under an
+`ACCESS EXCLUSIVE` lock (reads and writes wait) and validates the foreign keys that point at it again. Flyway runs V7
+in one transaction, so every table stays locked until the whole migration commits. V7 alters each table with one
+statement (one rewrite per table), which is fine for empty and small databases. For large tables, widen them online
+first, one table at a time, and let V7 skip them:
+
+1. `ALTER TABLE orders ADD COLUMN id_new BIGINT` (catalog only) and a trigger that copies `id` into it on insert and
+   update; the same for every column that references it (`order_history_items.order_id_new`, ...).
+2. Backfill in batches (`UPDATE ... SET id_new = id WHERE id BETWEEN ? AND ? AND id_new IS NULL`), then
+   `CREATE UNIQUE INDEX CONCURRENTLY` on the new key.
+3. In one short transaction: drop the old primary key and foreign keys, swap the columns by renaming, add the primary
+   key `USING INDEX`, move the sequence (`ALTER SEQUENCE orders_id_seq AS bigint OWNED BY orders.id` and the column
+   default), and add the foreign keys back `NOT VALID`.
+4. `ALTER TABLE ... VALIDATE CONSTRAINT` (no write lock), then drop the old columns and the trigger.
+
+How urgent it is: `SELECT sequencename, last_value FROM pg_sequences` against 2,147,483,647. V7 cannot be undone
+safely once an id passes that value.
+
+**V7_1, order history.** Adds `orders.updated_at` (backfilled from `created_at`) and `order_status_history`, with one
+`SYSTEM`/`backfill` row per existing order. On a large `orders` table, add and backfill `updated_at` in batches
+before the deploy: the migration uses `ADD COLUMN IF NOT EXISTS` and only updates rows still `NULL`. `SET NOT NULL`
+then scans the table once under a lock; on PostgreSQL 12+ a validated `CHECK (updated_at IS NOT NULL)` added
+beforehand lets it skip the scan.
+
+**V7_2, audit log.** A new, empty `audit_log` table; no lock on existing tables.
+
+Neither `order_status_history` nor `audit_log` has a retention job (`MaintenanceCleanupService` leaves them alone):
+both are records to keep. They grow by one row per status change and per audited admin action. Query them by order
+(`idx_order_status_history_order_id_id`), by target or by actor (`idx_audit_log_target_id`, `idx_audit_log_actor_id`).
+Each row carries the OpenTelemetry trace id of the request or job that wrote it (`trace_id`, null when no span was
+in scope), the same id as the `X-Trace-Id` header and the logs.

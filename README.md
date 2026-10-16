@@ -192,10 +192,12 @@ The `h2` profile runs Flyway migrations and includes the demo seed callback by d
 | `POST` | `/cart` | Add menu item to cart |
 | `PUT` | `/cart/items/{orderItemId}` | Update quantity |
 | `DELETE` | `/cart/items/{orderItemId}` | Remove item |
+| `DELETE` | `/cart` | Empty the cart (`204`, also when it is already empty), for example after `409 CART_RESTAURANT_CONFLICT` |
 | `POST` | `/cart/checkout` | Checkout cart with idempotency key |
 | `POST` | `/payments/checkout` | Payment-style checkout with idempotency key |
 | `GET` | `/orders` | List current user's orders |
 | `POST` | `/orders/{orderId}/cancel` | Cancel an eligible order |
+| `GET` | `/orders/{orderId}/history` | The order's status changes, oldest first (owner or admin; `404` for anyone else) |
 | `GET` | `/notifications` | List order notifications |
 
 ### Admin and Recovery APIs
@@ -208,6 +210,7 @@ The `h2` profile runs Flyway migrations and includes the demo seed callback by d
 | `PATCH` | `/admin/menu-items/{menuItemId}` | Update a menu item's `name`, `description` or `price`; evicts that restaurant's cached menu after commit |
 | `PATCH` | `/admin/restaurants/{restaurantId}` | Update a restaurant's `name`, `address`, `phone` or `image_url`; evicts the cached restaurant list after commit |
 | `POST` | `/dead-letters/{deadLetterEventId}/replay` | Replay a stored dead-letter event |
+| `GET` | `/admin/audit-log?limit=50&before_id=` | Audit log of the admin actions above, newest first; pass the last entry's `id` as `before_id` for the next page |
 
 ### Operational APIs
 
@@ -265,6 +268,19 @@ COMPLETED and CANCELLED are terminal
 ```
 
 Status changes and their outbox events commit together. Invalid transitions fail without side effects.
+
+Every status change, including the creation at checkout, also writes one `order_status_history` row and moves
+`orders.updated_at`, in the same transaction and through the same guarded transition (`OrderService`, the
+`OrderLifecycleCommands` seam for the fulfilment modules). A row records `from_status` (null for the creation),
+`to_status`, who did it (`actor_type` `CUSTOMER`, `ADMIN`, `MERCHANT`, `RIDER` or `SYSTEM` for timeouts, and
+`actor_id`), the cancel `reason` and the request's trace id. A delivered order completed from `ACCEPTED` records both
+steps for the rider. Same-status no-ops and idempotent retries write nothing. `GET /orders/{orderId}/history` serves
+it; orders placed before V7_1 start with one `SYSTEM`/`backfill` row.
+
+Admin actions (status changes, outbox retries, dead-letter replay outcomes, catalog edits) are also written to
+`audit_log` by `AuditLogService.record` in the action's transaction: the admin, the role, the action, its target, a
+JSON `details` object and the trace id. Refused actions and idempotent retries add no entry. All keys are 64-bit
+(`BIGINT`) since V7; see [docs/operations.md](docs/operations.md) section 7 for the rollout of these migrations.
 
 ### Outbox and Kafka
 
@@ -450,7 +466,7 @@ Merchant commands are scoped to the merchant's restaurant (another restaurant's 
 repeating a command whose transition already happened returns the order unchanged. A reject of an order that was
 cancelled for another reason (the customer, the accept timeout) is `409 ORDER_STATUS_CONFLICT`, not a successful
 reject. Customers and admins get `403` on `/merchant/**`. Order responses (`GET /orders`) now also carry
-`restaurant_id` and `cancel_reason`.
+`restaurant_id`, `cancel_reason` and `updated_at`.
 
 ### Provisioning merchants and riders
 
