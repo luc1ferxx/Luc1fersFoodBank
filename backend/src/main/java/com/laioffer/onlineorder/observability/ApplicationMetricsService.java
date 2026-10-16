@@ -49,6 +49,17 @@ public class ApplicationMetricsService {
     }
 
 
+    /**
+     * @param decision accepted, rejected or timeout (the merchant did not answer within app.fulfilment.accept-timeout)
+     */
+    public void recordMerchantDecision(String decision) {
+        meterRegistry.counter(
+                "onlineorder.fulfilment.merchant.decisions",
+                "decision", normalize(decision)
+        ).increment();
+    }
+
+
     public void recordOutboxPublishResult(String topic, boolean success) {
         meterRegistry.counter(
                 "onlineorder.outbox.publish",
