@@ -14,9 +14,14 @@ import java.util.Optional;
  * orders table or call the order module's other services. Everything else between modules travels as events.
  *
  * <p>Every command locks the order row (SELECT ... FOR UPDATE), checks the transition against
- * {@link OrderStatus}, and writes the new status and the order event to the outbox in the caller's transaction. A
- * merchant accept and a timeout cancel therefore race on the same row lock and exactly one of them wins; the loser
- * sees the winner's status.
+ * {@link OrderStatus}, and writes the new status (with orders.updated_at), its order_status_history row and the order
+ * event to the outbox in the caller's transaction. A merchant accept and a timeout cancel therefore race on the same
+ * row lock and exactly one of them wins; the loser sees the winner's status. A command that changes nothing (a
+ * repeat, or an order no longer in the expected status) writes no history row.
+ *
+ * <p>Each command takes the {@link OrderActor} recorded in the order history, and there are deliberately no overloads
+ * without one: a new caller has to name its actor ({@link OrderActor#system()} for jobs such as the deadline
+ * timeouts) instead of silently recording SYSTEM for a merchant's or a rider's action.
  */
 public interface OrderLifecycleCommands {
 
@@ -36,7 +41,9 @@ public interface OrderLifecycleCommands {
      * cancel reason has the same code (the part before the first ':', for example MERCHANT_REJECTED): a reject of an
      * order the customer or the accept timeout already cancelled is a conflict, not a successful reject.
      *
-     * @param cancelReason stored on the order when {@code targetStatus} is CANCELLED; ignored otherwise
+     * @param cancelReason stored on the order (and as the history reason) when {@code targetStatus} is CANCELLED;
+     *                     ignored otherwise
+     * @param actor        recorded in the order history, for example {@link OrderActor#merchant(Long)}
      * @throws com.laioffer.onlineorder.exception.ResourceNotFoundException when the order does not exist or belongs
      *                                                                     to another restaurant (404, so a merchant
      *                                                                     cannot probe other restaurants' order ids)
@@ -49,7 +56,8 @@ public interface OrderLifecycleCommands {
             Long restaurantId,
             OrderStatus requiredStatus,
             OrderStatus targetStatus,
-            String cancelReason
+            String cancelReason,
+            OrderActor actor
     );
 
 
@@ -57,20 +65,24 @@ public interface OrderLifecycleCommands {
      * Cancels the order only while it is still in {@code expectedStatus}: a timeout must not cancel an order that was
      * paid or accepted in the meantime, even though ACCEPTED -> CANCELLED is a valid transition.
      *
+     * @param actor recorded in the order history; {@link OrderActor#system()} for the deadline timeouts
      * @return the cancelled order, or empty when the order does not exist or is no longer in {@code expectedStatus}
      * (nothing changed)
      */
-    Optional<OrderDto> cancelIfStillIn(Long orderId, OrderStatus expectedStatus, String cancelReason);
+    Optional<OrderDto> cancelIfStillIn(Long orderId, OrderStatus expectedStatus, String cancelReason, OrderActor actor);
 
 
     /**
      * Completes an order whose delivery was handed to the customer. From PREPARING the order moves to COMPLETED. From
      * ACCEPTED (the merchant never marked it PREPARING) it moves ACCEPTED -> PREPARING -> COMPLETED in this one
-     * transaction, emitting order.preparing and order.completed: food that was delivered was prepared, and both are
-     * valid guarded transitions. A COMPLETED order is left alone (duplicate delivery event); an order in any other
-     * status (cancelled, or never accepted) is left alone and reported as {@link DeliveryCompletion#IGNORED}.
+     * transaction, emitting order.preparing and order.completed and recording both steps in the order history: food
+     * that was delivered was prepared, and both are valid guarded transitions. A COMPLETED order is left alone
+     * (duplicate delivery event); an order in any other status (cancelled, or never accepted) is left alone and
+     * reported as {@link DeliveryCompletion#IGNORED}.
+     *
+     * @param actor recorded for each step, normally {@link OrderActor#rider(Long)} of the delivering rider
      */
-    DeliveryCompletion completeDeliveredOrder(Long orderId);
+    DeliveryCompletion completeDeliveredOrder(Long orderId, OrderActor actor);
 
 
     /**

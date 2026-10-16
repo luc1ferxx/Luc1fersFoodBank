@@ -37,12 +37,28 @@ class DeliveryCompletionServiceTests {
     void deliveryDelivered_shouldCompleteTheOrder() {
         Mockito.when(processedEventService.markIfUnseen(
                 "order-delivery-consumer", "evt-1", "evt-1", "delivery.delivered", "DELIVERY", 7L)).thenReturn(true);
-        Mockito.when(orderLifecycleCommands.completeDeliveredOrder(10L))
+        Mockito.when(orderLifecycleCommands.completeDeliveredOrder(10L, OrderActor.rider(4L)))
                 .thenReturn(OrderLifecycleCommands.DeliveryCompletion.COMPLETED);
 
         service.handle(event("delivery.delivered"));
 
-        Mockito.verify(orderLifecycleCommands).completeDeliveredOrder(10L);
+        // The rider of the delivery event is the actor recorded in the order history.
+        Mockito.verify(orderLifecycleCommands).completeDeliveredOrder(10L, OrderActor.rider(4L));
+    }
+
+
+    @Test
+    void deliveryDeliveredWithoutARider_shouldCompleteTheOrderAsSystem() {
+        Mockito.when(processedEventService.markIfUnseen(
+                "order-delivery-consumer", "evt-1", "evt-1", "delivery.delivered", "DELIVERY", 7L)).thenReturn(true);
+        Mockito.when(orderLifecycleCommands.completeDeliveredOrder(10L, OrderActor.system()))
+                .thenReturn(OrderLifecycleCommands.DeliveryCompletion.COMPLETED);
+
+        service.handle(new DeliveryEventEnvelope(
+                "evt-1", 1, "delivery.delivered", "DELIVERY", 7L, LocalDateTime.of(2026, 4, 4, 12, 30), "evt-1", null,
+                new DeliveryEventPayload(10L, 3L, 2L, null, null, "DELIVERED")));
+
+        Mockito.verify(orderLifecycleCommands).completeDeliveredOrder(10L, OrderActor.system());
     }
 
 

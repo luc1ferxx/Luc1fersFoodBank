@@ -59,7 +59,11 @@ public class DeliveryCompletionService {
         }
 
         Long orderId = event.data().orderId();
-        DeliveryCompletion completion = orderLifecycleCommands.completeDeliveredOrder(orderId);
+        // The rider who delivered, as far as the order module knows it: the rider id the delivery event carries.
+        OrderActor actor = event.data().riderId() == null
+                ? OrderActor.system()
+                : OrderActor.rider(event.data().riderId());
+        DeliveryCompletion completion = orderLifecycleCommands.completeDeliveredOrder(orderId, actor);
         if (completion == DeliveryCompletion.IGNORED || completion == DeliveryCompletion.NOT_FOUND) {
             LOGGER.warn(
                     "Delivered order {} was not completed: {} (delivery {})",

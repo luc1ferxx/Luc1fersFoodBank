@@ -8,8 +8,10 @@ import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.entity.OrderItemEntity;
 import com.laioffer.onlineorder.exception.ConflictException;
+import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.model.CartDto;
 import com.laioffer.onlineorder.model.OrderDto;
+import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.CartRepository;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
@@ -21,11 +23,13 @@ import com.laioffer.onlineorder.service.CartItemQuantityUpdater;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.IdempotencyRequestInitializer;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
+import com.laioffer.onlineorder.service.OrderStatusHistoryService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -72,6 +76,9 @@ public class CartServiceTests {
     private OrderEventOutboxService orderEventOutboxService;
 
     @Mock
+    private OrderStatusHistoryService orderStatusHistoryService;
+
+    @Mock
     private ApplicationMetricsService metricsService;
 
     private CartService cartService;
@@ -89,6 +96,7 @@ public class CartServiceTests {
                 orderRepository,
                 orderHistoryItemRepository,
                 orderEventOutboxService,
+                orderStatusHistoryService,
                 metricsService
         );
     }
@@ -191,6 +199,16 @@ public class CartServiceTests {
                 Mockito.isNull(),
                 Mockito.any()
         );
+        // The creation is the order's first history entry, by the customer who checked out.
+        Assertions.assertEquals(savedOrder.getValue().createdAt(), savedOrder.getValue().updatedAt());
+        Mockito.verify(orderStatusHistoryService).record(
+                4L,
+                null,
+                OrderStatus.PAID,
+                OrderActor.customer(customerId),
+                null,
+                savedOrder.getValue().createdAt()
+        );
     }
 
 
@@ -260,11 +278,26 @@ public class CartServiceTests {
         CartEntity cartEntity = new CartEntity(cartId, customerId, amount("21.0"));
 
         Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(orderItemRepository.getTotalPriceByCartId(cartId)).thenReturn(BigDecimal.ZERO);
 
         cartService.clearCart(customerId);
 
-        Mockito.verify(orderItemRepository).deleteByCartId(cartId);
-        Mockito.verify(cartRepository).updateTotalPrice(cartId, BigDecimal.ZERO);
+        // Locked before anything is deleted, and the total recomputed from the (now empty) cart lines.
+        InOrder inOrder = Mockito.inOrder(cartRepository, orderItemRepository);
+        inOrder.verify(cartRepository).lockByCustomerId(customerId);
+        inOrder.verify(orderItemRepository).deleteByCartId(cartId);
+        inOrder.verify(orderItemRepository).getTotalPriceByCartId(cartId);
+        inOrder.verify(cartRepository).updateTotalPrice(cartId, BigDecimal.ZERO);
+    }
+
+
+    @Test
+    void clearCart_whenTheCustomerHasNoCart_shouldSucceedWithoutChanges() {
+        Mockito.when(cartRepository.lockByCustomerId(1L)).thenReturn(null);
+
+        Assertions.assertDoesNotThrow(() -> cartService.clearCart(1L));
+        Mockito.verifyNoInteractions(orderItemRepository);
+        Mockito.verify(cartRepository, Mockito.never()).updateTotalPrice(Mockito.anyLong(), Mockito.any());
     }
 
 

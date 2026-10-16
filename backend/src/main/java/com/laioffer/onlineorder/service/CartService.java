@@ -10,6 +10,7 @@ import com.laioffer.onlineorder.entity.OrderItemEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.model.CartDto;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
@@ -62,6 +63,7 @@ public class CartService {
     private final OrderRepository orderRepository;
     private final OrderHistoryItemRepository orderHistoryItemRepository;
     private final OrderEventOutboxService orderEventOutboxService;
+    private final OrderStatusHistoryService orderStatusHistoryService;
     private final ApplicationMetricsService metricsService;
 
 
@@ -75,6 +77,7 @@ public class CartService {
             OrderRepository orderRepository,
             OrderHistoryItemRepository orderHistoryItemRepository,
             OrderEventOutboxService orderEventOutboxService,
+            OrderStatusHistoryService orderStatusHistoryService,
             ApplicationMetricsService metricsService
     ) {
         this.cartRepository = cartRepository;
@@ -86,6 +89,7 @@ public class CartService {
         this.orderRepository = orderRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
         this.orderEventOutboxService = orderEventOutboxService;
+        this.orderStatusHistoryService = orderStatusHistoryService;
         this.metricsService = metricsService;
     }
 
@@ -151,11 +155,21 @@ public class CartService {
     }
 
 
+    /**
+     * Empties the customer's cart (DELETE /cart), for example to switch restaurants after a 409
+     * CART_RESTAURANT_CONFLICT. Takes the cart row lock like every other cart mutation, so it serializes with
+     * concurrent adds and checkouts, and recomputes the total from the remaining lines (none). Clearing an empty
+     * cart is a no-op, so retries are safe. An account without a cart row (one provisioned without a cart, such as
+     * the SQL-seeded demo merchants) has nothing to clear: that is the same success, not a 404.
+     */
     @Transactional
     public void clearCart(Long customerId) {
-        CartEntity cart = getRequiredLockedCart(customerId);
+        CartEntity cart = cartRepository.lockByCustomerId(customerId);
+        if (cart == null) {
+            return;
+        }
         orderItemRepository.deleteByCartId(cart.id());
-        cartRepository.updateTotalPrice(cart.id(), BigDecimal.ZERO);
+        syncCartTotal(cart.id());
     }
 
 
@@ -245,15 +259,26 @@ public class CartService {
         Map<Long, MenuItemEntity> menuItemsById = getRequiredMenuItemsById(cartItems);
         Long restaurantId = requireSingleRestaurant(menuItemsById);
 
+        LocalDateTime createdAt = LocalDateTime.now();
+        OrderStatus initialStatus = OrderStatus.normalizeForCheckout(status);
         OrderEntity savedOrder = orderRepository.save(new OrderEntity(
                 null,
                 customerId,
                 refreshedCart.totalPrice(),
-                normalizeStatus(status),
-                LocalDateTime.now(),
+                initialStatus.name(),
+                createdAt,
                 restaurantId,
-                null
+                null,
+                createdAt
         ));
+        orderStatusHistoryService.record(
+                savedOrder.id(),
+                null,
+                initialStatus,
+                OrderActor.customer(customerId),
+                null,
+                createdAt
+        );
 
         List<OrderHistoryItemEntity> orderHistoryItems = new ArrayList<>();
         List<OrderHistoryItemDto> orderHistoryItemDtos = new ArrayList<>();

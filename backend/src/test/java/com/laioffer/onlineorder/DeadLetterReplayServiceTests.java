@@ -1,6 +1,9 @@
 package com.laioffer.onlineorder;
 
 
+import com.laioffer.onlineorder.audit.AuditActions;
+import com.laioffer.onlineorder.audit.AuditActor;
+import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.entity.DeadLetterEventEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
@@ -26,6 +29,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
@@ -46,6 +50,9 @@ class DeadLetterReplayServiceTests {
 
     @Mock
     private ApplicationMetricsService metricsService;
+
+    @Mock
+    private AuditLogService auditLogService;
 
 
     @Test
@@ -182,7 +189,8 @@ class DeadLetterReplayServiceTests {
                 kafkaTemplate,
                 deadLetterEventRepository,
                 metricsService,
-                new RecordingTransactions()
+                new RecordingTransactions(),
+                auditLogService
         ));
     }
 
@@ -360,6 +368,135 @@ class DeadLetterReplayServiceTests {
     }
 
 
+    @Test
+    void replay_shouldAuditASuccessfulReplayInTheTransactionThatRecordsIt() {
+        DeadLetterEventEntity pending = buildEvent("PENDING", 0, null, null, TOPIC);
+        DeadLetterEventEntity claimed = buildEvent("REPLAYING", 1, null, null, TOPIC);
+        DeadLetterEventEntity replayed = buildEvent("REPLAYED", 1, LocalDateTime.of(2026, 4, 4, 12, 5), null, TOPIC);
+        RecordingTransactions transactions = new RecordingTransactions();
+        DeadLetterReplayService service = service(transactions);
+        List<String> auditedIn = recordAuditTransaction(transactions);
+
+        Mockito.when(deadLetterEventRepository.findById(7L))
+                .thenReturn(Optional.of(pending), Optional.of(claimed), Optional.of(replayed));
+        Mockito.when(deadLetterEventRepository.claimForReplay(
+                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
+        )).thenReturn(1);
+        Mockito.when(kafkaTemplate.send(TOPIC, KEY, PAYLOAD)).thenReturn(CompletableFuture.completedFuture(null));
+        Mockito.when(deadLetterEventRepository.markReplayed(
+                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(),
+                Mockito.anyInt(), Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
+        )).thenReturn(1);
+
+        service.replay(7L, AuditActor.admin(9L));
+
+        Map<String, ?> details = auditedDetails(AuditActor.admin(9L));
+        Assertions.assertEquals("REPLAYED", details.get("outcome"));
+        Assertions.assertEquals(1, details.get("attempt"));
+        Assertions.assertEquals(true, details.get("recorded"));
+        Assertions.assertEquals("evt-7", details.get("event_id"));
+        // In the second (outcome) transaction, next to markReplayed.
+        Assertions.assertEquals(List.of("transaction 2"), auditedIn);
+    }
+
+
+    @Test
+    void replay_shouldAuditAFailedReplayWithItsError() {
+        DeadLetterEventEntity pending = buildEvent("PENDING", 0, null, null, TOPIC);
+        DeadLetterEventEntity claimed = buildEvent("REPLAYING", 1, null, null, TOPIC);
+        RecordingTransactions transactions = new RecordingTransactions();
+        DeadLetterReplayService service = service(transactions);
+        List<String> auditedIn = recordAuditTransaction(transactions);
+
+        Mockito.when(deadLetterEventRepository.findById(7L)).thenReturn(Optional.of(pending), Optional.of(claimed));
+        Mockito.when(deadLetterEventRepository.claimForReplay(
+                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
+        )).thenReturn(1);
+        Mockito.when(kafkaTemplate.send(TOPIC, KEY, PAYLOAD))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("Kafka unavailable")));
+        Mockito.when(deadLetterEventRepository.markReplayFailed(
+                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(),
+                Mockito.anyInt(), Mockito.any(LocalDateTime.class), Mockito.anyString()
+        )).thenReturn(1);
+
+        Assertions.assertThrows(IllegalStateException.class, () -> service.replay(7L, AuditActor.admin(9L)));
+
+        Map<String, ?> details = auditedDetails(AuditActor.admin(9L));
+        Assertions.assertEquals("REPLAY_FAILED", details.get("outcome"));
+        Assertions.assertEquals(1, details.get("attempt"));
+        Assertions.assertTrue(String.valueOf(details.get("error")).contains("Kafka unavailable"));
+        Assertions.assertEquals(List.of("transaction 2"), auditedIn);
+    }
+
+
+    @Test
+    void replay_ofAnAlreadyReplayedEvent_shouldAuditThatNothingWasSent() {
+        DeadLetterEventEntity event = buildEvent("REPLAYED", 1, LocalDateTime.of(2026, 4, 4, 12, 5), null, TOPIC);
+        RecordingTransactions transactions = new RecordingTransactions();
+        DeadLetterReplayService service = service(transactions);
+        List<String> auditedIn = recordAuditTransaction(transactions);
+        Mockito.when(deadLetterEventRepository.findById(7L)).thenReturn(Optional.of(event));
+
+        service.replay(7L);
+
+        Map<String, ?> details = auditedDetails(AuditActor.system());
+        Assertions.assertEquals("ALREADY_REPLAYED", details.get("outcome"));
+        Assertions.assertNull(details.get("attempt"));
+        Assertions.assertEquals(List.of("transaction 1"), auditedIn);
+        Mockito.verifyNoInteractions(kafkaTemplate);
+    }
+
+
+    @Test
+    void refusedReplays_shouldNotBeAudited() {
+        DeadLetterEventEntity pending = buildEvent("PENDING", 0, null, null, TOPIC);
+        DeadLetterEventEntity inFlight = buildEvent("REPLAYING", 1, null, null, TOPIC);
+        DeadLetterReplayService service = service(new RecordingTransactions());
+        Mockito.when(deadLetterEventRepository.findById(7L)).thenReturn(Optional.of(pending), Optional.of(inFlight));
+        Mockito.when(deadLetterEventRepository.claimForReplay(
+                Mockito.eq(7L), Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(LocalDateTime.class), Mockito.any(LocalDateTime.class)
+        )).thenReturn(0);
+        Mockito.when(deadLetterEventRepository.findById(8L)).thenReturn(Optional.empty());
+
+        Assertions.assertThrows(ConflictException.class, () -> service.replay(7L, AuditActor.admin(9L)));
+        Assertions.assertThrows(ResourceNotFoundException.class, () -> service.replay(8L, AuditActor.admin(9L)));
+
+        Mockito.verifyNoInteractions(auditLogService);
+    }
+
+
+    /**
+     * Records in which transaction (by number) each audit entry was written; fails the test if one is written outside
+     * a transaction.
+     */
+    private List<String> recordAuditTransaction(RecordingTransactions transactions) {
+        List<String> auditedIn = new ArrayList<>();
+        Mockito.doAnswer(invocation -> {
+            Assertions.assertTrue(transactions.depth > 0, "the audit entry was written outside a transaction");
+            auditedIn.add("transaction " + transactions.started);
+            return null;
+        }).when(auditLogService).record(Mockito.any(), Mockito.anyString(), Mockito.anyString(), Mockito.any(), Mockito.any());
+        return auditedIn;
+    }
+
+
+    @SuppressWarnings("unchecked")
+    private Map<String, ?> auditedDetails(AuditActor actor) {
+        ArgumentCaptor<Map<String, ?>> details = ArgumentCaptor.forClass(Map.class);
+        Mockito.verify(auditLogService).record(
+                Mockito.eq(actor),
+                Mockito.eq(AuditActions.DEAD_LETTER_REPLAY),
+                Mockito.eq(AuditActions.TARGET_DEAD_LETTER_EVENT),
+                Mockito.eq(7L),
+                details.capture()
+        );
+        return details.getValue();
+    }
+
+
     private DeadLetterReplayService service(TransactionOperations transactionOperations) {
         return new DeadLetterReplayService(
                 Duration.ofSeconds(5),
@@ -367,7 +504,8 @@ class DeadLetterReplayServiceTests {
                 kafkaTemplate,
                 deadLetterEventRepository,
                 metricsService,
-                transactionOperations
+                transactionOperations,
+                auditLogService
         );
     }
 

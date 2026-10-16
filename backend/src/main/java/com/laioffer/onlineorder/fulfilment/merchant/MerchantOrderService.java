@@ -6,6 +6,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.fulfilment.AfterCommit;
+import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.RestaurantOrderTransition;
 import com.laioffer.onlineorder.model.OrderDto;
@@ -115,7 +116,8 @@ public class MerchantOrderService {
                 restaurantId,
                 requiredStatus,
                 targetStatus,
-                cancelReason
+                cancelReason,
+                OrderActor.merchant(merchantCustomerId)
         );
         OrderDto order = transition.order();
         LocalDateTime now = LocalDateTime.now();

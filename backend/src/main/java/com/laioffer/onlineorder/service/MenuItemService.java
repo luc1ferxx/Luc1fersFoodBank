@@ -1,6 +1,9 @@
 package com.laioffer.onlineorder.service;
 
 
+import com.laioffer.onlineorder.audit.AuditActions;
+import com.laioffer.onlineorder.audit.AuditActor;
+import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.cache.CatalogCacheInvalidator;
 import com.laioffer.onlineorder.cache.CatalogCaches;
 import com.laioffer.onlineorder.entity.MenuItemEntity;
@@ -14,7 +17,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 
 @Service
@@ -23,11 +28,17 @@ public class MenuItemService {
 
     private final MenuItemRepository menuItemRepository;
     private final CatalogCacheInvalidator cacheInvalidator;
+    private final AuditLogService auditLogService;
 
 
-    public MenuItemService(MenuItemRepository menuItemRepository, CatalogCacheInvalidator cacheInvalidator) {
+    public MenuItemService(
+            MenuItemRepository menuItemRepository,
+            CatalogCacheInvalidator cacheInvalidator,
+            AuditLogService auditLogService
+    ) {
         this.menuItemRepository = menuItemRepository;
         this.cacheInvalidator = cacheInvalidator;
+        this.auditLogService = auditLogService;
     }
 
 
@@ -50,6 +61,16 @@ public class MenuItemService {
      */
     @Transactional
     public CatalogMenuItemDto updateMenuItem(long menuItemId, UpdateMenuItemBody body) {
+        return updateMenuItem(menuItemId, body, AuditActor.system());
+    }
+
+
+    /**
+     * {@link #updateMenuItem(long, UpdateMenuItemBody)} recorded in the audit log as done by {@code actor}, in the
+     * same transaction.
+     */
+    @Transactional
+    public CatalogMenuItemDto updateMenuItem(long menuItemId, UpdateMenuItemBody body, AuditActor actor) {
         if (body.hasNoChanges()) {
             throw new BadRequestException("At least one of name, description or price is required");
         }
@@ -60,6 +81,23 @@ public class MenuItemService {
         MenuItemEntity menuItem = menuItemRepository.findById(menuItemId)
                 .orElseThrow(() -> new ResourceNotFoundException("Menu item not found"));
         cacheInvalidator.evictMenuAfterCommit(menuItem.restaurantId());
+
+        // The fields the request set (omitted fields were left unchanged).
+        Map<String, Object> changes = new LinkedHashMap<>();
+        putIfPresent(changes, "name", body.name());
+        putIfPresent(changes, "description", body.description());
+        putIfPresent(changes, "price", body.price());
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("restaurant_id", menuItem.restaurantId());
+        details.put("changes", changes);
+        auditLogService.record(actor, AuditActions.MENU_ITEM_UPDATE, AuditActions.TARGET_MENU_ITEM, menuItemId, details);
         return new CatalogMenuItemDto(menuItem);
+    }
+
+
+    private static void putIfPresent(Map<String, Object> map, String key, Object value) {
+        if (value != null) {
+            map.put(key, value);
+        }
     }
 }

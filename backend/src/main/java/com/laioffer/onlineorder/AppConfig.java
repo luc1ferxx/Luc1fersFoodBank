@@ -102,6 +102,7 @@ public class AppConfig {
                                 .requestMatchers(HttpMethod.PATCH, "/admin/menu-items/*", "/admin/restaurants/*").hasRole("ADMIN")
                                 .requestMatchers(HttpMethod.PATCH, "/orders/*/status").hasRole("ADMIN")
                                 .requestMatchers(HttpMethod.POST, "/dead-letters/*/replay").hasRole("ADMIN")
+                                .requestMatchers("/admin/audit-log").hasRole("ADMIN")
                                 // Fulfilment: merchant endpoints are scoped to the merchant's restaurant in the service.
                                 .requestMatchers("/merchant/**").hasRole("MERCHANT")
                                 .requestMatchers("/admin/deliveries/**", "/admin/deliveries").hasRole("ADMIN")

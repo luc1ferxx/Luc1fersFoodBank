@@ -4,6 +4,7 @@ package com.laioffer.onlineorder.fulfilment.merchant;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.RestaurantOrderTransition;
 import com.laioffer.onlineorder.model.OrderDto;
@@ -30,6 +31,7 @@ class MerchantOrderServiceTests {
     private static final long MERCHANT_CUSTOMER_ID = 40L;
     private static final long RESTAURANT_ID = 2L;
     private static final long ORDER_ID = 10L;
+    private static final OrderActor MERCHANT = OrderActor.merchant(MERCHANT_CUSTOMER_ID);
 
     @Mock
     private MerchantAccountRepository merchantAccountRepository;
@@ -64,7 +66,7 @@ class MerchantOrderServiceTests {
         Mockito.when(merchantOrderRepository.lockByOrderIdAndRestaurantId(ORDER_ID, RESTAURANT_ID))
                 .thenReturn(inboxOrder("PAID"));
         Mockito.when(orderLifecycleCommands.transitionRestaurantOrder(
-                ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null)).thenReturn(changed("ACCEPTED", null));
+                ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null, MERCHANT)).thenReturn(changed("ACCEPTED", null));
 
         MerchantOrderDto accepted = service.accept(MERCHANT_CUSTOMER_ID, ORDER_ID);
 
@@ -104,7 +106,7 @@ class MerchantOrderServiceTests {
         Mockito.when(merchantOrderRepository.lockByOrderIdAndRestaurantId(ORDER_ID, RESTAURANT_ID))
                 .thenReturn(inboxOrder("PAID"));
         Mockito.when(orderLifecycleCommands.transitionRestaurantOrder(
-                        ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null))
+                        ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null, MERCHANT))
                 .thenThrow(new ConflictException(OrderLifecycleCommands.ORDER_STATUS_CONFLICT, "Order is CANCELLED"));
 
         Assertions.assertThrows(ConflictException.class, () -> service.accept(MERCHANT_CUSTOMER_ID, ORDER_ID));
@@ -121,7 +123,7 @@ class MerchantOrderServiceTests {
         Mockito.when(merchantOrderRepository.lockByOrderIdAndRestaurantId(ORDER_ID, RESTAURANT_ID))
                 .thenReturn(inboxOrder("ACCEPTED"));
         Mockito.when(orderLifecycleCommands.transitionRestaurantOrder(
-                ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null)).thenReturn(unchanged("ACCEPTED", null));
+                ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null, MERCHANT)).thenReturn(unchanged("ACCEPTED", null));
 
         Assertions.assertEquals("ACCEPTED", service.accept(MERCHANT_CUSTOMER_ID, ORDER_ID).status());
 
@@ -136,7 +138,7 @@ class MerchantOrderServiceTests {
         Mockito.when(merchantOrderRepository.lockByOrderIdAndRestaurantId(ORDER_ID, RESTAURANT_ID))
                 .thenReturn(inboxOrder("PAID"));
         Mockito.when(orderLifecycleCommands.transitionRestaurantOrder(
-                ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null)).thenReturn(unchanged("ACCEPTED", null));
+                ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null, MERCHANT)).thenReturn(unchanged("ACCEPTED", null));
 
         Assertions.assertEquals("ACCEPTED", service.accept(MERCHANT_CUSTOMER_ID, ORDER_ID).status());
 
@@ -152,7 +154,7 @@ class MerchantOrderServiceTests {
         Mockito.when(merchantOrderRepository.lockByOrderIdAndRestaurantId(ORDER_ID, RESTAURANT_ID))
                 .thenReturn(inboxOrder("PAID"));
         Mockito.when(orderLifecycleCommands.transitionRestaurantOrder(
-                        ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED, "MERCHANT_REJECTED: Sold out"))
+                        ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED, "MERCHANT_REJECTED: Sold out", MERCHANT))
                 .thenReturn(changed("CANCELLED", "MERCHANT_REJECTED: Sold out"));
 
         MerchantOrderDto rejected = service.reject(MERCHANT_CUSTOMER_ID, ORDER_ID, "  Sold out ");
@@ -169,7 +171,7 @@ class MerchantOrderServiceTests {
         Mockito.when(merchantOrderRepository.lockByOrderIdAndRestaurantId(ORDER_ID, RESTAURANT_ID))
                 .thenReturn(inboxOrder("PAID"));
         Mockito.when(orderLifecycleCommands.transitionRestaurantOrder(
-                        ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED, "MERCHANT_REJECTED: Sold out"))
+                        ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED, "MERCHANT_REJECTED: Sold out", MERCHANT))
                 .thenThrow(new ConflictException(
                         OrderLifecycleCommands.ORDER_STATUS_CONFLICT, "Order is CANCELLED (MERCHANT_TIMEOUT)"));
 
@@ -187,7 +189,7 @@ class MerchantOrderServiceTests {
         Mockito.when(merchantOrderRepository.lockByOrderIdAndRestaurantId(ORDER_ID, RESTAURANT_ID))
                 .thenReturn(inboxOrder("CANCELLED"));
         Mockito.when(orderLifecycleCommands.transitionRestaurantOrder(
-                        ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED, "MERCHANT_REJECTED: Sold out"))
+                        ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED, "MERCHANT_REJECTED: Sold out", MERCHANT))
                 .thenReturn(unchanged("CANCELLED", "MERCHANT_REJECTED: Out of buns"));
 
         MerchantOrderDto rejected = service.reject(MERCHANT_CUSTOMER_ID, ORDER_ID, "Sold out");
@@ -203,7 +205,7 @@ class MerchantOrderServiceTests {
         Mockito.when(merchantOrderRepository.lockByOrderIdAndRestaurantId(ORDER_ID, RESTAURANT_ID))
                 .thenReturn(inboxOrder("ACCEPTED"));
         Mockito.when(orderLifecycleCommands.transitionRestaurantOrder(
-                ORDER_ID, RESTAURANT_ID, OrderStatus.ACCEPTED, OrderStatus.PREPARING, null)).thenReturn(changed("PREPARING", null));
+                ORDER_ID, RESTAURANT_ID, OrderStatus.ACCEPTED, OrderStatus.PREPARING, null, MERCHANT)).thenReturn(changed("PREPARING", null));
 
         Assertions.assertEquals("PREPARING", service.markPreparing(MERCHANT_CUSTOMER_ID, ORDER_ID).status());
         Mockito.verifyNoInteractions(metricsService);

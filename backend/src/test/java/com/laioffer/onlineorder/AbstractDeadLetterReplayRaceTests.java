@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder;
 
 
+import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.entity.DeadLetterEventEntity;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.model.DeadLetterReplayDto;
@@ -55,6 +56,9 @@ abstract class AbstractDeadLetterReplayRaceTests {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private AuditLogService auditLogService;
+
     private KafkaTemplate<String, String> kafkaTemplate;
     private DeadLetterReplayService service;
     private ExecutorService executor;
@@ -73,7 +77,8 @@ abstract class AbstractDeadLetterReplayRaceTests {
                 kafkaTemplate,
                 deadLetterEventRepository,
                 Mockito.mock(ApplicationMetricsService.class),
-                new TransactionTemplate(transactionManager)
+                new TransactionTemplate(transactionManager),
+                auditLogService
         );
         executor = Executors.newFixedThreadPool(2);
         // Each send returns its own future and signals that it started; the test completes the futures.

@@ -1,6 +1,9 @@
 package com.laioffer.onlineorder.service;
 
 
+import com.laioffer.onlineorder.audit.AuditActions;
+import com.laioffer.onlineorder.audit.AuditActor;
+import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.entity.DeadLetterEventEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
@@ -23,6 +26,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 
@@ -39,6 +44,10 @@ import java.util.concurrent.TimeUnit;
  * never resolved, because the process died or the database was unreachable after the send, can be claimed again
  * once it is older than {@code app.dlt.replay-claim-timeout}; that timeout must exceed the longest possible send
  * (the producer's max.block.ms plus {@code app.dlt.replay-timeout}).
+ *
+ * <p>The outcome of a replay is written to the audit log in the transaction that records it: REPLAYED and
+ * REPLAY_FAILED with the outcome transaction, ALREADY_REPLAYED (nothing sent) with the claim transaction. A refused
+ * replay (unknown id, no source topic, a replay in flight) changes nothing and records nothing.
  */
 @Service
 @ConditionalOnProperty(name = "app.kafka.enabled", havingValue = "true", matchIfMissing = true)
@@ -48,6 +57,7 @@ public class DeadLetterReplayService {
     static final String REPLAY_STATUS_REPLAYING = "REPLAYING";
     static final String REPLAY_STATUS_REPLAYED = "REPLAYED";
     static final String REPLAY_STATUS_REPLAY_FAILED = "REPLAY_FAILED";
+    static final String OUTCOME_ALREADY_REPLAYED = "ALREADY_REPLAYED";
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DeadLetterReplayService.class);
 
@@ -57,6 +67,7 @@ public class DeadLetterReplayService {
     private final DeadLetterEventRepository deadLetterEventRepository;
     private final ApplicationMetricsService metricsService;
     private final TransactionOperations transactionOperations;
+    private final AuditLogService auditLogService;
 
 
     @Autowired
@@ -66,7 +77,8 @@ public class DeadLetterReplayService {
             KafkaTemplate<String, String> kafkaTemplate,
             DeadLetterEventRepository deadLetterEventRepository,
             ApplicationMetricsService metricsService,
-            PlatformTransactionManager transactionManager
+            PlatformTransactionManager transactionManager,
+            AuditLogService auditLogService
     ) {
         this(
                 replayTimeout,
@@ -74,7 +86,8 @@ public class DeadLetterReplayService {
                 kafkaTemplate,
                 deadLetterEventRepository,
                 metricsService,
-                new TransactionTemplate(transactionManager)
+                new TransactionTemplate(transactionManager),
+                auditLogService
         );
     }
 
@@ -85,7 +98,8 @@ public class DeadLetterReplayService {
             KafkaTemplate<String, String> kafkaTemplate,
             DeadLetterEventRepository deadLetterEventRepository,
             ApplicationMetricsService metricsService,
-            TransactionOperations transactionOperations
+            TransactionOperations transactionOperations,
+            AuditLogService auditLogService
     ) {
         if (replayClaimTimeout.compareTo(replayTimeout) <= 0) {
             throw new IllegalArgumentException(
@@ -99,11 +113,29 @@ public class DeadLetterReplayService {
         this.deadLetterEventRepository = deadLetterEventRepository;
         this.metricsService = metricsService;
         this.transactionOperations = transactionOperations;
+        this.auditLogService = auditLogService;
     }
 
 
+    /**
+     * A replay without a known actor, recorded in the audit log as SYSTEM.
+     */
     public DeadLetterReplayDto replay(Long deadLetterEventId) {
-        Claim claim = transactionOperations.execute(status -> claim(deadLetterEventId));
+        return replay(deadLetterEventId, AuditActor.system());
+    }
+
+
+    /**
+     * @param actor recorded in the audit log with the outcome
+     */
+    public DeadLetterReplayDto replay(Long deadLetterEventId, AuditActor actor) {
+        Claim claim = transactionOperations.execute(status -> {
+            Claim result = claim(deadLetterEventId);
+            if (!result.claimed()) {
+                audit(actor, result.event(), OUTCOME_ALREADY_REPLAYED, null, true, null);
+            }
+            return result;
+        });
         if (claim == null) {
             throw new IllegalStateException("Claim transaction completed without a dead-letter event");
         }
@@ -117,7 +149,7 @@ public class DeadLetterReplayService {
         } catch (RuntimeException sendFailure) {
             IllegalStateException replayFailure = new IllegalStateException("Unable to replay dead-letter event", sendFailure);
             try {
-                transactionOperations.executeWithoutResult(status -> markReplayFailed(claim, rootMessage(sendFailure)));
+                transactionOperations.executeWithoutResult(status -> markReplayFailed(claim, rootMessage(sendFailure), actor));
             } catch (RuntimeException markFailure) {
                 LOGGER.warn("Unable to record the failed replay of dead-letter event {}", deadLetterEventId, markFailure);
                 replayFailure.addSuppressed(markFailure);
@@ -126,7 +158,7 @@ public class DeadLetterReplayService {
             throw replayFailure;
         }
 
-        DeadLetterEventEntity replayed = transactionOperations.execute(status -> markReplayed(claim));
+        DeadLetterEventEntity replayed = transactionOperations.execute(status -> markReplayed(claim, actor));
         if (replayed == null) {
             throw new IllegalStateException("Replay transaction completed without a dead-letter event");
         }
@@ -196,7 +228,7 @@ public class DeadLetterReplayService {
     }
 
 
-    private DeadLetterEventEntity markReplayed(Claim claim) {
+    private DeadLetterEventEntity markReplayed(Claim claim, AuditActor actor) {
         Long deadLetterEventId = claim.event().id();
         LocalDateTime now = LocalDateTime.now();
         int updated = deadLetterEventRepository.markReplayed(
@@ -213,12 +245,13 @@ public class DeadLetterReplayService {
                     deadLetterEventId
             );
         }
+        audit(actor, claim.event(), REPLAY_STATUS_REPLAYED, claim.attempt(), updated == 1, null);
         return deadLetterEventRepository.findById(deadLetterEventId)
                 .orElseThrow(() -> new ResourceNotFoundException("Dead-letter event not found after replay"));
     }
 
 
-    private void markReplayFailed(Claim claim, String errorMessage) {
+    private void markReplayFailed(Claim claim, String errorMessage, AuditActor actor) {
         Long deadLetterEventId = claim.event().id();
         int updated = deadLetterEventRepository.markReplayFailed(
                 deadLetterEventId,
@@ -235,6 +268,30 @@ public class DeadLetterReplayService {
                     errorMessage
             );
         }
+        audit(actor, claim.event(), REPLAY_STATUS_REPLAY_FAILED, claim.attempt(), updated == 1, abbreviate(errorMessage));
+    }
+
+
+    /**
+     * @param attempt  the replay attempt this outcome belongs to; null when nothing was sent
+     * @param recorded false when the outcome arrived after the claim had moved on, so the row kept a later status
+     */
+    private void audit(
+            AuditActor actor,
+            DeadLetterEventEntity event,
+            String outcome,
+            Integer attempt,
+            boolean recorded,
+            String error
+    ) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("outcome", outcome);
+        details.put("attempt", attempt);
+        details.put("recorded", recorded);
+        details.put("source_topic", event.sourceTopic());
+        details.put("event_id", event.eventId());
+        details.put("error", error);
+        auditLogService.record(actor, AuditActions.DEAD_LETTER_REPLAY, AuditActions.TARGET_DEAD_LETTER_EVENT, event.id(), details);
     }
 
 

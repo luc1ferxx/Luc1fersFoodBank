@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.fulfilment.timeout;
 
 
+import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import org.slf4j.Logger;
@@ -109,7 +110,8 @@ public class OrderDeadlineProcessor {
         boolean cancelled = enabled && orderLifecycleCommands.cancelIfStillIn(
                 deadline.orderId(),
                 type.waitingStatus(),
-                type.cancelReason()
+                type.cancelReason(),
+                OrderActor.system()
         ).isPresent();
         orderDeadlineRepository.deleteById(deadline.id());
         return new FiredDeadline(deadline, type, cancelled);

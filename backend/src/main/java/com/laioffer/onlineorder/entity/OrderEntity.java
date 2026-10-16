@@ -11,6 +11,9 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 
+/**
+ * @param updatedAt when the order last changed status; its creation time until the first transition
+ */
 @Table("orders")
 public record OrderEntity(
         @Id
@@ -27,7 +30,9 @@ public record OrderEntity(
         @Column("restaurant_id")
         Long restaurantId,
         @Column("cancel_reason")
-        String cancelReason
+        String cancelReason,
+        @Column("updated_at")
+        LocalDateTime updatedAt
 ) {
 
     @PersistenceCreator
@@ -36,9 +41,42 @@ public record OrderEntity(
 
 
     /**
+     * An order that has not changed status since it was created ({@code updatedAt} is {@code createdAt}).
+     */
+    public OrderEntity(
+            Long id,
+            Long customerId,
+            BigDecimal totalPrice,
+            String status,
+            LocalDateTime createdAt,
+            Long restaurantId,
+            String cancelReason
+    ) {
+        this(id, customerId, totalPrice, status, createdAt, restaurantId, cancelReason, createdAt);
+    }
+
+
+    /**
      * An order without a restaurant (placed before single-restaurant carts) and without a cancel reason.
      */
     public OrderEntity(Long id, Long customerId, BigDecimal totalPrice, String status, LocalDateTime createdAt) {
         this(id, customerId, totalPrice, status, createdAt, null, null);
+    }
+
+
+    /**
+     * This order in {@code status}, changed at {@code changedAt}. The cancel reason is only replaced for CANCELLED.
+     */
+    public OrderEntity withStatus(String status, String cancelReason, LocalDateTime changedAt) {
+        return new OrderEntity(
+                id,
+                customerId,
+                totalPrice,
+                status,
+                createdAt,
+                restaurantId,
+                cancelReason,
+                changedAt
+        );
     }
 }
