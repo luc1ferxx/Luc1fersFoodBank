@@ -362,7 +362,10 @@ their events.
 > (`MERCHANT_TIMEOUT`), but only when the order's restaurant had at least one **active** merchant account when the
 > merchant inbox received the order. The merchant module decides that from its own `merchant_accounts` and announces
 > it as `merchant.order_received`; the timeout module sets the `ACCEPT` deadline only from that event and never reads
-> merchant tables. A restaurant without staff (none provisioned, or all deactivated before the order arrived) therefore
+> merchant tables. The deadline runs from when the inbox received the order (the event time of
+> `merchant.order_received`), not from the payment, so an inbox that lagged behind `order.paid` (a backlog, a replayed
+> dead letter) still gives the merchant the whole window instead of a deadline that is already due. A restaurant
+> without staff (none provisioned, or all deactivated before the order arrived) therefore
 > never gets its paid orders auto-cancelled: they stay `PAID` in its inbox until a merchant or an admin moves them, and
 > `onlineorder.fulfilment.merchant.orders_received{staffing="unstaffed"}` counts them. A deadline set while the
 > restaurant was staffed still fires if its merchant is deactivated afterwards. The payment timeout for unpaid `PLACED`
@@ -374,7 +377,7 @@ their events.
 POST /payments/checkout            order PAID ---------------------- order.paid
                                                                         |-> merchant: inbox row (PAID); if the restaurant has an
                                                                         |      active merchant -> merchant.order_received
-                                                                        |      `-> timeout: ACCEPT deadline = paid_at + accept-timeout
+                                                                        |      `-> timeout: ACCEPT deadline = received_at + accept-timeout
                                                                         |-> timeout: PAYMENT deadline dropped
                                                                         `-> notifications: "Payment confirmed"
 POST /merchant/orders/{id}/accept  order ACCEPTED ------------------ order.accepted

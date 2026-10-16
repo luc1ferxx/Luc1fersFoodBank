@@ -75,7 +75,7 @@ class OrderDeadlineServiceTests {
 
 
     @Test
-    void merchantOrderReceived_shouldSetAnAcceptDeadlineFromThePaymentTime() {
+    void merchantOrderReceived_shouldSetAnAcceptDeadlineFromWhenTheInboxReceivedTheOrder() {
         MerchantEventEnvelope received = merchantEvent(OCCURRED_AT);
         Mockito.when(processedEventService.markIfUnseen(
                 "order-timeout-merchant-consumer", received.eventId(), received.eventId(), "merchant.order_received",
@@ -83,8 +83,42 @@ class OrderDeadlineServiceTests {
 
         service.handle(received);
 
+        // Paid at 12:00:00, in the merchant's inbox at 12:00:02.
         Mockito.verify(orderDeadlineRepository).insertIfAbsent(
-                Mockito.eq(10L), Mockito.eq("ACCEPT"), Mockito.eq(OCCURRED_AT.plusMinutes(10)), Mockito.any());
+                Mockito.eq(10L), Mockito.eq("ACCEPT"), Mockito.eq(OCCURRED_AT.plusSeconds(2).plusMinutes(10)), Mockito.any());
+    }
+
+
+    @Test
+    void merchantOrderReceived_longAfterThePayment_shouldStillGiveTheMerchantTheWholeWindow() {
+        // The merchant group handled order.paid 25 minutes late (a backlog or a replayed dead letter): measured from
+        // the payment, the deadline would already be due when the order first shows up in the inbox.
+        LocalDateTime receivedAt = OCCURRED_AT.plusMinutes(25);
+        MerchantEventEnvelope received = new MerchantEventEnvelope(
+                "evt-late", 1, "merchant.order_received", "MERCHANT_ORDER", 10L, receivedAt, "evt-late", null,
+                new MerchantEventPayload(10L, 2L, OCCURRED_AT, 1));
+        Mockito.when(processedEventService.markIfUnseen(
+                Mockito.eq("order-timeout-merchant-consumer"), Mockito.anyString(), Mockito.anyString(),
+                Mockito.anyString(), Mockito.anyString(), Mockito.anyLong())).thenReturn(true);
+
+        service.handle(received);
+
+        Mockito.verify(orderDeadlineRepository).insertIfAbsent(
+                Mockito.eq(10L), Mockito.eq("ACCEPT"), Mockito.eq(receivedAt.plusMinutes(10)), Mockito.any());
+    }
+
+
+    @Test
+    void receivedAt_shouldNeverBeBeforeThePaymentAndFallBackToNow() {
+        LocalDateTime now = OCCURRED_AT.plusHours(1);
+        // Another instance's clock stamped the announcement before the payment.
+        Assertions.assertEquals(OCCURRED_AT, OrderDeadlineService.receivedAt(new MerchantEventEnvelope(
+                "e", 1, "merchant.order_received", "MERCHANT_ORDER", 10L, OCCURRED_AT.minusSeconds(1), "e", null,
+                new MerchantEventPayload(10L, 2L, OCCURRED_AT, 1)), now));
+        // No event time: this consumer's own time, a later bound for the receipt.
+        Assertions.assertEquals(now, OrderDeadlineService.receivedAt(new MerchantEventEnvelope(
+                "e", 1, "merchant.order_received", "MERCHANT_ORDER", 10L, null, "e", null,
+                new MerchantEventPayload(10L, 2L, OCCURRED_AT, 1)), now));
     }
 
 

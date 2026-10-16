@@ -319,10 +319,10 @@ class FulfilmentPostgresIntegrationTests {
         Assertions.assertEquals(List.of("ACCEPT"), deadlineTypes(order.orderId()));
         LocalDateTime dueAt = jdbcTemplate.queryForObject(
                 "SELECT due_at FROM order_deadlines WHERE order_id = ?", LocalDateTime.class, order.orderId());
-        LocalDateTime expectedDueAt = latestOrderEvent(order.orderId(), "order.paid").occurredAt().plusMinutes(10);
+        LocalDateTime expectedDueAt = latestMerchantEvent(order.orderId()).occurredAt().plusMinutes(10);
         Assertions.assertTrue(
                 java.time.Duration.between(expectedDueAt, dueAt).abs().toMillis() < 1,
-                "due_at " + dueAt + " should be the payment time plus the accept timeout, " + expectedDueAt
+                "due_at " + dueAt + " should be the inbox receipt time plus the accept timeout, " + expectedDueAt
         );
 
         orderDeadlineProcessor.fireDueDeadlines();
@@ -345,6 +345,45 @@ class FulfilmentPostgresIntegrationTests {
                 ConflictException.class,
                 () -> merchantOrderService.accept(customerIdOf("merchant.fashionwok@laifood.com"), order.orderId())
         );
+    }
+
+
+    @Test
+    void acceptTimeout_whenTheInboxReceivedOrderPaidAfterTheTimeout_shouldStillGiveTheMerchantTheWholeWindow() {
+        PaidOrder order = paidOrderAt("Burger King");
+        // The merchant group handles order.paid 11 minutes after the payment (a backlog, or the dead-lettered event
+        // replayed): measured from the payment, the 10-minute deadline would already be due.
+        OrderEventEnvelope paid = latestOrderEvent(order.orderId(), "order.paid");
+        LocalDateTime paidAt = LocalDateTime.now().minusMinutes(11);
+        merchantInboxService.handle(new OrderEventEnvelope(
+                paid.eventId(),
+                paid.eventVersion(),
+                paid.eventType(),
+                paid.aggregateType(),
+                paid.aggregateId(),
+                paidAt,
+                paid.correlationId(),
+                paid.idempotencyKey(),
+                paid.data()
+        ));
+        LocalDateTime receivedAt = latestMerchantEvent(order.orderId()).occurredAt();
+        Assertions.assertEquals(paidAt, latestMerchantEvent(order.orderId()).data().paidAt());
+        deliverMerchantOrderReceived(order.orderId());
+
+        LocalDateTime dueAt = jdbcTemplate.queryForObject(
+                "SELECT due_at FROM order_deadlines WHERE order_id = ?", LocalDateTime.class, order.orderId());
+        Assertions.assertTrue(
+                java.time.Duration.between(receivedAt.plusMinutes(10), dueAt).abs().toMillis() < 1,
+                "due_at " + dueAt + " should be the receipt time " + receivedAt + " plus the accept timeout"
+        );
+        Assertions.assertTrue(dueAt.isAfter(LocalDateTime.now().plusMinutes(9)));
+
+        // The poller leaves the order to the merchant, who can still accept it.
+        orderDeadlineProcessor.fireDueDeadlines();
+        Assertions.assertEquals("PAID", orderStatus(order.orderId()));
+        Assertions.assertEquals(List.of("ACCEPT"), deadlineTypes(order.orderId()));
+        merchantOrderService.accept(customerIdOf(BURGER_KING_MERCHANT), order.orderId());
+        Assertions.assertEquals("ACCEPTED", orderStatus(order.orderId()));
     }
 
 
@@ -947,6 +986,11 @@ class FulfilmentPostgresIntegrationTests {
      * listener would.
      */
     void deliverMerchantOrderReceived(Long orderId) {
+        orderDeadlineService.handle(latestMerchantEvent(orderId));
+    }
+
+
+    MerchantEventEnvelope latestMerchantEvent(Long orderId) {
         String payload = jdbcTemplate.queryForObject("""
                 SELECT payload
                 FROM outbox_events
@@ -957,7 +1001,7 @@ class FulfilmentPostgresIntegrationTests {
                 LIMIT 1
                 """, String.class, orderId);
         try {
-            orderDeadlineService.handle(objectMapper.readValue(payload, MerchantEventEnvelope.class));
+            return objectMapper.readValue(payload, MerchantEventEnvelope.class);
         } catch (java.io.IOException ex) {
             throw new IllegalStateException(ex);
         }

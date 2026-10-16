@@ -40,7 +40,8 @@ import java.util.UUID;
  *
  * <p>Staffing: when order.paid adds a new PAID row and the restaurant has at least one active merchant account, the
  * module publishes merchant.order_received (merchant topic, same transaction through the outbox) with the payment
- * time, and the timeout module sets the order's accept deadline from it. A restaurant without an active merchant
+ * time. Its event time is when the order became visible here; the timeout module runs the accept deadline from that,
+ * so a merchant gets the whole accept window even when this group was late. A restaurant without an active merchant
  * account gets no such event, so its paid orders are never cancelled for want of an accept nobody could give; they
  * wait in the inbox for a merchant (or an admin) like before the accept timeout existed. Staffing is decided when the
  * inbox receives the order: a merchant deactivated before that leaves the order without a deadline, one deactivated

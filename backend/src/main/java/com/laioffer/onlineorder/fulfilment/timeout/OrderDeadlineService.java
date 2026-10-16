@@ -24,12 +24,15 @@ import java.util.Set;
  *     <li>order.paid: the PAYMENT deadline is dropped;</li>
  *     <li>merchant.order_received (merchant topic, own consumer group): the merchant module saw the paid order arrive
  *     at a restaurant with at least one active merchant account, so, when app.fulfilment.accept-timeout-enabled is on
- *     (the default), an ACCEPT deadline is set at the payment time plus app.fulfilment.accept-timeout. A restaurant
- *     without an active merchant gets no such event and its orders no ACCEPT deadline: nobody could accept them;</li>
+ *     (the default), an ACCEPT deadline is set at app.fulfilment.accept-timeout after the order reached the inbox
+ *     (the later of the payment time and the event time). A restaurant without an active merchant gets no such event
+ *     and its orders no ACCEPT deadline: nobody could accept them;</li>
  *     <li>any later order event: the order no longer waits for anything, so its deadlines are dropped.</li>
  * </ul>
- * Deadlines are measured from the event's occurredAt (the payment time for ACCEPT), so a consumer that lags does not
- * extend them. Dropping a deadline early only saves the poller a no-op: the poller cancels an order only while it is
+ * Deadlines are measured from event times, so this consumer lagging does not extend them. The ACCEPT deadline starts
+ * when the merchant could first see the order: an inbox that received order.paid late (a backlog, or a dead-lettered
+ * order.paid replayed later) still gives the merchant the whole accept window instead of a deadline that is already
+ * due. Dropping a deadline early only saves the poller a no-op: the poller cancels an order only while it is
  * still in the status the deadline waits in. That also covers a merchant.order_received handled after the order was
  * accepted or cancelled (the two topics are consumed independently): its deadline fires as a no-op. Each event is
  * applied once per consumer (processed_events, same transaction). The module never reads the merchant module's
@@ -104,8 +107,9 @@ public class OrderDeadlineService {
 
 
     /**
-     * merchant.order_received: the paid order reached a staffed restaurant; sets its ACCEPT deadline from the payment
-     * time. A duplicate (or a copy under a new event id) adds no second deadline: (order_id, deadline_type) is unique.
+     * merchant.order_received: the paid order reached a staffed restaurant; sets its ACCEPT deadline from the moment
+     * the inbox received it (the event time, or the payment time if that is later, for clock skew between instances).
+     * A duplicate (or a copy under a new event id) adds no second deadline: (order_id, deadline_type) is unique.
      *
      * @throws IllegalArgumentException for an event without an event id or order id (retried, then dead-lettered)
      */
@@ -136,14 +140,23 @@ public class OrderDeadlineService {
         }
 
         LocalDateTime now = LocalDateTime.now();
-        LocalDateTime paidAt = data.paidAt() != null
-                ? data.paidAt()
-                : event.occurredAt() != null ? event.occurredAt() : now;
         orderDeadlineRepository.insertIfAbsent(
                 data.orderId(),
                 DeadlineType.ACCEPT.name(),
-                paidAt.plus(acceptTimeout),
+                receivedAt(event, now).plus(acceptTimeout),
                 now
         );
+    }
+
+
+    /**
+     * When the merchant inbox received the paid order: the announcement's event time, which the inbox sets in the
+     * transaction that makes the order visible to the merchant (this consumer's own time for an event without one, a
+     * later bound), but never before the payment.
+     */
+    static LocalDateTime receivedAt(MerchantEventEnvelope event, LocalDateTime now) {
+        LocalDateTime announcedAt = event.occurredAt() == null ? now : event.occurredAt();
+        LocalDateTime paidAt = event.data().paidAt();
+        return paidAt != null && paidAt.isAfter(announcedAt) ? paidAt : announcedAt;
     }
 }
