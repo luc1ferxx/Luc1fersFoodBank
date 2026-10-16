@@ -29,10 +29,10 @@ public final class TwoLevelCaches {
      * Redis, and without default typing: each cache binds its values to one declared type.
      * <p>
      * Two Jackson 3 defaults are switched back to what Jackson 2 did: properties keep their declaration order
-     * (Jackson 3 sorts them alphabetically), so the stored JSON is byte for byte what Spring Boot 3 instances wrote
-     * and the {@code v1} entries stay shared across the upgrade without a key version bump; and an unknown property
-     * fails the read (Jackson 3 ignores it), so an entry of another shape is still treated as a miss instead of
-     * being read as a half-empty DTO.
+     * (Jackson 3 sorts all but record components alphabetically), so the stored JSON stays byte for byte what
+     * Spring Boot 3 instances wrote and the {@code v1} entries stay shared across the upgrade without a key version
+     * bump; and an unknown property fails the read (Jackson 3 ignores it), so an entry of another shape is still
+     * treated as a miss instead of being read as a half-empty DTO.
      */
     public static ObjectMapper objectMapper() {
         return JsonMapper.builder()

@@ -31,8 +31,8 @@ spring:
     default-property-inclusion: non_null
     property-naming-strategy: SNAKE_CASE
     mapper:
-      # Jackson 3 sorts properties alphabetically by default; the API (and the outbox payloads written with this
-      # mapper) keep their declaration order, as with Jackson 2.
+      # Jackson 3 sorts properties alphabetically by default (record components keep their order either way, and
+      # every DTO here is a record); declaration order keeps the JSON of any other type as Jackson 2 wrote it.
       sort-properties-alphabetically: false
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
