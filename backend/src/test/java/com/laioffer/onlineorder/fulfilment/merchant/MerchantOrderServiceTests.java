@@ -154,6 +154,22 @@ class MerchantOrderServiceTests {
 
 
     @Test
+    void reject_whenTheAcceptTimeoutCancelledTheOrderFirst_shouldNotCountARejection() {
+        bindMerchant();
+        Mockito.when(merchantOrderRepository.lockByOrderIdAndRestaurantId(ORDER_ID, RESTAURANT_ID))
+                .thenReturn(inboxOrder("PAID"));
+        Mockito.when(orderLifecycleCommands.transitionRestaurantOrder(
+                        ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED, "MERCHANT_REJECTED: Sold out"))
+                .thenReturn(order("CANCELLED", "MERCHANT_TIMEOUT"));
+
+        MerchantOrderDto rejected = service.reject(MERCHANT_EMAIL, ORDER_ID, "Sold out");
+
+        Assertions.assertEquals("MERCHANT_TIMEOUT", rejected.cancelReason());
+        Mockito.verifyNoInteractions(metricsService);
+    }
+
+
+    @Test
     void markPreparing_shouldRequireAnAcceptedOrder() {
         bindMerchant();
         Mockito.when(merchantOrderRepository.lockByOrderIdAndRestaurantId(ORDER_ID, RESTAURANT_ID))

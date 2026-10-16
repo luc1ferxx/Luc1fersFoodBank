@@ -22,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Objects;
 
 
 /**
@@ -121,7 +122,11 @@ public class MerchantOrderService {
         LocalDateTime now = LocalDateTime.now();
         merchantOrderRepository.updateStatus(inboxOrder.id(), order.status(), order.cancelReason(), now);
 
-        boolean transitioned = requiredStatus.name().equals(inboxOrder.status());
+        // Count only a decision this command made: not a retry, and not a reject answered with an order the accept
+        // timeout had already cancelled.
+        boolean transitioned = requiredStatus.name().equals(inboxOrder.status())
+                && targetStatus.name().equals(order.status())
+                && (targetStatus != OrderStatus.CANCELLED || Objects.equals(cancelReason, order.cancelReason()));
         if (transitioned && decision != null) {
             AfterCommit.run(() -> metricsService.recordMerchantDecision(decision));
         }
