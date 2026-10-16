@@ -68,7 +68,8 @@ tasks.register('buildFrontend', Exec) {
             fileTree("${frontendDir}/src"),
             fileTree("${frontendDir}/public"),
             fileTree("${frontendDir}/scripts"),
-            "${frontendDir}/.env.production",
+            // Every env file Vite's loadEnv may read (.env, .env.local, .env.[mode], .env.[mode].local).
+            fileTree(dir: frontendDir, include: '.env*'),
             "${frontendDir}/package.json",
             "${frontendDir}/package-lock.json",
             "${frontendDir}/index.html",
