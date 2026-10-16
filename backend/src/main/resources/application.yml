@@ -116,7 +116,12 @@ spring:
     store-type: redis
     data:
       redis:
-        namespace: ${REDIS_SESSION_NAMESPACE:onlineorder:session}
+        # The suffix versions the stored session format (JDK-serialized SecurityContext), like the catalog cache
+        # keys: pods of two releases share Redis during a rolling update or a rollback, and a pod that reads a
+        # session holding a class it lacks answers every request carrying it with an HTML 500. v2 = Spring
+        # Security 7 (FactorGrantedAuthority, unknown to Spring Boot 3.5). Bump it when RedisSessionFormatTests
+        # reports a change. REDIS_SESSION_NAMESPACE replaces only the prefix.
+        namespace: ${REDIS_SESSION_NAMESPACE:onlineorder:session}:v2
   cache:
     type: redis
     redis:
