@@ -1,8 +1,19 @@
-const fs = require("fs");
-const path = require("path");
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const sourceDir = path.resolve(__dirname, "..", "build");
-const targetDir = path.resolve(__dirname, "..", "..", "backend", "src", "main", "resources", "public");
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const sourceDir = path.resolve(scriptDir, "..", "build");
+const targetDir = path.resolve(
+  scriptDir,
+  "..",
+  "..",
+  "backend",
+  "src",
+  "main",
+  "resources",
+  "public",
+);
 
 if (!fs.existsSync(sourceDir)) {
   throw new Error(`Frontend build output was not found: ${sourceDir}`);

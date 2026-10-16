@@ -1,9 +1,10 @@
-const fs = require("fs");
-const path = require("path");
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // The backend sends `script-src 'self'` without nonces or hashes, so any inline
 // <script> in index.html is blocked by the browser and the app renders blank.
-const findInlineScripts = (html) => {
+export const findInlineScripts = (html) => {
   const inlineScripts = [];
   const scriptPattern = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
   let match;
@@ -19,7 +20,7 @@ const findInlineScripts = (html) => {
   return inlineScripts;
 };
 
-const verifyBuild = (buildDir) => {
+export const verifyBuild = (buildDir) => {
   const indexPath = path.join(buildDir, "index.html");
   if (!fs.existsSync(indexPath)) {
     throw new Error(`Frontend build output was not found: ${indexPath}`);
@@ -30,14 +31,14 @@ const verifyBuild = (buildDir) => {
     throw new Error(
       `${indexPath} contains ${inlineScripts.length} inline script(s) that the backend CSP blocks: ` +
         inlineScripts.map((snippet) => JSON.stringify(snippet)).join(", ") +
-        ". Keep INLINE_RUNTIME_CHUNK=false in .env.production."
+        ". Load scripts as external modules from index.html instead of inlining them.",
     );
   }
 };
 
-if (require.main === module) {
-  verifyBuild(path.resolve(__dirname, "..", "build"));
+const scriptPath = fileURLToPath(import.meta.url);
+
+if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+  verifyBuild(path.resolve(path.dirname(scriptPath), "..", "build"));
   console.log("Verified build/index.html has no inline scripts.");
 }
-
-module.exports = { findInlineScripts, verifyBuild };

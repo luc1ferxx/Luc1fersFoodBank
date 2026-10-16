@@ -94,7 +94,7 @@ sequenceDiagram
 
 | Layer | Stack |
 | --- | --- |
-| Frontend | React, Ant Design, Create React App, browser session cookies |
+| Frontend | React 19, Vite, Vitest + React Testing Library, ESLint + Prettier, browser session cookies |
 | Backend | Java 17, Spring Boot, Spring MVC, Spring Security, Spring Data JDBC, Gradle |
 | Data | PostgreSQL, Flyway migrations, H2 fallback profile |
 | Runtime state | Redis for Spring Session, cache, and distributed rate-limit counters |
@@ -109,7 +109,7 @@ sequenceDiagram
 ### Prerequisites
 
 - Java 17
-- Node 20
+- Node 20.19+, 22.13+, or 24+
 - Docker Desktop or another Docker-compatible runtime
 
 ### 1. Start local infrastructure
@@ -129,7 +129,7 @@ This starts:
 ### 2. Install frontend dependencies
 
 ```sh
-(cd frontend && npm ci --legacy-peer-deps)
+(cd frontend && npm ci)
 ```
 
 ### 3. Run the backend with demo data
@@ -473,11 +473,13 @@ Run the normal backend verification path:
 (cd backend && ./gradlew test -x buildFrontend -x syncFrontendBuild --no-daemon)
 ```
 
-Build the React app:
+Check, test, and build the React app:
 
 ```sh
-(cd frontend && npm run build)
+(cd frontend && npm run lint && npm test && npm run build)
 ```
+
+`npm test` runs Vitest with jsdom and React Testing Library against an in-memory fake API (login, cart, checkout success and failure, Idempotency-Key reuse on retry, session expiry, stale menu responses, notification polling). `npm run build` writes `frontend/build` and fails if `index.html` contains an inline script, which the backend CSP would block.
 
 Build the backend jar with embedded frontend assets:
 
@@ -507,7 +509,7 @@ Some integration tests use Testcontainers and require Docker. Tests annotated wi
 
 ```text
 .
-|-- frontend/                         React + Ant Design client
+|-- frontend/                         React + Vite client (api/, hooks/, components/, pages/)
 |-- backend/                          Spring Boot application
 |   |-- src/main/java/.../controller   HTTP API surface
 |   |-- src/main/java/.../service      business logic and transactions
@@ -531,6 +533,7 @@ Some integration tests use Testcontainers and require Docker. Tests annotated wi
 | Run backend with demo seed | `cd backend && FLYWAY_LOCATIONS=classpath:db/migration,classpath:db/demo ./gradlew bootRun` |
 | Run backend with H2 profile | `cd backend && SPRING_PROFILES_ACTIVE=h2 ./gradlew bootRun` |
 | Start frontend dev server | `cd frontend && npm start` |
+| Lint and test frontend | `cd frontend && npm run lint && npm test` |
 | Build frontend | `cd frontend && npm run build` |
 | Copy frontend build into backend | `cd frontend && npm run deploy:backend` |
 | Build executable jar | `cd backend && ./gradlew bootJar --no-daemon` |
@@ -544,6 +547,7 @@ This project is intentionally strong on backend correctness patterns, but it is 
 
 - Payment is simulated with local request validation. There is no real payment provider, authorization, capture, webhook, or settlement flow.
 - There is no inventory reservation or stock decrement model.
+- The frontend is plain JavaScript (TypeScript is a follow-up) and only covers the customer and manual-admin flows; there is no merchant UI yet.
 - Kafka delivery is treated as at-least-once with consumer-side idempotency, not end-to-end exactly-once delivery.
 - Failed outbox rows require explicit admin retry after the underlying cause is fixed.
 - H2 is a lightweight local fallback, not the production-shaped runtime.

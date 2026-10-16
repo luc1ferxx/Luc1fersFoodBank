@@ -4,7 +4,7 @@
 
 - Full-stack food ordering app: React frontend in `frontend/`, Spring Boot backend in `backend/`.
 - Backend uses Java 17, Gradle wrapper 8.14.3, PostgreSQL, Redis, Kafka, Spring Session, Actuator, Flyway, and Testcontainers.
-- Frontend is Create React App with React scripts 4 and Ant Design. CI and Docker use Node 20.
+- Frontend is React 19 built with Vite 8 (`@vitejs/plugin-react`), tested with Vitest + jsdom + React Testing Library, and linted with ESLint (flat config, react-hooks rules) + Prettier. No UI component library. CI and Docker use Node 20 (the locked Vite, Vitest, ESLint, and jsdom together need Node `^20.19.0 || ^22.13.0 || >=24`).
 
 ## Common Commands
 
@@ -54,24 +54,28 @@ The `h2` profile uses Flyway migrations plus the idempotent demo seed callback b
 
 ```sh
 cd frontend
-npm ci --legacy-peer-deps
+npm ci
 npm start
 ```
 
-The frontend dev server runs on `http://localhost:3000` and proxies API calls to `http://localhost:8080`.
+The Vite dev server runs on `http://localhost:3000` and proxies the backend path prefixes listed in `frontend/src/api/proxyPaths.js` to `http://localhost:8080` (override with `DEV_PROXY_TARGET`). When the frontend starts calling a new backend path, add its prefix there; `src/api/client.test.js` fails otherwise.
 
 ```sh
 cd frontend
-npm run build
+npm run lint   # ESLint + prettier --check
+npm test       # Vitest, single run
+npm run build  # vite build into frontend/build, then scripts/verify-csp-build.js
 ```
 
-React scripts are wrapped with `--openssl-legacy-provider` in `package.json`; use the npm scripts instead of invoking `react-scripts` directly.
+- The backend serves the build with `script-src 'self'`, so `build/index.html` must not contain inline scripts; the `postbuild` check and `src/cspBuild.test.js` enforce it. Hashed assets go to `build/static/` because the backend only permits anonymous GETs for `/static/**`.
+- Client-side env vars must be prefixed `VITE_` and read through `import.meta.env` (none are used today).
+- Layout: `src/api/` (fetch wrapper with AbortSignal support, `ApiError`, central 401 -> `onUnauthorized`, endpoint functions that take an `Idempotency-Key`), `src/hooks/` (`useSession`, `useMenu`, `useCart`, `useCheckout`, `useOrders`, `useNotifications`, `useAdminTools`), `src/components/`, and `src/pages/OrderingPage.jsx`, which `App.jsx` keys by the signed-in user so session-scoped state resets on login, logout, or expiry. `src/test/fakeBackend.js` is the in-memory API used by the UI tests.
 
 ### Packaging and embedded frontend assets
 
 ```sh
 cd frontend
-npm ci --legacy-peer-deps
+npm ci
 cd ../backend
 ./gradlew bootJar --no-daemon
 ```
@@ -88,7 +92,7 @@ This manually builds the frontend and copies `frontend/build` into `backend/src/
 ## CI and Release Workflows
 
 - `.github/workflows/ci.yml` runs:
-  - `npm ci --legacy-peer-deps` and `npm run build` in `frontend/`
+  - `npm ci`, `npm run lint`, `npm test`, and `npm run build` in `frontend/`
   - `./gradlew test -x buildFrontend -x syncFrontendBuild --no-daemon` in `backend/`
   - `./gradlew bootJar --no-daemon` after installing frontend dependencies
 - `.github/workflows/release.yml` builds and publishes the root `Dockerfile` image to GHCR on `v*` tags or manual dispatch.
@@ -112,6 +116,7 @@ Optional environment variables include `BASE_URL`, `VUS`, `DURATION`, `USER_COUN
 - Keep schema changes in versioned Flyway migrations under `backend/src/main/resources/db/migration`. Put non-destructive local/demo seed changes in `backend/src/main/resources/db/demo` when they are not required production schema.
 - DDL that H2 cannot run (partial indexes, `CREATE INDEX CONCURRENTLY`) goes in a versioned Java migration under `backend/src/main/java/db/migration` that only records its version on other databases; `V3__Add_outbox_unpublished_index` is the pattern. The `h2` profile runs the same migration list.
 - Treat checkout, cart mutation, order status changes, outbox publishing, idempotency, and DLT replay as correctness-sensitive paths; update focused tests when changing them.
+- In the frontend, a retry of the same checkout, cancel, or status change must reuse its `Idempotency-Key` (see `useCheckout`, `useOrders`, `useAdminTools`), and responses for superseded requests must be dropped through `useLatestRequest`; `src/App.test.jsx` covers both.
 
 ## Order Fulfilment Modules
 
