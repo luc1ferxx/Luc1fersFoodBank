@@ -27,6 +27,16 @@
     </Match>
 
     <!--
+      V7 builds ALTER TABLE / ALTER SEQUENCE statements for each id column. DDL takes no bind parameters for
+      identifiers; the table and column names come from the migration's constant list and the sequence names from
+      pg_get_serial_sequence, never from input.
+    -->
+    <Match>
+        <Class name="db.migration.V7__Widen_keys_to_bigint"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+
+    <!--
       Baseline at gate introduction: defensive checks for a null KafkaTemplate#send result and a missing producer
       factory. The unit tests exercise both with mocks.
     -->
