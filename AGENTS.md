@@ -112,3 +112,13 @@ Optional environment variables include `BASE_URL`, `VUS`, `DURATION`, `USER_COUN
 - Keep schema changes in versioned Flyway migrations under `backend/src/main/resources/db/migration`. Put non-destructive local/demo seed changes in `backend/src/main/resources/db/demo` when they are not required production schema.
 - DDL that H2 cannot run (partial indexes, `CREATE INDEX CONCURRENTLY`) goes in a versioned Java migration under `backend/src/main/java/db/migration` that only records its version on other databases; `V3__Add_outbox_unpublished_index` is the pattern. The `h2` profile runs the same migration list.
 - Treat checkout, cart mutation, order status changes, outbox publishing, idempotency, and DLT replay as correctness-sensitive paths; update focused tests when changing them.
+
+## Observability and Delivery
+
+Details in `docs/operations.md`.
+
+- Tracing is Micrometer Tracing + OpenTelemetry with W3C `traceparent`. `X-Trace-Id` and error-body `trace_id` are the OpenTelemetry trace id. Spans are exported only with `TRACING_EXPORT_ENABLED=true`; tests never export, and Spring Boot tests turn propagation off unless the class has `@AutoConfigureObservability` (needed to assert trace ids).
+- Insert outbox rows through `OutboxEventRepository.save(...)`: `OutboxTraceContextCallback` stores the current traceparent in `outbox_events.trace_parent` (V6) and the publisher continues that trace. A hand-written `INSERT` loses the trace. Kafka observation is enabled for every `KafkaTemplate` and listener container factory bean by `TracingConfig`, including new ones.
+- `MANAGEMENT_SERVER_PORT=8081` (image, Kubernetes) serves the actuator on its own port without a session; unset, the actuator stays on 8080 behind `ROLE_ADMIN` (local runs, tests, k6).
+- CI's `backend-test` job runs `./gradlew test jacocoTestReport jacocoTestCoverageVerification spotbugsMain -x buildFrontend -x syncFrontendBuild --no-daemon` (coverage minimums in `backend/build.gradle`; SpotBugs baseline in `backend/config/spotbugs/exclude.xml`). Its `config-lint` job validates `deploy/` and the workflows. `release.yml` runs CI, a Trivy gate, an SBOM, the GHCR push and kustomize deploys (staging only with a `KUBE_CONFIG` secret; production through the protected environment).
+- Validate observability and Kubernetes changes with promtool (`check rules`, `test rules alerts.test.yml`, `check config`), `docker compose -f deploy/observability/docker-compose.yml --profile app config`, and `kubectl kustomize deploy/k8s/overlays/<env>` + kubeconform; the exact commands are in `docs/operations.md` and the `config-lint` job.
