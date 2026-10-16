@@ -4,7 +4,7 @@
 
 - Full-stack food ordering app: React frontend in `frontend/`, Spring Boot backend in `backend/`.
 - Backend uses Java 17, Gradle wrapper 8.14.3, PostgreSQL, Redis, Kafka, Spring Session, Actuator, Flyway, and Testcontainers.
-- Frontend is React 19 built with Vite 8 (`@vitejs/plugin-react`), tested with Vitest + jsdom + React Testing Library, and linted with ESLint (flat config, react-hooks rules) + Prettier. No UI component library. CI and Docker use Node 20 (Vite needs Node `^20.19` or `>=22.12`).
+- Frontend is React 19 built with Vite 8 (`@vitejs/plugin-react`), tested with Vitest + jsdom + React Testing Library, and linted with ESLint (flat config, react-hooks rules) + Prettier. No UI component library. CI and Docker use Node 20 (the locked Vite, Vitest, ESLint, and jsdom together need Node `^20.19.0 || ^22.13.0 || >=24`).
 
 ## Common Commands
 

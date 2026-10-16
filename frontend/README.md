@@ -2,7 +2,7 @@
 
 React 19 single-page app built with [Vite](https://vite.dev). The Spring Boot backend in `../backend` serves the production build and the JSON API.
 
-Requires Node `^20.19` or `>=22.12`.
+Requires Node `^20.19`, `^22.13`, or `>=24` (the range the locked Vite, Vitest, ESLint, and jsdom all support).
 
 ## Scripts
 
