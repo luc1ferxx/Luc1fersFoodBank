@@ -1,6 +1,11 @@
 package com.laioffer.onlineorder;
 
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.clients.admin.NewTopic;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,6 +18,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
@@ -27,8 +33,10 @@ import org.springframework.util.MultiValueMap;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -53,6 +61,12 @@ class ContainerizedOrderFlowTests {
 
     @Autowired
     private TestRestTemplate restTemplate;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private ObjectMapper objectMapper;
 
 
     @DynamicPropertySource
@@ -146,6 +160,57 @@ class ContainerizedOrderFlowTests {
             }
             return false;
         });
+    }
+
+
+    /**
+     * POST /dead-letters/{id}/replay exists only with Kafka on: the replay outcome is audited with the admin who is
+     * signed in to the request, not with an actor a test hands to the service.
+     */
+    @Test
+    void deadLetterReplay_shouldAuditTheOutcomeWithTheSignedInAdmin() throws Exception {
+        String topic = "audit-replay-it";
+        try (AdminClient admin = AdminClient.create(Map.of(
+                AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers()))) {
+            admin.createTopics(List.of(new NewTopic(topic, 1, (short) 1))).all().get(30, TimeUnit.SECONDS);
+        }
+        LocalDateTime now = LocalDateTime.now();
+        String eventId = "audit-replay-" + System.nanoTime();
+        jdbcTemplate.update("""
+                INSERT INTO dead_letter_events (source_topic, dead_letter_topic, message_key, payload, error_message,
+                                                replay_status, replay_attempts, event_id, created_at, updated_at)
+                VALUES (?, ?, 'audit-key', '{"replayed": true}', 'listener failed', 'PENDING', 0, ?, ?, ?)
+                """, topic, topic + ".dlt", eventId, now, now);
+        long deadLetterId = jdbcTemplate.queryForObject(
+                "SELECT id FROM dead_letter_events WHERE event_id = ?", Long.class, eventId);
+        String sessionCookie = extractSessionCookie(login());
+
+        ResponseEntity<Map> replay = restTemplate.exchange(
+                url("/dead-letters/" + deadLetterId + "/replay"),
+                HttpMethod.POST,
+                new HttpEntity<>(headersWithCookie(sessionCookie)),
+                Map.class
+        );
+
+        Assertions.assertEquals(HttpStatus.OK, replay.getStatusCode());
+        Assertions.assertEquals("REPLAYED", replay.getBody().get("replay_status"));
+        List<Map<String, Object>> entries = jdbcTemplate.queryForList("""
+                SELECT actor_customer_id, actor_role, action, details
+                FROM audit_log
+                WHERE target_type = 'DEAD_LETTER_EVENT' AND target_id = ?
+                """, String.valueOf(deadLetterId));
+        Assertions.assertEquals(1, entries.size());
+        Map<String, Object> entry = entries.get(0);
+        Assertions.assertEquals(
+                jdbcTemplate.queryForObject("SELECT id FROM customers WHERE email = 'demo@laifood.com'", Long.class),
+                ((Number) entry.get("actor_customer_id")).longValue()
+        );
+        Assertions.assertEquals("ROLE_ADMIN", entry.get("actor_role"));
+        Assertions.assertEquals("dead_letter.replay", entry.get("action"));
+        JsonNode details = objectMapper.readTree((String) entry.get("details"));
+        Assertions.assertEquals("REPLAYED", details.get("outcome").asText());
+        Assertions.assertEquals(1, details.get("attempt").asInt());
+        Assertions.assertEquals(topic, details.get("source_topic").asText());
     }
 
 
