@@ -167,6 +167,21 @@ app:
   # Each module consumes with its own consumer group, so each sees every event once.
   fulfilment:
     merchant-group: ${FULFILMENT_MERCHANT_GROUP:onlineorder-merchant}
+    timeout-group: ${FULFILMENT_TIMEOUT_GROUP:onlineorder-timeout}
+    # A PAID order the merchant has not accepted within accept-timeout of payment is cancelled (MERCHANT_TIMEOUT);
+    # a PLACED order not paid within payment-timeout is cancelled (PAYMENT_TIMEOUT). Measured from the event time;
+    # a changed value applies to orders paid or placed after the change.
+    accept-timeout: ${FULFILMENT_ACCEPT_TIMEOUT:10m}
+    payment-timeout: ${FULFILMENT_PAYMENT_TIMEOUT:15m}
+    deadline-poller:
+      # Runs on its own thread, not on the shared scheduler the outbox publisher uses. Off wherever Kafka is off
+      # (nothing writes deadlines then).
+      enabled: ${FULFILMENT_DEADLINE_POLLER_ENABLED:${app.kafka.enabled:true}}
+      interval: ${FULFILMENT_DEADLINE_POLL_INTERVAL:1s}
+      # Deadlines fired per run, one transaction each.
+      batch-size: ${FULFILMENT_DEADLINE_BATCH_SIZE:100}
+      # Delay before a deadline whose firing failed (for example a lock timeout) is tried again.
+      retry-backoff: ${FULFILMENT_DEADLINE_RETRY_BACKOFF:30s}
   cleanup:
     enabled: ${CLEANUP_ENABLED:true}
     fixed-delay-ms: ${CLEANUP_FIXED_DELAY_MS:3600000}

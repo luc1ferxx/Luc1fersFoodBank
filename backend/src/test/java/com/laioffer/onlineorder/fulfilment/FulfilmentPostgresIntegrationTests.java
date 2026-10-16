@@ -6,6 +6,8 @@ import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantInboxService;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantOrderService;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
+import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineProcessor;
+import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineService;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
@@ -27,6 +29,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -105,6 +108,12 @@ class FulfilmentPostgresIntegrationTests {
 
     @Autowired
     private MerchantOrderService merchantOrderService;
+
+    @Autowired
+    private OrderDeadlineService orderDeadlineService;
+
+    @Autowired
+    private OrderDeadlineProcessor orderDeadlineProcessor;
 
 
     @Test
@@ -275,19 +284,157 @@ class FulfilmentPostgresIntegrationTests {
     }
 
 
+    @Test
+    void acceptTimeout_shouldCancelAPaidOrderTheMerchantNeverAccepted() {
+        PaidOrder order = paidOrderAt("Fashion Wok");
+        deliverOrderEvent(order.orderId(), "order.paid", orderDeadlineService::handle);
+        deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+        Assertions.assertEquals(List.of("ACCEPT"), deadlineTypes(order.orderId()));
+        LocalDateTime dueAt = jdbcTemplate.queryForObject(
+                "SELECT due_at FROM order_deadlines WHERE order_id = ?", LocalDateTime.class, order.orderId());
+        LocalDateTime expectedDueAt = latestOrderEvent(order.orderId(), "order.paid").occurredAt().plusMinutes(10);
+        Assertions.assertTrue(
+                java.time.Duration.between(expectedDueAt, dueAt).abs().toMillis() < 1,
+                "due_at " + dueAt + " should be the payment time plus the accept timeout, " + expectedDueAt
+        );
+
+        orderDeadlineProcessor.fireDueDeadlines();
+        Assertions.assertEquals("PAID", orderStatus(order.orderId()), "The deadline is not due yet");
+
+        makeDeadlinesDue(order.orderId());
+        orderDeadlineProcessor.fireDueDeadlines();
+
+        Assertions.assertEquals("CANCELLED", orderStatus(order.orderId()));
+        Assertions.assertEquals(OrderLifecycleCommands.MERCHANT_TIMEOUT, cancelReason(order.orderId()));
+        Assertions.assertTrue(deadlineTypes(order.orderId()).isEmpty());
+        OrderEventEnvelope cancelled = latestOrderEvent(order.orderId(), "order.cancelled");
+        Assertions.assertEquals(OrderLifecycleCommands.MERCHANT_TIMEOUT, cancelled.data().reason());
+
+        // The merchant inbox follows the cancel event; accepting now is a conflict.
+        merchantInboxService.handle(cancelled);
+        Assertions.assertEquals("CANCELLED", jdbcTemplate.queryForObject(
+                "SELECT status FROM merchant_orders WHERE order_id = ?", String.class, order.orderId()));
+        Assertions.assertThrows(
+                ConflictException.class,
+                () -> merchantOrderService.accept("merchant.fashionwok@laifood.com", order.orderId())
+        );
+    }
+
+
+    @Test
+    void acceptTimeout_afterTheMerchantAccepted_shouldLeaveTheOrderAlone() {
+        PaidOrder order = paidOrderAt("Burger King");
+        deliverOrderEvent(order.orderId(), "order.paid", orderDeadlineService::handle);
+        deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+        merchantOrderService.accept(BURGER_KING_MERCHANT, order.orderId());
+        // The poller fires before the timeout consumer has seen order.accepted.
+        makeDeadlinesDue(order.orderId());
+
+        orderDeadlineProcessor.fireDueDeadlines();
+
+        Assertions.assertEquals("ACCEPTED", orderStatus(order.orderId()));
+        Assertions.assertTrue(deadlineTypes(order.orderId()).isEmpty());
+        Assertions.assertEquals(List.of("order.paid", "order.accepted"), orderEventTypes(order.orderId()));
+    }
+
+
+    @Test
+    void paymentTimeout_shouldCancelAPlacedOrderThatWasNeverPaid() {
+        String email = "fulfilment-placed-" + System.nanoTime() + "@example.com";
+        customerService.signUp(email, "demo123", "Placed", "Customer");
+        Long customerId = jdbcTemplate.queryForObject("SELECT id FROM customers WHERE email = ?", Long.class, email);
+        cartService.addMenuItemToCart(customerId, menuItemAt("SGD Tofu House"));
+        OrderDto placed = cartService.checkout(customerId);
+        Assertions.assertEquals("PLACED", placed.status());
+
+        deliverOrderEvent(placed.id(), "order.created", orderDeadlineService::handle);
+        Assertions.assertEquals(List.of("PAYMENT"), deadlineTypes(placed.id()));
+        makeDeadlinesDue(placed.id());
+        orderDeadlineProcessor.fireDueDeadlines();
+
+        Assertions.assertEquals("CANCELLED", orderStatus(placed.id()));
+        Assertions.assertEquals(OrderLifecycleCommands.PAYMENT_TIMEOUT, cancelReason(placed.id()));
+        Assertions.assertTrue(deadlineTypes(placed.id()).isEmpty());
+    }
+
+
+    @Test
+    void concurrentPollers_shouldFireEveryDeadlineExactlyOnce() throws Exception {
+        List<Long> orderIds = new java.util.ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            PaidOrder order = paidOrderAt(i % 2 == 0 ? "Burger King" : "Fashion Wok");
+            deliverOrderEvent(order.orderId(), "order.paid", orderDeadlineService::handle);
+            // A duplicate delivery adds no second deadline.
+            deliverOrderEvent(order.orderId(), "order.paid", orderDeadlineService::handle);
+            makeDeadlinesDue(order.orderId());
+            orderIds.add(order.orderId());
+        }
+        ExecutorService pollers = Executors.newFixedThreadPool(4);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            List<Future<Integer>> runs = new java.util.ArrayList<>();
+            for (int i = 0; i < 4; i++) {
+                runs.add(pollers.submit(awaiting(start, orderDeadlineProcessor::fireDueDeadlines)));
+            }
+            start.countDown();
+            int fired = 0;
+            for (Future<Integer> run : runs) {
+                fired += run.get(30, TimeUnit.SECONDS);
+            }
+            Assertions.assertTrue(fired >= orderIds.size());
+        } finally {
+            pollers.shutdownNow();
+        }
+
+        for (Long orderId : orderIds) {
+            Assertions.assertEquals("CANCELLED", orderStatus(orderId));
+            Assertions.assertEquals(List.of("order.paid", "order.cancelled"), orderEventTypes(orderId));
+            Assertions.assertTrue(deadlineTypes(orderId).isEmpty());
+        }
+    }
+
+
     // ---- helpers shared by the fulfilment tests ----
 
-    PaidOrder paidOrderAt(String restaurantName) {
-        String email = "fulfilment-" + System.nanoTime() + "@example.com";
-        customerService.signUp(email, "demo123", "Fulfilment", "Customer");
-        Long customerId = jdbcTemplate.queryForObject("SELECT id FROM customers WHERE email = ?", Long.class, email);
-        Long menuItemId = jdbcTemplate.queryForObject("""
+    Long menuItemAt(String restaurantName) {
+        return jdbcTemplate.queryForObject("""
                 SELECT MIN(menu_items.id)
                 FROM menu_items
                 JOIN restaurants ON restaurants.id = menu_items.restaurant_id
                 WHERE restaurants.name = ?
                 """, Long.class, restaurantName);
-        cartService.addMenuItemToCart(customerId, menuItemId);
+    }
+
+
+    List<String> deadlineTypes(Long orderId) {
+        return jdbcTemplate.queryForList(
+                "SELECT deadline_type FROM order_deadlines WHERE order_id = ? ORDER BY deadline_type",
+                String.class,
+                orderId
+        );
+    }
+
+
+    void makeDeadlinesDue(Long orderId) {
+        jdbcTemplate.update(
+                "UPDATE order_deadlines SET due_at = ? WHERE order_id = ?",
+                LocalDateTime.now().minusMinutes(1),
+                orderId
+        );
+    }
+
+
+    String cancelReason(Long orderId) {
+        return jdbcTemplate.queryForObject("SELECT cancel_reason FROM orders WHERE id = ?", String.class, orderId);
+    }
+
+
+
+    PaidOrder paidOrderAt(String restaurantName) {
+        String email = "fulfilment-" + System.nanoTime() + "@example.com";
+        customerService.signUp(email, "demo123", "Fulfilment", "Customer");
+        Long customerId = jdbcTemplate.queryForObject("SELECT id FROM customers WHERE email = ?", Long.class, email);
+        cartService.addMenuItemToCart(customerId, menuItemAt(restaurantName));
         OrderDto order = cartService.checkout(customerId, "PAID");
         return new PaidOrder(order.id(), customerId, email, order.restaurantId());
     }

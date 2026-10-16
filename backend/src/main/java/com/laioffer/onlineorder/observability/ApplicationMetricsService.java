@@ -60,6 +60,19 @@ public class ApplicationMetricsService {
     }
 
 
+    /**
+     * @param deadlineType PAYMENT or ACCEPT
+     * @param result       cancelled (the order was still waiting) or skipped (it had moved on)
+     */
+    public void recordFulfilmentTimeout(String deadlineType, String result) {
+        meterRegistry.counter(
+                "onlineorder.fulfilment.timeouts",
+                "type", normalize(deadlineType),
+                "result", normalize(result)
+        ).increment();
+    }
+
+
     public void recordOutboxPublishResult(String topic, boolean success) {
         meterRegistry.counter(
                 "onlineorder.outbox.publish",
