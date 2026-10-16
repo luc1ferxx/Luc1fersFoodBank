@@ -192,7 +192,7 @@ The `h2` profile runs Flyway migrations and includes the demo seed callback by d
 | `POST` | `/cart` | Add menu item to cart |
 | `PUT` | `/cart/items/{orderItemId}` | Update quantity |
 | `DELETE` | `/cart/items/{orderItemId}` | Remove item |
-| `DELETE` | `/cart` | Empty the cart (`204`, also when it is already empty), for example after `409 CART_RESTAURANT_CONFLICT` |
+| `DELETE` | `/cart` | Empty the cart (`204`, also when it is already empty or the account has no cart), for example after `409 CART_RESTAURANT_CONFLICT` |
 | `POST` | `/cart/checkout` | Checkout cart with idempotency key |
 | `POST` | `/payments/checkout` | Payment-style checkout with idempotency key |
 | `GET` | `/orders` | List current user's orders |
@@ -273,14 +273,21 @@ Every status change, including the creation at checkout, also writes one `order_
 `orders.updated_at`, in the same transaction and through the same guarded transition (`OrderService`, the
 `OrderLifecycleCommands` seam for the fulfilment modules). A row records `from_status` (null for the creation),
 `to_status`, who did it (`actor_type` `CUSTOMER`, `ADMIN`, `MERCHANT`, `RIDER` or `SYSTEM` for timeouts, and
-`actor_id`), the cancel `reason` and the request's trace id. A delivered order completed from `ACCEPTED` records both
-steps for the rider. Same-status no-ops and idempotent retries write nothing. `GET /orders/{orderId}/history` serves
+`actor_id`), the cancel `reason` and the request's trace id. `actor_id` depends on `actor_type`: the `customers.id`
+of the login for `CUSTOMER`, `ADMIN` and `MERCHANT`, the `riders.id` for `RIDER` (the order module learns the rider
+only from the `delivery.delivered` event), null for `SYSTEM`. A delivered order completed from `ACCEPTED` records both
+steps for the rider, also when an admin marked the delivery delivered through `/admin/deliveries` (the audit log
+records that admin). Same-status no-ops and idempotent retries write nothing. `GET /orders/{orderId}/history` serves
 it; orders placed before V7_1 start with one `SYSTEM`/`backfill` row.
 
-Admin actions (status changes, outbox retries, dead-letter replay outcomes, catalog edits) are also written to
-`audit_log` by `AuditLogService.record` in the action's transaction: the admin, the role, the action, its target, a
-JSON `details` object and the trace id. Refused actions and idempotent retries add no entry. All keys are 64-bit
-(`BIGINT`) since V7; see [docs/operations.md](docs/operations.md) section 7 for the rollout of these migrations.
+Admin actions (status changes, outbox retries, dead-letter replays, catalog edits, the simulated rider actions) are
+also written to `audit_log` by `AuditLogService.record` in the action's transaction: the admin, the role, the action,
+its target, a JSON `details` object and the trace id. Refused actions add no entry, and neither do a retry of
+`PATCH /orders/{id}/status` with the same `Idempotency-Key` or a repeated simulated rider action, which change
+nothing. Every dead-letter replay request that is not refused is recorded with its outcome (`REPLAYED`,
+`REPLAY_FAILED`, or `ALREADY_REPLAYED` when the event had been replayed before and nothing was sent). All keys are
+64-bit (`BIGINT`) since V7; see [docs/operations.md](docs/operations.md) section 7 for the rollout of these
+migrations, which must not run next to pods of an older version.
 
 ### Outbox and Kafka
 
@@ -459,8 +466,8 @@ reaches a group out of order, so each module also stays correct when the order o
 | `POST` | `/merchant/orders/{orderId}/reject` | `MERCHANT` | `PAID -> CANCELLED`, body `{"reason": "..."}` (required) |
 | `POST` | `/merchant/orders/{orderId}/preparing` | `MERCHANT` | `ACCEPTED -> PREPARING` |
 | `GET` | `/admin/deliveries?order_id=` | `ADMIN` | Deliveries (one order, or the 50 most recent) |
-| `POST` | `/admin/deliveries/{deliveryId}/picked-up` | `ADMIN` | Simulated rider: `ASSIGNED -> PICKED_UP` |
-| `POST` | `/admin/deliveries/{deliveryId}/delivered` | `ADMIN` | Simulated rider: `PICKED_UP -> DELIVERED` |
+| `POST` | `/admin/deliveries/{deliveryId}/picked-up` | `ADMIN` | Simulated rider: `ASSIGNED -> PICKED_UP` (audited as `delivery.picked_up`) |
+| `POST` | `/admin/deliveries/{deliveryId}/delivered` | `ADMIN` | Simulated rider: `PICKED_UP -> DELIVERED` (audited as `delivery.delivered`) |
 
 Merchant commands are scoped to the merchant's restaurant (another restaurant's order is a `404`) and are idempotent:
 repeating a command whose transition already happened returns the order unchanged. A reject of an order that was
