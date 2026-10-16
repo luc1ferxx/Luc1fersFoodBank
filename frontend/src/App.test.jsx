@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, expect, test, vi } from "vitest";
 import App from "./App";
 import {
   cancelOrder,
@@ -18,14 +19,12 @@ const jsonResponse = (body, init = {}) =>
   });
 
 afterEach(() => {
-  if (global.fetch?.mockRestore) {
-    global.fetch.mockRestore();
-  }
+  vi.restoreAllMocks();
 });
 
 test("API helpers use the backend-supported endpoints and idempotency headers", async () => {
-  const fetchMock = jest
-    .spyOn(global, "fetch")
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
     .mockImplementation(() => Promise.resolve(jsonResponse({ id: 101, status: "PAID" })));
 
   await checkoutWithPayment(
@@ -99,7 +98,7 @@ test("API helpers use the backend-supported endpoints and idempotency headers", 
 });
 
 test("guests can browse restaurants and menu items before signing in", async () => {
-  jest.spyOn(global, "fetch").mockImplementation((url) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
     if (url === "/me") {
       return Promise.resolve(new Response("", { status: 401 }));
     }
@@ -152,7 +151,7 @@ test("guests can browse restaurants and menu items before signing in", async () 
   expect(await screen.findByText("Whopper")).toBeInTheDocument();
   expect(screen.getByText(/sign in to add/i)).toBeInTheDocument();
   await waitFor(() => {
-    expect(global.fetch).toHaveBeenCalledWith(
+    expect(globalThis.fetch).toHaveBeenCalledWith(
       "/restaurants/menu",
       expect.objectContaining({ credentials: "include" })
     );
@@ -160,7 +159,7 @@ test("guests can browse restaurants and menu items before signing in", async () 
 });
 
 test("successful signup resets the form and switches to login without an error", async () => {
-  const fetchMock = jest.spyOn(global, "fetch").mockImplementation((url) => {
+  const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
     if (url === "/me") {
       return Promise.resolve(new Response("", { status: 401 }));
     }
