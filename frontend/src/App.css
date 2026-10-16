@@ -498,7 +498,7 @@ button:disabled {
 }
 
 .panel-tabs {
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   margin: -4px -4px 14px;
 }
 
