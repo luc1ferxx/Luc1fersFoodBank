@@ -8,7 +8,6 @@ import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.entity.OrderItemEntity;
 import com.laioffer.onlineorder.exception.ConflictException;
-import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.model.CartDto;
 import com.laioffer.onlineorder.model.OrderDto;
@@ -293,11 +292,12 @@ public class CartServiceTests {
 
 
     @Test
-    void clearCart_whenTheCustomerHasNoCart_shouldReturnNotFound() {
+    void clearCart_whenTheCustomerHasNoCart_shouldSucceedWithoutChanges() {
         Mockito.when(cartRepository.lockByCustomerId(1L)).thenReturn(null);
 
-        Assertions.assertThrows(ResourceNotFoundException.class, () -> cartService.clearCart(1L));
+        Assertions.assertDoesNotThrow(() -> cartService.clearCart(1L));
         Mockito.verifyNoInteractions(orderItemRepository);
+        Mockito.verify(cartRepository, Mockito.never()).updateTotalPrice(Mockito.anyLong(), Mockito.any());
     }
 
 

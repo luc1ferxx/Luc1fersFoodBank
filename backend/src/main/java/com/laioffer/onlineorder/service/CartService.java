@@ -159,11 +159,15 @@ public class CartService {
      * Empties the customer's cart (DELETE /cart), for example to switch restaurants after a 409
      * CART_RESTAURANT_CONFLICT. Takes the cart row lock like every other cart mutation, so it serializes with
      * concurrent adds and checkouts, and recomputes the total from the remaining lines (none). Clearing an empty
-     * cart is a no-op, so retries are safe.
+     * cart is a no-op, so retries are safe. An account without a cart row (one provisioned without a cart, such as
+     * the SQL-seeded demo merchants) has nothing to clear: that is the same success, not a 404.
      */
     @Transactional
     public void clearCart(Long customerId) {
-        CartEntity cart = getRequiredLockedCart(customerId);
+        CartEntity cart = cartRepository.lockByCustomerId(customerId);
+        if (cart == null) {
+            return;
+        }
         orderItemRepository.deleteByCartId(cart.id());
         syncCartTotal(cart.id());
     }

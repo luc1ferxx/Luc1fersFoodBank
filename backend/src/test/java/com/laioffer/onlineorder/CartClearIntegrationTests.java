@@ -2,6 +2,7 @@ package com.laioffer.onlineorder;
 
 
 import com.laioffer.onlineorder.service.CustomerService;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -84,6 +85,24 @@ class CartClearIntegrationTests {
 
 
     @Test
+    void clearCart_forAnAccountWithoutACartRow_shouldBeTheSameSuccess() throws Exception {
+        // The demo merchants are seeded by SQL with a login but no carts row.
+        String email = "merchant.burgerking@laifood.com";
+        Long customerId = customerService.getCustomerByEmail(email).id();
+        Assertions.assertEquals(0, cartRows(customerId));
+        MockHttpSession merchant = login(email, "merchant123");
+
+        mockMvc.perform(delete("/cart").session(merchant))
+                .andExpect(status().isNoContent())
+                .andExpect(content().string(""));
+        mockMvc.perform(delete("/cart").session(merchant))
+                .andExpect(status().isNoContent());
+
+        Assertions.assertEquals(0, cartRows(customerId), "clearing creates no cart");
+    }
+
+
+    @Test
     void clearCart_shouldRequireALogin() throws Exception {
         mockMvc.perform(delete("/cart"))
                 .andExpect(status().isUnauthorized())
@@ -110,12 +129,22 @@ class CartClearIntegrationTests {
     }
 
 
+    private int cartRows(Long customerId) {
+        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM carts WHERE customer_id = ?", Integer.class, customerId);
+    }
+
+
     private MockHttpSession signUpAndLogin() throws Exception {
         String email = "cart-clear-" + System.nanoTime() + "@example.com";
         customerService.signUp(email, "demo123", "Cart", "Clear");
+        return login(email, "demo123");
+    }
+
+
+    private MockHttpSession login(String email, String password) throws Exception {
         return (MockHttpSession) mockMvc.perform(post("/login")
                         .param("username", email)
-                        .param("password", "demo123"))
+                        .param("password", password))
                 .andExpect(status().isOk())
                 .andReturn()
                 .getRequest()
