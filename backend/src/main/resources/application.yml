@@ -182,6 +182,10 @@ app:
     # restaurant has a merchant login that accepts orders (merchants are only seeded by the demo seed, and the frontend
     # has no merchant screen yet). Switching it off also drops pending ACCEPT deadlines without cancelling.
     accept-timeout-enabled: ${FULFILMENT_ACCEPT_TIMEOUT_ENABLED:false}
+    # Consumer threads per fulfilment listener (merchant, timeout, dispatch, order-delivery, notification-delivery).
+    # With Kafka on there are 7 listener containers (these 5, notifications, the DLT); each consumer thread holds a
+    # pooled database connection only while it handles a record, but all of them share the Hikari pool above.
+    listener-concurrency: ${FULFILMENT_LISTENER_CONCURRENCY:${app.kafka.listener-concurrency}}
     deadline-poller:
       # Runs on its own thread, not on the shared scheduler the outbox publisher uses. Off wherever Kafka is off
       # (nothing writes deadlines then).

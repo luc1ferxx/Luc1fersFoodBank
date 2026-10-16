@@ -30,7 +30,8 @@ public class DispatchConsumer {
             id = "dispatch",
             topics = "${app.kafka.order-topic}",
             groupId = "${app.fulfilment.dispatch-group:onlineorder-dispatch}",
-            containerFactory = "orderEventKafkaListenerContainerFactory"
+            containerFactory = "orderEventKafkaListenerContainerFactory",
+            concurrency = "${app.fulfilment.listener-concurrency:${app.kafka.listener-concurrency:3}}"
     )
     public void consume(String payload) {
         try {

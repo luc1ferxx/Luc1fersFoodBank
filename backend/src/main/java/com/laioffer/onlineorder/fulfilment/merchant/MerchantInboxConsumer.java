@@ -30,7 +30,8 @@ public class MerchantInboxConsumer {
             id = "merchant-inbox",
             topics = "${app.kafka.order-topic}",
             groupId = "${app.fulfilment.merchant-group:onlineorder-merchant}",
-            containerFactory = "orderEventKafkaListenerContainerFactory"
+            containerFactory = "orderEventKafkaListenerContainerFactory",
+            concurrency = "${app.fulfilment.listener-concurrency:${app.kafka.listener-concurrency:3}}"
     )
     public void consume(String payload) {
         try {

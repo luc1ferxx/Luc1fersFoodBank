@@ -30,7 +30,8 @@ public class DeliveryCompletionConsumer {
             id = "order-delivery",
             topics = "${app.fulfilment.delivery-topic:delivery-events}",
             groupId = "${app.fulfilment.order-delivery-group:onlineorder-order-delivery}",
-            containerFactory = "orderEventKafkaListenerContainerFactory"
+            containerFactory = "orderEventKafkaListenerContainerFactory",
+            concurrency = "${app.fulfilment.listener-concurrency:${app.kafka.listener-concurrency:3}}"
     )
     public void consume(String payload) {
         try {

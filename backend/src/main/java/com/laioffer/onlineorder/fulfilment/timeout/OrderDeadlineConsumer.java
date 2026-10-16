@@ -30,7 +30,8 @@ public class OrderDeadlineConsumer {
             id = "order-timeout",
             topics = "${app.kafka.order-topic}",
             groupId = "${app.fulfilment.timeout-group:onlineorder-timeout}",
-            containerFactory = "orderEventKafkaListenerContainerFactory"
+            containerFactory = "orderEventKafkaListenerContainerFactory",
+            concurrency = "${app.fulfilment.listener-concurrency:${app.kafka.listener-concurrency:3}}"
     )
     public void consume(String payload) {
         try {
