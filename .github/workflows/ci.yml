@@ -6,6 +6,11 @@ on:
       - main
       - master
   pull_request:
+  # The release workflow runs the same jobs before it publishes an image.
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   frontend-build:
@@ -36,7 +41,72 @@ jobs:
           java-version: 17
           cache: gradle
       - run: chmod +x gradlew
-      - run: ./gradlew test -x buildFrontend -x syncFrontendBuild --no-daemon
+      # Tests (Testcontainers needs the runner's Docker), JaCoCo report and coverage minimums, SpotBugs.
+      - name: Test, coverage gate and SpotBugs
+        run: >-
+          ./gradlew test jacocoTestReport jacocoTestCoverageVerification spotbugsMain
+          -x buildFrontend -x syncFrontendBuild --no-daemon
+      - name: Coverage summary
+        if: always()
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import os
+          import xml.etree.ElementTree as ET
+          path = "build/reports/jacoco/test/jacocoTestReport.xml"
+          if not os.path.exists(path):
+              print("No JaCoCo report was produced.")
+              raise SystemExit(0)
+          print("| Counter | Covered | Missed | Coverage |")
+          print("| --- | --- | --- | --- |")
+          for counter in ET.parse(path).getroot().findall("counter"):
+              covered, missed = int(counter.get("covered")), int(counter.get("missed"))
+              print(f"| {counter.get('type')} | {covered} | {missed} | {covered / (covered + missed):.1%} |")
+          EOF
+      - name: Upload test and quality reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-reports
+          path: |
+            backend/build/test-results/test
+            backend/build/reports/tests/test
+            backend/build/reports/jacoco/test
+            backend/build/reports/spotbugs
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Observability, Kubernetes and workflow configuration: the same checks as docs/operations.md.
+  config-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prometheus rules, rule tests and config
+        run: |
+          promtool() {
+            docker run --rm --entrypoint /bin/promtool \
+              -v "$PWD/deploy/observability/prometheus:/etc/prometheus:ro" \
+              -w /etc/prometheus prom/prometheus:v3.13.4 "$@"
+          }
+          promtool check rules alerts.yml
+          promtool test rules alerts.test.yml
+          promtool check config prometheus.yml
+      - name: Observability compose file
+        run: docker compose -f deploy/observability/docker-compose.yml --profile app config --quiet
+      - name: Grafana dashboards are valid JSON
+        run: |
+          for dashboard in deploy/observability/grafana/dashboards/*.json; do
+            python3 -m json.tool "$dashboard" > /dev/null
+          done
+      - name: Kubernetes manifests (kustomize + kubeconform)
+        run: |
+          mkdir -p "$RUNNER_TEMP/k8s"
+          kubectl kustomize deploy/k8s/base > "$RUNNER_TEMP/k8s/base.yaml"
+          kubectl kustomize deploy/k8s/overlays/staging > "$RUNNER_TEMP/k8s/staging.yaml"
+          kubectl kustomize deploy/k8s/overlays/prod > "$RUNNER_TEMP/k8s/prod.yaml"
+          docker run --rm -v "$RUNNER_TEMP/k8s:/manifests:ro" ghcr.io/yannh/kubeconform:v0.7.0 \
+            -strict -summary -kubernetes-version 1.31.0 /manifests
+      - name: Workflow files (actionlint)
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
 
   package-backend:
     runs-on: ubuntu-latest
