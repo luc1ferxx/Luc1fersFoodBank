@@ -1,6 +1,9 @@
 package com.laioffer.onlineorder.fulfilment.dispatch;
 
 
+import com.laioffer.onlineorder.audit.AuditActions;
+import com.laioffer.onlineorder.audit.AuditActor;
+import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import org.slf4j.Logger;
@@ -12,7 +15,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 
@@ -24,6 +29,11 @@ import java.util.Optional;
  * <p>Every rider request looks the rider up again by login, so deactivating a rider takes effect on their next
  * request (403) although the session still carries ROLE_RIDER. A rider only ever reaches their own deliveries: another
  * rider's delivery is reported as 404, the same as one that does not exist.
+ *
+ * <p>Each change writes one audit_log entry in its transaction: an admin's {@link #update} (rider.update), the rider's
+ * own duty change (rider.availability) and their pick-up and delivery (delivery.picked_up, delivery.delivered, the same
+ * actions as the admin's simulated ones, with ROLE_RIDER). A repeat that changes nothing and a refused request write
+ * none.
  */
 @Service
 public class RiderService {
@@ -35,16 +45,19 @@ public class RiderService {
     private final RiderRepository riderRepository;
     private final DeliveryRepository deliveryRepository;
     private final DispatchService dispatchService;
+    private final AuditLogService auditLogService;
 
 
     public RiderService(
             RiderRepository riderRepository,
             DeliveryRepository deliveryRepository,
-            DispatchService dispatchService
+            DispatchService dispatchService,
+            AuditLogService auditLogService
     ) {
         this.riderRepository = riderRepository;
         this.deliveryRepository = deliveryRepository;
         this.dispatchService = dispatchService;
+        this.auditLogService = auditLogService;
     }
 
 
@@ -72,11 +85,12 @@ public class RiderService {
      * dispatch assignment of this rider. Deliveries the rider already holds stay assigned to them; an operator moves
      * them to another rider with {@link DispatchService#reassign}.
      *
+     * @param actor the admin, recorded with a change in the audit log (rider.update)
      * @throws ResourceNotFoundException when there is no such rider
      * @throws ConflictException         RIDER_INACTIVE when the change would leave an inactive rider on duty
      */
     @Transactional
-    public RiderEntity update(Long riderId, Boolean active, Boolean onDuty) {
+    public RiderEntity update(Long riderId, Boolean active, Boolean onDuty, AuditActor actor) {
         RiderEntity rider = riderRepository.lockById(riderId);
         if (rider == null) {
             throw new ResourceNotFoundException("Rider not found");
@@ -91,6 +105,14 @@ public class RiderService {
         }
         LocalDateTime now = LocalDateTime.now();
         riderRepository.updateStatus(riderId, newActive, newOnDuty, now);
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("customer_id", rider.customerId());
+        details.put("from_active", rider.active());
+        details.put("to_active", newActive);
+        details.put("from_on_duty", rider.onDuty());
+        details.put("to_on_duty", newOnDuty);
+        details.put("open_deliveries", rider.activeDeliveries());
+        auditLogService.record(actor, AuditActions.RIDER_UPDATE, AuditActions.TARGET_RIDER, riderId, details);
         LOGGER.info(
                 "Rider updated by an admin: rider_id={}, active={}, on_duty={}, open_deliveries={}",
                 riderId,
@@ -151,6 +173,16 @@ public class RiderService {
         if (riderRepository.updateOnDutyIfActive(rider.id(), onDuty, LocalDateTime.now()) == 0) {
             throw new AccessDeniedException("Rider is deactivated");
         }
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("from_on_duty", rider.onDuty());
+        details.put("to_on_duty", onDuty);
+        auditLogService.record(
+                AuditActor.rider(customerId),
+                AuditActions.RIDER_AVAILABILITY,
+                AuditActions.TARGET_RIDER,
+                rider.id(),
+                details
+        );
         LOGGER.info("Rider {} duty: rider_id={}", onDuty ? "on" : "off", rider.id());
         return riderRepository.findById(rider.id()).orElseThrow(() -> new ResourceNotFoundException("Rider not found"));
     }
@@ -165,12 +197,33 @@ public class RiderService {
 
     @Transactional
     public DeliveryEntity markPickedUp(Long customerId, Long deliveryId) {
-        return dispatchService.advanceForRider(requireActiveRider(customerId).id(), deliveryId, DeliveryStatus.PICKED_UP);
+        return advance(customerId, deliveryId, DeliveryStatus.PICKED_UP, AuditActions.DELIVERY_PICKED_UP);
     }
 
 
     @Transactional
     public DeliveryEntity markDelivered(Long customerId, Long deliveryId) {
-        return dispatchService.advanceForRider(requireActiveRider(customerId).id(), deliveryId, DeliveryStatus.DELIVERED);
+        return advance(customerId, deliveryId, DeliveryStatus.DELIVERED, AuditActions.DELIVERY_DELIVERED);
+    }
+
+
+    /**
+     * The rider's own delivery move, audited when it changed the delivery. The delivery row is locked first (the
+     * transition locks it again in this transaction), so the status read here is the one the transition starts from.
+     */
+    private DeliveryEntity advance(Long customerId, Long deliveryId, DeliveryStatus target, String action) {
+        Long riderId = requireActiveRider(customerId).id();
+        DeliveryEntity before = deliveryRepository.lockByIdAndRiderId(deliveryId, riderId);
+        DeliveryEntity after = dispatchService.advanceForRider(riderId, deliveryId, target);
+        if (before != null && !target.name().equals(before.status())) {
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("order_id", after.orderId());
+            details.put("rider_id", riderId);
+            details.put("from_status", before.status());
+            details.put("to_status", after.status());
+            auditLogService.record(
+                    AuditActor.rider(customerId), action, AuditActions.TARGET_DELIVERY, deliveryId, details);
+        }
+        return after;
     }
 }

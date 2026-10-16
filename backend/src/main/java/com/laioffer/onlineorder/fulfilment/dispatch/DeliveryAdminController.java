@@ -70,7 +70,11 @@ public class DeliveryAdminController {
      * Moves an open delivery to another active, on-duty rider (body {"rider_id": n}); idempotent for the same rider.
      */
     @PostMapping("/admin/deliveries/{deliveryId}/reassign")
-    public DeliveryDto reassign(@PathVariable Long deliveryId, @Valid @RequestBody ReassignDeliveryBody body) {
-        return dispatchService.reassign(deliveryId, body.riderId());
+    public DeliveryDto reassign(
+            Principal principal,
+            @PathVariable Long deliveryId,
+            @Valid @RequestBody ReassignDeliveryBody body
+    ) {
+        return deliveryAdminService.reassign(deliveryId, body.riderId(), auditActorResolver.resolve(principal));
     }
 }

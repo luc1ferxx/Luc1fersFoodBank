@@ -1,6 +1,9 @@
 package com.laioffer.onlineorder.fulfilment.merchant;
 
 
+import com.laioffer.onlineorder.audit.AuditActions;
+import com.laioffer.onlineorder.audit.AuditActor;
+import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,7 +12,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 
@@ -29,10 +34,12 @@ public class MerchantAccountService {
     private static final Logger LOGGER = LoggerFactory.getLogger(MerchantAccountService.class);
 
     private final MerchantAccountRepository merchantAccountRepository;
+    private final AuditLogService auditLogService;
 
 
-    public MerchantAccountService(MerchantAccountRepository merchantAccountRepository) {
+    public MerchantAccountService(MerchantAccountRepository merchantAccountRepository, AuditLogService auditLogService) {
         this.merchantAccountRepository = merchantAccountRepository;
+        this.auditLogService = auditLogService;
     }
 
 
@@ -56,14 +63,28 @@ public class MerchantAccountService {
 
 
     /**
+     * Activates or deactivates the account under its row lock. A change writes one merchant.update entry to the audit
+     * log, naming {@code actor}, in the same transaction; setting the flag it already has changes nothing and is not
+     * audited.
+     *
      * @throws ResourceNotFoundException when there is no such merchant account
      */
     @Transactional
-    public MerchantAccountEntity setActive(Long merchantId, boolean active) {
-        LocalDateTime now = LocalDateTime.now();
-        if (merchantAccountRepository.updateActive(merchantId, active, now) == 0) {
+    public MerchantAccountEntity setActive(Long merchantId, boolean active, AuditActor actor) {
+        MerchantAccountEntity account = merchantAccountRepository.lockById(merchantId);
+        if (account == null) {
             throw new ResourceNotFoundException("Merchant not found");
         }
+        if (account.active() == active) {
+            return account;
+        }
+        merchantAccountRepository.updateActive(merchantId, active, LocalDateTime.now());
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("customer_id", account.customerId());
+        details.put("restaurant_id", account.restaurantId());
+        details.put("from_active", account.active());
+        details.put("to_active", active);
+        auditLogService.record(actor, AuditActions.MERCHANT_UPDATE, AuditActions.TARGET_MERCHANT, merchantId, details);
         LOGGER.info("Merchant account {}: merchant_id={}", active ? "activated" : "deactivated", merchantId);
         return merchantAccountRepository.findById(merchantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Merchant not found"));

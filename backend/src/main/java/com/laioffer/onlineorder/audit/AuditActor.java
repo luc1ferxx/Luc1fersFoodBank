@@ -13,6 +13,7 @@ import java.util.Objects;
 public record AuditActor(Long customerId, String role) {
 
     public static final String ROLE_ADMIN = "ROLE_ADMIN";
+    public static final String ROLE_RIDER = "ROLE_RIDER";
     public static final String ROLE_SYSTEM = "SYSTEM";
 
     private static final AuditActor SYSTEM = new AuditActor(null, ROLE_SYSTEM);
@@ -25,6 +26,16 @@ public record AuditActor(Long customerId, String role) {
 
     public static AuditActor admin(Long customerId) {
         return new AuditActor(customerId, ROLE_ADMIN);
+    }
+
+
+    /**
+     * A rider acting on their own account or deliveries through /rider/** (ROLE_RIDER only).
+     *
+     * @param customerId the customers.id of the rider's login (not riders.id)
+     */
+    public static AuditActor rider(Long customerId) {
+        return new AuditActor(customerId, ROLE_RIDER);
     }
 
 

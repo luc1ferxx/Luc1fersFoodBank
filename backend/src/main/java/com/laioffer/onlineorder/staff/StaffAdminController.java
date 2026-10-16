@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.staff;
 
 
+import com.laioffer.onlineorder.audit.AuditActorResolver;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 
+import java.security.Principal;
 import java.util.List;
 
 
@@ -20,16 +22,21 @@ import java.util.List;
  * rate-limited per admin like other admin writes). An email that any login already uses is 409
  * EMAIL_ALREADY_REGISTERED; an unknown restaurant, merchant or rider is 404. PATCH /admin/riders/{riderId} also takes
  * an optional on_duty, the operator's lever when no rider is on duty (an extension of the shared contract, whose
- * {"active": boolean} body keeps working).
+ * {"active": boolean} body keeps working). Every change is recorded in the audit log with the admin who made it.
  */
 @RestController
 public class StaffAdminController {
 
     private final StaffProvisioningService staffProvisioningService;
+    private final AuditActorResolver auditActorResolver;
 
 
-    public StaffAdminController(StaffProvisioningService staffProvisioningService) {
+    public StaffAdminController(
+            StaffProvisioningService staffProvisioningService,
+            AuditActorResolver auditActorResolver
+    ) {
         this.staffProvisioningService = staffProvisioningService;
+        this.auditActorResolver = auditActorResolver;
     }
 
 
@@ -41,14 +48,18 @@ public class StaffAdminController {
 
     @PostMapping("/admin/merchants")
     @ResponseStatus(HttpStatus.CREATED)
-    public AdminMerchantDto createMerchant(@Valid @RequestBody CreateMerchantBody body) {
-        return staffProvisioningService.createMerchant(body);
+    public AdminMerchantDto createMerchant(Principal principal, @Valid @RequestBody CreateMerchantBody body) {
+        return staffProvisioningService.createMerchant(body, auditActorResolver.resolve(principal));
     }
 
 
     @PatchMapping("/admin/merchants/{merchantId}")
-    public AdminMerchantDto updateMerchant(@PathVariable Long merchantId, @Valid @RequestBody UpdateStaffStatusBody body) {
-        return staffProvisioningService.setMerchantActive(merchantId, body.active());
+    public AdminMerchantDto updateMerchant(
+            Principal principal,
+            @PathVariable Long merchantId,
+            @Valid @RequestBody UpdateStaffStatusBody body
+    ) {
+        return staffProvisioningService.setMerchantActive(merchantId, body.active(), auditActorResolver.resolve(principal));
     }
 
 
@@ -60,13 +71,18 @@ public class StaffAdminController {
 
     @PostMapping("/admin/riders")
     @ResponseStatus(HttpStatus.CREATED)
-    public AdminRiderDto createRider(@Valid @RequestBody CreateRiderBody body) {
-        return staffProvisioningService.createRider(body);
+    public AdminRiderDto createRider(Principal principal, @Valid @RequestBody CreateRiderBody body) {
+        return staffProvisioningService.createRider(body, auditActorResolver.resolve(principal));
     }
 
 
     @PatchMapping("/admin/riders/{riderId}")
-    public AdminRiderDto updateRider(@PathVariable Long riderId, @Valid @RequestBody UpdateRiderStatusBody body) {
-        return staffProvisioningService.updateRider(riderId, body.active(), body.onDuty());
+    public AdminRiderDto updateRider(
+            Principal principal,
+            @PathVariable Long riderId,
+            @Valid @RequestBody UpdateRiderStatusBody body
+    ) {
+        return staffProvisioningService.updateRider(
+                riderId, body.active(), body.onDuty(), auditActorResolver.resolve(principal));
     }
 }

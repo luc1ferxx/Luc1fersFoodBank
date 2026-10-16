@@ -13,6 +13,12 @@ public final class AuditActions {
     public static final String RESTAURANT_UPDATE = "restaurant.update";
     public static final String DELIVERY_PICKED_UP = "delivery.picked_up";
     public static final String DELIVERY_DELIVERED = "delivery.delivered";
+    public static final String DELIVERY_REASSIGN = "delivery.reassign";
+    public static final String MERCHANT_CREATE = "merchant.create";
+    public static final String MERCHANT_UPDATE = "merchant.update";
+    public static final String RIDER_CREATE = "rider.create";
+    public static final String RIDER_UPDATE = "rider.update";
+    public static final String RIDER_AVAILABILITY = "rider.availability";
 
     public static final String TARGET_ORDER = "ORDER";
     public static final String TARGET_OUTBOX_EVENT = "OUTBOX_EVENT";
@@ -20,6 +26,8 @@ public final class AuditActions {
     public static final String TARGET_MENU_ITEM = "MENU_ITEM";
     public static final String TARGET_RESTAURANT = "RESTAURANT";
     public static final String TARGET_DELIVERY = "DELIVERY";
+    public static final String TARGET_MERCHANT = "MERCHANT";
+    public static final String TARGET_RIDER = "RIDER";
 
 
     private AuditActions() {

@@ -16,6 +16,10 @@ public interface MerchantAccountRepository extends ListCrudRepository<MerchantAc
     MerchantAccountEntity findByCustomerId(Long customerId);
 
 
+    @Query("SELECT * FROM merchant_accounts WHERE id = :id FOR UPDATE")
+    MerchantAccountEntity lockById(Long id);
+
+
     @Query("SELECT * FROM merchant_accounts ORDER BY id")
     List<MerchantAccountEntity> findAllOrderById();
 

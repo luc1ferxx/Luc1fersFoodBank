@@ -1,6 +1,9 @@
 package com.laioffer.onlineorder.staff;
 
 
+import com.laioffer.onlineorder.audit.AuditActions;
+import com.laioffer.onlineorder.audit.AuditActor;
+import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.entity.CustomerEntity;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.fulfilment.dispatch.RiderEntity;
@@ -17,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -36,6 +40,11 @@ import java.util.stream.Stream;
  *
  * <p>Accounts are never deleted: an admin deactivates them, which takes effect on the account's next request because
  * the modules re-check the active flag on every merchant and rider request.
+ *
+ * <p>Every change is written to the audit log with the admin in the same transaction: merchant.create and
+ * rider.create here (the login's customer id and email, never the password), merchant.update and rider.update by the
+ * module that applies the change, only when something changed. A refused request (409, 404) rolls back and writes
+ * none.
  */
 @Service
 public class StaffProvisioningService {
@@ -48,6 +57,7 @@ public class StaffProvisioningService {
     private final RestaurantService restaurantService;
     private final MerchantAccountService merchantAccountService;
     private final RiderService riderService;
+    private final AuditLogService auditLogService;
 
 
     public StaffProvisioningService(
@@ -55,13 +65,15 @@ public class StaffProvisioningService {
             CustomerRepository customerRepository,
             RestaurantService restaurantService,
             MerchantAccountService merchantAccountService,
-            RiderService riderService
+            RiderService riderService,
+            AuditLogService auditLogService
     ) {
         this.customerService = customerService;
         this.customerRepository = customerRepository;
         this.restaurantService = restaurantService;
         this.merchantAccountService = merchantAccountService;
         this.riderService = riderService;
+        this.auditLogService = auditLogService;
     }
 
 
@@ -70,13 +82,16 @@ public class StaffProvisioningService {
      * @throws com.laioffer.onlineorder.exception.ConflictException        EMAIL_ALREADY_REGISTERED
      */
     @Transactional
-    public AdminMerchantDto createMerchant(CreateMerchantBody body) {
+    public AdminMerchantDto createMerchant(CreateMerchantBody body, AuditActor actor) {
         if (!restaurantService.restaurantExists(body.restaurantId())) {
             throw new ResourceNotFoundException("Restaurant not found");
         }
         CustomerEntity login = customerService.createStaffLogin(
                 body.email(), body.password(), body.firstName(), body.lastName(), MERCHANT_ROLE);
         MerchantAccountEntity account = merchantAccountService.create(login.id(), body.restaurantId());
+        Map<String, Object> details = loginDetails(login);
+        details.put("restaurant_id", account.restaurantId());
+        auditLogService.record(actor, AuditActions.MERCHANT_CREATE, AuditActions.TARGET_MERCHANT, account.id(), details);
         return toMerchantDto(account, Map.of(login.id(), login), restaurantService.findNames(List.of(account.restaurantId())));
     }
 
@@ -91,8 +106,8 @@ public class StaffProvisioningService {
 
 
     @Transactional
-    public AdminMerchantDto setMerchantActive(Long merchantId, boolean active) {
-        MerchantAccountEntity account = merchantAccountService.setActive(merchantId, active);
+    public AdminMerchantDto setMerchantActive(Long merchantId, boolean active, AuditActor actor) {
+        MerchantAccountEntity account = merchantAccountService.setActive(merchantId, active, actor);
         return toMerchantDto(
                 account,
                 loginsById(Stream.of(account.customerId())),
@@ -105,10 +120,12 @@ public class StaffProvisioningService {
      * @throws com.laioffer.onlineorder.exception.ConflictException EMAIL_ALREADY_REGISTERED
      */
     @Transactional
-    public AdminRiderDto createRider(CreateRiderBody body) {
+    public AdminRiderDto createRider(CreateRiderBody body, AuditActor actor) {
         CustomerEntity login = customerService.createStaffLogin(
                 body.email(), body.password(), body.firstName(), body.lastName(), RIDER_ROLE);
         RiderEntity rider = riderService.create(login.id(), displayName(login), blankToNull(body.phone()));
+        auditLogService.record(
+                actor, AuditActions.RIDER_CREATE, AuditActions.TARGET_RIDER, rider.id(), loginDetails(login));
         return toRiderDto(rider, Map.of(login.id(), login));
     }
 
@@ -126,8 +143,8 @@ public class StaffProvisioningService {
      * @throws com.laioffer.onlineorder.exception.ConflictException RIDER_INACTIVE for an inactive rider on duty
      */
     @Transactional
-    public AdminRiderDto updateRider(Long riderId, Boolean active, Boolean onDuty) {
-        RiderEntity rider = riderService.update(riderId, active, onDuty);
+    public AdminRiderDto updateRider(Long riderId, Boolean active, Boolean onDuty, AuditActor actor) {
+        RiderEntity rider = riderService.update(riderId, active, onDuty, actor);
         return toRiderDto(rider, loginsById(Stream.of(rider.customerId())));
     }
 
@@ -196,6 +213,17 @@ public class StaffProvisioningService {
                 rider.activeDeliveries(),
                 rider.createdAt()
         );
+    }
+
+
+    /**
+     * Who the new login is, for its audit entry: no password, hash or other secret.
+     */
+    private static Map<String, Object> loginDetails(CustomerEntity login) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("customer_id", login.id());
+        details.put("email", login.email());
+        return details;
     }
 
 

@@ -14,7 +14,8 @@ import java.util.function.Function;
 
 
 /**
- * The admin's simulated rider actions (POST /admin/deliveries/{id}/picked-up and /delivered), audited.
+ * The admin's simulated rider actions (POST /admin/deliveries/{id}/picked-up and /delivered) and reassignments
+ * (POST /admin/deliveries/{id}/reassign), audited.
  *
  * <p>Each action is {@link DispatchService}'s guarded delivery transition plus one audit_log entry naming the admin,
  * in one transaction. The delivery row is locked first, so the status read here is the one the transition starts from:
@@ -53,6 +54,27 @@ public class DeliveryAdminService {
     public DeliveryDto markDelivered(Long deliveryId, AuditActor actor) {
         return advance(deliveryId, DeliveryStatus.DELIVERED, AuditActions.DELIVERY_DELIVERED, actor,
                 dispatchService::markDelivered);
+    }
+
+
+    /**
+     * {@link DispatchService#reassign} plus one delivery.reassign entry naming the admin and both riders. Retrying with
+     * the rider the delivery already has changes nothing and is not audited; a refused reassignment rolls back.
+     */
+    @Transactional
+    public DeliveryDto reassign(Long deliveryId, Long riderId, AuditActor actor) {
+        // Taken before the reassignment, which locks the same row again in this transaction.
+        DeliveryEntity before = deliveryRepository.lockById(deliveryId);
+        DeliveryDto after = dispatchService.reassign(deliveryId, riderId);
+        if (before != null && !riderId.equals(before.riderId())) {
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("order_id", after.orderId());
+            details.put("status", after.status());
+            details.put("from_rider_id", before.riderId());
+            details.put("to_rider_id", after.riderId());
+            auditLogService.record(actor, AuditActions.DELIVERY_REASSIGN, AuditActions.TARGET_DELIVERY, deliveryId, details);
+        }
+        return after;
     }
 
 
