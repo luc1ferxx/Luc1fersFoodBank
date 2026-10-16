@@ -231,6 +231,54 @@ describe("cart and checkout", () => {
   });
 });
 
+describe("admin tools", () => {
+  it("reuses the status-change Idempotency-Key on retry and starts a new one for a new change", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.orders = [{ id: 7, status: "PAID", total_price: 9, created_at: null, items: [] }];
+    backend.on("PATCH", "/orders/7/status", () =>
+      apiError(503, "Order service unavailable", "trace-51"),
+    );
+    backend.on("PATCH", "/orders/7/status", () =>
+      apiError(503, "Order service unavailable", "trace-52"),
+    );
+    const user = renderApp();
+
+    await signedInLabel();
+    await waitFor(() => expect(backend.callsTo("GET", "/orders")).toHaveLength(1));
+    await user.click(screen.getByRole("button", { name: "Admin tools" }));
+    await user.type(screen.getByLabelText("Order ID"), "7");
+    expect(screen.getByLabelText("Target status")).toHaveValue("ACCEPTED");
+
+    await user.click(screen.getByRole("button", { name: "Update status" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "503: Order service unavailable Trace trace-51.",
+    );
+
+    // Submitting the same order and status again is a retry of the same transition.
+    await user.click(screen.getByRole("button", { name: "Update status" }));
+    expect(await screen.findByText(/Trace trace-52/)).toBeInTheDocument();
+
+    // A different target status is a new transition, not a retry.
+    await user.selectOptions(screen.getByLabelText("Target status"), "PREPARING");
+    await user.click(screen.getByRole("button", { name: "Update status" }));
+    expect(await screen.findByText("Order #7 is PREPARING")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await waitFor(() => expect(backend.callsTo("GET", "/orders")).toHaveLength(2));
+
+    const calls = backend.callsTo("PATCH", "/orders/7/status");
+    expect(calls.map((call) => JSON.parse(call.body))).toEqual([
+      { status: "ACCEPTED" },
+      { status: "ACCEPTED" },
+      { status: "PREPARING" },
+    ]);
+    const keys = calls.map((call) => call.headers["Idempotency-Key"]);
+    expect(keys[0]).toEqual(expect.any(String));
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).toEqual(expect.any(String));
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+});
+
 describe("session expiry", () => {
   it("returns to the logged-out state when a protected request comes back 401", async () => {
     const backend = installFakeBackend({ user: demoUser, cartItems: [whopperLine] });

@@ -209,6 +209,18 @@ export function createFakeBackend({ user = null, cartItems = [] } = {}) {
         return json({ ...order });
       }),
     ],
+    [
+      "PATCH",
+      /^\/orders\/(\d+)\/status$/,
+      protectedRoute(({ body }, match) => {
+        const order = state.orders.find((item) => item.id === Number(match[1]));
+        if (!order) {
+          return apiError(404, "Order not found");
+        }
+        order.status = JSON.parse(body).status;
+        return json({ ...order });
+      }),
+    ],
     ["GET", /^\/notifications$/, protectedRoute(() => json(state.notifications))],
   ];
 
