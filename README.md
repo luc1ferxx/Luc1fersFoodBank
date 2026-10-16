@@ -185,7 +185,7 @@ The `h2` profile runs Flyway migrations and includes the demo seed callback by d
 | `POST` | `/signup` | Create a customer account |
 | `POST` | `/login` | Start a server-side session |
 | `POST` | `/logout` | End the session |
-| `GET` | `/me` | Read current session user |
+| `GET` | `/me` | Read current session user: `roles`, plus the bound `merchant` / `rider` (or `null`) for staff logins |
 | `GET` | `/restaurants/menu` | List restaurants with their menus (HTTP-cacheable, see [Catalog Caching](#catalog-caching)) |
 | `GET` | `/restaurant/{restaurantId}/menu` | List menu items; `404` for an unknown restaurant (HTTP-cacheable) |
 | `GET` | `/cart` | Read current cart |
@@ -208,6 +208,8 @@ The `h2` profile runs Flyway migrations and includes the demo seed callback by d
 | `PATCH` | `/admin/menu-items/{menuItemId}` | Update a menu item's `name`, `description` or `price`; evicts that restaurant's cached menu after commit |
 | `PATCH` | `/admin/restaurants/{restaurantId}` | Update a restaurant's `name`, `address`, `phone` or `image_url`; evicts the cached restaurant list after commit |
 | `POST` | `/dead-letters/{deadLetterEventId}/replay` | Replay a stored dead-letter event |
+| `GET`, `POST` | `/admin/merchants`, `/admin/riders` | List or provision merchant and rider logins (see [Provisioning merchants and riders](#provisioning-merchants-and-riders)) |
+| `PATCH` | `/admin/merchants/{merchantId}`, `/admin/riders/{riderId}` | Activate or deactivate a merchant or rider, body `{"active": false}` |
 
 ### Operational APIs
 
@@ -330,7 +332,8 @@ With the breaker, a cold request pays one 500ms command timeout per open period 
 - Customer accounts track status, failed login count, lockout time, last login, and audit timestamps.
 - Login lookup is case-insensitive.
 - Anonymous routes are rate-limited by remote IP.
-- Authenticated checkout and admin routes are rate-limited by user identity.
+- Authenticated checkout and admin routes (including merchant and rider provisioning) are rate-limited by user identity.
+- Roles: `ROLE_USER` (customers), `ROLE_ADMIN`, `ROLE_MERCHANT` (`/merchant/**`, own restaurant only) and `ROLE_RIDER` (`/rider/**`, own deliveries only). Merchant and rider requests re-check the account's active flag, so a deactivation applies to existing sessions on their next request.
 - Redis rate-limit store failures fail open and emit metrics instead of blocking core flows.
 
 ---
@@ -345,8 +348,8 @@ own tables:
 | --- | --- | --- | --- |
 | Order | `fulfilment.order` (+ `service.OrderService`) | `orders`, the order state machine | `delivery.delivered` |
 | Merchant | `fulfilment.merchant` | `merchant_accounts`, `merchant_orders` (inbox) | `order.paid` and later order events |
-| Timeout | `fulfilment.timeout` | `order_deadlines` | `order.created`, `order.paid`, later order events |
-| Dispatch | `fulfilment.dispatch` | `riders`, `deliveries`, `dispatch_orders` | `order.accepted`, `order.cancelled` |
+| Timeout | `fulfilment.timeout` | `order_deadlines` | `order.created`, `order.paid`, later order events, `merchant.order_received` |
+| Dispatch | `fulfilment.dispatch` | `riders` (rider logins, on duty), `deliveries`, `dispatch_orders` | `order.accepted`, `order.cancelled` |
 | Notifications | `service.OrderNotificationService`, `fulfilment.notification` | `order_notifications` | order events, delivery events |
 
 Every order now belongs to one restaurant: a cart only holds items of one restaurant (adding another restaurant's item
@@ -354,21 +357,25 @@ returns `409 CART_RESTAURANT_CONFLICT`) and checkout records `orders.restaurant_
 have no restaurant and stay on the admin-driven flow (`PATCH /orders/{id}/status`); the fulfilment modules ignore
 their events.
 
-> **The merchant accept timeout is off by default** (`FULFILMENT_ACCEPT_TIMEOUT_ENABLED=false`). When on, it cancels
-> every paid order that no merchant accepts within `accept-timeout`. This repo has no merchant screen yet and only the
-> demo seed creates merchant logins, so with it on, every order paid through the frontend would be cancelled 10 minutes
-> later. With it off, a paid order nobody acts on stays `PAID` (as before these modules) until a merchant or an admin
-> moves it; the payment timeout for unpaid `PLACED` orders still runs. Turn it on only where every restaurant has a
-> merchant login that accepts orders (see "Provisioning merchants and riders"). Cancelled paid orders are not refunded
-> automatically: the customer is told to contact support.
+> **The merchant accept timeout only applies to staffed restaurants.** It is on by default
+> (`FULFILMENT_ACCEPT_TIMEOUT_ENABLED=true`) and cancels a paid order that no merchant accepts within `accept-timeout`
+> (`MERCHANT_TIMEOUT`), but only when the order's restaurant had at least one **active** merchant account when the
+> merchant inbox received the order. The merchant module decides that from its own `merchant_accounts` and announces
+> it as `merchant.order_received`; the timeout module sets the `ACCEPT` deadline only from that event and never reads
+> merchant tables. A restaurant without staff (none provisioned, or all deactivated before the order arrived) therefore
+> never gets its paid orders auto-cancelled: they stay `PAID` in its inbox until a merchant or an admin moves them, and
+> `onlineorder.fulfilment.merchant.orders_received{staffing="unstaffed"}` counts them. A deadline set while the
+> restaurant was staffed still fires if its merchant is deactivated afterwards. The payment timeout for unpaid `PLACED`
+> orders runs as before. Cancelled paid orders are not refunded automatically: the customer is told to contact support.
 
 ### Event flow
 
 ```text
 POST /payments/checkout            order PAID ---------------------- order.paid
-                                                                        |-> merchant: inbox row (PAID)
-                                                                        |-> timeout: ACCEPT deadline = paid_at + accept-timeout
-                                                                        |      (only with accept-timeout-enabled)
+                                                                        |-> merchant: inbox row (PAID); if the restaurant has an
+                                                                        |      active merchant -> merchant.order_received
+                                                                        |      `-> timeout: ACCEPT deadline = paid_at + accept-timeout
+                                                                        |-> timeout: PAYMENT deadline dropped
                                                                         `-> notifications: "Payment confirmed"
 POST /merchant/orders/{id}/accept  order ACCEPTED ------------------ order.accepted
                                                                         |-> dispatch: least-loaded rider, delivery ASSIGNED
@@ -376,13 +383,13 @@ POST /merchant/orders/{id}/accept  order ACCEPTED ------------------ order.accep
                                                                         |-> timeout: deadline dropped
                                                                         `-> merchant inbox, notifications
 POST /merchant/orders/{id}/preparing  order PREPARING -------------- order.preparing
-POST /admin/deliveries/{id}/picked-up delivery PICKED_UP ----------- delivery.picked_up -> notifications: "Order on the way"
-POST /admin/deliveries/{id}/delivered delivery DELIVERED ----------- delivery.delivered
+POST /rider/deliveries/{id}/picked-up delivery PICKED_UP ----------- delivery.picked_up -> notifications: "Order on the way"
+POST /rider/deliveries/{id}/delivered delivery DELIVERED ----------- delivery.delivered
                                                                         |-> order: PREPARING -> COMPLETED ---- order.completed
                                                                         `-> notifications: "Order delivered"
 
 no accept within accept-timeout   deadline poller: PAID -> CANCELLED (MERCHANT_TIMEOUT) -- order.cancelled
-  (accept-timeout-enabled only)
+  (staffed restaurants only)
 POST /merchant/orders/{id}/reject PAID -> CANCELLED (MERCHANT_REJECTED: <reason>) ------- order.cancelled
 unpaid PLACED order               order.created -> PAYMENT deadline -> CANCELLED (PAYMENT_TIMEOUT)
 customer cancels an ACCEPTED order order.cancelled -> dispatch cancels the delivery and releases the rider
@@ -407,6 +414,7 @@ delivery event for a cancelled order is logged and ignored.
 | --- | --- | --- |
 | `order-events` (key: order id) | order module, via the outbox | `onlineorder` (notifications), `onlineorder-merchant`, `onlineorder-timeout`, `onlineorder-dispatch` |
 | `delivery-events` (key: order id) | dispatch, via the outbox | `onlineorder-order-delivery`, `onlineorder-notification-delivery` |
+| `merchant-events` (key: order id) | merchant, via the outbox | `onlineorder-timeout-merchant` |
 | `order-events.dlt` | the listener error handler | `onlineorder-dlt` |
 
 All events go through the transactional outbox (`OrderEventOutboxService.enqueueEvent` stores any aggregate type and
@@ -430,8 +438,9 @@ reaches a group out of order, so each module also stays correct when the order o
   they touch deliveries, so they serialize per order even on different consumers. `order.cancelled` sets
   `cancelled_at` there even when no delivery exists yet, and an `order.accepted` handled afterwards (for example one
   dead-lettered because no rider was active, replayed after the customer cancelled) assigns no rider.
-- **Timeout:** a deadline written by a late `order.created` or `order.paid` fires as a no-op: the poller only cancels an
-  order that is still in the status the deadline waits in.
+- **Timeout:** a deadline written by a late `order.created` or `merchant.order_received` fires as a no-op: the poller
+  only cancels an order that is still in the status the deadline waits in. `merchant.order_received` and the later
+  order events travel on different topics, so this also covers an order accepted before its announcement arrived.
 - **Order completion:** a `delivery.delivered` for a cancelled order is ignored.
 
 ### Fulfilment APIs
@@ -442,9 +451,14 @@ reaches a group out of order, so each module also stays correct when the order o
 | `POST` | `/merchant/orders/{orderId}/accept` | `MERCHANT` | `PAID -> ACCEPTED` |
 | `POST` | `/merchant/orders/{orderId}/reject` | `MERCHANT` | `PAID -> CANCELLED`, body `{"reason": "..."}` (required) |
 | `POST` | `/merchant/orders/{orderId}/preparing` | `MERCHANT` | `ACCEPTED -> PREPARING` |
+| `GET` | `/rider/me` | `RIDER` | The rider's profile: `rider_id`, `name`, `phone`, `active`, `on_duty`, `active_deliveries` |
+| `PUT` | `/rider/me/availability` | `RIDER` | Go on or off duty, body `{"on_duty": true}`; off duty only stops new assignments |
+| `GET` | `/rider/deliveries?status=ASSIGNED,PICKED_UP` | `RIDER` | The rider's own deliveries (default: the open ones, `ASSIGNED` and `PICKED_UP`) with `restaurant_name` |
+| `POST` | `/rider/deliveries/{deliveryId}/picked-up` | `RIDER` | `ASSIGNED -> PICKED_UP` (own deliveries only) |
+| `POST` | `/rider/deliveries/{deliveryId}/delivered` | `RIDER` | `PICKED_UP -> DELIVERED` (own deliveries only) |
 | `GET` | `/admin/deliveries?order_id=` | `ADMIN` | Deliveries (one order, or the 50 most recent) |
-| `POST` | `/admin/deliveries/{deliveryId}/picked-up` | `ADMIN` | Simulated rider: `ASSIGNED -> PICKED_UP` |
-| `POST` | `/admin/deliveries/{deliveryId}/delivered` | `ADMIN` | Simulated rider: `PICKED_UP -> DELIVERED` |
+| `POST` | `/admin/deliveries/{deliveryId}/picked-up` | `ADMIN` | Ops and tests: any delivery `ASSIGNED -> PICKED_UP` |
+| `POST` | `/admin/deliveries/{deliveryId}/delivered` | `ADMIN` | Ops and tests: any delivery `PICKED_UP -> DELIVERED` |
 
 Merchant commands are scoped to the merchant's restaurant (another restaurant's order is a `404`) and are idempotent:
 repeating a command whose transition already happened returns the order unchanged. A reject of an order that was
@@ -452,29 +466,53 @@ cancelled for another reason (the customer, the accept timeout) is `409 ORDER_ST
 reject. Customers and admins get `403` on `/merchant/**`. Order responses (`GET /orders`) now also carry
 `restaurant_id` and `cancel_reason`.
 
+Rider actions go through the same delivery state machine and outbox events as the admin endpoints and are idempotent
+the same way; a delivery that cannot make the move is `409 DELIVERY_STATUS_CONFLICT`. A rider only reaches their own
+deliveries: another rider's delivery is `404` (and absent from their list). Everyone but a rider gets `403` on
+`/rider/**`.
+
 ### Provisioning merchants and riders
 
-Demo merchants (seeded only with `classpath:db/demo`, password `merchant123`): `merchant.burgerking@laifood.com`,
-`merchant.sgdtofu@laifood.com`, `merchant.fashionwok@laifood.com`. The demo seed also adds three simulated riders.
+Admins create merchant and rider logins through the API (`ROLE_ADMIN`; the POSTs and PATCHes are rate-limited per admin
+like other admin writes). The login gets a BCrypt password through the shared `PasswordEncoder` and the same email and
+password validation as `POST /signup`; an email any login already uses (in any letter case) is
+`409 EMAIL_ALREADY_REGISTERED`.
 
-Outside the demo there is no API for this yet. Like admin logins, merchants and riders are provisioned in SQL; the
-merchant signs up as a customer first and logs in again afterwards:
+| Method | Path | Body | Result |
+| --- | --- | --- | --- |
+| `POST` | `/admin/merchants` | `email`, `password`, `first_name`, `last_name`, `restaurant_id` | `201` merchant: a `ROLE_MERCHANT` login bound to the restaurant (`404` for an unknown restaurant) |
+| `GET` | `/admin/merchants` | | `merchant_id`, `customer_id`, `email`, `first_name`, `last_name`, `restaurant_id`, `restaurant_name`, `active`, `created_at` |
+| `PATCH` | `/admin/merchants/{merchantId}` | `{"active": false}` | the merchant |
+| `POST` | `/admin/riders` | `email`, `password`, `first_name`, `last_name`, `phone` | `201` rider: a `ROLE_RIDER` login, active and off duty |
+| `GET` | `/admin/riders` | | `rider_id`, `customer_id`, `email`, `first_name`, `last_name`, `name`, `phone`, `active`, `on_duty`, `active_deliveries`, `created_at` |
+| `PATCH` | `/admin/riders/{riderId}` | `{"active": false}` | the rider (deactivating also takes them off duty) |
 
-```sql
-INSERT INTO authorities (email, authority) VALUES ('owner@example.com', 'ROLE_MERCHANT');
-INSERT INTO merchant_accounts (customer_id, restaurant_id)
-SELECT id, 42 FROM customers WHERE email = 'owner@example.com';
-INSERT INTO riders (name, phone) VALUES ('Rider One', '(408) 555-0100');
-```
+Accounts are deactivated, never deleted. Deactivation takes effect on the account's next request without touching its
+session: the merchant and dispatch modules look the account up on every merchant or rider request and answer `403`
+for an inactive one, while `GET /me` still lists the role and shows `"active": false`. A deactivated merchant no
+longer makes its restaurant staffed (see the accept timeout above); a deactivated rider is never assigned. Deliveries a
+rider already holds stay assigned to them: move them with the admin delivery endpoints or reactivate the rider.
 
-Without an active rider, dispatch retries `order.accepted` and then dead-letters it; replay it with
-`POST /dead-letters/{id}/replay` once a rider exists.
+The orchestration lives in `com.laioffer.onlineorder.staff` (admin web layer): in one transaction it creates the login
+through `CustomerService` and binds it through the merchant module's `MerchantAccountService` or the dispatch
+module's `RiderService`; the modules still only touch their own tables.
+
+Demo staff (seeded only with `classpath:db/demo`): merchants `merchant.burgerking@laifood.com`,
+`merchant.sgdtofu@laifood.com`, `merchant.fashionwok@laifood.com` (password `merchant123`), and riders
+`rider.alice@laifood.com`, `rider.bob@laifood.com`, `rider.carol@laifood.com` (password `rider123`, bound to Demo
+Rider Alice, Bob and Carol, which start on duty).
+
+**No rider on duty.** Dispatch only assigns riders that are active and on duty (least-loaded first, `SKIP LOCKED` as
+before). With none, `order.accepted` is retried and then dead-lettered (`OnlineOrderDeadLettersGrowing` fires, and
+`onlineorder.fulfilment.dispatch.assignments{result="no_rider_attempt"}` grows). The operator gets a rider on duty (the
+rider calls `PUT /rider/me/availability`, or an admin provisions or reactivates one), then replays the dead letter with
+`POST /dead-letters/{id}/replay`. A replay after the customer cancelled assigns no rider.
 
 ### Configuration
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `app.fulfilment.accept-timeout-enabled` (`FULFILMENT_ACCEPT_TIMEOUT_ENABLED`) | `false` | Run the accept timeout at all (see the note at the top of this section); switching it off also drops pending accept deadlines without cancelling |
+| `app.fulfilment.accept-timeout-enabled` (`FULFILMENT_ACCEPT_TIMEOUT_ENABLED`) | `true` | Run the accept timeout for staffed restaurants (see the note at the top of this section); switching it off also drops pending accept deadlines without cancelling |
 | `app.fulfilment.accept-timeout` (`FULFILMENT_ACCEPT_TIMEOUT`) | `10m` | Cancel a `PAID` order not accepted in time (`MERCHANT_TIMEOUT`) |
 | `app.fulfilment.payment-timeout` (`FULFILMENT_PAYMENT_TIMEOUT`) | `15m` | Cancel a `PLACED` order not paid in time (`PAYMENT_TIMEOUT`) |
 | `app.fulfilment.deadline-poller.enabled` | follows `app.kafka.enabled` | Run the deadline poller |
@@ -482,16 +520,18 @@ Without an active rider, dispatch retries `order.accepted` and then dead-letters
 | `app.fulfilment.deadline-poller.batch-size` | `100` | Deadlines fired per run, one transaction each |
 | `app.fulfilment.deadline-poller.retry-backoff` | `30s` | Delay before retrying a deadline whose firing failed |
 | `app.fulfilment.delivery-topic` (`KAFKA_DELIVERY_TOPIC`) | `delivery-events` | Delivery event topic |
+| `app.fulfilment.merchant-topic` (`KAFKA_MERCHANT_TOPIC`) | `merchant-events` | Merchant event topic (`merchant.order_received`) |
 | `app.fulfilment.*-group` | see the table above | Consumer group per module |
-| `app.fulfilment.listener-concurrency` (`FULFILMENT_LISTENER_CONCURRENCY`) | `app.kafka.listener-concurrency` (3) | Consumer threads of each of the five fulfilment listeners |
+| `app.fulfilment.listener-concurrency` (`FULFILMENT_LISTENER_CONCURRENCY`) | `app.kafka.listener-concurrency` (3) | Consumer threads of each of the six fulfilment listeners |
 
 Metrics: `onlineorder.fulfilment.merchant.decisions{decision=accepted|rejected|timeout}`,
+`onlineorder.fulfilment.merchant.orders_received{staffing=staffed|unstaffed}`,
 `onlineorder.fulfilment.timeouts{type=accept|payment,result=cancelled|skipped}`,
 `onlineorder.fulfilment.dispatch.assignments{result=assigned|duplicate|cancelled|no_rider_attempt}`. `no_rider_attempt`
 counts attempts, not orders: with no active rider each listener retry and each DLT replay counts once more.
 
-Capacity: with Kafka on, the app runs 7 listener containers (the 5 fulfilment listeners, notifications, the DLT). At the
-default concurrency of 3 that is 21 consumer threads, against 6 before these modules. A thread holds a pooled
+Capacity: with Kafka on, the app runs 8 listener containers (the 6 fulfilment listeners, notifications, the DLT). At the
+default concurrency of 3 that is 24 consumer threads, against 6 before these modules. A thread holds a pooled
 connection only while it handles a record, but they share the 30-connection pool with HTTP requests, the outbox
 publisher and the deadline poller, and every order event now costs one short transaction in each of the 4 groups on
 `order-events` instead of 1. The k6 order flow has not been rerun with these consumers yet; if it shows connection
@@ -516,9 +556,8 @@ the guarded transition only if the order still waits, and deletes the row, all i
 poller runs on its own thread instead of the shared scheduler (4 threads), so a burst of due deadlines cannot delay
 the outbox publisher.
 
-Follow-ups: a merchant UI and a rider app (the frontend is unchanged; merchant and rider actions are API-only),
-admin APIs to provision merchants and riders, real rider location and ETA, refunds for cancelled paid orders, and a
-k6 run with the fulfilment consumers on.
+Follow-ups: real rider location and ETA, reassigning the open deliveries of a deactivated rider, refunds for cancelled
+paid orders, and a k6 run with the fulfilment consumers on.
 
 ---
 
@@ -557,7 +596,10 @@ The test suite covers:
 - order fulfilment: merchant scoping and authz, accept-versus-timeout races, concurrent deadline pollers and rider
   assignment, duplicate and out-of-order (replayed) event deliveries (`FulfilmentPostgresIntegrationTests`), and end
   to end on PostgreSQL, Redis and Kafka: pay -> accept -> deliver -> complete with and without the merchant's
-  `PREPARING` (`FulfilmentFlowContainerTests`) and the accept and payment timeouts (`FulfilmentTimeoutContainerTests`)
+  `PREPARING`, once through the rider API (`FulfilmentFlowContainerTests`), and the accept timeout at a staffed and an
+  unstaffed restaurant and the payment timeout (`FulfilmentTimeoutContainerTests`)
+- staff accounts: provisioning, `GET /me`, the role matrix, deactivation on the next request, dispatch to active
+  on-duty riders only, and a rider never reaching another rider's delivery (`StaffAccountsPostgresIntegrationTests`)
 
 Some integration tests use Testcontainers and require Docker. Tests annotated with `@Testcontainers(disabledWithoutDocker = true)` may skip when Docker is unavailable.
 
