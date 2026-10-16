@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder;
 
 
+import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.cache.CatalogCacheInvalidator;
 import com.laioffer.onlineorder.cache.CatalogCaches;
 import com.laioffer.onlineorder.cache.TwoLevelCacheManager;
@@ -198,6 +199,15 @@ class RestaurantCacheFallbackTests {
         @Bean
         MenuItemRepository menuItemRepository() {
             return Mockito.mock(MenuItemRepository.class);
+        }
+
+
+        /**
+         * The catalog services record admin edits in the audit log; these tests only read.
+         */
+        @Bean
+        AuditLogService auditLogService() {
+            return Mockito.mock(AuditLogService.class);
         }
 
 

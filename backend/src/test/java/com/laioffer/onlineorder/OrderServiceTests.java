@@ -1,6 +1,8 @@
 package com.laioffer.onlineorder;
 
 
+import com.laioffer.onlineorder.audit.AuditActions;
+import com.laioffer.onlineorder.audit.AuditActor;
 import com.laioffer.onlineorder.entity.IdempotencyRequestEntity;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
@@ -18,6 +20,7 @@ import com.laioffer.onlineorder.service.IdempotencyRequestInitializer;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.OrderService;
 import com.laioffer.onlineorder.service.OrderStatusHistoryService;
+import com.laioffer.onlineorder.audit.AuditLogService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,6 +34,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -59,6 +63,9 @@ class OrderServiceTests {
     @Mock
     private OrderStatusHistoryService orderStatusHistoryService;
 
+    @Mock
+    private AuditLogService auditLogService;
+
     private OrderService orderService;
 
 
@@ -71,7 +78,8 @@ class OrderServiceTests {
                 metricsService,
                 idempotencyRequestRepository,
                 idempotencyRequestInitializer,
-                orderStatusHistoryService
+                orderStatusHistoryService,
+                auditLogService
         );
     }
 
@@ -142,11 +150,12 @@ class OrderServiceTests {
                 Mockito.isNull(),
                 Mockito.any(LocalDateTime.class)
         );
+        Mockito.verifyNoInteractions(auditLogService);
     }
 
 
     @Test
-    void idempotentTransitionOrderStatus_shouldRecordTheAdminInTheHistory() {
+    void idempotentTransitionOrderStatus_shouldRecordTheAdminInTheHistoryAndTheAuditLog() {
         OrderEntity paidOrder = new OrderEntity(5L, 1L, amount("19.0"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
         stubFirstIdempotentAttempt(9L, "admin-key");
         Mockito.when(orderRepository.lockById(5L)).thenReturn(paidOrder);
@@ -163,11 +172,24 @@ class OrderServiceTests {
                 Mockito.isNull(),
                 Mockito.any(LocalDateTime.class)
         );
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, ?>> details = ArgumentCaptor.forClass(Map.class);
+        Mockito.verify(auditLogService).record(
+                Mockito.eq(AuditActor.admin(9L)),
+                Mockito.eq(AuditActions.ORDER_STATUS_UPDATE),
+                Mockito.eq(AuditActions.TARGET_ORDER),
+                Mockito.eq(5L),
+                details.capture()
+        );
+        Assertions.assertEquals("PAID", details.getValue().get("from_status"));
+        Assertions.assertEquals("ACCEPTED", details.getValue().get("to_status"));
+        Assertions.assertEquals(true, details.getValue().get("changed"));
+        Assertions.assertEquals("admin-key", details.getValue().get("idempotency_key"));
     }
 
 
     @Test
-    void idempotentTransitionOrderStatus_toTheCurrentStatus_shouldRecordNoHistory() {
+    void idempotentTransitionOrderStatus_toTheCurrentStatus_shouldAuditTheNoOpWithoutHistory() {
         OrderEntity acceptedOrder = new OrderEntity(5L, 1L, amount("19.0"), "ACCEPTED", LocalDateTime.of(2026, 4, 4, 12, 0));
         stubFirstIdempotentAttempt(9L, "same-status-key");
         Mockito.when(orderRepository.lockById(5L)).thenReturn(acceptedOrder);
@@ -176,6 +198,13 @@ class OrderServiceTests {
 
         Mockito.verifyNoInteractions(orderStatusHistoryService);
         Mockito.verify(orderRepository, Mockito.never()).save(Mockito.any());
+        Mockito.verify(auditLogService).record(
+                Mockito.eq(AuditActor.admin(9L)),
+                Mockito.eq(AuditActions.ORDER_STATUS_UPDATE),
+                Mockito.eq(AuditActions.TARGET_ORDER),
+                Mockito.eq(5L),
+                Mockito.argThat(details -> Boolean.FALSE.equals(details.get("changed")))
+        );
     }
 
 

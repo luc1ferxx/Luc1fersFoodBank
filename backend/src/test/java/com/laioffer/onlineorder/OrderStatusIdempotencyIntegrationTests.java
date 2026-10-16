@@ -110,11 +110,12 @@ class OrderStatusIdempotencyIntegrationTests {
         Assertions.assertEquals(1, countIdempotencyRequests(seededOrder.customerId(), STATUS_SCOPE_PREFIX + seededOrder.orderId(), "status-key-1"));
         Assertions.assertEquals(1, countOutboxEventsForOrder(seededOrder.orderId()));
         Assertions.assertEquals("SUCCEEDED", idempotencyStatus(seededOrder.customerId(), STATUS_SCOPE_PREFIX + seededOrder.orderId(), "status-key-1"));
-        // The retry adds no second history row.
+        // The retry adds no second history row and no second audit entry.
         Assertions.assertEquals(
                 List.of("PAID->ACCEPTED|ADMIN|" + seededOrder.customerId() + "|null"),
                 statusHistory(seededOrder.orderId())
         );
+        Assertions.assertEquals(1, countOrderAuditEntries(seededOrder.orderId()));
     }
 
     @Test
@@ -155,6 +156,7 @@ class OrderStatusIdempotencyIntegrationTests {
             Assertions.assertEquals(1, countOutboxEventsForOrderAndType(seededOrder.orderId(), "order.accepted"));
             Assertions.assertEquals("ACCEPTED", orderRepository.findById(seededOrder.orderId()).orElseThrow().status());
             Assertions.assertEquals(1, statusHistory(seededOrder.orderId()).size());
+            Assertions.assertEquals(1, countOrderAuditEntries(seededOrder.orderId()));
         } finally {
             executorService.shutdownNow();
         }
@@ -176,6 +178,8 @@ class OrderStatusIdempotencyIntegrationTests {
                 List.of("PAID->CANCELLED|CUSTOMER|" + seededOrder.customerId() + "|CUSTOMER_CANCELLED"),
                 statusHistory(seededOrder.orderId())
         );
+        // A customer's own cancel is in the order history, not in the operations audit log.
+        Assertions.assertEquals(0, countOrderAuditEntries(seededOrder.orderId()));
     }
 
     @Test
@@ -192,6 +196,7 @@ class OrderStatusIdempotencyIntegrationTests {
         Assertions.assertEquals("ACCEPTED", order.status());
         Assertions.assertEquals(1, countOutboxEventsForOrder(seededOrder.orderId()));
         Assertions.assertEquals(1, statusHistory(seededOrder.orderId()).size());
+        Assertions.assertEquals(1, countOrderAuditEntries(seededOrder.orderId()));
     }
 
     @Test
@@ -241,6 +246,7 @@ class OrderStatusIdempotencyIntegrationTests {
         Assertions.assertEquals("PAID", order.status());
         Assertions.assertEquals(0, countOutboxEventsForOrder(seededOrder.orderId()));
         Assertions.assertEquals(List.of(), statusHistory(seededOrder.orderId()));
+        Assertions.assertEquals(0, countOrderAuditEntries(seededOrder.orderId()));
     }
 
     @Test
@@ -344,6 +350,15 @@ class OrderStatusIdempotencyIntegrationTests {
                 + "|" + row.getString("actor_type")
                 + "|" + row.getObject("actor_id")
                 + "|" + row.getString("reason"), orderId);
+    }
+
+    private long countOrderAuditEntries(Long orderId) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM audit_log WHERE target_type = 'ORDER' AND target_id = ?",
+                Long.class,
+                String.valueOf(orderId)
+        );
+        return count == null ? 0 : count;
     }
 
     private long countOutboxEventsForOrder(Long orderId) {

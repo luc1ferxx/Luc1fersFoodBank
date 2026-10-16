@@ -1,8 +1,10 @@
 package com.laioffer.onlineorder.controller;
 
 
+import com.laioffer.onlineorder.audit.AuditActorResolver;
 import com.laioffer.onlineorder.model.OutboxEventDto;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
+import com.laioffer.onlineorder.service.OutboxAdminService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -10,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 
+import java.security.Principal;
 import java.util.List;
 
 
@@ -17,10 +20,18 @@ import java.util.List;
 public class OutboxAdminController {
 
     private final OrderEventOutboxService orderEventOutboxService;
+    private final OutboxAdminService outboxAdminService;
+    private final AuditActorResolver auditActorResolver;
 
 
-    public OutboxAdminController(OrderEventOutboxService orderEventOutboxService) {
+    public OutboxAdminController(
+            OrderEventOutboxService orderEventOutboxService,
+            OutboxAdminService outboxAdminService,
+            AuditActorResolver auditActorResolver
+    ) {
         this.orderEventOutboxService = orderEventOutboxService;
+        this.outboxAdminService = outboxAdminService;
+        this.auditActorResolver = auditActorResolver;
     }
 
 
@@ -31,7 +42,7 @@ public class OutboxAdminController {
 
 
     @PostMapping("/admin/outbox/events/{eventId}/retry")
-    public OutboxEventDto retryFailedEvent(@PathVariable Long eventId) {
-        return orderEventOutboxService.retryFailedEvent(eventId);
+    public OutboxEventDto retryFailedEvent(Principal principal, @PathVariable Long eventId) {
+        return outboxAdminService.retryFailedEvent(eventId, auditActorResolver.resolve(principal));
     }
 }

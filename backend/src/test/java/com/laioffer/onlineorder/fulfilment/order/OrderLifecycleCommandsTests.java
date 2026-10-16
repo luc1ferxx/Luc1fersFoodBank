@@ -16,6 +16,7 @@ import com.laioffer.onlineorder.service.IdempotencyRequestInitializer;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.OrderService;
 import com.laioffer.onlineorder.service.OrderStatusHistoryService;
+import com.laioffer.onlineorder.audit.AuditLogService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -60,6 +61,9 @@ class OrderLifecycleCommandsTests {
     @Mock
     private OrderStatusHistoryService orderStatusHistoryService;
 
+    @Mock
+    private AuditLogService auditLogService;
+
     private OrderService orderService;
 
 
@@ -72,7 +76,8 @@ class OrderLifecycleCommandsTests {
                 metricsService,
                 idempotencyRequestRepository,
                 idempotencyRequestInitializer,
-                orderStatusHistoryService
+                orderStatusHistoryService,
+                auditLogService
         );
     }
 

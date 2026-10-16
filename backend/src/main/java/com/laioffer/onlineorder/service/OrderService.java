@@ -1,6 +1,9 @@
 package com.laioffer.onlineorder.service;
 
 
+import com.laioffer.onlineorder.audit.AuditActions;
+import com.laioffer.onlineorder.audit.AuditActor;
+import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.entity.IdempotencyRequestEntity;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
@@ -28,6 +31,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -67,6 +71,7 @@ public class OrderService implements OrderLifecycleCommands {
     private final OrderRepository orderRepository;
     private final OrderHistoryItemRepository orderHistoryItemRepository;
     private final OrderStatusHistoryService orderStatusHistoryService;
+    private final AuditLogService auditLogService;
 
 
     public OrderService(
@@ -76,7 +81,8 @@ public class OrderService implements OrderLifecycleCommands {
             ApplicationMetricsService metricsService,
             IdempotencyRequestRepository idempotencyRequestRepository,
             IdempotencyRequestInitializer idempotencyRequestInitializer,
-            OrderStatusHistoryService orderStatusHistoryService
+            OrderStatusHistoryService orderStatusHistoryService,
+            AuditLogService auditLogService
     ) {
         this.orderRepository = orderRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
@@ -85,6 +91,7 @@ public class OrderService implements OrderLifecycleCommands {
         this.idempotencyRequestRepository = idempotencyRequestRepository;
         this.idempotencyRequestInitializer = idempotencyRequestInitializer;
         this.orderStatusHistoryService = orderStatusHistoryService;
+        this.auditLogService = auditLogService;
     }
 
 
@@ -147,7 +154,7 @@ public class OrderService implements OrderLifecycleCommands {
 
     /**
      * The admin status change (PATCH /orders/{orderId}/status, ROLE_ADMIN only): recorded in the order history with
-     * an ADMIN actor, once per idempotency key.
+     * an ADMIN actor and in the audit log, once per idempotency key.
      */
     @Transactional
     public OrderDto idempotentTransitionOrderStatus(Long actorCustomerId, Long orderId, String targetStatus, String idempotencyKey) {
@@ -173,12 +180,25 @@ public class OrderService implements OrderLifecycleCommands {
                     if (order == null) {
                         throw new ResourceNotFoundException("Order not found");
                     }
-                    return transitionLockedOrder(
+                    TransitionResult result = transitionLockedOrder(
                             order,
                             normalizedTargetStatus,
                             OrderLifecycleCommands.ADMIN_CANCELLED,
                             OrderActor.admin(actorCustomerId)
-                    ).order();
+                    );
+                    Map<String, Object> details = new LinkedHashMap<>();
+                    details.put("from_status", result.fromStatus().name());
+                    details.put("to_status", normalizedTargetStatus.name());
+                    details.put("changed", result.changed());
+                    details.put("idempotency_key", normalizedKey);
+                    auditLogService.record(
+                            AuditActor.admin(actorCustomerId),
+                            AuditActions.ORDER_STATUS_UPDATE,
+                            AuditActions.TARGET_ORDER,
+                            orderId,
+                            details
+                    );
+                    return result.order();
                 }
         );
     }

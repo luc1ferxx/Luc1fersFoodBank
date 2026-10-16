@@ -124,6 +124,11 @@ class OrderStatusTransitionRollbackTests {
         Assertions.assertEquals(0, countOutboxEventsForOrder(seededOrder.orderId()));
         Assertions.assertEquals(0, countIdempotencyRequests(seededOrder.customerId(), "status-rollback-key"));
         Assertions.assertEquals(0, countRows("order_status_history", "order_id", seededOrder.orderId()));
+        Assertions.assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM audit_log WHERE target_type = 'ORDER' AND target_id = ?",
+                Long.class,
+                String.valueOf(seededOrder.orderId())
+        ));
     }
 
     private SeededOrder createOrderWithHistory(String status) {

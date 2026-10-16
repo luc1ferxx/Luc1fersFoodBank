@@ -1,6 +1,10 @@
 package com.laioffer.onlineorder;
 
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.laioffer.onlineorder.audit.AuditActor;
+import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.entity.DeadLetterEventEntity;
 import com.laioffer.onlineorder.model.DeadLetterReplayDto;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
@@ -24,6 +28,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 
@@ -62,6 +67,12 @@ class DeadLetterRedeliveryH2IntegrationTests {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private AuditLogService auditLogService;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
     private DeadLetterReplayService replayService;
 
 
@@ -70,6 +81,7 @@ class DeadLetterRedeliveryH2IntegrationTests {
     void setUp() {
         jdbcTemplate.update("DELETE FROM dead_letter_events");
         jdbcTemplate.update("DELETE FROM processed_events");
+        jdbcTemplate.update("DELETE FROM audit_log WHERE target_type = 'DEAD_LETTER_EVENT'");
         KafkaTemplate<String, String> kafkaTemplate = Mockito.mock(KafkaTemplate.class);
         Mockito.when(kafkaTemplate.send(Mockito.eq(TOPIC), Mockito.eq(KEY), Mockito.anyString()))
                 .thenReturn(CompletableFuture.completedFuture(null));
@@ -79,7 +91,8 @@ class DeadLetterRedeliveryH2IntegrationTests {
                 kafkaTemplate,
                 deadLetterEventRepository,
                 Mockito.mock(ApplicationMetricsService.class),
-                new TransactionTemplate(transactionManager)
+                new TransactionTemplate(transactionManager),
+                auditLogService
         );
     }
 
@@ -156,6 +169,38 @@ class DeadLetterRedeliveryH2IntegrationTests {
         );
         Assertions.assertEquals(0, marked);
         Assertions.assertEquals("REPLAY_FAILED", onlyRow().replayStatus());
+    }
+
+
+    @Test
+    void replay_shouldWriteEachOutcomeToTheAuditLogWithTheOperator() throws Exception {
+        deadLetterProcessingService.handle(TOPIC, DLT, KEY, ENVELOPE, "consumer failed: boom 1");
+        DeadLetterEventEntity stored = onlyRow();
+
+        replayService.replay(stored.id(), AuditActor.admin(7L));
+        replayService.replay(stored.id(), AuditActor.admin(7L));
+
+        List<Map<String, Object>> entries = jdbcTemplate.queryForList("""
+                SELECT actor_customer_id, actor_role, action, target_id, details
+                FROM audit_log
+                WHERE target_type = 'DEAD_LETTER_EVENT'
+                ORDER BY id
+                """);
+        Assertions.assertEquals(2, entries.size());
+        for (Map<String, Object> entry : entries) {
+            Assertions.assertEquals(7L, ((Number) entry.get("actor_customer_id")).longValue());
+            Assertions.assertEquals("ROLE_ADMIN", entry.get("actor_role"));
+            Assertions.assertEquals("dead_letter.replay", entry.get("action"));
+            Assertions.assertEquals(String.valueOf(stored.id()), entry.get("target_id"));
+        }
+        JsonNode replayed = objectMapper.readTree((String) entries.get(0).get("details"));
+        Assertions.assertEquals("REPLAYED", replayed.get("outcome").asText());
+        Assertions.assertEquals(1, replayed.get("attempt").asInt());
+        Assertions.assertTrue(replayed.get("recorded").asBoolean());
+        Assertions.assertEquals("evt-redelivered", replayed.get("event_id").asText());
+        // The second request found the event replayed already and sent nothing.
+        JsonNode alreadyReplayed = objectMapper.readTree((String) entries.get(1).get("details"));
+        Assertions.assertEquals("ALREADY_REPLAYED", alreadyReplayed.get("outcome").asText());
     }
 
 

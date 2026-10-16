@@ -1,6 +1,9 @@
 package com.laioffer.onlineorder.service;
 
 
+import com.laioffer.onlineorder.audit.AuditActions;
+import com.laioffer.onlineorder.audit.AuditActor;
+import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.cache.CatalogCacheInvalidator;
 import com.laioffer.onlineorder.cache.CatalogCaches;
 import com.laioffer.onlineorder.exception.BadRequestException;
@@ -13,7 +16,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 
 @Service
@@ -22,13 +27,16 @@ public class RestaurantService {
 
     private final RestaurantRepository restaurantRepository;
     private final CatalogCacheInvalidator cacheInvalidator;
+    private final AuditLogService auditLogService;
 
 
     public RestaurantService(
             RestaurantRepository restaurantRepository,
-            CatalogCacheInvalidator cacheInvalidator) {
+            CatalogCacheInvalidator cacheInvalidator,
+            AuditLogService auditLogService) {
         this.restaurantRepository = restaurantRepository;
         this.cacheInvalidator = cacheInvalidator;
+        this.auditLogService = auditLogService;
     }
 
 
@@ -66,6 +74,16 @@ public class RestaurantService {
      */
     @Transactional
     public CatalogRestaurantDto updateRestaurant(long restaurantId, UpdateRestaurantBody body) {
+        return updateRestaurant(restaurantId, body, AuditActor.system());
+    }
+
+
+    /**
+     * {@link #updateRestaurant(long, UpdateRestaurantBody)} recorded in the audit log as done by {@code actor}, in the
+     * same transaction.
+     */
+    @Transactional
+    public CatalogRestaurantDto updateRestaurant(long restaurantId, UpdateRestaurantBody body, AuditActor actor) {
         if (body.hasNoChanges()) {
             throw new BadRequestException("At least one of name, address, phone or image_url is required");
         }
@@ -80,8 +98,29 @@ public class RestaurantService {
             throw new ResourceNotFoundException("Restaurant not found");
         }
         cacheInvalidator.evictRestaurantsAfterCommit();
+
+        // The fields the request set (omitted fields were left unchanged).
+        Map<String, Object> changes = new LinkedHashMap<>();
+        putIfPresent(changes, "name", body.name());
+        putIfPresent(changes, "address", body.address());
+        putIfPresent(changes, "phone", body.phone());
+        putIfPresent(changes, "image_url", body.imageUrl());
+        auditLogService.record(
+                actor,
+                AuditActions.RESTAURANT_UPDATE,
+                AuditActions.TARGET_RESTAURANT,
+                restaurantId,
+                Map.of("changes", changes)
+        );
         return restaurantRepository.findById(restaurantId)
                 .map(CatalogRestaurantDto::new)
                 .orElseThrow(() -> new ResourceNotFoundException("Restaurant not found"));
+    }
+
+
+    private static void putIfPresent(Map<String, Object> map, String key, Object value) {
+        if (value != null) {
+            map.put(key, value);
+        }
     }
 }
