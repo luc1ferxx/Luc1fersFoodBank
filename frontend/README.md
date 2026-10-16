@@ -32,18 +32,37 @@ Requires Node `^20.19`, `^22.13`, or `>=24` (the range the locked Vite, Vitest, 
 src/
   api/          client.ts (fetch wrapper: AbortSignal, ApiError with status/code/trace id, 401 -> onUnauthorized),
                 decode.ts + dto.ts (typed DTOs and their decoders), endpoints.ts, proxyPaths.ts
-  hooks/        useSession, useMenu, useCart, useCheckout, useOrders, useNotifications, useAdminTools,
-                useLatestRequest, usePolling
-  components/   presentational sections, ErrorBoundary
-  pages/        OrderingPage: session-scoped state, remounted when the signed-in user changes
-  lib/          formatting and form helpers
-  test/         fakeBackend.ts (the in-memory API used by the UI tests), helpers.tsx
+  hooks/        useSession, useMenu, useCart, useCheckout, useOrders, useOrderHistory, useNotifications,
+                useMerchantOrders, useRiderConsole, useAccounts, useAdminTools,
+                useLatestRequest, useLiveResource, usePolling
+  components/   presentational sections, dialogs, ErrorBoundary
+  pages/        OrderingPage, MerchantConsole, RiderConsole, AdminConsole
+  lib/          formatting, labels, workspaces (roles -> views), form and map helpers
+  test/         fakeBackend.ts + fakeFulfilment.ts + fakeAdmin.ts + fixtures.ts (the in-memory API used by
+                the UI tests), helpers.tsx
 ```
+
+## Workspaces
+
+`App.tsx` reads `roles` from `GET /me` (`src/lib/workspaces.ts`):
+
+| Roles                        | Workspace                                                                                                    |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| guest, `ROLE_USER`           | Order food                                                                                                   |
+| `ROLE_MERCHANT`              | Merchant console: the restaurant's orders with a status filter; accept, reject with a reason, mark preparing |
+| `ROLE_RIDER`                 | Rider console: on-duty switch, own deliveries, picked up and delivered                                       |
+| `ROLE_ADMIN`                 | Admin console: merchant and rider accounts (create, deactivate), order status change, dead-letter replay     |
+| no known role, or no `roles` | Order food                                                                                                   |
+
+A user with several roles gets a switcher; a merchant or rider lands on their console, an admin who also orders on
+ordering. The workspace is keyed by user and view, so its state resets on login, logout, session expiry, or a switch.
 
 Behaviour worth knowing before changing things:
 
 - A 401 from any endpoint that needs a session (everything except `/login` and `/me`) signs the UI out and shows a session-expired message.
 - Switching restaurants aborts the previous menu request; a late response for a restaurant the user already left is dropped.
-- Retrying the same checkout, order cancel, or admin status change reuses its `Idempotency-Key`; editing the payment form starts a new attempt.
-- Notifications poll every 15 seconds only while the tab is visible, and refresh once when it becomes visible again (`usePolling`).
+- Retrying the same checkout, order cancel, or admin status change reuses its `Idempotency-Key`; editing the payment form starts a new attempt. Merchant and rider commands send no key: the backend makes them idempotent by state (a repeat returns the record unchanged), and a 404 or 409 re-reads the list.
+- Adding an item from another restaurant (`409 CART_RESTAURANT_CONFLICT`) opens a dialog: Cancel leaves the cart alone; "Clear cart & add" calls `DELETE /cart` and retries the add. A failed clear keeps the dialog; a failed add after the clear reports it next to the (now empty) cart.
+- Order cards load `GET /orders/{id}/history` on demand and again when the order's status changes.
+- Notifications and the merchant and rider consoles poll every 15 seconds only while the tab is visible, and refresh once when it becomes visible again (`usePolling`). Console lists go through `useLiveResource`: a filter switch or a command result drops any read still in flight, so an older response never replaces a newer one.
 - Client-side environment variables must be prefixed `VITE_` (none are used today).

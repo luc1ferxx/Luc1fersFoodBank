@@ -154,6 +154,20 @@ Open:
 - Backend / embedded UI: [http://localhost:8080](http://localhost:8080)
 - Swagger UI: [http://localhost:8080/swagger-ui/index.html](http://localhost:8080/swagger-ui/index.html)
 
+### Frontend workspaces
+
+After sign-in the UI reads `roles` from `GET /me` and opens one workspace per role. Users with several roles switch
+between them with the tabs under the header; guests and logins without a known role get the ordering page.
+
+| Role | Workspace |
+| --- | --- |
+| `ROLE_USER`, guests | Order food: menus, cart, checkout, orders with their status history (`GET /orders/{id}/history`), notifications. Adding another restaurant's item (`409 CART_RESTAURANT_CONFLICT`) asks whether to clear the cart (`DELETE /cart`) and add it. |
+| `ROLE_MERCHANT` | Merchant console: the restaurant's orders (`GET /merchant/orders`, status filter), accept, reject with a reason, mark preparing. |
+| `ROLE_RIDER` | Rider console: on-duty switch, the rider's own deliveries, picked up and delivered. |
+| `ROLE_ADMIN` | Admin console: list, create, and deactivate merchants (restaurant picked from the catalog) and riders; the manual order-status change and dead-letter replay. |
+
+The merchant and rider consoles poll every 15 seconds while the tab is visible.
+
 ### Demo Account
 
 | Field | Value |
@@ -516,8 +530,7 @@ the guarded transition only if the order still waits, and deletes the row, all i
 poller runs on its own thread instead of the shared scheduler (4 threads), so a burst of due deadlines cannot delay
 the outbox publisher.
 
-Follow-ups: a merchant UI and a rider app (the frontend is unchanged; merchant and rider actions are API-only),
-admin APIs to provision merchants and riders, real rider location and ETA, refunds for cancelled paid orders, and a
+Follow-ups: admin APIs to provision merchants and riders, real rider location and ETA, refunds for cancelled paid orders, and a
 k6 run with the fulfilment consumers on.
 
 ---
@@ -536,7 +549,7 @@ Type-check, lint, test, and build the React app:
 (cd frontend && npm run typecheck && npm run lint && npm test && npm run build)
 ```
 
-`npm test` runs Vitest with jsdom and React Testing Library against an in-memory fake API (login, cart, checkout success and failure, Idempotency-Key reuse on retry, session expiry, stale menu responses, notification polling). `npm run build` writes `frontend/build` and fails if `index.html` contains an inline script, which the backend CSP would block.
+`npm run typecheck` runs `tsc --noEmit` (strict TypeScript). `npm test` runs Vitest with jsdom and React Testing Library against an in-memory fake API (login, cart and the clear-cart dialog, checkout success and failure, Idempotency-Key reuse on retry, session expiry, stale responses, polling, order status history, role-based workspaces, the merchant, rider, and admin consoles). `npm run build` writes `frontend/build` and fails if `index.html` contains an inline script, which the backend CSP would block.
 
 Build the backend jar with embedded frontend assets:
 
@@ -612,7 +625,7 @@ This project is intentionally strong on backend correctness patterns, but it is 
 
 - Payment is simulated with local request validation. There is no real payment provider, authorization, capture, webhook, or settlement flow.
 - There is no inventory reservation or stock decrement model.
-- The frontend only covers the customer and manual-admin flows; there is no merchant UI yet.
+- The merchant and rider consoles poll every 15 seconds instead of receiving pushed updates, and the rider console has no map, location, or ETA.
 - Kafka delivery is treated as at-least-once with consumer-side idempotency, not end-to-end exactly-once delivery.
 - Failed outbox rows require explicit admin retry after the underlying cause is fixed.
 - H2 is a lightweight local fallback, not the production-shaped runtime.
