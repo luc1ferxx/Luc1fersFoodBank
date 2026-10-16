@@ -1,0 +1,4 @@
+# The application runs on the host with MANAGEMENT_SERVER_PORT=8081.
+- targets: ["host.docker.internal:8081"]
+  labels:
+    environment: local

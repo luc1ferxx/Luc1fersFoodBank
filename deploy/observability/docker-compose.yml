@@ -1,0 +1,154 @@
+# Local observability stack: OpenTelemetry Collector -> Tempo for traces, Prometheus for metrics and alert rules,
+# Grafana with provisioned datasources and dashboards. See docs/operations.md.
+#
+#   docker compose -f deploy/observability/docker-compose.yml up -d                 # stack only; app runs on the host
+#   docker compose -f deploy/observability/docker-compose.yml --profile app up -d   # stack + app + its dependencies
+#
+# Host ports are overridable so the stack can run next to backend/docker-compose.yml (5433, 6379, 9092) and the
+# frontend dev server (3000).
+name: onlineorder-observability
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.161.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "${OTEL_GRPC_PORT:-4317}:4317"
+      - "${OTEL_HTTP_PORT:-4318}:4318"
+    depends_on:
+      - tempo
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.10.8
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    user: "0"
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "${TEMPO_PORT:-3200}:3200"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.13.4
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+      # Tempo's metrics generator writes service-graph and span metrics; exemplars link latency to traces.
+      - --web.enable-remote-write-receiver
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      # host/: the app runs on the host (./gradlew bootRun); compose/: the app runs in this stack (--profile app).
+      - ${ONLINEORDER_SCRAPE_TARGETS:-./prometheus/targets/host}:/etc/prometheus/targets:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.0.9
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - tempo
+    ports:
+      # Not 3000: that is the frontend dev server.
+      - "${GRAFANA_PORT:-3001}:3000"
+    restart: unless-stopped
+
+  # --- profile "app": the application and the services it needs, wired to the stack ---
+
+  postgres:
+    profiles: ["app"]
+    image: postgres:15.2-alpine
+    environment:
+      POSTGRES_DB: onlineorder
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d onlineorder"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    profiles: ["app"]
+    image: redis:7.4-alpine
+    command: redis-server --maxmemory 256mb --maxmemory-policy volatile-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  kafka:
+    profiles: ["app"]
+    image: apache/kafka-native:3.8.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: controller,broker
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  onlineorder:
+    profiles: ["app"]
+    image: ${ONLINEORDER_IMAGE:-onlineorder:local}
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      APP_ENV: local-observability
+      DATABASE_URL: jdbc:postgresql://postgres:5432/onlineorder
+      DATABASE_USERNAME: postgres
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+      REDIS_HOST: redis
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      FLYWAY_LOCATIONS: classpath:db/migration,classpath:db/demo
+      TRACING_EXPORT_ENABLED: "true"
+      TRACING_SAMPLING_PROBABILITY: "1.0"
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    ports:
+      - "${APP_HTTP_PORT:-8080}:8080"
+      - "${APP_MANAGEMENT_PORT:-8081}:8081"
+
+volumes:
+  tempo-data:
+  prometheus-data:
+  grafana-data:
+  postgres-data:
