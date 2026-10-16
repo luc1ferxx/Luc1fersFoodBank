@@ -4,14 +4,17 @@ import { ConfirmDialog } from "./ConfirmDialog";
 
 /**
  * Shown when an add was refused with 409 CART_RESTAURANT_CONFLICT: offers to clear
- * the cart (DELETE /cart) and add the item again.
+ * the cart (DELETE /cart) and add the item again. Clearing waits while a checkout of
+ * that cart is in flight, like the cart's own Clear cart button.
  */
 export function CartConflictDialog({
   cart,
   restaurants,
+  checkoutPending,
 }: {
   cart: CartState;
   restaurants: readonly Restaurant[];
+  checkoutPending: boolean;
 }) {
   const { conflict } = cart;
 
@@ -27,8 +30,13 @@ export function CartConflictDialog({
       confirmLabel="Clear cart & add"
       pendingLabel="Clearing cart..."
       pending={cart.conflictPending}
+      confirmDisabled={checkoutPending}
       error={cart.conflictError}
-      onConfirm={() => void cart.resolveConflict()}
+      onConfirm={() => {
+        if (!checkoutPending) {
+          void cart.resolveConflict();
+        }
+      }}
       onCancel={cart.dismissConflict}
     >
       <p>
@@ -36,6 +44,7 @@ export function CartConflictDialog({
         order goes to one restaurant, so clear the cart and add{" "}
         <strong>{conflict.item.name}</strong>?
       </p>
+      {checkoutPending ? <p>Your checkout is still running. Wait for it to finish.</p> : null}
     </ConfirmDialog>
   );
 }

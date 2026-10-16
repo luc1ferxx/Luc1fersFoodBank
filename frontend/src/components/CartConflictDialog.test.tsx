@@ -1,9 +1,9 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { CartItem } from "../api/dto";
-import { apiError, demoUser, installFakeBackend, requestJson } from "../test/fakeBackend";
-import { renderApp } from "../test/helpers";
+import { apiError, deferred, demoUser, installFakeBackend, requestJson } from "../test/fakeBackend";
+import { flushPromises, renderApp } from "../test/helpers";
 
 const whopperLine: CartItem = {
   order_item_id: 501,
@@ -19,6 +19,28 @@ const whopperLine: CartItem = {
 /** Signs in with a Burger Barn cart and tries to add a Noodle Nook dish. */
 const addFromAnotherRestaurant = async (user: UserEvent) => {
   await screen.findByRole("button", { name: "Pay $12.78" });
+  await user.click(screen.getByRole("button", { name: /Noodle Nook/ }));
+  await screen.findByText("Dan Dan Noodles");
+  await user.click(screen.getByRole("button", { name: "Add to cart" }));
+  return screen.findByRole("dialog", { name: "Start a new cart?" });
+};
+
+const cartConflict = () =>
+  apiError(409, "Your cart already has items from another restaurant.", {
+    code: "CART_RESTAURANT_CONFLICT",
+  });
+
+/** The element directly under <body> that holds `element` (the app's root). */
+const pageRoot = (element: HTMLElement): HTMLElement => {
+  let current = element;
+  while (current.parentElement && current.parentElement !== document.body) {
+    current = current.parentElement;
+  }
+  return current;
+};
+
+/** Like addFromAnotherRestaurant, but the Pay button reads "Paying..." meanwhile. */
+const addFromAnotherRestaurantDuringCheckout = async (user: UserEvent) => {
   await user.click(screen.getByRole("button", { name: /Noodle Nook/ }));
   await screen.findByText("Dan Dan Noodles");
   await user.click(screen.getByRole("button", { name: "Add to cart" }));
@@ -137,6 +159,128 @@ describe("adding an item from another restaurant", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("409: Menu item is not available");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});
+
+describe("the clear-cart dialog as a modal", () => {
+  it("keeps keyboard focus inside and makes the page behind it inert", async () => {
+    installFakeBackend({ user: demoUser, cartItems: [whopperLine] });
+    const user = renderApp();
+
+    const dialog = await addFromAnotherRestaurant(user);
+    const addButton = screen.getByRole("button", { name: "Add to cart", hidden: true });
+    const page = pageRoot(addButton);
+    expect(page).toHaveAttribute("inert");
+    expect(dialog.closest("[inert]")).toBeNull();
+
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    const confirm = within(dialog).getByRole("button", { name: "Clear cart & add" });
+    expect(cancel).toHaveFocus();
+    await user.tab();
+    expect(confirm).toHaveFocus();
+    await user.tab();
+    expect(cancel).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(confirm).toHaveFocus();
+
+    await user.click(cancel);
+    expect(page).not.toHaveAttribute("inert");
+    expect(addButton).toHaveFocus();
+  });
+
+  it("closes on Escape even when focus left the dialog", async () => {
+    const backend = installFakeBackend({ user: demoUser, cartItems: [whopperLine] });
+    const user = renderApp();
+
+    await addFromAnotherRestaurant(user);
+    act(() => {
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+    });
+    expect(document.body).toHaveFocus();
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(backend.callsTo("DELETE", "/cart")).toHaveLength(0);
+  });
+
+  it("refuses another add while it is open and never swaps the item it names", async () => {
+    const backend = installFakeBackend({ user: demoUser, cartItems: [whopperLine] });
+    const firstAdd = deferred();
+    const secondAdd = deferred();
+    backend.on("POST", "/cart", () => firstAdd.promise);
+    backend.on("POST", "/cart", () => secondAdd.promise);
+    const user = renderApp();
+
+    // Two adds from other restaurants are in flight at once.
+    await screen.findByRole("button", { name: "Pay $12.78" });
+    await user.click(screen.getByRole("button", { name: /Noodle Nook/ }));
+    await screen.findByText("Dan Dan Noodles");
+    await user.click(screen.getByRole("button", { name: "Add to cart" }));
+    await user.click(screen.getByRole("button", { name: /Taco Town/ }));
+    await screen.findByText("Fish Taco");
+    await user.click(screen.getByRole("button", { name: "Add to cart" }));
+
+    await act(async () => {
+      firstAdd.resolve(cartConflict());
+      await firstAdd.promise;
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Start a new cart?" });
+    expect(dialog).toHaveTextContent("clear the cart and add Dan Dan Noodles?");
+
+    // The later 409 does not replace the open question.
+    await act(async () => {
+      secondAdd.resolve(cartConflict());
+      await secondAdd.promise;
+    });
+    await flushPromises();
+    expect(dialog).toHaveTextContent("clear the cart and add Dan Dan Noodles?");
+
+    // inert keeps real browsers from reaching the page; jsdom does not honour it, so a
+    // click still lands, and the add is refused without a request.
+    await user.click(screen.getByRole("button", { name: "Add to cart", hidden: true }));
+    expect(backend.callsTo("POST", "/cart")).toHaveLength(2);
+
+    await user.click(within(dialog).getByRole("button", { name: "Clear cart & add" }));
+    expect(await screen.findByRole("button", { name: "Pay $11.00" })).toBeInTheDocument();
+    expect(backend.callsTo("POST", "/cart").map(requestJson)).toEqual([
+      { menu_id: 20 },
+      { menu_id: 30 },
+      { menu_id: 20 },
+    ]);
+  });
+
+  it("waits for a running checkout before clearing the cart", async () => {
+    const backend = installFakeBackend({ user: demoUser, cartItems: [whopperLine] });
+    const checkout = deferred();
+    backend.on("POST", "/payments/checkout", () => checkout.promise);
+    const user = renderApp();
+
+    await screen.findByRole("button", { name: "Pay $12.78" });
+    await user.type(screen.getByLabelText("Cardholder name"), "Demo User");
+    await user.type(screen.getByLabelText("Card number"), "4242424242424242");
+    await user.type(screen.getByLabelText("Expiry"), "1230");
+    await user.type(screen.getByLabelText("CVV"), "123");
+    await user.click(screen.getByRole("button", { name: "Pay $12.78" }));
+
+    const dialog = await addFromAnotherRestaurantDuringCheckout(user);
+    const confirm = within(dialog).getByRole("button", { name: "Clear cart & add" });
+    expect(confirm).toBeDisabled();
+    expect(dialog).toHaveTextContent("Your checkout is still running. Wait for it to finish.");
+    await user.click(confirm);
+    expect(backend.callsTo("DELETE", "/cart")).toHaveLength(0);
+
+    await act(async () => {
+      checkout.resolve(apiError(503, "Payment gateway timed out"));
+      await checkout.promise;
+    });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    expect(dialog).not.toHaveTextContent("Your checkout is still running.");
+
+    await user.click(confirm);
+    expect(await screen.findByRole("button", { name: "Pay $11.00" })).toBeInTheDocument();
+    expect(backend.callsTo("DELETE", "/cart")).toHaveLength(1);
   });
 });
 

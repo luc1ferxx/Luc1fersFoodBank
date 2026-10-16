@@ -86,7 +86,11 @@ export function OrderingPage({
           signedIn={signedIn}
           cart={cart}
         />
-        <CartConflictDialog cart={cart} restaurants={menu.restaurants} />
+        <CartConflictDialog
+          cart={cart}
+          restaurants={menu.restaurants}
+          checkoutPending={checkout.pending}
+        />
       </ErrorBoundary>
 
       <aside className="side-workbench" aria-label="Account and order tools">

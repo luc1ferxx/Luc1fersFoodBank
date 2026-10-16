@@ -23,7 +23,9 @@ export interface CartConflict {
  * A cart holds one restaurant's items. When an add comes back 409
  * CART_RESTAURANT_CONFLICT the hook exposes `conflict` instead of an error, so the UI
  * can offer to clear the cart and add the item: `resolveConflict()` runs DELETE /cart
- * and then retries the add; `dismissConflict()` leaves the cart alone.
+ * and then retries the add; `dismissConflict()` leaves the cart alone. While one
+ * conflict is open, adds are refused and a second 409 never replaces it, so the
+ * dialog's confirm always adds the item it names.
  */
 export function useCart(user: CurrentUser | null, requireSession: (message: string) => void) {
   const [cart, setCart] = useState<Cart>(EMPTY_CART);
@@ -80,13 +82,16 @@ export function useCart(user: CurrentUser | null, requireSession: (message: stri
         requireSession("Sign in to add menu items to your cart.");
         return Promise.resolve();
       }
+      if (conflict) {
+        return Promise.resolve();
+      }
       setPendingMenuItemId(item.id);
       return addItemToCart(item.id)
         .then(refresh)
         .catch((requestError: unknown) => {
           if (hasErrorCode(requestError, ERROR_CODES.cartRestaurantConflict)) {
-            setConflictError("");
-            setConflict({ item });
+            // Two adds in flight can both come back 409: the first one asks.
+            setConflict((current) => current ?? { item });
             // The cart on screen may be stale (another tab); show the one the server has.
             return refresh();
           }
@@ -95,7 +100,7 @@ export function useCart(user: CurrentUser | null, requireSession: (message: stri
         })
         .finally(() => setPendingMenuItemId(null));
     },
-    [refresh, requireSession, user],
+    [conflict, refresh, requireSession, user],
   );
 
   const dismissConflict = useCallback(() => {
