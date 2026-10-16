@@ -4,15 +4,14 @@ package com.laioffer.onlineorder.fulfilment.merchant;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.laioffer.onlineorder.entity.CustomerEntity;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.fulfilment.AfterCommit;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
+import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.RestaurantOrderTransition;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
-import com.laioffer.onlineorder.service.CustomerService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.access.AccessDeniedException;
@@ -22,7 +21,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Objects;
 
 
 /**
@@ -32,6 +30,9 @@ import java.util.Objects;
  * and restaurant id, and the order module checks the order's restaurant again under its row lock. An order of
  * another restaurant is reported as 404, the same as an order that does not exist. The order transition, its
  * outbox event and the inbox update commit in one transaction.
+ *
+ * <p>The caller passes the merchant's customer id, resolved from the login by the web layer like every other
+ * controller does; the module only reads its own tables.
  */
 @Service
 public class MerchantOrderService {
@@ -40,7 +41,6 @@ public class MerchantOrderService {
     private static final TypeReference<List<OrderHistoryItemDto>> ITEMS_TYPE = new TypeReference<>() {
     };
 
-    private final CustomerService customerService;
     private final MerchantAccountRepository merchantAccountRepository;
     private final MerchantOrderRepository merchantOrderRepository;
     private final OrderLifecycleCommands orderLifecycleCommands;
@@ -49,14 +49,12 @@ public class MerchantOrderService {
 
 
     public MerchantOrderService(
-            CustomerService customerService,
             MerchantAccountRepository merchantAccountRepository,
             MerchantOrderRepository merchantOrderRepository,
             OrderLifecycleCommands orderLifecycleCommands,
             ApplicationMetricsService metricsService,
             ObjectMapper objectMapper
     ) {
-        this.customerService = customerService;
         this.merchantAccountRepository = merchantAccountRepository;
         this.merchantOrderRepository = merchantOrderRepository;
         this.orderLifecycleCommands = orderLifecycleCommands;
@@ -65,8 +63,8 @@ public class MerchantOrderService {
     }
 
 
-    public List<MerchantOrderDto> getOrders(String merchantEmail, String status, int limit) {
-        Long restaurantId = requireRestaurantId(merchantEmail);
+    public List<MerchantOrderDto> getOrders(Long merchantCustomerId, String status, int limit) {
+        Long restaurantId = requireRestaurantId(merchantCustomerId);
         int normalizedLimit = Math.max(1, Math.min(limit, 100));
         List<MerchantOrderEntity> orders = status == null || status.isBlank()
                 ? merchantOrderRepository.findPageByRestaurantId(restaurantId, normalizedLimit)
@@ -80,54 +78,52 @@ public class MerchantOrderService {
 
 
     @Transactional
-    public MerchantOrderDto accept(String merchantEmail, Long orderId) {
-        return decide(merchantEmail, orderId, OrderStatus.PAID, OrderStatus.ACCEPTED, null, "accepted");
+    public MerchantOrderDto accept(Long merchantCustomerId, Long orderId) {
+        return decide(merchantCustomerId, orderId, OrderStatus.PAID, OrderStatus.ACCEPTED, null, "accepted");
     }
 
 
     @Transactional
-    public MerchantOrderDto reject(String merchantEmail, Long orderId, String reason) {
+    public MerchantOrderDto reject(Long merchantCustomerId, Long orderId, String reason) {
         String cancelReason = OrderLifecycleCommands.MERCHANT_REJECTED + ": " + reason.trim();
-        return decide(merchantEmail, orderId, OrderStatus.PAID, OrderStatus.CANCELLED, cancelReason, "rejected");
+        return decide(merchantCustomerId, orderId, OrderStatus.PAID, OrderStatus.CANCELLED, cancelReason, "rejected");
     }
 
 
     @Transactional
-    public MerchantOrderDto markPreparing(String merchantEmail, Long orderId) {
-        return decide(merchantEmail, orderId, OrderStatus.ACCEPTED, OrderStatus.PREPARING, null, null);
+    public MerchantOrderDto markPreparing(Long merchantCustomerId, Long orderId) {
+        return decide(merchantCustomerId, orderId, OrderStatus.ACCEPTED, OrderStatus.PREPARING, null, null);
     }
 
 
     private MerchantOrderDto decide(
-            String merchantEmail,
+            Long merchantCustomerId,
             Long orderId,
             OrderStatus requiredStatus,
             OrderStatus targetStatus,
             String cancelReason,
             String decision
     ) {
-        Long restaurantId = requireRestaurantId(merchantEmail);
+        Long restaurantId = requireRestaurantId(merchantCustomerId);
         MerchantOrderEntity inboxOrder = merchantOrderRepository.lockByOrderIdAndRestaurantId(orderId, restaurantId);
         if (inboxOrder == null) {
             throw new ResourceNotFoundException("Order not found");
         }
 
-        OrderDto order = orderLifecycleCommands.transitionRestaurantOrder(
+        RestaurantOrderTransition transition = orderLifecycleCommands.transitionRestaurantOrder(
                 orderId,
                 restaurantId,
                 requiredStatus,
                 targetStatus,
                 cancelReason
         );
+        OrderDto order = transition.order();
         LocalDateTime now = LocalDateTime.now();
         merchantOrderRepository.updateStatus(inboxOrder.id(), order.status(), order.cancelReason(), now);
 
-        // Count only a decision this command made: not a retry, and not a reject answered with an order the accept
-        // timeout had already cancelled.
-        boolean transitioned = requiredStatus.name().equals(inboxOrder.status())
-                && targetStatus.name().equals(order.status())
-                && (targetStatus != OrderStatus.CANCELLED || Objects.equals(cancelReason, order.cancelReason()));
-        if (transitioned && decision != null) {
+        // Count only a decision this command made: not a retry, and not an order an admin had already moved before
+        // this inbox row caught up (the order module reports which).
+        if (transition.changed() && decision != null) {
             AfterCommit.run(() -> metricsService.recordMerchantDecision(decision));
         }
         LOGGER.info(
@@ -157,9 +153,10 @@ public class MerchantOrderService {
     /**
      * @throws AccessDeniedException (403) when the login is not bound to a restaurant
      */
-    private Long requireRestaurantId(String merchantEmail) {
-        CustomerEntity merchant = customerService.getCustomerByEmail(merchantEmail);
-        MerchantAccountEntity account = merchantAccountRepository.findByCustomerId(merchant.id());
+    private Long requireRestaurantId(Long merchantCustomerId) {
+        MerchantAccountEntity account = merchantCustomerId == null
+                ? null
+                : merchantAccountRepository.findByCustomerId(merchantCustomerId);
         if (account == null) {
             throw new AccessDeniedException("Merchant account is not bound to a restaurant");
         }

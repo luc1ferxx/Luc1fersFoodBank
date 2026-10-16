@@ -31,17 +31,20 @@ public interface OrderLifecycleCommands {
 
     /**
      * Moves an order of {@code restaurantId} from {@code requiredStatus} to {@code targetStatus}. Repeating a command
-     * whose transition already happened (the order is in {@code targetStatus}) returns the order unchanged, so
-     * clients can retry.
+     * whose transition already happened returns the order unchanged with {@link RestaurantOrderTransition#changed()}
+     * false, so clients can retry. For a cancel, the order only counts as already cancelled by this command when its
+     * cancel reason has the same code (the part before the first ':', for example MERCHANT_REJECTED): a reject of an
+     * order the customer or the accept timeout already cancelled is a conflict, not a successful reject.
      *
      * @param cancelReason stored on the order when {@code targetStatus} is CANCELLED; ignored otherwise
      * @throws com.laioffer.onlineorder.exception.ResourceNotFoundException when the order does not exist or belongs
      *                                                                     to another restaurant (404, so a merchant
      *                                                                     cannot probe other restaurants' order ids)
      * @throws com.laioffer.onlineorder.exception.ConflictException         ORDER_STATUS_CONFLICT when the order is in
-     *                                                                     any other status
+     *                                                                     any other status, or was cancelled for
+     *                                                                     another reason
      */
-    OrderDto transitionRestaurantOrder(
+    RestaurantOrderTransition transitionRestaurantOrder(
             Long orderId,
             Long restaurantId,
             OrderStatus requiredStatus,
@@ -68,6 +71,15 @@ public interface OrderLifecycleCommands {
      * status (cancelled, or never accepted) is left alone and reported as {@link DeliveryCompletion#IGNORED}.
      */
     DeliveryCompletion completeDeliveredOrder(Long orderId);
+
+
+    /**
+     * @param order   the order after the command
+     * @param changed true when this command made the transition; false when it had already happened (a repeated
+     *                command), so callers count a decision only once
+     */
+    record RestaurantOrderTransition(OrderDto order, boolean changed) {
+    }
 
 
     enum DeliveryCompletion {

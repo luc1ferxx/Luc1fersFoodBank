@@ -18,6 +18,8 @@ import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.CustomerService;
 import com.laioffer.onlineorder.service.OrderService;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -131,6 +133,9 @@ class FulfilmentPostgresIntegrationTests {
 
     @Autowired
     private DeliveryNotificationService deliveryNotificationService;
+
+    @Autowired
+    private MeterRegistry meterRegistry;
 
 
     @Test
@@ -273,7 +278,7 @@ class FulfilmentPostgresIntegrationTests {
 
                 Future<String> accept = executor.submit(awaiting(start, () -> {
                     try {
-                        return merchantOrderService.accept(BURGER_KING_MERCHANT, order.orderId()).status();
+                        return merchantOrderService.accept(customerIdOf(BURGER_KING_MERCHANT), order.orderId()).status();
                     } catch (ConflictException ex) {
                         return "CONFLICT";
                     }
@@ -333,7 +338,7 @@ class FulfilmentPostgresIntegrationTests {
                 "SELECT status FROM merchant_orders WHERE order_id = ?", String.class, order.orderId()));
         Assertions.assertThrows(
                 ConflictException.class,
-                () -> merchantOrderService.accept("merchant.fashionwok@laifood.com", order.orderId())
+                () -> merchantOrderService.accept(customerIdOf("merchant.fashionwok@laifood.com"), order.orderId())
         );
     }
 
@@ -343,7 +348,7 @@ class FulfilmentPostgresIntegrationTests {
         PaidOrder order = paidOrderAt("Burger King");
         deliverOrderEvent(order.orderId(), "order.paid", orderDeadlineService::handle);
         deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
-        merchantOrderService.accept(BURGER_KING_MERCHANT, order.orderId());
+        merchantOrderService.accept(customerIdOf(BURGER_KING_MERCHANT), order.orderId());
         // The poller fires before the timeout consumer has seen order.accepted.
         makeDeadlinesDue(order.orderId());
 
@@ -415,7 +420,7 @@ class FulfilmentPostgresIntegrationTests {
     void acceptedOrder_shouldBeDispatchedPickedUpDeliveredAndCompleted() throws Exception {
         PaidOrder order = paidOrderAt("Burger King");
         deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
-        merchantOrderService.accept(BURGER_KING_MERCHANT, order.orderId());
+        merchantOrderService.accept(customerIdOf(BURGER_KING_MERCHANT), order.orderId());
         OrderEventEnvelope accepted = latestOrderEvent(order.orderId(), "order.accepted");
         int totalLoadBefore = totalRiderLoad();
 
@@ -563,6 +568,62 @@ class FulfilmentPostgresIntegrationTests {
 
 
     @Test
+    void merchantReject_ofAnOrderTheCustomerAlreadyCancelled_shouldConflictAndKeepTheCustomersReason() throws Exception {
+        PaidOrder order = paidOrderAt("Burger King");
+        deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+        MockHttpSession burgerKing = login(BURGER_KING_MERCHANT, MERCHANT_PASSWORD);
+        double rejectedBefore = merchantDecisions("rejected");
+        // The customer cancels while the merchant inbox still shows the order as PAID.
+        orderService.cancelOrder(order.customerId(), order.orderId());
+
+        mockMvc.perform(post("/merchant/orders/{id}/reject", order.orderId())
+                        .session(burgerKing)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\": \"out of stock\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value(OrderLifecycleCommands.ORDER_STATUS_CONFLICT));
+
+        Assertions.assertEquals(OrderLifecycleCommands.CUSTOMER_CANCELLED, cancelReason(order.orderId()));
+        Assertions.assertEquals(List.of("order.paid", "order.cancelled"), orderEventTypes(order.orderId()));
+        Assertions.assertEquals(rejectedBefore, merchantDecisions("rejected"));
+
+        // Once the inbox caught up, the merchant sees why the order was cancelled.
+        deliverOrderEvent(order.orderId(), "order.cancelled", merchantInboxService::handle);
+        mockMvc.perform(get("/merchant/orders").param("status", "CANCELLED").session(burgerKing))
+                .andExpect(jsonPath("$[?(@.order_id == %d)].cancel_reason".formatted(order.orderId()))
+                        .value(OrderLifecycleCommands.CUSTOMER_CANCELLED));
+    }
+
+
+    @Test
+    void merchantAccept_ofAnOrderAnAdminAcceptedBeforeTheInboxCaughtUp_shouldNotCountADecision() throws Exception {
+        PaidOrder order = paidOrderAt("Burger King");
+        deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+        MockHttpSession burgerKing = login(BURGER_KING_MERCHANT, MERCHANT_PASSWORD);
+        // PATCH /orders/{id}/status by an admin; the merchant consumer has not seen order.accepted yet.
+        orderService.transitionOrderStatus(order.orderId(), "ACCEPTED");
+        double acceptedBefore = merchantDecisions("accepted");
+
+        mockMvc.perform(post("/merchant/orders/{id}/accept", order.orderId()).session(burgerKing))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"));
+
+        Assertions.assertEquals(acceptedBefore, merchantDecisions("accepted"));
+        Assertions.assertEquals(List.of("order.paid", "order.accepted"), orderEventTypes(order.orderId()));
+        Assertions.assertEquals("ACCEPTED", inboxStatus(order.orderId()));
+
+        // A decision the merchant does make is counted once.
+        PaidOrder second = paidOrderAt("Burger King");
+        deliverOrderEvent(second.orderId(), "order.paid", merchantInboxService::handle);
+        mockMvc.perform(post("/merchant/orders/{id}/accept", second.orderId()).session(burgerKing))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/merchant/orders/{id}/accept", second.orderId()).session(burgerKing))
+                .andExpect(status().isOk());
+        Assertions.assertEquals(acceptedBefore + 1, merchantDecisions("accepted"));
+    }
+
+
+    @Test
     void orderPaidReplayedAfterTheOrderWasCancelled_shouldShowTheCancelledOrderNotAStalePaidOne() throws Exception {
         PaidOrder order = paidOrderAt("Burger King");
         OrderEventEnvelope paid = latestOrderEvent(order.orderId(), "order.paid");
@@ -690,6 +751,19 @@ class FulfilmentPostgresIntegrationTests {
 
 
     // ---- helpers shared by the fulfilment tests ----
+
+    Long customerIdOf(String email) {
+        return jdbcTemplate.queryForObject("SELECT id FROM customers WHERE LOWER(email) = LOWER(?)", Long.class, email);
+    }
+
+
+    double merchantDecisions(String decision) {
+        Counter counter = meterRegistry.find("onlineorder.fulfilment.merchant.decisions")
+                .tag("decision", decision)
+                .counter();
+        return counter == null ? 0 : counter.count();
+    }
+
 
     String inboxStatus(Long orderId) {
         return jdbcTemplate.queryForObject("SELECT status FROM merchant_orders WHERE order_id = ?", String.class, orderId);

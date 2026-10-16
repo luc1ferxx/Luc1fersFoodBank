@@ -28,6 +28,7 @@ import java.util.HexFormat;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
 
@@ -220,7 +221,7 @@ public class OrderService implements OrderLifecycleCommands {
 
     @Override
     @Transactional
-    public OrderDto transitionRestaurantOrder(
+    public RestaurantOrderTransition transitionRestaurantOrder(
             Long orderId,
             Long restaurantId,
             OrderStatus requiredStatus,
@@ -232,16 +233,34 @@ public class OrderService implements OrderLifecycleCommands {
             throw new ResourceNotFoundException("Order not found");
         }
         OrderStatus currentStatus = OrderStatus.normalize(order.status());
-        if (currentStatus == targetStatus) {
-            return getOrderDto(order);
+        if (currentStatus == targetStatus
+                && (targetStatus != OrderStatus.CANCELLED
+                || Objects.equals(cancelReasonCode(order.cancelReason()), cancelReasonCode(cancelReason)))) {
+            return new RestaurantOrderTransition(getOrderDto(order), false);
         }
         if (currentStatus != requiredStatus) {
+            String reason = currentStatus == OrderStatus.CANCELLED && order.cancelReason() != null
+                    ? " (" + cancelReasonCode(order.cancelReason()) + ")"
+                    : "";
             throw new ConflictException(
                     OrderLifecycleCommands.ORDER_STATUS_CONFLICT,
-                    "Order is " + currentStatus + "; only " + requiredStatus + " orders can move to " + targetStatus
+                    "Order is " + currentStatus + reason + "; only " + requiredStatus + " orders can move to "
+                            + targetStatus
             );
         }
-        return transitionLockedOrder(order, targetStatus, cancelReason);
+        return new RestaurantOrderTransition(transitionLockedOrder(order, targetStatus, cancelReason), true);
+    }
+
+
+    /**
+     * The code of a cancel reason: MERCHANT_REJECTED for "MERCHANT_REJECTED: out of buns".
+     */
+    private static String cancelReasonCode(String cancelReason) {
+        if (cancelReason == null) {
+            return null;
+        }
+        int separator = cancelReason.indexOf(':');
+        return (separator < 0 ? cancelReason : cancelReason.substring(0, separator)).trim();
     }
 
 

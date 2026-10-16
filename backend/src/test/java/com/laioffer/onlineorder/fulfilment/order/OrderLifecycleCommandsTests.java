@@ -5,6 +5,7 @@ import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.DeliveryCompletion;
+import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.RestaurantOrderTransition;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
@@ -76,9 +77,11 @@ class OrderLifecycleCommandsTests {
         Mockito.when(orderRepository.lockById(ORDER_ID)).thenReturn(order("PAID", RESTAURANT_ID));
         Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        OrderDto accepted = orderService.transitionRestaurantOrder(
+        RestaurantOrderTransition transition = orderService.transitionRestaurantOrder(
                 ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null);
+        OrderDto accepted = transition.order();
 
+        Assertions.assertTrue(transition.changed());
         Assertions.assertEquals("ACCEPTED", accepted.status());
         Assertions.assertEquals(RESTAURANT_ID, accepted.restaurantId());
         Mockito.verify(orderEventOutboxService).enqueueOrderEvent(
@@ -136,10 +139,58 @@ class OrderLifecycleCommandsTests {
     void transitionRestaurantOrder_whenAlreadyInTargetStatus_shouldReturnTheOrderUnchanged() {
         Mockito.when(orderRepository.lockById(ORDER_ID)).thenReturn(order("ACCEPTED", RESTAURANT_ID));
 
-        OrderDto order = orderService.transitionRestaurantOrder(
+        RestaurantOrderTransition transition = orderService.transitionRestaurantOrder(
                 ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null);
 
-        Assertions.assertEquals("ACCEPTED", order.status());
+        Assertions.assertFalse(transition.changed());
+        Assertions.assertEquals("ACCEPTED", transition.order().status());
+        Mockito.verify(orderRepository, Mockito.never()).save(Mockito.any());
+        Mockito.verifyNoInteractions(orderEventOutboxService);
+    }
+
+
+    @Test
+    void transitionRestaurantOrder_whenRejectingAnOrderTheCustomerCancelled_shouldConflict() {
+        Mockito.when(orderRepository.lockById(ORDER_ID))
+                .thenReturn(order("CANCELLED", RESTAURANT_ID, OrderLifecycleCommands.CUSTOMER_CANCELLED));
+
+        ConflictException conflict = Assertions.assertThrows(
+                ConflictException.class,
+                () -> orderService.transitionRestaurantOrder(
+                        ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED, "MERCHANT_REJECTED: sold out")
+        );
+
+        Assertions.assertEquals(OrderLifecycleCommands.ORDER_STATUS_CONFLICT, conflict.getCode());
+        Assertions.assertTrue(conflict.getMessage().contains("CUSTOMER_CANCELLED"), conflict.getMessage());
+        Mockito.verify(orderRepository, Mockito.never()).save(Mockito.any());
+        Mockito.verifyNoInteractions(orderEventOutboxService);
+    }
+
+
+    @Test
+    void transitionRestaurantOrder_whenRejectingAnOrderTheAcceptTimeoutCancelled_shouldConflict() {
+        Mockito.when(orderRepository.lockById(ORDER_ID))
+                .thenReturn(order("CANCELLED", RESTAURANT_ID, OrderLifecycleCommands.MERCHANT_TIMEOUT));
+
+        Assertions.assertThrows(
+                ConflictException.class,
+                () -> orderService.transitionRestaurantOrder(
+                        ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED, "MERCHANT_REJECTED: sold out")
+        );
+        Mockito.verifyNoInteractions(orderEventOutboxService);
+    }
+
+
+    @Test
+    void transitionRestaurantOrder_whenTheRejectIsRepeated_shouldReturnTheFirstRejectionUnchanged() {
+        Mockito.when(orderRepository.lockById(ORDER_ID))
+                .thenReturn(order("CANCELLED", RESTAURANT_ID, "MERCHANT_REJECTED: out of buns"));
+
+        RestaurantOrderTransition transition = orderService.transitionRestaurantOrder(
+                ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED, "MERCHANT_REJECTED: sold out");
+
+        Assertions.assertFalse(transition.changed());
+        Assertions.assertEquals("MERCHANT_REJECTED: out of buns", transition.order().cancelReason());
         Mockito.verify(orderRepository, Mockito.never()).save(Mockito.any());
         Mockito.verifyNoInteractions(orderEventOutboxService);
     }
@@ -151,7 +202,7 @@ class OrderLifecycleCommandsTests {
         Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         OrderDto rejected = orderService.transitionRestaurantOrder(
-                ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED, "MERCHANT_REJECTED: sold out");
+                ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED, "MERCHANT_REJECTED: sold out").order();
 
         Assertions.assertEquals("CANCELLED", rejected.status());
         Assertions.assertEquals("MERCHANT_REJECTED: sold out", rejected.cancelReason());
@@ -275,6 +326,11 @@ class OrderLifecycleCommandsTests {
 
 
     private OrderEntity order(String status, Long restaurantId) {
+        return order(status, restaurantId, null);
+    }
+
+
+    private OrderEntity order(String status, Long restaurantId, String cancelReason) {
         return new OrderEntity(
                 ORDER_ID,
                 1L,
@@ -282,7 +338,7 @@ class OrderLifecycleCommandsTests {
                 status,
                 LocalDateTime.of(2026, 4, 4, 12, 0),
                 restaurantId,
-                null
+                cancelReason
         );
     }
 }

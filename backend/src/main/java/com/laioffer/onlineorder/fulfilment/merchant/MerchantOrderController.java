@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.fulfilment.merchant;
 
 
+import com.laioffer.onlineorder.service.CustomerService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -16,15 +17,18 @@ import java.util.List;
 
 /**
  * Merchant endpoints (ROLE_MERCHANT only, see AppConfig). Commands are idempotent: repeating one whose transition
- * already happened returns the order unchanged.
+ * already happened returns the order unchanged. A reject of an order that was cancelled for another reason (by the
+ * customer or the accept timeout) is 409 ORDER_STATUS_CONFLICT, not a successful reject.
  */
 @RestController
 public class MerchantOrderController {
 
+    private final CustomerService customerService;
     private final MerchantOrderService merchantOrderService;
 
 
-    public MerchantOrderController(MerchantOrderService merchantOrderService) {
+    public MerchantOrderController(CustomerService customerService, MerchantOrderService merchantOrderService) {
+        this.customerService = customerService;
         this.merchantOrderService = merchantOrderService;
     }
 
@@ -35,13 +39,13 @@ public class MerchantOrderController {
             @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "50") int limit
     ) {
-        return merchantOrderService.getOrders(principal.getName(), status, limit);
+        return merchantOrderService.getOrders(merchantId(principal), status, limit);
     }
 
 
     @PostMapping("/merchant/orders/{orderId}/accept")
     public MerchantOrderDto accept(Principal principal, @PathVariable Long orderId) {
-        return merchantOrderService.accept(principal.getName(), orderId);
+        return merchantOrderService.accept(merchantId(principal), orderId);
     }
 
 
@@ -51,12 +55,20 @@ public class MerchantOrderController {
             @PathVariable Long orderId,
             @Valid @RequestBody RejectOrderBody body
     ) {
-        return merchantOrderService.reject(principal.getName(), orderId, body.reason());
+        return merchantOrderService.reject(merchantId(principal), orderId, body.reason());
     }
 
 
     @PostMapping("/merchant/orders/{orderId}/preparing")
     public MerchantOrderDto markPreparing(Principal principal, @PathVariable Long orderId) {
-        return merchantOrderService.markPreparing(principal.getName(), orderId);
+        return merchantOrderService.markPreparing(merchantId(principal), orderId);
+    }
+
+
+    /**
+     * The logged-in merchant's customer id, resolved like every other controller resolves its principal.
+     */
+    private Long merchantId(Principal principal) {
+        return customerService.getCustomerByEmail(principal.getName()).id();
     }
 }
