@@ -7,6 +7,9 @@
     "moduleDetection": "force",
     "types": ["node"],
     "noEmit": true,
+    // vite.config.ts imports src/api/proxyPaths.ts with its extension, as Vite's
+    // native config loader requires.
+    "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
