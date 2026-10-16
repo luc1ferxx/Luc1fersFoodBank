@@ -16,7 +16,7 @@ export const parseId = (value: string): number | null => {
  * Manual admin forms. The backend enforces ROLE_ADMIN; the UI only collects IDs.
  * Retrying the same order/status pair reuses its Idempotency-Key.
  */
-export function useAdminTools({ onOrderChanged }: { onOrderChanged?: () => void } = {}) {
+export function useAdminTools() {
   const [pending, setPending] = useState<AdminPending>("");
   const [error, setError] = useState("");
   const [orderResult, setOrderResult] = useState<Order | null>(null);
@@ -50,7 +50,6 @@ export function useAdminTools({ onOrderChanged }: { onOrderChanged?: () => void 
         setOrderResult(order);
         statusPayloadRef.current = "";
         statusKeyRef.current = null;
-        onOrderChanged?.();
       })
       .catch((requestError: unknown) => {
         setError(errorCopy(requestError, "Unable to update order status."));

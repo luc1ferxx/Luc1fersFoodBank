@@ -694,6 +694,102 @@ button:disabled {
   gap: 8px;
 }
 
+.status-badge--ASSIGNED {
+  background: #e9f4ff;
+  color: #1e5c8e;
+}
+
+.status-badge--PICKED_UP {
+  background: #fff4dc;
+  color: #7c520f;
+}
+
+.status-badge--DELIVERED {
+  background: #e9f7ec;
+  color: #246238;
+}
+
+.workspace-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: fit-content;
+  max-width: 1480px;
+  margin: 0 auto 18px;
+  padding: 4px;
+  border-radius: 8px;
+  background: #f0f3ec;
+}
+
+.workspace-switcher button {
+  padding: 0 14px;
+  background: transparent;
+  color: #596254;
+}
+
+.workspace-switcher button.active {
+  background: #fff;
+  color: #20221d;
+  box-shadow: 0 8px 18px rgba(37, 42, 31, 0.08);
+}
+
+.console {
+  display: grid;
+  gap: 18px;
+  max-width: 1480px;
+  margin: 0 auto;
+}
+
+.console--split {
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  align-items: start;
+}
+
+.console__panel,
+.console__side {
+  padding: 18px;
+}
+
+.console__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.console__toolbar > label:not(.toggle-row) {
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+  color: #4e554b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.console__toolbar .toggle-row {
+  margin-bottom: 10px;
+}
+
+.console__list {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+.console-card .timeline {
+  padding-left: 18px;
+  color: #4e554b;
+  font-size: 13px;
+}
+
+.reject-form {
+  margin-top: 10px;
+}
+
+.duty-switch {
+  margin-top: 6px;
+  font-size: 15px;
+}
+
 .order-card__actions {
   display: flex;
   flex-wrap: wrap;
@@ -803,7 +899,8 @@ button:disabled {
 
 @media (max-width: 1120px) {
   .topbar,
-  .mvp-grid {
+  .mvp-grid,
+  .console--split {
     grid-template-columns: 1fr;
   }
 

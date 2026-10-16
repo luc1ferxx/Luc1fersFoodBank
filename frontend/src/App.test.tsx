@@ -232,7 +232,7 @@ describe("cart and checkout", () => {
   });
 });
 
-describe("admin tools", () => {
+describe("admin console order tools", () => {
   it("reuses the status-change Idempotency-Key on retry and starts a new one for a new change", async () => {
     const backend = installFakeBackend({ user: demoUser });
     backend.state.orders = [orderFixture({ id: 7, status: "PAID" })];
@@ -245,8 +245,7 @@ describe("admin tools", () => {
     const user = renderApp();
 
     await signedInLabel();
-    await waitFor(() => expect(backend.callsTo("GET", "/orders")).toHaveLength(1));
-    await user.click(screen.getByRole("button", { name: "Admin tools" }));
+    await user.click(screen.getByRole("button", { name: "Admin console" }));
     await user.type(screen.getByLabelText("Order ID"), "7");
     expect(screen.getByLabelText("Target status")).toHaveValue("ACCEPTED");
 
@@ -264,7 +263,6 @@ describe("admin tools", () => {
     await user.click(screen.getByRole("button", { name: "Update status" }));
     expect(await screen.findByText("Order #7 is PREPARING")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    await waitFor(() => expect(backend.callsTo("GET", "/orders")).toHaveLength(2));
 
     const calls = backend.callsTo("PATCH", "/orders/7/status");
     expect(calls.map(requestJson)).toEqual([

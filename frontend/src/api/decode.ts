@@ -47,6 +47,13 @@ const isBoolean = (value: unknown): value is boolean => typeof value === "boolea
 const isMissing = (value: unknown): value is null | undefined =>
   value === null || value === undefined;
 
+export const decodeString: Decoder<string> = (value, path) => {
+  if (!isString(value)) {
+    throw new DecodeError(path, "a string", value);
+  }
+  return value;
+};
+
 export const decodeArray =
   <T>(item: Decoder<T>): Decoder<T[]> =>
   (value, path) => {

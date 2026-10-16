@@ -13,6 +13,8 @@ export const API_PATH_PREFIXES: readonly string[] = [
   "/orders",
   "/notifications",
   "/dead-letters",
+  "/merchant",
+  "/rider",
 ];
 
 // Vite treats proxy keys that start with ^ as regular expressions matched against

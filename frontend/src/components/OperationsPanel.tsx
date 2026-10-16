@@ -1,15 +1,13 @@
-import type { AdminTools } from "../hooks/useAdminTools";
 import type { CartState } from "../hooks/useCart";
 import type { CheckoutState } from "../hooks/useCheckout";
 import type { NotificationsState } from "../hooks/useNotifications";
 import type { OrdersState } from "../hooks/useOrders";
-import { AdminPanel } from "./AdminPanel";
 import { CartPanel } from "./CartPanel";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { NotificationsPanel } from "./NotificationsPanel";
 import { OrdersPanel } from "./OrdersPanel";
 
-export type OperationsTab = "cart" | "orders" | "notifications" | "admin";
+export type OperationsTab = "cart" | "orders" | "notifications";
 
 interface OperationsPanelProps {
   activePanel: OperationsTab;
@@ -19,7 +17,6 @@ interface OperationsPanelProps {
   checkout: CheckoutState;
   orders: OrdersState;
   notifications: NotificationsState;
-  admin: AdminTools;
 }
 
 export function OperationsPanel({
@@ -30,13 +27,11 @@ export function OperationsPanel({
   checkout,
   orders,
   notifications,
-  admin,
 }: OperationsPanelProps) {
   const tabs: [OperationsTab, string][] = [
     ["cart", `Cart (${cart.itemCount})`],
     ["orders", "Orders"],
     ["notifications", `Notifications (${notifications.notifications.length})`],
-    ["admin", "Admin tools"],
   ];
 
   return (
@@ -62,7 +57,6 @@ export function OperationsPanel({
         {activePanel === "notifications" ? (
           <NotificationsPanel signedIn={signedIn} notifications={notifications} />
         ) : null}
-        {activePanel === "admin" ? <AdminPanel admin={admin} /> : null}
       </ErrorBoundary>
     </section>
   );

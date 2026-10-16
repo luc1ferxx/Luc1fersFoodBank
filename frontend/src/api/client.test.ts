@@ -21,6 +21,23 @@ const payment = {
   cvv: "123",
 };
 
+const merchantOrderJson = {
+  order_id: 7,
+  restaurant_id: 1,
+  customer_id: 2,
+  status: "ACCEPTED",
+  total_price: 12.78,
+  items: [{ menu_item_id: 10, menu_item_name: "Whopper", price: 6.39, quantity: 2 }],
+};
+const riderJson = { rider_id: 3, name: "Alice", active: true, on_duty: true, active_deliveries: 0 };
+const deliveryJson = {
+  delivery_id: 5,
+  order_id: 7,
+  restaurant_id: 1,
+  restaurant_name: "Burger Barn",
+  status: "PICKED_UP",
+};
+
 describe("API endpoints", () => {
   it("use the backend-supported endpoints and idempotency headers", async () => {
     const fetchMock = stubFetch();
@@ -125,6 +142,17 @@ describe("API endpoints", () => {
       [() => api.getNotifications(), []],
       [() => api.updateOrderStatus(1, "PAID", "k"), orderJson],
       [() => api.replayDeadLetter(1), { id: 1, replay_status: "REPLAYED" }],
+      [() => api.clearCart(), null],
+      [() => api.getOrderHistory(1), []],
+      [() => api.getMerchantOrders({ status: "PAID" }), []],
+      [() => api.acceptMerchantOrder(7), merchantOrderJson],
+      [() => api.rejectMerchantOrder(7, "Closed"), merchantOrderJson],
+      [() => api.markMerchantOrderPreparing(7), merchantOrderJson],
+      [() => api.getRiderProfile(), riderJson],
+      [() => api.updateRiderAvailability(true), riderJson],
+      [() => api.getRiderDeliveries({ status: "DELIVERED" }), []],
+      [() => api.markDeliveryPickedUp(5), deliveryJson],
+      [() => api.markDeliveryDelivered(5), deliveryJson],
     ];
     const fetchMock = stubFetch();
     for (const [call, body] of calls) {
@@ -147,6 +175,83 @@ describe("API endpoints", () => {
       "/menu.png",
       "/carts",
     ].forEach((path) => expect(path).not.toMatch(proxied));
+  });
+});
+
+describe("role endpoints", () => {
+  it("send the shared contract's methods, paths and bodies", async () => {
+    const fetchMock = stubFetch(() => Promise.resolve(json(merchantOrderJson)));
+
+    await api.rejectMerchantOrder(7, "Out of buns");
+    fetchMock.mockImplementation(() => Promise.resolve(json(riderJson)));
+    await api.updateRiderAvailability(false);
+    fetchMock.mockImplementation(() => Promise.resolve(json([])));
+    await api.getMerchantOrders();
+    await api.getRiderDeliveries();
+    fetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 204 })));
+    await api.clearCart();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/merchant/orders/7/reject",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ reason: "Out of buns" }) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/rider/me/availability",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify({ on_duty: false }) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/merchant/orders?limit=50", expect.anything());
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/rider/deliveries", expect.anything());
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      "/cart",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("decode /me with roles, merchant and rider, and without them", async () => {
+    stubFetch(() =>
+      Promise.resolve(
+        json({
+          id: 21,
+          email: "merchant@laifood.com",
+          roles: ["ROLE_MERCHANT"],
+          merchant: {
+            merchant_id: 3,
+            restaurant_id: 1,
+            restaurant_name: "Burger Barn",
+            active: true,
+          },
+        }),
+      ),
+    );
+    await expect(api.getCurrentUser()).resolves.toEqual({
+      id: 21,
+      email: "merchant@laifood.com",
+      first_name: null,
+      last_name: null,
+      roles: ["ROLE_MERCHANT"],
+      merchant: { merchant_id: 3, restaurant_id: 1, restaurant_name: "Burger Barn", active: true },
+      rider: null,
+    });
+
+    stubFetch(() => Promise.resolve(json({ id: 1, email: "demo@laifood.com" })));
+    await expect(api.getCurrentUser()).resolves.toMatchObject({ roles: [], merchant: null });
+
+    stubFetch(() => Promise.resolve(json({ id: 1, email: "demo@laifood.com", roles: "ADMIN" })));
+    await expect(api.getCurrentUser()).rejects.toThrow(
+      'Unexpected response from the server: me.roles should be an array, got the string "ADMIN".',
+    );
+  });
+
+  it("reject statuses outside the contract", async () => {
+    stubFetch(() => Promise.resolve(json([{ ...deliveryJson, status: "LOST" }])));
+
+    await expect(api.getRiderDeliveries()).rejects.toMatchObject({
+      name: "DecodeError",
+      path: "deliveries[0].status",
+    });
   });
 });
 

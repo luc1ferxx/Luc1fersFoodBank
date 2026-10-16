@@ -4,7 +4,6 @@ import { CartConflictDialog } from "../components/CartConflictDialog";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { OperationsPanel, type OperationsTab } from "../components/OperationsPanel";
 import { RestaurantBrowser } from "../components/RestaurantBrowser";
-import { useAdminTools } from "../hooks/useAdminTools";
 import { useCart } from "../hooks/useCart";
 import { useCheckout } from "../hooks/useCheckout";
 import type { MenuBrowser } from "../hooks/useMenu";
@@ -58,7 +57,6 @@ export function OrderingPage({
     onCheckedOut: refreshOrderViews,
     requireSession,
   });
-  const admin = useAdminTools({ onOrderChanged: refreshOrderViews });
 
   return (
     <main className="mvp-grid">
@@ -83,7 +81,6 @@ export function OrderingPage({
           checkout={checkout}
           orders={orders}
           notifications={notifications}
-          admin={admin}
         />
       </aside>
     </main>

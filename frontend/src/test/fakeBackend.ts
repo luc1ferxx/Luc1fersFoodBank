@@ -1,58 +1,103 @@
 import { type Mock, vi } from "vitest";
 import { fieldsOf } from "../api/decode";
-import type {
-  Cart,
-  CartItem,
-  CurrentUser,
-  MenuItem,
-  ActorType,
-  Order,
-  OrderNotification,
-  OrderStatus,
-  OrderStatusChange,
-  Restaurant,
+import {
+  type ActorType,
+  type Cart,
+  type CartItem,
+  type CurrentUser,
+  type MenuItem,
+  type MerchantOrder,
+  type Order,
+  type OrderNotification,
+  type OrderStatusChange,
+  ROLES,
+  type Restaurant,
+  type RiderDelivery,
+  type RiderProfile,
+  parseOrderStatus,
 } from "../api/dto";
-import { parseOrderStatus } from "../api/dto";
+import { type FakeContext, merchantRoutes, riderRoutes } from "./fakeFulfilment";
+import {
+  type FakeHandler,
+  type FakeRequest,
+  type FakeRoute,
+  apiError,
+  idParam,
+  json,
+  noContent,
+  requestJson,
+} from "./fakeHttp";
 
-export const json = (body: unknown, init: ResponseInit = {}): Response =>
-  new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
+export {
+  apiError,
+  deferred,
+  idempotencyKeys,
+  json,
+  requestJson,
+  type FakeHandler,
+  type FakeRequest,
+} from "./fakeHttp";
+export { deliveryFixture, merchantOrderFixture } from "./fakeFulfilment";
 
-export const apiError = (
-  status: number,
-  message: string,
-  { traceId, code = "ERROR" }: { traceId?: string; code?: string } = {},
-): Response =>
-  json(
-    { code, message, status, trace_id: traceId },
-    { status, headers: { "Content-Type": "application/json" } },
-  );
-
-export interface Deferred<T> {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-  reject: (reason: unknown) => void;
-}
-
-export const deferred = <T = Response>(): Deferred<T> => {
-  let resolve: (value: T) => void = () => undefined;
-  let reject: (reason: unknown) => void = () => undefined;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-};
-
+/** A customer who is also an admin, like the demo seed's demo@laifood.com. */
 export const demoUser: CurrentUser = {
   id: 1,
   email: "demo@laifood.com",
   first_name: "Demo",
   last_name: "User",
+  roles: [ROLES.user, ROLES.admin],
+  merchant: null,
+  rider: null,
 };
+
+/** A customer without other roles. */
+export const customerUser: CurrentUser = {
+  id: 2,
+  email: "casey@example.com",
+  first_name: "Casey",
+  last_name: "Customer",
+  roles: [ROLES.user],
+  merchant: null,
+  rider: null,
+};
+
+/** A merchant login bound to Burger Barn (no ROLE_USER, like the demo merchants). */
+export const merchantUser: CurrentUser = {
+  id: 21,
+  email: "merchant.burgerbarn@laifood.com",
+  first_name: "Burger Barn",
+  last_name: "Merchant",
+  roles: [ROLES.merchant],
+  merchant: { merchant_id: 3, restaurant_id: 1, restaurant_name: "Burger Barn", active: true },
+  rider: null,
+};
+
+export const riderProfileFixture: RiderProfile = {
+  rider_id: 7,
+  name: "Alice Rider",
+  phone: "(408) 555-0101",
+  active: true,
+  on_duty: false,
+  active_deliveries: 0,
+};
+
+/** A rider login. */
+export const riderUser: CurrentUser = {
+  id: 31,
+  email: "rider.alice@laifood.com",
+  first_name: "Alice",
+  last_name: "Rider",
+  roles: [ROLES.rider],
+  merchant: null,
+  rider: { rider_id: 7, name: "Alice Rider", on_duty: false, active: true },
+};
+
+/** Logins the fake's POST /login accepts. */
+const PASSWORDS: ReadonlyMap<string, [CurrentUser, string]> = new Map([
+  [demoUser.email, [demoUser, "demo123"]],
+  [merchantUser.email, [merchantUser, "merchant123"]],
+  [riderUser.email, [riderUser, "rider123"]],
+]);
 
 export const restaurantsFixture: Restaurant[] = [
   {
@@ -99,56 +144,12 @@ const recomputeTotal = (cart: Cart) => {
   cart.total_price = cart.order_items.reduce((sum, item) => sum + item.price * item.quantity, 0);
 };
 
-/** One request the fake backend received. */
-export interface FakeRequest {
-  url: string;
-  path: string;
-  query: URLSearchParams;
-  method: string;
-  body: string | null;
-  headers: Headers;
-  signal: AbortSignal | null | undefined;
-}
-
-export type FakeHandler = (
-  request: FakeRequest,
-  match: RegExpExecArray,
-) => Response | Promise<Response>;
-
-/** The JSON body of a recorded request, as `unknown` for assertions and decoders. */
-export const requestJson = (request: FakeRequest | undefined): unknown => {
-  const parsed: unknown = JSON.parse(request?.body ?? "null");
-  return parsed;
-};
-
-/** The Idempotency-Key header of each request. */
-export const idempotencyKeys = (requests: FakeRequest[]): (string | null)[] =>
-  requests.map((request) => request.headers.get("Idempotency-Key"));
-
-const idParam = (match: RegExpExecArray) => Number(match[1]);
-
 const requestUrl = (input: RequestInfo | URL): string => {
   if (typeof input === "string") {
     return input;
   }
   return input instanceof URL ? `${input.pathname}${input.search}` : input.url;
 };
-
-interface FakeBackendOptions {
-  user?: CurrentUser | null;
-  cartItems?: CartItem[];
-}
-
-export interface FakeState {
-  user: CurrentUser | null;
-  cart: Cart;
-  orders: Order[];
-  /** Status changes per order id, oldest first. */
-  orderHistory: Map<number, OrderStatusChange[]>;
-  notifications: OrderNotification[];
-  nextOrderItemId: number;
-  nextOrderId: number;
-}
 
 /** A placed order with defaults for the fields a test does not care about. */
 export const orderFixture = (overrides: Partial<Order> & Pick<Order, "id">): Order => ({
@@ -161,11 +162,34 @@ export const orderFixture = (overrides: Partial<Order> & Pick<Order, "id">): Ord
   ...overrides,
 });
 
+export interface FakeBackendOptions {
+  user?: CurrentUser | null;
+  cartItems?: CartItem[];
+}
+
+export interface FakeState {
+  user: CurrentUser | null;
+  cart: Cart;
+  /** The signed-in customer's orders, newest first. */
+  orders: Order[];
+  /** Status changes per order id, oldest first. */
+  orderHistory: Map<number, OrderStatusChange[]>;
+  notifications: OrderNotification[];
+  /** The signed-in merchant's restaurant inbox. */
+  merchantOrders: MerchantOrder[];
+  /** The signed-in rider; null makes /rider/** answer 403. */
+  riderProfile: RiderProfile | null;
+  /** The signed-in rider's deliveries. */
+  deliveries: RiderDelivery[];
+  nextOrderItemId: number;
+  nextOrderId: number;
+}
+
 /**
  * In-memory stand-in for the Spring Boot API, installed as global fetch. Protected
- * endpoints answer 401 when no user is signed in, like the real security config.
- * `on(method, path, handler)` overrides one route (once by default) so a test can
- * delay or fail a specific request.
+ * endpoints answer 401 when no user is signed in and 403 without the route's role,
+ * like the real security config. `on(method, path, handler)` overrides one route
+ * (once by default) so a test can delay or fail a specific request.
  */
 export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOptions = {}) {
   const state: FakeState = {
@@ -174,6 +198,9 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
     orders: [],
     orderHistory: new Map(),
     notifications: [],
+    merchantOrders: [],
+    riderProfile: user?.roles.includes(ROLES.rider) ? { ...riderProfileFixture } : null,
+    deliveries: [],
     nextOrderItemId: 500,
     nextOrderId: 100,
   };
@@ -182,40 +209,50 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
   const overrides: { method: string; pattern: RegExp; handler: FakeHandler; once: boolean }[] = [];
   const calls: FakeRequest[] = [];
 
-  const unauthorized = () => apiError(401, "Authentication required");
-  const recordStatusChange = (
-    orderId: number,
-    fromStatus: OrderStatus | null,
-    toStatus: OrderStatus,
-    actorType: ActorType,
-    reason: string | null = null,
-  ) => {
-    const history = state.orderHistory.get(orderId) ?? [];
-    history.push({
-      from_status: fromStatus,
-      to_status: toStatus,
-      actor_type: actorType,
-      actor_id: actorType === "SYSTEM" ? null : (state.user?.id ?? null),
-      reason,
-      occurred_at: `2026-10-16T12:0${history.length}:00Z`,
-    });
-    state.orderHistory.set(orderId, history);
-  };
+  const unauthorized = () => apiError(401, "Authentication required", { code: "UNAUTHORIZED" });
   const protectedRoute =
     (handler: FakeHandler): FakeHandler =>
     (request, match) =>
       state.user ? handler(request, match) : unauthorized();
+  const hasRole = (role: string) => state.user?.roles.includes(role) === true;
 
-  const routes: [string, RegExp, FakeHandler][] = [
+  const context: FakeContext = {
+    state,
+    requireRole: (role, handler) =>
+      protectedRoute((request, match) =>
+        hasRole(role)
+          ? handler(request, match)
+          : apiError(403, "Access denied", { code: "FORBIDDEN" }),
+      ),
+    recordStatusChange: (orderId, fromStatus, toStatus, actorType: ActorType, reason = null) => {
+      const history = state.orderHistory.get(orderId) ?? [];
+      history.push({
+        from_status: fromStatus,
+        to_status: toStatus,
+        actor_type: actorType,
+        actor_id: actorType === "SYSTEM" ? null : (state.user?.id ?? null),
+        reason,
+        occurred_at: `2026-10-16T12:0${history.length}:00Z`,
+      });
+      state.orderHistory.set(orderId, history);
+    },
+  };
+  const { recordStatusChange } = context;
+
+  const sessionRoutes: FakeRoute[] = [
     ["GET", /^\/me$/, () => (state.user ? json(state.user) : unauthorized())],
     [
       "POST",
       /^\/login$/,
       ({ body }) => {
         const form = new URLSearchParams(body ?? "");
-        if (form.get("username") === demoUser.email && form.get("password") === "demo123") {
-          state.user = demoUser;
-          return new Response(null, { status: 200 });
+        const login = PASSWORDS.get(form.get("username") ?? "");
+        if (login && login[1] === form.get("password")) {
+          state.user = login[0];
+          if (login[0].roles.includes(ROLES.rider) && !state.riderProfile) {
+            state.riderProfile = { ...riderProfileFixture };
+          }
+          return noContent(200);
         }
         return apiError(401, "Invalid email or password");
       },
@@ -225,10 +262,13 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
       /^\/logout$/,
       () => {
         state.user = null;
-        return new Response(null, { status: 200 });
+        return noContent(200);
       },
     ],
-    ["POST", /^\/signup$/, () => new Response(null, { status: 201 })],
+    ["POST", /^\/signup$/, () => noContent(201)],
+  ];
+
+  const customerRoutes: FakeRoute[] = [
     ["GET", /^\/restaurants\/menu$/, () => json(restaurantsFixture)],
     [
       "GET",
@@ -266,7 +306,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
           });
         }
         recomputeTotal(state.cart);
-        return new Response(null, { status: 200 });
+        return noContent(200);
       }),
     ],
     [
@@ -275,7 +315,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
       protectedRoute(() => {
         state.cart.order_items = [];
         recomputeTotal(state.cart);
-        return new Response(null, { status: 204 });
+        return noContent();
       }),
     ],
     [
@@ -289,7 +329,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
         line.quantity = fieldsOf(requestJson(request), "body").number("quantity");
         state.cart.order_items = state.cart.order_items.filter((item) => item.quantity > 0);
         recomputeTotal(state.cart);
-        return new Response(null, { status: 200 });
+        return noContent(200);
       }),
     ],
     [
@@ -300,7 +340,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
           (item) => item.order_item_id !== idParam(match),
         );
         recomputeTotal(state.cart);
-        return new Response(null, { status: 204 });
+        return noContent();
       }),
     ],
     [
@@ -359,7 +399,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
     [
       "PATCH",
       /^\/orders\/(\d+)\/status$/,
-      protectedRoute((request, match) => {
+      context.requireRole(ROLES.admin, (request, match) => {
         const order = state.orders.find((item) => item.id === idParam(match));
         const status = parseOrderStatus(fieldsOf(requestJson(request), "body").string("status"));
         if (!order || !status) {
@@ -377,13 +417,29 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
       /^\/orders\/(\d+)\/history$/,
       protectedRoute((_request, match) => {
         const orderId = idParam(match);
-        if (!state.orders.some((order) => order.id === orderId)) {
+        const owned = state.orders.some((order) => order.id === orderId);
+        const history = state.orderHistory.get(orderId);
+        if (!owned && !(hasRole(ROLES.admin) && history)) {
           return apiError(404, "Order not found");
         }
-        return json(state.orderHistory.get(orderId) ?? []);
+        return json(history ?? []);
       }),
     ],
     ["GET", /^\/notifications$/, protectedRoute(() => json(state.notifications))],
+    [
+      "POST",
+      /^\/dead-letters\/(\d+)\/replay$/,
+      context.requireRole(ROLES.admin, (_request, match) =>
+        json({ id: idParam(match), replay_status: "REPLAYED" }),
+      ),
+    ],
+  ];
+
+  const routes: FakeRoute[] = [
+    ...sessionRoutes,
+    ...customerRoutes,
+    ...merchantRoutes(context),
+    ...riderRoutes(context),
   ];
 
   const fetchMock: Mock<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>> =

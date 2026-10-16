@@ -1,4 +1,4 @@
-import { type Decoder, fieldsOf } from "./decode";
+import { type Decoder, decodeString, fieldsOf } from "./decode";
 
 /*
  * Request and response shapes of the backend API (snake_case, from the global Jackson
@@ -16,6 +16,9 @@ export const ORDER_STATUSES = [
   "CANCELLED",
 ] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
+
+export const DELIVERY_STATUSES = ["ASSIGNED", "PICKED_UP", "DELIVERED", "CANCELLED"] as const;
+export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
 
 /** Machine-readable `code` values of backend error bodies that the UI reacts to. */
 export const ERROR_CODES = {
@@ -41,12 +44,62 @@ export interface SignupRequest {
   last_name: string;
 }
 
-/** GET /me (CurrentUserDto). */
+/** Spring Security authorities that pick the UI's workspaces. */
+export const ROLES = {
+  user: "ROLE_USER",
+  admin: "ROLE_ADMIN",
+  merchant: "ROLE_MERCHANT",
+  rider: "ROLE_RIDER",
+} as const;
+
+/** The restaurant a merchant login is bound to (GET /me `merchant`). */
+export interface MerchantBinding {
+  merchant_id: number;
+  restaurant_id: number;
+  restaurant_name: string | null;
+  active: boolean;
+}
+
+export const decodeMerchantBinding: Decoder<MerchantBinding> = (value, path) => {
+  const f = fieldsOf(value, path);
+  return {
+    merchant_id: f.number("merchant_id"),
+    restaurant_id: f.number("restaurant_id"),
+    restaurant_name: f.optionalString("restaurant_name"),
+    active: f.boolean("active"),
+  };
+};
+
+/** The rider record of a rider login (GET /me `rider`). */
+export interface RiderBinding {
+  rider_id: number;
+  name: string;
+  on_duty: boolean;
+  active: boolean;
+}
+
+export const decodeRiderBinding: Decoder<RiderBinding> = (value, path) => {
+  const f = fieldsOf(value, path);
+  return {
+    rider_id: f.number("rider_id"),
+    name: f.string("name"),
+    on_duty: f.boolean("on_duty"),
+    active: f.boolean("active"),
+  };
+};
+
+/**
+ * GET /me (CurrentUserDto). `roles`, `merchant`, and `rider` decode as [] and null
+ * when a backend without them answers, which leaves the user on the ordering page.
+ */
 export interface CurrentUser {
   id: number;
   email: string;
   first_name: string | null;
   last_name: string | null;
+  roles: string[];
+  merchant: MerchantBinding | null;
+  rider: RiderBinding | null;
 }
 
 export const decodeCurrentUser: Decoder<CurrentUser> = (value, path) => {
@@ -56,6 +109,9 @@ export const decodeCurrentUser: Decoder<CurrentUser> = (value, path) => {
     email: f.string("email"),
     first_name: f.optionalString("first_name"),
     last_name: f.optionalString("last_name"),
+    roles: f.arrayOrEmpty("roles", decodeString),
+    merchant: f.optionalObject("merchant", decodeMerchantBinding),
+    rider: f.optionalObject("rider", decodeRiderBinding),
   };
 };
 
@@ -250,6 +306,104 @@ export const decodeNotification: Decoder<OrderNotification> = (value, path) => {
     title: f.string("title"),
     message: f.string("message"),
     created_at: f.optionalString("created_at"),
+  };
+};
+
+// ---- Merchant (ROLE_MERCHANT) ----
+
+/** An item of a merchant order (MerchantOrderDto.Item). */
+export interface MerchantOrderItem {
+  menu_item_id: number;
+  menu_item_name: string;
+  price: number;
+  quantity: number;
+}
+
+export const decodeMerchantOrderItem: Decoder<MerchantOrderItem> = (value, path) => {
+  const f = fieldsOf(value, path);
+  return {
+    menu_item_id: f.number("menu_item_id"),
+    menu_item_name: f.string("menu_item_name"),
+    price: f.number("price"),
+    quantity: f.number("quantity"),
+  };
+};
+
+/** GET /merchant/orders and the accept/reject/preparing responses (MerchantOrderDto). */
+export interface MerchantOrder {
+  order_id: number;
+  restaurant_id: number;
+  customer_id: number;
+  status: OrderStatus;
+  total_price: number;
+  items: MerchantOrderItem[];
+  cancel_reason: string | null;
+  paid_at: string | null;
+  updated_at: string | null;
+}
+
+export const decodeMerchantOrder: Decoder<MerchantOrder> = (value, path) => {
+  const f = fieldsOf(value, path);
+  return {
+    order_id: f.number("order_id"),
+    restaurant_id: f.number("restaurant_id"),
+    customer_id: f.number("customer_id"),
+    status: f.oneOf("status", ORDER_STATUSES),
+    total_price: f.number("total_price"),
+    items: f.arrayOrEmpty("items", decodeMerchantOrderItem),
+    cancel_reason: f.optionalString("cancel_reason"),
+    paid_at: f.optionalString("paid_at"),
+    updated_at: f.optionalString("updated_at"),
+  };
+};
+
+// ---- Rider (ROLE_RIDER) ----
+
+/** GET /rider/me and PUT /rider/me/availability. */
+export interface RiderProfile {
+  rider_id: number;
+  name: string;
+  phone: string | null;
+  active: boolean;
+  on_duty: boolean;
+  active_deliveries: number;
+}
+
+export const decodeRiderProfile: Decoder<RiderProfile> = (value, path) => {
+  const f = fieldsOf(value, path);
+  return {
+    rider_id: f.number("rider_id"),
+    name: f.string("name"),
+    phone: f.optionalString("phone"),
+    active: f.boolean("active"),
+    on_duty: f.boolean("on_duty"),
+    active_deliveries: f.optionalNumber("active_deliveries") ?? 0,
+  };
+};
+
+/** GET /rider/deliveries and the picked-up/delivered responses: the rider's own deliveries. */
+export interface RiderDelivery {
+  delivery_id: number;
+  order_id: number;
+  restaurant_id: number;
+  restaurant_name: string | null;
+  status: DeliveryStatus;
+  assigned_at: string | null;
+  picked_up_at: string | null;
+  delivered_at: string | null;
+}
+
+export const decodeRiderDelivery: Decoder<RiderDelivery> = (value, path) => {
+  const f = fieldsOf(value, path);
+  return {
+    delivery_id: f.number("delivery_id"),
+    order_id: f.number("order_id"),
+    restaurant_id: f.number("restaurant_id"),
+    restaurant_name: f.optionalString("restaurant_name"),
+    status: f.oneOf("status", DELIVERY_STATUSES),
+    assigned_at: f.optionalString("assigned_at"),
+    picked_up_at: f.optionalString("picked_up_at"),
+    delivered_at: f.optionalString("delivered_at"),
   };
 };
 

@@ -27,9 +27,8 @@ export function AdminPanel({ admin }: { admin: AdminTools }) {
         <h2>Use IDs from backend logs or database records</h2>
       </div>
       <p className="quiet-copy">
-        The session endpoint does not expose roles, and the backend does not expose all-order or
-        dead-letter list endpoints. These forms intentionally require manual IDs and let the backend
-        enforce ROLE_ADMIN.
+        The backend has no all-order or dead-letter list endpoints, so these forms take IDs from
+        logs or the database. The backend enforces ROLE_ADMIN on both.
       </p>
       <Alert tone="danger">{error}</Alert>
 

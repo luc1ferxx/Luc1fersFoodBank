@@ -5,22 +5,29 @@ import {
   type Credentials,
   type CurrentUser,
   type DeadLetterReplay,
+  type DeliveryStatus,
   type MenuItem,
+  type MerchantOrder,
   type Order,
   type OrderNotification,
   type OrderStatus,
   type OrderStatusChange,
   type PaymentDetails,
   type Restaurant,
+  type RiderDelivery,
+  type RiderProfile,
   type SignupRequest,
   decodeCart,
   decodeCurrentUser,
   decodeDeadLetterReplay,
   decodeMenuItem,
+  decodeMerchantOrder,
   decodeNotification,
   decodeOrder,
   decodeOrderStatusChange,
   decodeRestaurant,
+  decodeRiderDelivery,
+  decodeRiderProfile,
 } from "./dto";
 
 export interface RequestControl {
@@ -200,6 +207,118 @@ export const getNotifications = async ({ limit = 50, signal }: ListControl = {})
       fallbackMessage: "Fail to load notifications",
     }),
     "notifications",
+  );
+
+// ---- Merchant (ROLE_MERCHANT, scoped to the login's restaurant) ----
+//
+// The merchant commands take no Idempotency-Key: they are idempotent by state, so
+// repeating one whose transition already happened returns the order unchanged, and a
+// command the order's state no longer allows is 409 ORDER_STATUS_CONFLICT.
+
+const merchantOrderPath = (orderId: number, command: string) =>
+  `/merchant/orders/${orderId}/${command}`;
+
+export const getMerchantOrders = async ({
+  status,
+  limit = 50,
+  signal,
+}: ListControl & { status?: OrderStatus | undefined } = {}): Promise<MerchantOrder[]> => {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (status) {
+    query.set("status", status);
+  }
+  return decodeArray(decodeMerchantOrder)(
+    await request(`/merchant/orders?${query.toString()}`, {
+      signal,
+      fallbackMessage: "Fail to load the restaurant's orders",
+    }),
+    "merchant_orders",
+  );
+};
+
+export const acceptMerchantOrder = async (orderId: number): Promise<MerchantOrder> =>
+  decodeMerchantOrder(
+    await request(merchantOrderPath(orderId, "accept"), {
+      method: "POST",
+      fallbackMessage: "Fail to accept the order",
+    }),
+    "merchant_order",
+  );
+
+export const rejectMerchantOrder = async (
+  orderId: number,
+  reason: string,
+): Promise<MerchantOrder> =>
+  decodeMerchantOrder(
+    await request(merchantOrderPath(orderId, "reject"), {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ reason }),
+      fallbackMessage: "Fail to reject the order",
+    }),
+    "merchant_order",
+  );
+
+export const markMerchantOrderPreparing = async (orderId: number): Promise<MerchantOrder> =>
+  decodeMerchantOrder(
+    await request(merchantOrderPath(orderId, "preparing"), {
+      method: "POST",
+      fallbackMessage: "Fail to mark the order as preparing",
+    }),
+    "merchant_order",
+  );
+
+// ---- Rider (ROLE_RIDER, only the rider's own data) ----
+//
+// Like the merchant commands, picked-up and delivered are idempotent by state (a
+// retry returns the delivery unchanged; a wrong state is 409) and take no key.
+
+export const getRiderProfile = async ({ signal }: RequestControl = {}): Promise<RiderProfile> =>
+  decodeRiderProfile(
+    await request("/rider/me", { signal, fallbackMessage: "Fail to load your rider profile" }),
+    "rider",
+  );
+
+export const updateRiderAvailability = async (onDuty: boolean): Promise<RiderProfile> =>
+  decodeRiderProfile(
+    await request("/rider/me/availability", {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify({ on_duty: onDuty }),
+      fallbackMessage: "Fail to change your availability",
+    }),
+    "rider",
+  );
+
+/** Without a status the backend returns the ASSIGNED and PICKED_UP deliveries. */
+export const getRiderDeliveries = async ({
+  status,
+  signal,
+}: RequestControl & { status?: DeliveryStatus | undefined } = {}): Promise<RiderDelivery[]> =>
+  decodeArray(decodeRiderDelivery)(
+    await request(
+      status ? `/rider/deliveries?status=${encodeURIComponent(status)}` : "/rider/deliveries",
+      { signal, fallbackMessage: "Fail to load your deliveries" },
+    ),
+    "deliveries",
+  );
+
+export const markDeliveryPickedUp = async (deliveryId: number): Promise<RiderDelivery> =>
+  decodeRiderDelivery(
+    await request(`/rider/deliveries/${deliveryId}/picked-up`, {
+      method: "POST",
+      fallbackMessage: "Fail to mark the delivery as picked up",
+    }),
+    "delivery",
+  );
+
+export const markDeliveryDelivered = async (deliveryId: number): Promise<RiderDelivery> =>
+  decodeRiderDelivery(
+    await request(`/rider/deliveries/${deliveryId}/delivered`, {
+      method: "POST",
+      fallbackMessage: "Fail to mark the delivery as delivered",
+    }),
+    "delivery",
   );
 
 // ---- Admin ----
