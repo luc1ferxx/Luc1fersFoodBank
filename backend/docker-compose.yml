@@ -13,7 +13,7 @@ services:
 
 
   redis:
-    image: redis:7.4-alpine
+    image: redis:8.10-alpine
     # Every key the app writes has a TTL (sessions 30m, cache entries 10m, rate-limit buckets 2m), so
     # volatile-lru evicts the least recently used of them when memory is full; the default noeviction
     # would instead reject session and rate-limit writes once maxmemory is reached.
