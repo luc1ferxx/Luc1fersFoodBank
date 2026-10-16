@@ -184,6 +184,43 @@ class AuditLogIntegrationTests {
 
 
     @Test
+    void simulatedRiderActions_shouldBeAuditedOnceEachWithTheAdmin() throws Exception {
+        long deliveryId = insertAssignedDelivery(paidOrder());
+        MockHttpSession admin = login(ADMIN_EMAIL, "demo123");
+
+        for (int attempt = 0; attempt < 2; attempt++) {
+            mockMvc.perform(post("/admin/deliveries/{id}/picked-up", deliveryId).session(admin))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("PICKED_UP"));
+        }
+        mockMvc.perform(post("/admin/deliveries/{id}/delivered", deliveryId).session(admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DELIVERED"));
+        // A delivered delivery cannot be picked up again: refused, rolled back, not audited.
+        mockMvc.perform(post("/admin/deliveries/{id}/picked-up", deliveryId).session(admin))
+                .andExpect(status().isConflict());
+        mockMvc.perform(post("/admin/deliveries/{id}/delivered", 987_654_321L).session(admin))
+                .andExpect(status().isNotFound());
+
+        List<Map<String, Object>> entries = entriesFor("DELIVERY", deliveryId);
+        Assertions.assertEquals(
+                List.of("delivery.picked_up", "delivery.delivered"),
+                entries.stream().map(entry -> entry.get("action")).toList(),
+                "the repeated pick-up is not a second action"
+        );
+        for (Map<String, Object> entry : entries) {
+            Assertions.assertEquals(adminId(), ((Number) entry.get("actor_customer_id")).longValue());
+            Assertions.assertEquals("ROLE_ADMIN", entry.get("actor_role"));
+        }
+        JsonNode delivered = objectMapper.readTree((String) entries.get(1).get("details"));
+        Assertions.assertEquals("PICKED_UP", delivered.get("from_status").asText());
+        Assertions.assertEquals("DELIVERED", delivered.get("to_status").asText());
+        Assertions.assertTrue(delivered.get("rider_id").asLong() > 0);
+        Assertions.assertTrue(entriesFor("DELIVERY", 987_654_321L).isEmpty());
+    }
+
+
+    @Test
     void refusedAdminActions_shouldNotBeAudited() throws Exception {
         MockHttpSession admin = login(ADMIN_EMAIL, "demo123");
         OrderDto order = paidOrder();
@@ -324,6 +361,24 @@ class AuditLogIntegrationTests {
                 VALUES ('ORDER', 100, ?, 'order-events', '100', 'order.created', '{}', ?, ?, ?, ?, ?)
                 """, eventId, status, attempts, lastError, now, now);
         return jdbcTemplate.queryForObject("SELECT id FROM outbox_events WHERE event_id = ?", Long.class, eventId);
+    }
+
+
+    /**
+     * The delivery the dispatch consumer would have assigned for the order (Kafka is off here), with its rider's load.
+     */
+    private long insertAssignedDelivery(OrderDto order) {
+        String riderName = "Audit Rider " + System.nanoTime();
+        jdbcTemplate.update("INSERT INTO riders (name, active_deliveries) VALUES (?, 1)", riderName);
+        long riderId = jdbcTemplate.queryForObject("SELECT id FROM riders WHERE name = ?", Long.class, riderName);
+        LocalDateTime now = LocalDateTime.now();
+        jdbcTemplate.update("""
+                INSERT INTO deliveries (order_id, customer_id, restaurant_id, rider_id, status, assigned_at, updated_at)
+                SELECT id, customer_id, restaurant_id, ?, 'ASSIGNED', ?, ?
+                FROM orders
+                WHERE id = ?
+                """, riderId, now, now, order.id());
+        return jdbcTemplate.queryForObject("SELECT id FROM deliveries WHERE order_id = ?", Long.class, order.id());
     }
 
 

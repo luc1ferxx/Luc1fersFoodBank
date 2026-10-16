@@ -11,12 +11,15 @@ public final class AuditActions {
     public static final String DEAD_LETTER_REPLAY = "dead_letter.replay";
     public static final String MENU_ITEM_UPDATE = "menu_item.update";
     public static final String RESTAURANT_UPDATE = "restaurant.update";
+    public static final String DELIVERY_PICKED_UP = "delivery.picked_up";
+    public static final String DELIVERY_DELIVERED = "delivery.delivered";
 
     public static final String TARGET_ORDER = "ORDER";
     public static final String TARGET_OUTBOX_EVENT = "OUTBOX_EVENT";
     public static final String TARGET_DEAD_LETTER_EVENT = "DEAD_LETTER_EVENT";
     public static final String TARGET_MENU_ITEM = "MENU_ITEM";
     public static final String TARGET_RESTAURANT = "RESTAURANT";
+    public static final String TARGET_DELIVERY = "DELIVERY";
 
 
     private AuditActions() {
