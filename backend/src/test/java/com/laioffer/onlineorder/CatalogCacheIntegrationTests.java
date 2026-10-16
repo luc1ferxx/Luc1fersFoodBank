@@ -54,7 +54,9 @@ import java.util.function.BooleanSupplier;
         properties = {
                 "spring.autoconfigure.exclude=org.springframework.boot.autoconfigure.session.SessionAutoConfiguration",
                 "app.cache.delayed-double-delete=300ms",
-                "app.catalog.http-max-age=30s"
+                "app.catalog.http-max-age=30s",
+                // Every unknown id is rechecked, so the 404 test cannot use up the interval of the next test.
+                "app.catalog.unknown-restaurant-recheck-interval=0s"
         }
 )
 @Testcontainers(disabledWithoutDocker = true)
@@ -180,6 +182,29 @@ class CatalogCacheIntegrationTests {
         Assertions.assertEquals("Restaurant not found", response.getBody().get("message"));
         Assertions.assertFalse(menuCache().isCachedLocally(987654321L));
         Assertions.assertFalse(redis.hasKey("onlineorder:cache:v1:menu::987654321"));
+    }
+
+
+    @Test
+    void restaurantInsertedBehindTheCache_shouldBeServedRightAwayAndRefreshTheCachedList() {
+        getJsonList("/restaurants/menu");
+        Assertions.assertTrue(redis.hasKey("onlineorder:cache:v1:restaurants::all"));
+        String name = "Seeded Later " + System.nanoTime();
+        jdbcTemplate.update("INSERT INTO restaurants (name, address, image_url, phone) VALUES (?, ?, ?, ?)", name, "2 Seed St", "", "");
+        long newRestaurantId = jdbcTemplate.queryForObject("SELECT id FROM restaurants WHERE name = ?", Long.class, name);
+        jdbcTemplate.update(
+                "INSERT INTO menu_items (restaurant_id, name, description, price, image_url) VALUES (?, ?, ?, ?, ?)",
+                newRestaurantId, "Soup", "Hot", new BigDecimal("4.00"), ""
+        );
+
+        ResponseEntity<List<Map<String, Object>>> menu = getJsonList("/restaurant/" + newRestaurantId + "/menu");
+
+        Assertions.assertEquals(HttpStatus.OK, menu.getStatusCode(), "not a 404 until the cached list expires");
+        Assertions.assertEquals("Soup", menu.getBody().get(0).get("name"));
+        Assertions.assertTrue(getJsonList("/restaurants/menu").getBody().stream()
+                .anyMatch(entry -> ((Number) entry.get("id")).longValue() == newRestaurantId), "the stale list was evicted");
+        // Let the delayed second delete of restaurants::all run now rather than during another test.
+        await(() -> !redis.hasKey("onlineorder:cache:v1:restaurants::all"), "the delayed second delete ran");
     }
 
 

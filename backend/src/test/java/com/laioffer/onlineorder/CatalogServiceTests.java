@@ -16,6 +16,7 @@ import org.mockito.Mockito;
 
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.List;
 
 
@@ -30,7 +31,7 @@ class CatalogServiceTests {
     void setUp() {
         restaurantService = Mockito.mock(RestaurantService.class);
         menuItemService = Mockito.mock(MenuItemService.class);
-        catalogService = new CatalogService(restaurantService, menuItemService);
+        catalogService = new CatalogService(restaurantService, menuItemService, Duration.ofHours(1));
         Mockito.when(restaurantService.getRestaurantList()).thenReturn(List.of(
                 new CatalogRestaurantDto(1L, "Burger King", "773 N Mathilda Ave", "(408) 736-0101", "bk.png"),
                 new CatalogRestaurantDto(2L, "Empty Kitchen", null, null, null)
@@ -47,6 +48,46 @@ class CatalogServiceTests {
         Assertions.assertThrows(ResourceNotFoundException.class, () -> catalogService.getMenu(999L));
 
         Mockito.verify(menuItemService, Mockito.never()).getMenu(Mockito.anyLong());
+        Mockito.verify(restaurantService, Mockito.never()).evictRestaurantList();
+    }
+
+
+    @Test
+    void getMenu_forUnknownIds_shouldCheckTheDatabaseAtMostOncePerInterval() {
+        for (long unknownId = 900; unknownId < 950; unknownId++) {
+            long id = unknownId;
+            Assertions.assertThrows(ResourceNotFoundException.class, () -> catalogService.getMenu(id));
+        }
+
+        Mockito.verify(restaurantService, Mockito.times(1)).restaurantExists(Mockito.anyLong());
+        Mockito.verify(restaurantService).restaurantExists(900L);
+    }
+
+
+    @Test
+    void getMenu_forARestaurantMissingFromTheCachedList_shouldEvictTheListAndServeTheMenu() {
+        Mockito.when(restaurantService.restaurantExists(3L)).thenReturn(true);
+        Mockito.when(menuItemService.getMenu(3L)).thenReturn(List.of(
+                new CatalogMenuItemDto(30L, 3L, "Taco", null, new BigDecimal("3.00"), null)
+        ));
+
+        List<CatalogMenuItemDto> menu = catalogService.getMenu(3L);
+
+        Assertions.assertEquals("Taco", menu.get(0).name());
+        Mockito.verify(restaurantService).evictRestaurantList();
+    }
+
+
+    @Test
+    void getMenu_withAZeroRecheckInterval_shouldCheckEveryUnknownId() {
+        CatalogService unthrottled = new CatalogService(restaurantService, menuItemService, Duration.ZERO);
+
+        for (long unknownId = 900; unknownId < 905; unknownId++) {
+            long id = unknownId;
+            Assertions.assertThrows(ResourceNotFoundException.class, () -> unthrottled.getMenu(id));
+        }
+
+        Mockito.verify(restaurantService, Mockito.times(5)).restaurantExists(Mockito.anyLong());
     }
 
 

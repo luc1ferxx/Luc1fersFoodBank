@@ -198,6 +198,10 @@ app:
   catalog:
     # Cache-Control max-age for GET /restaurants/menu and GET /restaurant/{id}/menu (both also send an ETag).
     http-max-age: ${CATALOG_HTTP_MAX_AGE:30s}
+    # A restaurant id missing from the cached restaurant list is looked up in the database at most once per
+    # interval per instance before the 404, so a restaurant created outside the admin API is served at once
+    # while random ids still cannot hammer the database. 0 checks every unknown id.
+    unknown-restaurant-recheck-interval: ${CATALOG_UNKNOWN_RESTAURANT_RECHECK_INTERVAL:1s}
   security:
     rate-limit:
       enabled: ${SECURITY_RATE_LIMIT_ENABLED:true}

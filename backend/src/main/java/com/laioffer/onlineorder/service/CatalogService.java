@@ -6,11 +6,14 @@ import com.laioffer.onlineorder.model.CatalogMenuItemDto;
 import com.laioffer.onlineorder.model.CatalogRestaurantDto;
 import com.laioffer.onlineorder.model.MenuItemDto;
 import com.laioffer.onlineorder.model.RestaurantDto;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 
 /**
@@ -23,11 +26,18 @@ public class CatalogService {
 
     private final RestaurantService restaurantService;
     private final MenuItemService menuItemService;
+    private final long unknownRestaurantRecheckNanos;
+    private final AtomicLong nextUnknownRestaurantRecheck = new AtomicLong(System.nanoTime());
 
 
-    public CatalogService(RestaurantService restaurantService, MenuItemService menuItemService) {
+    public CatalogService(
+            RestaurantService restaurantService,
+            MenuItemService menuItemService,
+            @Value("${app.catalog.unknown-restaurant-recheck-interval:1s}") Duration unknownRestaurantRecheckInterval
+    ) {
         this.restaurantService = restaurantService;
         this.menuItemService = menuItemService;
+        this.unknownRestaurantRecheckNanos = Math.max(0, unknownRestaurantRecheckInterval.toNanos());
     }
 
 
@@ -49,11 +59,16 @@ public class CatalogService {
 
     /**
      * One restaurant's menu. The id is first checked against the cached restaurant list, so requests for ids
-     * that do not exist are answered with 404 from cache and cannot be used to hammer the database (cache
-     * penetration), nor fill the menu cache with empty entries.
+     * that do not exist cannot be used to hammer the database (cache penetration), nor fill the menu cache
+     * with empty entries.
+     * <p>
+     * The cached list can lag behind a restaurant created outside the admin API (SQL, a seed run) until it
+     * expires. An id the list does not know is therefore looked up in the database by primary key, at most
+     * once per {@code app.catalog.unknown-restaurant-recheck-interval} on this instance; other unknown ids in
+     * that interval get 404 from the cache. If the restaurant exists, the stale list is evicted everywhere.
      */
     public List<CatalogMenuItemDto> getMenu(long restaurantId) {
-        if (!isKnownRestaurant(restaurantId)) {
+        if (!isKnownRestaurant(restaurantId) && !existsButIsMissingFromTheCachedList(restaurantId)) {
             throw new ResourceNotFoundException("Restaurant not found");
         }
         return menuItemService.getMenu(restaurantId);
@@ -67,5 +82,28 @@ public class CatalogService {
             }
         }
         return false;
+    }
+
+
+    private boolean existsButIsMissingFromTheCachedList(long restaurantId) {
+        if (!tryStartUnknownRestaurantRecheck() || !restaurantService.restaurantExists(restaurantId)) {
+            return false;
+        }
+        restaurantService.evictRestaurantList();
+        return true;
+    }
+
+
+    /**
+     * Lets one caller per interval through; concurrent callers that lose the race get false, which makes the
+     * recheck single-flight as well.
+     */
+    private boolean tryStartUnknownRestaurantRecheck() {
+        if (unknownRestaurantRecheckNanos == 0) {
+            return true;
+        }
+        long now = System.nanoTime();
+        long next = nextUnknownRestaurantRecheck.get();
+        return now - next >= 0 && nextUnknownRestaurantRecheck.compareAndSet(next, now + unknownRestaurantRecheckNanos);
     }
 }

@@ -125,6 +125,8 @@ class RestaurantCacheFallbackTests {
 
         Mockito.verify(menuItemRepository, Mockito.never()).findByRestaurantIdOrderById(404L);
         Mockito.verify(restaurantRepository, Mockito.times(1)).findAllOrderById();
+        // One bounded primary-key check, in case the restaurant was created after the list was cached.
+        Mockito.verify(restaurantRepository, Mockito.times(1)).existsById(404L);
     }
 
 

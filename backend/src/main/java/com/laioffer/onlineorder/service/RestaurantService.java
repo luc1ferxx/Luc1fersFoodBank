@@ -45,6 +45,23 @@ public class RestaurantService {
 
 
     /**
+     * Uncached primary-key lookup, for ids the cached restaurant list does not know.
+     */
+    public boolean restaurantExists(long restaurantId) {
+        return restaurantRepository.existsById(restaurantId);
+    }
+
+
+    /**
+     * Drops the cached restaurant list on every instance, for example when it is missing a restaurant that
+     * was created outside the admin API.
+     */
+    public void evictRestaurantList() {
+        cacheInvalidator.evictRestaurantsAfterCommit();
+    }
+
+
+    /**
      * Updates the restaurant's basic fields and evicts the cached restaurant list after the commit.
      */
     @Transactional
