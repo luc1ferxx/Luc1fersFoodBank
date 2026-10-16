@@ -277,6 +277,49 @@ class DispatchServiceTests {
     }
 
 
+    @Test
+    void advanceForRider_onTheRidersOwnDelivery_shouldMakeTheSameGuardedTransition() {
+        Mockito.when(deliveryRepository.lockByIdAndRiderId(7L, 3L)).thenReturn(delivery(7L, "ASSIGNED"));
+        Mockito.when(riderRepository.findById(3L)).thenReturn(Optional.of(rider(3L, "Alice")));
+
+        DeliveryEntity pickedUp = service.advanceForRider(3L, 7L, DeliveryStatus.PICKED_UP);
+
+        Assertions.assertEquals("PICKED_UP", pickedUp.status());
+        Assertions.assertNotNull(pickedUp.pickedUpAt());
+        Mockito.verify(deliveryRepository, Mockito.never()).lockById(Mockito.anyLong());
+        Mockito.verify(riderRepository, Mockito.never()).decrementLoad(Mockito.anyLong(), Mockito.any());
+        Mockito.verify(outboxService).enqueueEvent(
+                Mockito.eq("DELIVERY"), Mockito.eq(7L), Mockito.eq("delivery-events"), Mockito.eq("10"),
+                Mockito.eq("delivery.picked_up"), Mockito.anyString(), Mockito.any());
+    }
+
+
+    @Test
+    void advanceForRider_onAnotherRidersDelivery_shouldReturnNotFoundAndChangeNothing() {
+        // lockByIdAndRiderId finds nothing: the delivery belongs to rider 3, not rider 4.
+        Assertions.assertThrows(
+                ResourceNotFoundException.class, () -> service.advanceForRider(4L, 7L, DeliveryStatus.PICKED_UP));
+
+        Mockito.verify(deliveryRepository, Mockito.never())
+                .updateStatus(Mockito.anyLong(), Mockito.anyString(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+        Mockito.verifyNoInteractions(outboxService, riderRepository);
+    }
+
+
+    @Test
+    void advanceForRider_whenRepeatedOrInTheWrongState_shouldBeIdempotentOrConflict() {
+        Mockito.when(deliveryRepository.lockByIdAndRiderId(7L, 3L))
+                .thenReturn(delivery(7L, "DELIVERED"), delivery(7L, "CANCELLED"));
+
+        Assertions.assertEquals("DELIVERED", service.advanceForRider(3L, 7L, DeliveryStatus.DELIVERED).status());
+        ConflictException conflict = Assertions.assertThrows(
+                ConflictException.class, () -> service.advanceForRider(3L, 7L, DeliveryStatus.PICKED_UP));
+
+        Assertions.assertEquals("DELIVERY_STATUS_CONFLICT", conflict.getCode());
+        Mockito.verifyNoInteractions(outboxService);
+    }
+
+
     private void openDispatchOrder() {
         LocalDateTime createdAt = LocalDateTime.of(2026, 4, 4, 12, 0);
         Mockito.when(dispatchOrderRepository.lockByOrderId(ORDER_ID))
@@ -291,7 +334,7 @@ class DispatchServiceTests {
 
     private RiderEntity rider(Long id, String name) {
         LocalDateTime now = LocalDateTime.now();
-        return new RiderEntity(id, name, null, true, 0, now, now);
+        return new RiderEntity(id, null, name, null, true, true, 0, now, now);
     }
 
 

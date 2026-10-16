@@ -25,24 +25,26 @@ import java.util.UUID;
 
 
 /**
- * Assigns simulated riders to accepted orders (dispatch consumer group) and tracks each delivery.
+ * Assigns riders to accepted orders (dispatch consumer group) and tracks each delivery.
  *
  * <p>Both order event handlers first create (if absent) and lock the order's dispatch_orders row, so they serialize
  * per order even on different consumers, and an order.cancelled that was handled first leaves a tombstone there.
  *
- * <p>order.accepted: the least-loaded active rider is locked with FOR UPDATE SKIP LOCKED, the delivery is inserted
- * (unique per order) and the rider's load incremented in one transaction, together with the processed_events mark and
- * the delivery.assigned outbox event. A duplicate delivery of the event, or another event for an order that already
- * has a delivery, assigns no second rider. An order.accepted for an order whose order.cancelled was already handled
- * (a late or replayed event, for example the DLT replay below) assigns no rider. With no active rider the event fails,
- * is retried and finally dead-lettered for an operator to replay.
+ * <p>order.accepted: the least-loaded rider that is active and on duty is locked with FOR UPDATE SKIP LOCKED, the
+ * delivery is inserted (unique per order) and the rider's load incremented in one transaction, together with the
+ * processed_events mark and the delivery.assigned outbox event. A duplicate delivery of the event, or another event for
+ * an order that already has a delivery, assigns no second rider. An order.accepted for an order whose order.cancelled
+ * was already handled (a late or replayed event, for example the DLT replay below) assigns no rider. With no rider on
+ * duty the event fails, is retried and finally dead-lettered; an operator gets a rider on duty and replays it
+ * (README "Order fulfilment").
  *
  * <p>order.cancelled: the tombstone is set, and an open delivery is cancelled and its rider released
  * (delivery.cancelled).
  *
- * <p>Simulated rider actions (ADMIN): picked up and delivered, each a guarded {@link DeliveryStatus} transition
- * under the delivery row lock that writes its delivery event to the outbox in the same transaction. Repeating an
- * action that already happened returns the delivery unchanged.
+ * <p>Rider actions: picked up and delivered, each a guarded {@link DeliveryStatus} transition under the delivery row
+ * lock that writes its delivery event to the outbox in the same transaction. Repeating an action that already happened
+ * returns the delivery unchanged. The rider API ({@link RiderService}) only reaches the rider's own deliveries; the
+ * admin endpoints (ops and tests) reach any delivery.
  */
 @Service
 public class DispatchService {
@@ -114,6 +116,22 @@ public class DispatchService {
     }
 
 
+    /**
+     * The same guarded transition as the admin actions, only on a delivery assigned to {@code riderId}.
+     *
+     * @throws ResourceNotFoundException for another rider's delivery, the same as for one that does not exist
+     * @throws ConflictException         DELIVERY_STATUS_CONFLICT when the delivery cannot move to {@code target}
+     */
+    @Transactional
+    public DeliveryEntity advanceForRider(Long riderId, Long deliveryId, DeliveryStatus target) {
+        DeliveryEntity delivery = deliveryRepository.lockByIdAndRiderId(deliveryId, riderId);
+        if (delivery == null) {
+            throw new ResourceNotFoundException("Delivery not found");
+        }
+        return transition(delivery, target);
+    }
+
+
     public List<DeliveryDto> getDeliveries(Long orderId, int limit) {
         List<DeliveryEntity> deliveries;
         if (orderId != null) {
@@ -151,7 +169,7 @@ public class DispatchService {
         if (rider == null) {
             // Counted per attempt (this transaction rolls back and the listener retries the record), not per order.
             metricsService.recordDispatchAssignment("no_rider_attempt");
-            throw new IllegalStateException("No active rider is available for order " + orderId);
+            throw new IllegalStateException("No rider is active and on duty for order " + orderId);
         }
 
         LocalDateTime now = LocalDateTime.now();
@@ -211,9 +229,19 @@ public class DispatchService {
         if (delivery == null) {
             throw new ResourceNotFoundException("Delivery not found");
         }
+        DeliveryEntity updated = transition(delivery, target);
+        return new DeliveryDto(updated, riderName(updated.riderId()));
+    }
+
+
+    /**
+     * @param delivery locked by the caller
+     * @return the delivery after the transition, or unchanged when it already is in {@code target} (a retry)
+     */
+    private DeliveryEntity transition(DeliveryEntity delivery, DeliveryStatus target) {
         DeliveryStatus current = DeliveryStatus.valueOf(delivery.status());
         if (current == target) {
-            return new DeliveryDto(delivery, riderName(delivery.riderId()));
+            return delivery;
         }
         if (!current.canTransitionTo(target)) {
             throw new ConflictException(
@@ -221,8 +249,7 @@ public class DispatchService {
                     "Delivery is " + current + "; it cannot move to " + target
             );
         }
-        DeliveryEntity updated = applyTransition(delivery, target);
-        return new DeliveryDto(updated, riderName(updated.riderId()));
+        return applyTransition(delivery, target);
     }
 
 

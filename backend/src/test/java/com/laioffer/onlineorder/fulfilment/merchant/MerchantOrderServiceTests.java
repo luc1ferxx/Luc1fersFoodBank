@@ -99,6 +99,21 @@ class MerchantOrderServiceTests {
 
 
     @Test
+    void everyCommand_whenTheMerchantAccountIsDeactivated_shouldBeForbidden() {
+        Mockito.when(merchantAccountRepository.findByCustomerId(MERCHANT_CUSTOMER_ID)).thenReturn(new MerchantAccountEntity(
+                1L, MERCHANT_CUSTOMER_ID, RESTAURANT_ID, false, LocalDateTime.now(), LocalDateTime.now()));
+
+        Assertions.assertThrows(AccessDeniedException.class, () -> service.accept(MERCHANT_CUSTOMER_ID, ORDER_ID));
+        Assertions.assertThrows(AccessDeniedException.class, () -> service.markPreparing(MERCHANT_CUSTOMER_ID, ORDER_ID));
+        Assertions.assertThrows(
+                AccessDeniedException.class, () -> service.reject(MERCHANT_CUSTOMER_ID, ORDER_ID, "closed"));
+        Assertions.assertThrows(AccessDeniedException.class, () -> service.getOrders(MERCHANT_CUSTOMER_ID, null, 50));
+
+        Mockito.verifyNoInteractions(merchantOrderRepository, orderLifecycleCommands);
+    }
+
+
+    @Test
     void accept_whenOrderAlreadyTimedOut_shouldPropagateTheConflictWithoutUpdatingTheInbox() {
         bindMerchant();
         Mockito.when(merchantOrderRepository.lockByOrderIdAndRestaurantId(ORDER_ID, RESTAURANT_ID))
@@ -226,7 +241,7 @@ class MerchantOrderServiceTests {
 
     private void bindMerchant() {
         Mockito.when(merchantAccountRepository.findByCustomerId(MERCHANT_CUSTOMER_ID))
-                .thenReturn(new MerchantAccountEntity(1L, MERCHANT_CUSTOMER_ID, RESTAURANT_ID, LocalDateTime.now()));
+                .thenReturn(new MerchantAccountEntity(1L, MERCHANT_CUSTOMER_ID, RESTAURANT_ID, true, LocalDateTime.now(), LocalDateTime.now()));
     }
 
 
