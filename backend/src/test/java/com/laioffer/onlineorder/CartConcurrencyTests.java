@@ -3,6 +3,7 @@ package com.laioffer.onlineorder;
 import com.laioffer.onlineorder.entity.CartEntity;
 import com.laioffer.onlineorder.entity.CustomerEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
+import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.repository.CartRepository;
 import com.laioffer.onlineorder.repository.CustomerRepository;
@@ -157,6 +158,68 @@ class CartConcurrencyTests {
         Assertions.assertEquals(1, countOutboxEventsForOrder(successfulOrderId));
         Assertions.assertTrue(orderItemRepository.getAllByCartId(testCustomer.cartId()).isEmpty());
     }
+
+    /**
+     * DELETE /cart racing an add of another restaurant's item: the cart row lock serializes them, so either the clear
+     * ran first and the add succeeded (the cart holds only the new item), or the add ran first, was refused with
+     * CART_RESTAURANT_CONFLICT, and the clear emptied the cart. The total always matches the lines.
+     */
+    @Test
+    void clearCartAndAddFromAnotherRestaurant_whenCalledConcurrently_shouldSerializeOnTheCartLock() throws Exception {
+        Long otherRestaurantItemId = jdbcTemplate.queryForObject("""
+                SELECT MIN(id) FROM menu_items
+                WHERE restaurant_id <> (SELECT restaurant_id FROM menu_items WHERE id = 1)
+                """, Long.class);
+        MenuItemEntity otherRestaurantItem = menuItemRepository.findById(otherRestaurantItemId).orElseThrow();
+        for (int round = 0; round < 10; round++) {
+            TestCustomer testCustomer = createCustomerWithOneItemInCart();
+            CountDownLatch startLatch = new CountDownLatch(1);
+
+            Future<Boolean> add = executorService.submit(() -> {
+                startLatch.await(5, TimeUnit.SECONDS);
+                try {
+                    cartService.addMenuItemToCart(testCustomer.customerId(), otherRestaurantItemId);
+                    return true;
+                } catch (ConflictException ex) {
+                    Assertions.assertEquals(CartService.CART_RESTAURANT_CONFLICT, ex.getCode());
+                    return false;
+                }
+            });
+            Future<?> clear = executorService.submit(() -> {
+                startLatch.await(5, TimeUnit.SECONDS);
+                cartService.clearCart(testCustomer.customerId());
+                return null;
+            });
+            startLatch.countDown();
+            boolean added = add.get(10, TimeUnit.SECONDS);
+            clear.get(10, TimeUnit.SECONDS);
+
+            List<OrderItemEntity> lines = orderItemRepository.getAllByCartId(testCustomer.cartId());
+            BigDecimal total = cartRepository.getByCustomerId(testCustomer.customerId()).totalPrice();
+            if (added) {
+                Assertions.assertEquals(1, lines.size(), "the clear ran first, then the add");
+                Assertions.assertEquals(otherRestaurantItemId, lines.get(0).menuItemId());
+                Assertions.assertEquals(0, otherRestaurantItem.price().compareTo(total));
+            } else {
+                Assertions.assertEquals(List.of(), lines, "the add was refused first, then the clear emptied the cart");
+                Assertions.assertEquals(0, BigDecimal.ZERO.compareTo(total));
+            }
+        }
+    }
+
+
+    @Test
+    void clearCart_whenRepeated_shouldLeaveAnEmptyCartWithAZeroTotal() {
+        TestCustomer testCustomer = createCustomerWithOneItemInCart();
+
+        cartService.clearCart(testCustomer.customerId());
+        cartService.clearCart(testCustomer.customerId());
+
+        Assertions.assertTrue(orderItemRepository.getAllByCartId(testCustomer.cartId()).isEmpty());
+        Assertions.assertEquals(0, BigDecimal.ZERO.compareTo(
+                cartRepository.getByCustomerId(testCustomer.customerId()).totalPrice()));
+    }
+
 
     private OrderDto coordinatedCheckout(
             Long customerId,

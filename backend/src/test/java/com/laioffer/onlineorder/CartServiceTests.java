@@ -8,6 +8,7 @@ import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.entity.OrderItemEntity;
 import com.laioffer.onlineorder.exception.ConflictException;
+import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.model.CartDto;
 import com.laioffer.onlineorder.model.OrderDto;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -277,11 +279,25 @@ public class CartServiceTests {
         CartEntity cartEntity = new CartEntity(cartId, customerId, amount("21.0"));
 
         Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(orderItemRepository.getTotalPriceByCartId(cartId)).thenReturn(BigDecimal.ZERO);
 
         cartService.clearCart(customerId);
 
-        Mockito.verify(orderItemRepository).deleteByCartId(cartId);
-        Mockito.verify(cartRepository).updateTotalPrice(cartId, BigDecimal.ZERO);
+        // Locked before anything is deleted, and the total recomputed from the (now empty) cart lines.
+        InOrder inOrder = Mockito.inOrder(cartRepository, orderItemRepository);
+        inOrder.verify(cartRepository).lockByCustomerId(customerId);
+        inOrder.verify(orderItemRepository).deleteByCartId(cartId);
+        inOrder.verify(orderItemRepository).getTotalPriceByCartId(cartId);
+        inOrder.verify(cartRepository).updateTotalPrice(cartId, BigDecimal.ZERO);
+    }
+
+
+    @Test
+    void clearCart_whenTheCustomerHasNoCart_shouldReturnNotFound() {
+        Mockito.when(cartRepository.lockByCustomerId(1L)).thenReturn(null);
+
+        Assertions.assertThrows(ResourceNotFoundException.class, () -> cartService.clearCart(1L));
+        Mockito.verifyNoInteractions(orderItemRepository);
     }
 
 

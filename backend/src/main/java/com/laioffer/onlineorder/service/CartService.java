@@ -155,11 +155,17 @@ public class CartService {
     }
 
 
+    /**
+     * Empties the customer's cart (DELETE /cart), for example to switch restaurants after a 409
+     * CART_RESTAURANT_CONFLICT. Takes the cart row lock like every other cart mutation, so it serializes with
+     * concurrent adds and checkouts, and recomputes the total from the remaining lines (none). Clearing an empty
+     * cart is a no-op, so retries are safe.
+     */
     @Transactional
     public void clearCart(Long customerId) {
         CartEntity cart = getRequiredLockedCart(customerId);
         orderItemRepository.deleteByCartId(cart.id());
-        cartRepository.updateTotalPrice(cart.id(), BigDecimal.ZERO);
+        syncCartTotal(cart.id());
     }
 
 
