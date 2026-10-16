@@ -50,6 +50,9 @@ public class CartService {
     private static final String IDEMPOTENCY_STATUS_PROCESSING = "PROCESSING";
     private static final String IDEMPOTENCY_STATUS_SUCCEEDED = "SUCCEEDED";
 
+    public static final String CART_RESTAURANT_CONFLICT = "CART_RESTAURANT_CONFLICT";
+    public static final String CART_HAS_MULTIPLE_RESTAURANTS = "CART_HAS_MULTIPLE_RESTAURANTS";
+
     private final CartRepository cartRepository;
     private final IdempotencyRequestRepository idempotencyRequestRepository;
     private final IdempotencyRequestInitializer idempotencyRequestInitializer;
@@ -87,10 +90,22 @@ public class CartService {
     }
 
 
+    /**
+     * A cart only holds items of one restaurant, so that every order goes to exactly one merchant. Adding an item of
+     * another restaurant fails with 409 CART_RESTAURANT_CONFLICT; the customer clears the cart (or checks it out)
+     * first. The cart row lock serializes concurrent adds, so two requests cannot fill one cart from two restaurants.
+     */
     @Transactional
     public void addMenuItemToCart(long customerId, long menuItemId) {
         CartEntity cart = getRequiredLockedCart(customerId);
         MenuItemEntity menuItem = getRequiredMenuItem(menuItemId);
+        if (!orderItemRepository.findOtherRestaurantIdsInCart(cart.id(), menuItem.restaurantId()).isEmpty()) {
+            throw new ConflictException(
+                    CART_RESTAURANT_CONFLICT,
+                    "Your cart already has items from another restaurant. Clear the cart or check it out before "
+                            + "adding items from this restaurant."
+            );
+        }
         cartItemQuantityUpdater.incrementQuantity(cart.id(), menuItem.id(), menuItem.price());
         syncCartTotal(cart.id());
     }
@@ -227,18 +242,21 @@ public class CartService {
 
         syncCartTotal(cart.id());
         CartEntity refreshedCart = getRequiredCart(customerId);
+        Map<Long, MenuItemEntity> menuItemsById = getRequiredMenuItemsById(cartItems);
+        Long restaurantId = requireSingleRestaurant(menuItemsById);
 
         OrderEntity savedOrder = orderRepository.save(new OrderEntity(
                 null,
                 customerId,
                 refreshedCart.totalPrice(),
                 normalizeStatus(status),
-                LocalDateTime.now()
+                LocalDateTime.now(),
+                restaurantId,
+                null
         ));
 
         List<OrderHistoryItemEntity> orderHistoryItems = new ArrayList<>();
         List<OrderHistoryItemDto> orderHistoryItemDtos = new ArrayList<>();
-        Map<Long, MenuItemEntity> menuItemsById = getRequiredMenuItemsById(cartItems);
         for (OrderItemEntity cartItem : cartItems) {
             MenuItemEntity menuItem = menuItemsById.get(cartItem.menuItemId());
             OrderHistoryItemEntity orderHistoryItem = new OrderHistoryItemEntity(
@@ -264,6 +282,26 @@ public class CartService {
         cartRepository.updateTotalPrice(cart.id(), BigDecimal.ZERO);
 
         return new OrderDto(savedOrder, orderHistoryItemDtos);
+    }
+
+
+    /**
+     * Carts filled before single-restaurant carts can still mix restaurants; such a cart cannot be checked out as one
+     * order, so checkout fails with 409 and leaves the cart untouched for the customer to split.
+     */
+    private Long requireSingleRestaurant(Map<Long, MenuItemEntity> menuItemsById) {
+        List<Long> restaurantIds = menuItemsById.values().stream()
+                .map(MenuItemEntity::restaurantId)
+                .distinct()
+                .toList();
+        if (restaurantIds.size() != 1) {
+            throw new ConflictException(
+                    CART_HAS_MULTIPLE_RESTAURANTS,
+                    "Your cart has items from more than one restaurant. Remove the items of all but one restaurant "
+                            + "before checking out."
+            );
+        }
+        return restaurantIds.get(0);
     }
 
 

@@ -14,10 +14,25 @@ public record OrderDto(
         BigDecimal totalPrice,
         String status,
         LocalDateTime createdAt,
-        List<OrderHistoryItemDto> items
+        List<OrderHistoryItemDto> items,
+        Long restaurantId,
+        String cancelReason
 ) {
 
+    public OrderDto(Long id, BigDecimal totalPrice, String status, LocalDateTime createdAt, List<OrderHistoryItemDto> items) {
+        this(id, totalPrice, status, createdAt, items, null, null);
+    }
+
+
     public OrderDto(OrderEntity order, List<OrderHistoryItemDto> items) {
-        this(order.id(), order.totalPrice(), order.status(), order.createdAt(), items);
+        this(
+                order.id(),
+                order.totalPrice(),
+                order.status(),
+                order.createdAt(),
+                items,
+                order.restaurantId(),
+                order.cancelReason()
+        );
     }
 }

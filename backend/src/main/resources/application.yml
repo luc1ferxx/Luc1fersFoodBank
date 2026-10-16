@@ -163,6 +163,38 @@ app:
     # unreachable after the send, can be claimed again once it is this old. Must exceed the longest
     # possible send: the producer's max.block.ms (5s) plus replay-timeout.
     replay-claim-timeout: ${DLT_REPLAY_CLAIM_TIMEOUT:30s}
+  # Event-driven order fulfilment (merchant, timeout, dispatch modules); see README "Order fulfilment".
+  # Each module consumes with its own consumer group, so each sees every event once.
+  fulfilment:
+    # Delivery events published by the dispatch module (same partition count as the order topic).
+    delivery-topic: ${KAFKA_DELIVERY_TOPIC:delivery-events}
+    merchant-group: ${FULFILMENT_MERCHANT_GROUP:onlineorder-merchant}
+    timeout-group: ${FULFILMENT_TIMEOUT_GROUP:onlineorder-timeout}
+    dispatch-group: ${FULFILMENT_DISPATCH_GROUP:onlineorder-dispatch}
+    order-delivery-group: ${FULFILMENT_ORDER_DELIVERY_GROUP:onlineorder-order-delivery}
+    notification-delivery-group: ${FULFILMENT_NOTIFICATION_DELIVERY_GROUP:onlineorder-notification-delivery}
+    # A PAID order the merchant has not accepted within accept-timeout of payment is cancelled (MERCHANT_TIMEOUT);
+    # a PLACED order not paid within payment-timeout is cancelled (PAYMENT_TIMEOUT). Measured from the event time;
+    # a changed value applies to orders paid or placed after the change.
+    accept-timeout: ${FULFILMENT_ACCEPT_TIMEOUT:10m}
+    payment-timeout: ${FULFILMENT_PAYMENT_TIMEOUT:15m}
+    # Off by default: the accept timeout cancels every paid order no merchant accepts. Only turn it on where every
+    # restaurant has a merchant login that accepts orders (merchants are only seeded by the demo seed, and the frontend
+    # has no merchant screen yet). Switching it off also drops pending ACCEPT deadlines without cancelling.
+    accept-timeout-enabled: ${FULFILMENT_ACCEPT_TIMEOUT_ENABLED:false}
+    # Consumer threads per fulfilment listener (merchant, timeout, dispatch, order-delivery, notification-delivery).
+    # With Kafka on there are 7 listener containers (these 5, notifications, the DLT); each consumer thread holds a
+    # pooled database connection only while it handles a record, but all of them share the Hikari pool above.
+    listener-concurrency: ${FULFILMENT_LISTENER_CONCURRENCY:${app.kafka.listener-concurrency}}
+    deadline-poller:
+      # Runs on its own thread, not on the shared scheduler the outbox publisher uses. Off wherever Kafka is off
+      # (nothing writes deadlines then).
+      enabled: ${FULFILMENT_DEADLINE_POLLER_ENABLED:${app.kafka.enabled:true}}
+      interval: ${FULFILMENT_DEADLINE_POLL_INTERVAL:1s}
+      # Deadlines fired per run, one transaction each.
+      batch-size: ${FULFILMENT_DEADLINE_BATCH_SIZE:100}
+      # Delay before a deadline whose firing failed (for example a lock timeout) is tried again.
+      retry-backoff: ${FULFILMENT_DEADLINE_RETRY_BACKOFF:30s}
   cleanup:
     enabled: ${CLEANUP_ENABLED:true}
     fixed-delay-ms: ${CLEANUP_FIXED_DELAY_MS:3600000}

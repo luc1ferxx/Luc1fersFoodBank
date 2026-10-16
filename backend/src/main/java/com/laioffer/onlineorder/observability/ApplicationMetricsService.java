@@ -49,6 +49,43 @@ public class ApplicationMetricsService {
     }
 
 
+    /**
+     * @param decision accepted, rejected or timeout (the merchant did not answer within app.fulfilment.accept-timeout)
+     */
+    public void recordMerchantDecision(String decision) {
+        meterRegistry.counter(
+                "onlineorder.fulfilment.merchant.decisions",
+                "decision", normalize(decision)
+        ).increment();
+    }
+
+
+    /**
+     * @param deadlineType PAYMENT or ACCEPT
+     * @param result       cancelled (the order was still waiting) or skipped (it had moved on)
+     */
+    public void recordFulfilmentTimeout(String deadlineType, String result) {
+        meterRegistry.counter(
+                "onlineorder.fulfilment.timeouts",
+                "type", normalize(deadlineType),
+                "result", normalize(result)
+        ).increment();
+    }
+
+
+    /**
+     * @param result assigned; duplicate (the order already had a rider); cancelled (order.cancelled was handled first,
+     *               so no rider was assigned); or no_rider_attempt (an attempt found no active rider and failed for a
+     *               retry: counted once per listener attempt and DLT replay, not once per order)
+     */
+    public void recordDispatchAssignment(String result) {
+        meterRegistry.counter(
+                "onlineorder.fulfilment.dispatch.assignments",
+                "result", normalize(result)
+        ).increment();
+    }
+
+
     public void recordOutboxPublishResult(String topic, boolean success) {
         meterRegistry.counter(
                 "onlineorder.outbox.publish",

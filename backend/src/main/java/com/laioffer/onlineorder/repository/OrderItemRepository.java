@@ -32,6 +32,21 @@ public interface OrderItemRepository extends ListCrudRepository<OrderItemEntity,
     void incrementQuantity(Long cartId, Long menuItemId, BigDecimal price);
 
 
+    /**
+     * Restaurants other than {@code restaurantId} that already have items in the cart: empty, or the one restaurant
+     * of a single-restaurant cart (at most one row).
+     */
+    @Query("""
+            SELECT menu_items.restaurant_id
+            FROM order_items
+            JOIN menu_items ON menu_items.id = order_items.menu_item_id
+            WHERE order_items.cart_id = :cartId
+              AND menu_items.restaurant_id <> :restaurantId
+            LIMIT 1
+            """)
+    List<Long> findOtherRestaurantIdsInCart(Long cartId, Long restaurantId);
+
+
     @Query("""
             SELECT CAST(COALESCE(SUM(price * quantity), 0) AS DOUBLE PRECISION)
             FROM order_items

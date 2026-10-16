@@ -61,6 +61,13 @@ function parseJson(response) {
   }
 }
 
+function emptyCart() {
+  const cart = parseJson(http.get(`${BASE_URL}/cart`, { tags: { name: 'GET /cart' } })) || {};
+  for (const item of cart.order_items || []) {
+    http.del(`${BASE_URL}/cart/items/${item.order_item_id}`, null, { tags: { name: 'DELETE /cart/items/{id}' } });
+  }
+}
+
 function randomIntInclusive(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
@@ -160,11 +167,21 @@ export default function (data) {
 
     for (let i = 0; i < itemCount; i += 1) {
       const menuItem = menu[(start + i) % menu.length];
-      const response = http.post(
+      let response = http.post(
         `${BASE_URL}/cart`,
         JSON.stringify({ menu_id: menuItem.id }),
         { ...jsonHeaders(), tags: { name: 'POST /cart' } }
       );
+      if (response.status === 409) {
+        // A cart holds one restaurant's items; a failed checkout in an earlier iteration can leave another
+        // restaurant's items behind. Empty the cart and add the item again.
+        emptyCart();
+        response = http.post(
+          `${BASE_URL}/cart`,
+          JSON.stringify({ menu_id: menuItem.id }),
+          { ...jsonHeaders(), tags: { name: 'POST /cart' } }
+        );
+      }
       check(response, {
         'add cart item status 2xx': (r) => r.status >= 200 && r.status < 300,
       });

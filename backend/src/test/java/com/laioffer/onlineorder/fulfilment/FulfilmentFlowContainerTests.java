@@ -1,0 +1,132 @@
+package com.laioffer.onlineorder.fulfilment;
+
+
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.kafka.KafkaContainer;
+
+
+import java.util.List;
+import java.util.Map;
+
+
+/**
+ * The event-driven fulfilment flow end to end on PostgreSQL, Redis and Kafka, driven only through the HTTP API:
+ * pay -> merchant inbox -> accept -> rider assigned -> picked up -> delivered -> COMPLETED, once with the merchant
+ * marking the order PREPARING and once without (completion then passes through PREPARING itself). The timeout paths
+ * are in {@link FulfilmentTimeoutContainerTests}, which needs short timeouts this class must not have.
+ */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Testcontainers(disabledWithoutDocker = true)
+class FulfilmentFlowContainerTests extends FulfilmentContainerTestSupport {
+
+    @Container
+    static PostgreSQLContainer<?> POSTGRES = postgres();
+
+    @Container
+    static GenericContainer<?> REDIS = redis();
+
+    @Container
+    static KafkaContainer KAFKA = kafka();
+
+
+    @DynamicPropertySource
+    static void configure(DynamicPropertyRegistry registry) {
+        registerInfrastructure(registry, POSTGRES, REDIS, KAFKA);
+        // The accept timeout runs, but far longer than any wait below: a slow runner must not let it cancel an order
+        // before the test accepts it.
+        registry.add("app.fulfilment.accept-timeout-enabled", () -> "true");
+        registry.add("app.fulfilment.accept-timeout", () -> "10m");
+    }
+
+
+    @Test
+    void paidOrder_shouldGoThroughMerchantRiderAndDeliveryToCompleted() {
+        runPaidOrderToCompletion(true);
+    }
+
+
+    @Test
+    void deliveredOrderTheMerchantNeverMarkedPreparing_shouldStillBeCompleted() {
+        runPaidOrderToCompletion(false);
+    }
+
+
+    private void runPaidOrderToCompletion(boolean merchantMarksPreparing) {
+        String customer = signUpAndLogin();
+        String burgerKing = login("merchant.burgerking@laifood.com", "merchant123");
+        String sgdTofu = login("merchant.sgdtofu@laifood.com", "merchant123");
+        String admin = login("demo@laifood.com", "demo123");
+
+        Long orderId = payForItemOf(customer, "Burger King", "e2e-happy-" + System.nanoTime());
+
+        // order.paid -> merchant inbox (merchant consumer group) and an ACCEPT deadline (timeout consumer group).
+        await("the order to reach the Burger King inbox", EVENT_WAIT, () ->
+                findById(getList("/merchant/orders?status=PAID", burgerKing), "order_id", orderId) != null);
+        await("the accept deadline", EVENT_WAIT, () -> jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM order_deadlines WHERE order_id = ? AND deadline_type = 'ACCEPT'",
+                Integer.class,
+                orderId
+        ) == 1);
+        Assertions.assertNull(findById(getList("/merchant/orders", sgdTofu), "order_id", orderId));
+        Assertions.assertEquals(HttpStatus.NOT_FOUND, post("/merchant/orders/" + orderId + "/accept", sgdTofu).getStatusCode());
+        Assertions.assertEquals(HttpStatus.FORBIDDEN, post("/merchant/orders/" + orderId + "/accept", customer).getStatusCode());
+
+        ResponseEntity<Map> accepted = post("/merchant/orders/" + orderId + "/accept", burgerKing);
+        Assertions.assertEquals(HttpStatus.OK, accepted.getStatusCode());
+        Assertions.assertEquals("ACCEPTED", accepted.getBody().get("status"));
+        if (merchantMarksPreparing) {
+            ResponseEntity<Map> preparing = post("/merchant/orders/" + orderId + "/preparing", burgerKing);
+            Assertions.assertEquals("PREPARING", preparing.getBody().get("status"));
+        }
+
+        // order.accepted -> rider assigned (dispatch consumer group) -> delivery.assigned notification.
+        Map<?, ?> delivery = awaitValue("a rider to be assigned", EVENT_WAIT, () -> {
+            List<?> deliveries = getList("/admin/deliveries?order_id=" + orderId, admin);
+            return deliveries.isEmpty() ? null : (Map<?, ?>) deliveries.get(0);
+        });
+        Assertions.assertEquals("ASSIGNED", delivery.get("status"));
+        Assertions.assertNotNull(delivery.get("rider_name"));
+        Long deliveryId = ((Number) delivery.get("id")).longValue();
+        await("the rider-assigned notification", EVENT_WAIT, () -> hasNotification(customer, orderId, "delivery.assigned"));
+        await("the accept deadline to be dropped", EVENT_WAIT, () -> jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM order_deadlines WHERE order_id = ?", Integer.class, orderId) == 0);
+
+        Assertions.assertEquals(HttpStatus.FORBIDDEN,
+                post("/admin/deliveries/" + deliveryId + "/picked-up", customer).getStatusCode());
+        Assertions.assertEquals("PICKED_UP",
+                post("/admin/deliveries/" + deliveryId + "/picked-up", admin).getBody().get("status"));
+        Assertions.assertEquals(merchantMarksPreparing ? "PREPARING" : "ACCEPTED", orderOf(customer, orderId).get("status"));
+        Assertions.assertEquals("DELIVERED",
+                post("/admin/deliveries/" + deliveryId + "/delivered", admin).getBody().get("status"));
+
+        // delivery.delivered -> order COMPLETED (order-delivery consumer group) -> notifications. Without the
+        // merchant's PREPARING, completion moves ACCEPTED -> PREPARING -> COMPLETED in one transaction.
+        await("the order to be completed", EVENT_WAIT, () -> "COMPLETED".equals(orderOf(customer, orderId).get("status")));
+        await("the delivered and completed notifications", EVENT_WAIT, () ->
+                hasNotification(customer, orderId, "delivery.delivered")
+                        && hasNotification(customer, orderId, "order.completed")
+                        && hasNotification(customer, orderId, "order.preparing")
+                        && hasNotification(customer, orderId, "order.accepted"));
+        await("the merchant inbox to show the completed order", EVENT_WAIT, () ->
+                "COMPLETED".equals(inboxStatus(burgerKing, orderId)));
+
+        Assertions.assertEquals(
+                List.of("order.paid", "order.accepted", "order.preparing", "order.completed"),
+                orderEventTypes(orderId)
+        );
+        Assertions.assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM order_deadlines WHERE order_id = ?", Integer.class, orderId));
+        Assertions.assertTrue(metricCount("onlineorder.fulfilment.merchant.decisions", "decision:accepted", admin) >= 1);
+        Assertions.assertTrue(metricCount("onlineorder.fulfilment.dispatch.assignments", "result:assigned", admin) >= 1);
+    }
+}

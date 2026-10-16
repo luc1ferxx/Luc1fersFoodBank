@@ -6,6 +6,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -40,6 +42,9 @@ class ApiContractIntegrationTests {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
 
     @Test
@@ -101,6 +106,45 @@ class ApiContractIntegrationTests {
                 .andExpect(jsonPath("$.trace_id").value("trace-conflict-123"))
                 .andExpect(jsonPath("$.status").value(409))
                 .andExpect(jsonPath("$.path").value("/signup"));
+    }
+
+
+    @Test
+    void addToCart_whenCartHoldsAnotherRestaurant_shouldReturnConflictWithCartRestaurantCode() throws Exception {
+        String email = "cart-contract-" + System.nanoTime() + "@example.com";
+        mockMvc.perform(post("/signup")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"email": "%s", "password": "demo123", "first_name": "Cart", "last_name": "User"}
+                                """.formatted(email)))
+                .andExpect(status().isCreated());
+        MockHttpSession session = (MockHttpSession) mockMvc.perform(post("/login")
+                        .param("username", email)
+                        .param("password", "demo123"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getRequest()
+                .getSession(false);
+        Long otherRestaurantItemId = jdbcTemplate.queryForObject(
+                "SELECT MIN(id) FROM menu_items WHERE restaurant_id <> (SELECT restaurant_id FROM menu_items WHERE id = 1)",
+                Long.class
+        );
+
+        mockMvc.perform(post("/cart")
+                        .session(session)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"menu_id\": 1}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/cart")
+                        .session(session)
+                        .header("X-Trace-Id", "trace-cart-conflict-123")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"menu_id\": %d}".formatted(otherRestaurantItemId)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CART_RESTAURANT_CONFLICT"))
+                .andExpect(jsonPath("$.trace_id").value("trace-cart-conflict-123"))
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.path").value("/cart"));
     }
 
 
