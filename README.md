@@ -166,7 +166,10 @@ between them with the tabs under the header; guests and logins without a known r
 | `ROLE_RIDER` | Rider console: on-duty switch, the rider's own deliveries, picked up and delivered. |
 | `ROLE_ADMIN` | Admin console: list, create, and deactivate merchants (restaurant picked from the catalog) and riders; the manual order-status change and dead-letter replay. |
 
-The merchant and rider consoles poll every 15 seconds while the tab is visible.
+Switching workspaces keeps the ordering page and the admin console as they were, so a checkout, cancel, or status
+change retried after a switch reuses its Idempotency-Key. The merchant and rider consoles poll every 15 seconds while
+the tab is visible. A deactivated merchant or rider (the backend answers `403` on `/merchant/**` and `/rider/**`) gets
+a notice instead of the raw error, polling stops, and Refresh checks again.
 
 ### Demo Account
 
@@ -530,7 +533,8 @@ the guarded transition only if the order still waits, and deletes the row, all i
 poller runs on its own thread instead of the shared scheduler (4 threads), so a burst of due deadlines cannot delay
 the outbox publisher.
 
-Follow-ups: admin APIs to provision merchants and riders, real rider location and ETA, refunds for cancelled paid orders, and a
+Follow-ups: a merchant UI and a rider app (the frontend is unchanged; merchant and rider actions are API-only),
+admin APIs to provision merchants and riders, real rider location and ETA, refunds for cancelled paid orders, and a
 k6 run with the fulfilment consumers on.
 
 ---
