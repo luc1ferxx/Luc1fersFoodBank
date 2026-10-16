@@ -4,6 +4,8 @@ plugins {
     id 'java'
     id 'org.springframework.boot' version '3.5.6'
     id 'io.spring.dependency-management' version '1.1.7'
+    id 'jacoco'
+    id 'com.github.spotbugs' version '6.5.11'
 }
 
 
@@ -102,3 +104,74 @@ tasks.named('processResources') {
     }
 }
 
+
+// Quality gates run by CI (see docs/operations.md). The coverage minimums sit just below the values
+// measured with Docker available (2026-10: 88.6% of lines, 73.9% of branches), so the Testcontainers suites
+// count; without Docker those suites skip and jacocoTestCoverageVerification fails. Raise them as coverage grows.
+jacoco {
+    toolVersion = '0.8.13'
+}
+
+
+tasks.named('jacocoTestReport') {
+    dependsOn tasks.named('test')
+    reports {
+        xml.required = true
+        html.required = true
+    }
+}
+
+
+tasks.named('jacocoTestCoverageVerification') {
+    dependsOn tasks.named('test')
+    violationRules {
+        rule {
+            limit {
+                counter = 'LINE'
+                value = 'COVEREDRATIO'
+                minimum = 0.87
+            }
+            limit {
+                counter = 'BRANCH'
+                value = 'COVEREDRATIO'
+                minimum = 0.72
+            }
+        }
+    }
+}
+
+
+// SpotBugs scans production code only. config/spotbugs/exclude.xml is the accepted baseline: Spring and
+// record idioms plus the findings reviewed when the gate was introduced. Any new finding fails the build.
+spotbugs {
+    ignoreFailures = false
+    excludeFilter = file('config/spotbugs/exclude.xml')
+}
+
+
+tasks.named('spotbugsTest') {
+    enabled = false
+}
+
+
+// Spring Boot's dependency management would downgrade SpotBugs' own commons-lang3 to the Boot-managed
+// version, which lacks classes SpotBugs needs; the tool classpath keeps the versions SpotBugs asks for.
+configurations.named('spotbugs') {
+    resolutionStrategy.eachDependency { details ->
+        if (details.requested.group == 'org.apache.commons' && details.requested.name == 'commons-lang3') {
+            details.useVersion(details.requested.version)
+        }
+    }
+}
+
+
+tasks.withType(com.github.spotbugs.snom.SpotBugsTask).configureEach {
+    reports {
+        html {
+            required = true
+        }
+        xml {
+            required = true
+        }
+    }
+}
