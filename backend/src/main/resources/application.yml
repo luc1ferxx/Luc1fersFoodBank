@@ -56,6 +56,11 @@ spring:
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
     listener:
       missing-topics-fatal: false
+      # Consumer spans continue the producer's trace from the record's traceparent header. TracingConfig applies
+      # this and template.observation-enabled to every listener container factory and KafkaTemplate bean.
+      observation-enabled: ${KAFKA_OBSERVATION_ENABLED:true}
+    template:
+      observation-enabled: ${KAFKA_OBSERVATION_ENABLED:true}
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -210,6 +215,18 @@ management:
   observations:
     key-values:
       application: ${spring.application.name}
+  # Distributed tracing: Micrometer Tracing with the OpenTelemetry bridge, W3C traceparent propagation. Trace ids
+  # are always generated (X-Trace-Id, logs, Kafka headers); sampling decides which traces are recorded and exported.
+  # Spans are exported over OTLP/HTTP only when TRACING_EXPORT_ENABLED=true (container image, Kubernetes, the
+  # deploy/observability stack); local runs and tests do not export.
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+      export:
+        enabled: ${TRACING_EXPORT_ENABLED:false}
 
 info:
   app:
@@ -225,4 +242,4 @@ logging:
     format:
       console: ${LOG_STRUCTURED_FORMAT_CONSOLE:logstash}
   pattern:
-    level: "%5p [traceId=%X{traceId:-na}]"
+    level: "%5p [traceId=%X{traceId:-na} spanId=%X{spanId:-na}]"
