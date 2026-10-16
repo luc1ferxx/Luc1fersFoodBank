@@ -23,9 +23,10 @@ import java.util.Map;
 
 
 /**
- * The timeout paths end to end on PostgreSQL, Redis and Kafka: pay -> no accept -> auto-cancelled
- * (MERCHANT_TIMEOUT), and an unpaid order cancelled by the payment timeout. Own class (and containers) because its
- * timeouts are short; the happy paths in {@link FulfilmentFlowContainerTests} run with a long accept timeout.
+ * The timeout paths end to end on PostgreSQL, Redis and Kafka: pay at a staffed restaurant -> no accept ->
+ * auto-cancelled (MERCHANT_TIMEOUT); pay at a restaurant without a merchant account -> never auto-cancelled; and an
+ * unpaid order cancelled by the payment timeout. Own class (and containers) because its timeouts are short; the happy
+ * paths in {@link FulfilmentFlowContainerTests} run with a long accept timeout.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers(disabledWithoutDocker = true)
@@ -46,7 +47,7 @@ class FulfilmentTimeoutContainerTests extends FulfilmentContainerTestSupport {
     @DynamicPropertySource
     static void configure(DynamicPropertyRegistry registry) {
         registerInfrastructure(registry, POSTGRES, REDIS, KAFKA);
-        registry.add("app.fulfilment.accept-timeout-enabled", () -> "true");
+        // app.fulfilment.accept-timeout-enabled is left at its default (on).
         registry.add("app.fulfilment.accept-timeout", () -> TIMEOUT.toSeconds() + "s");
         registry.add("app.fulfilment.payment-timeout", () -> TIMEOUT.toSeconds() + "s");
         registry.add("app.fulfilment.deadline-poller.interval", () -> "250ms");
@@ -60,6 +61,8 @@ class FulfilmentTimeoutContainerTests extends FulfilmentContainerTestSupport {
         String admin = login("demo@laifood.com", "demo123");
 
         Long paidOrderId = payForItemOf(customer, "Fashion Wok", "e2e-timeout-" + System.nanoTime());
+        String otherCustomer = signUpAndLogin();
+        Long unstaffedOrderId = payForItemOf(otherCustomer, newRestaurantWithoutStaff(), "e2e-unstaffed-" + System.nanoTime());
         addToCart(customer, menuItemOf("SGD Tofu House"));
         HttpHeaders checkoutHeaders = headers(customer);
         checkoutHeaders.set("Idempotency-Key", "e2e-placed-" + System.nanoTime());
@@ -96,5 +99,39 @@ class FulfilmentTimeoutContainerTests extends FulfilmentContainerTestSupport {
         Assertions.assertEquals(0, jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM deliveries WHERE order_id IN (?, ?)", Integer.class, paidOrderId, placedOrderId));
         Assertions.assertTrue(metricCount("onlineorder.fulfilment.merchant.decisions", "decision:timeout", admin) >= 1);
+
+        // The restaurant without a merchant account: the inbox and the timeout group both handled its order.paid long
+        // before the staffed order timed out, yet it has no deadline and stays PAID.
+        await("the unstaffed order to reach its inbox", EVENT_WAIT, () -> jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM merchant_orders WHERE order_id = ?", Integer.class, unstaffedOrderId) == 1);
+        await("the timeout group to handle the unstaffed order.paid", EVENT_WAIT, () -> jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM processed_events
+                WHERE consumer_name = 'order-timeout-consumer'
+                  AND aggregate_id = ?
+                  AND event_type = 'order.paid'
+                """, Integer.class, unstaffedOrderId) == 1);
+        Assertions.assertEquals("PAID", orderOf(otherCustomer, unstaffedOrderId).get("status"));
+        Assertions.assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM order_deadlines WHERE order_id = ?", Integer.class, unstaffedOrderId));
+        Assertions.assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM outbox_events WHERE aggregate_type = 'MERCHANT_ORDER' AND aggregate_id = ?",
+                Integer.class,
+                unstaffedOrderId
+        ));
+        Assertions.assertTrue(metricCount("onlineorder.fulfilment.merchant.orders_received", "staffing:unstaffed", admin) >= 1);
+        Assertions.assertTrue(metricCount("onlineorder.fulfilment.merchant.orders_received", "staffing:staffed", admin) >= 1);
+    }
+
+
+    private String newRestaurantWithoutStaff() {
+        String name = "Unstaffed Kitchen " + System.nanoTime();
+        jdbcTemplate.update("INSERT INTO restaurants (name, address, phone) VALUES (?, '1 Test St', '(408) 555-0000')", name);
+        Long restaurantId = jdbcTemplate.queryForObject("SELECT id FROM restaurants WHERE name = ?", Long.class, name);
+        jdbcTemplate.update(
+                "INSERT INTO menu_items (restaurant_id, name, price, description) VALUES (?, 'House Noodles', 9.50, 'Test')",
+                restaurantId
+        );
+        return name;
     }
 }

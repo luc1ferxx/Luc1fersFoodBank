@@ -9,7 +9,7 @@ import org.springframework.stereotype.Component;
 
 
 /**
- * Dispatch consumer group on the order topic; failures (including "no active rider") are retried and then
+ * Dispatch consumer group on the order topic; failures (including "no rider on duty") are retried and then
  * dead-lettered by the shared orderEventKafkaListenerContainerFactory.
  */
 @Component

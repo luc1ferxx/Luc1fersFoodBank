@@ -25,4 +25,18 @@ public class FulfilmentKafkaConfig {
     ) {
         return new NewTopic(topicName, partitions, replicas);
     }
+
+
+    /**
+     * Merchant events (merchant.order_received), same partition count as the order topic for the same reason.
+     */
+    @Bean
+    @ConditionalOnProperty(name = "app.kafka.enabled", havingValue = "true", matchIfMissing = true)
+    NewTopic merchantEventsTopic(
+            @Value("${app.fulfilment.merchant-topic:merchant-events}") String topicName,
+            @Value("${app.kafka.partitions:3}") int partitions,
+            @Value("${app.kafka.replicas:1}") short replicas
+    ) {
+        return new NewTopic(topicName, partitions, replicas);
+    }
 }

@@ -21,6 +21,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.util.LinkedMultiValueMap;
@@ -58,6 +59,8 @@ import java.util.concurrent.ThreadLocalRandom;
 // (management.otlp.tracing.export.enabled defaults to false); spans go to the in-memory exporter below.
 @AutoConfigureObservability(metrics = false)
 @Testcontainers(disabledWithoutDocker = true)
+// Closed after the class, so its Kafka consumers cannot join the groups of a later class's broker on a reused port.
+@DirtiesContext
 class OutboxKafkaTraceContinuityTests {
 
     @Container

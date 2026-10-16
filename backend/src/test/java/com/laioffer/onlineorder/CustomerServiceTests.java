@@ -96,6 +96,47 @@ class CustomerServiceTests {
 
 
     @Test
+    void createStaffLogin_shouldCreateAnEncodedLoginWithOnlyTheStaffRoleAndNoCart() {
+        CustomerEntity login = new CustomerEntity(
+                9L, "rider@example.com", "encoded-password", true, "Dana", "Rider", "ACTIVE", true, 0,
+                null, null, null, null);
+        Mockito.when(customerRepository.findByEmail("rider@example.com")).thenReturn(login);
+
+        CustomerEntity created = customerService.createStaffLogin(" Rider@Example.com ", "secret", "Dana", "Rider", "RIDER");
+
+        Assertions.assertEquals(9L, created.id());
+        Mockito.verify(customerRepository).countByEmailIgnoreCase("rider@example.com");
+        Mockito.verify(userDetailsManager).createUser(Mockito.argThat(userDetails ->
+                userDetails.getUsername().equals("rider@example.com")
+                        && userDetails.getPassword().equals("encoded-password")
+                        && userDetails.getAuthorities().size() == 1
+                        && userDetails.getAuthorities().iterator().next().getAuthority().equals("ROLE_RIDER")
+        ));
+        Mockito.verify(customerRepository).updateNameByEmail("rider@example.com", "Dana", "Rider");
+        Mockito.verifyNoInteractions(cartRepository);
+    }
+
+
+    @Test
+    void createStaffLogin_whenTheEmailIsTaken_shouldConflictWithEmailAlreadyRegistered() {
+        Mockito.when(customerRepository.countByEmailIgnoreCase("taken@example.com")).thenReturn(1L, 0L);
+        Mockito.doThrow(new DataIntegrityViolationException("duplicate"))
+                .when(userDetailsManager)
+                .createUser(Mockito.any());
+
+        // Found by the check, and lost to a concurrent registration after the check.
+        for (int attempt = 0; attempt < 2; attempt++) {
+            ConflictException conflict = Assertions.assertThrows(ConflictException.class, () ->
+                    customerService.createStaffLogin("taken@example.com", "secret", null, null, "MERCHANT"));
+            Assertions.assertEquals(CustomerService.EMAIL_ALREADY_REGISTERED, conflict.getCode());
+        }
+        Mockito.verify(userDetailsManager, Mockito.times(1)).createUser(Mockito.any());
+        Mockito.verify(customerRepository, Mockito.never())
+                .updateNameByEmail(Mockito.anyString(), Mockito.any(), Mockito.any());
+    }
+
+
+    @Test
     void recordFailedLoginAttempt_shouldIncrementFailureCountAndLockAccountAtThreshold() {
         customerService.recordFailedLoginAttempt("user@example.com");
 

@@ -200,6 +200,41 @@ class RateLimitingFilterTests {
     }
 
 
+    @Test
+    void shouldRateLimitStaffProvisioningWritesByUserButNotReads() throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        allowRedisRequest(redisTemplate);
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                Mockito.mock(ApplicationMetricsService.class),
+                errorResponseWriter()
+        );
+
+        for (String[] request : List.of(
+                new String[]{"GET", "/admin/merchants"},
+                new String[]{"GET", "/admin/riders"},
+                new String[]{"POST", "/admin/riders/3"},
+                new String[]{"PATCH", "/admin/merchants"},
+                new String[]{"PATCH", "/admin/riders/abc"}
+        )) {
+            filter.doFilter(new MockHttpServletRequest(request[0], request[1]), new MockHttpServletResponse(), new MockFilterChain());
+        }
+        Mockito.verifyNoInteractions(redisTemplate);
+
+        MockHttpServletRequest create = new MockHttpServletRequest("POST", "/admin/merchants");
+        create.setRemoteAddr("10.0.0.5");
+        create.setUserPrincipal((Principal) () -> "Admin@Example.com");
+        filter.doFilter(create, new MockHttpServletResponse(), new MockFilterChain());
+
+        Assertions.assertEquals("onlineorder:rate-limit:admin-provisioning:user:admin@example.com", capturedRedisKey(redisTemplate));
+        Object[] args = capturedRedisArgs(redisTemplate);
+        Assertions.assertEquals("10", args[0]);
+        Assertions.assertEquals("6000", args[2]);
+    }
+
+
     @ParameterizedTest
     @CsvSource({
             "POST, /%6Cogin, login",
@@ -216,7 +251,11 @@ class RateLimitingFilterTests {
             "PATCH, /admin//restaurants/3/, admin-catalog",
             "POST, /dead-letters/%31%32/replay, dead-letter-replay",
             "POST, /admin/outbox/events/7/%72etry, outbox-retry",
-            "PATCH, /orders/%34%32/status, order-status"
+            "PATCH, /orders/%34%32/status, order-status",
+            "POST, /admin/%6Derchants, admin-provisioning",
+            "POST, /admin//riders/, admin-provisioning",
+            "PATCH, /admin/merchants/%34, admin-staff-status",
+            "PATCH, /admin/riders/12/, admin-staff-status"
     })
     void shouldApplyRateLimitRuleToEncodedAndNonNormalizedPaths(String method, String uri, String routeKey) throws Exception {
         StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);

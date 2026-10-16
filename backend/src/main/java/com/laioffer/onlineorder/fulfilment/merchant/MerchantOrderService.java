@@ -153,7 +153,10 @@ public class MerchantOrderService {
 
 
     /**
-     * @throws AccessDeniedException (403) when the login is not bound to a restaurant
+     * Looked up on every request, so a deactivation takes effect on the merchant's next request even though the
+     * session still carries ROLE_MERCHANT.
+     *
+     * @throws AccessDeniedException (403) when the login is not bound to a restaurant or the account is deactivated
      */
     private Long requireRestaurantId(Long merchantCustomerId) {
         MerchantAccountEntity account = merchantCustomerId == null
@@ -161,6 +164,9 @@ public class MerchantOrderService {
                 : merchantAccountRepository.findByCustomerId(merchantCustomerId);
         if (account == null) {
             throw new AccessDeniedException("Merchant account is not bound to a restaurant");
+        }
+        if (!account.active()) {
+            throw new AccessDeniedException("Merchant account is deactivated");
         }
         return account.restaurantId();
     }

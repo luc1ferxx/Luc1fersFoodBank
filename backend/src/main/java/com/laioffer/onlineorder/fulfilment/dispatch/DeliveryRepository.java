@@ -7,6 +7,7 @@ import org.springframework.data.repository.ListCrudRepository;
 
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 
 
@@ -53,6 +54,27 @@ public interface DeliveryRepository extends ListCrudRepository<DeliveryEntity, L
     DeliveryEntity lockByOrderId(Long orderId);
 
 
+    /**
+     * A delivery of this rider, locked; null for another rider's delivery as for one that does not exist.
+     */
+    @Query("SELECT * FROM deliveries WHERE id = :id AND rider_id = :riderId FOR UPDATE")
+    DeliveryEntity lockByIdAndRiderId(Long id, Long riderId);
+
+
+    /**
+     * The rider's deliveries in one of {@code statuses}, newest first; served by idx_deliveries_rider_status.
+     */
+    @Query("""
+            SELECT *
+            FROM deliveries
+            WHERE rider_id = :riderId
+              AND status IN (:statuses)
+            ORDER BY assigned_at DESC, id DESC
+            LIMIT :limit
+            """)
+    List<DeliveryEntity> findByRiderIdAndStatuses(Long riderId, Collection<String> statuses, int limit);
+
+
     @Query("""
             SELECT *
             FROM deliveries
@@ -60,6 +82,16 @@ public interface DeliveryRepository extends ListCrudRepository<DeliveryEntity, L
             LIMIT :limit
             """)
     List<DeliveryEntity> findRecent(int limit);
+
+
+    @Modifying
+    @Query("""
+            UPDATE deliveries
+            SET rider_id = :riderId,
+                updated_at = :updatedAt
+            WHERE id = :id
+            """)
+    int updateRider(Long id, Long riderId, LocalDateTime updatedAt);
 
 
     @Modifying

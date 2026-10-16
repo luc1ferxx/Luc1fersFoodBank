@@ -13,6 +13,7 @@ import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineProcessor;
 import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineService;
 import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
+import com.laioffer.onlineorder.messaging.MerchantEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
@@ -49,6 +50,7 @@ import java.util.concurrent.TimeUnit;
 
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -91,8 +93,6 @@ class FulfilmentPostgresIntegrationTests {
         registry.add("app.outbox.publisher-enabled", () -> "false");
         registry.add("app.cleanup.enabled", () -> "false");
         registry.add("app.security.rate-limit.enabled", () -> "false");
-        // Off by default (README "Order fulfilment"); the timeout tests below need it.
-        registry.add("app.fulfilment.accept-timeout-enabled", () -> "true");
     }
 
 
@@ -370,14 +370,17 @@ class FulfilmentPostgresIntegrationTests {
     void acceptTimeout_shouldCancelAPaidOrderTheMerchantNeverAccepted() {
         PaidOrder order = paidOrderAt("Fashion Wok");
         deliverOrderEvent(order.orderId(), "order.paid", orderDeadlineService::handle);
+        Assertions.assertTrue(deadlineTypes(order.orderId()).isEmpty(), "order.paid alone sets no accept deadline");
+        // Fashion Wok has an active merchant: the inbox announces the order and the timeout module sets the deadline.
         deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+        deliverMerchantOrderReceived(order.orderId());
         Assertions.assertEquals(List.of("ACCEPT"), deadlineTypes(order.orderId()));
         LocalDateTime dueAt = jdbcTemplate.queryForObject(
                 "SELECT due_at FROM order_deadlines WHERE order_id = ?", LocalDateTime.class, order.orderId());
-        LocalDateTime expectedDueAt = latestOrderEvent(order.orderId(), "order.paid").occurredAt().plusMinutes(10);
+        LocalDateTime expectedDueAt = latestMerchantEvent(order.orderId()).occurredAt().plusMinutes(10);
         Assertions.assertTrue(
                 java.time.Duration.between(expectedDueAt, dueAt).abs().toMillis() < 1,
-                "due_at " + dueAt + " should be the payment time plus the accept timeout, " + expectedDueAt
+                "due_at " + dueAt + " should be the inbox receipt time plus the accept timeout, " + expectedDueAt
         );
 
         orderDeadlineProcessor.fireDueDeadlines();
@@ -408,10 +411,51 @@ class FulfilmentPostgresIntegrationTests {
 
 
     @Test
+    void acceptTimeout_whenTheInboxReceivedOrderPaidAfterTheTimeout_shouldStillGiveTheMerchantTheWholeWindow() {
+        PaidOrder order = paidOrderAt("Burger King");
+        // The merchant group handles order.paid 11 minutes after the payment (a backlog, or the dead-lettered event
+        // replayed): measured from the payment, the 10-minute deadline would already be due.
+        OrderEventEnvelope paid = latestOrderEvent(order.orderId(), "order.paid");
+        LocalDateTime paidAt = LocalDateTime.now().minusMinutes(11);
+        merchantInboxService.handle(new OrderEventEnvelope(
+                paid.eventId(),
+                paid.eventVersion(),
+                paid.eventType(),
+                paid.aggregateType(),
+                paid.aggregateId(),
+                paidAt,
+                paid.correlationId(),
+                paid.idempotencyKey(),
+                paid.data()
+        ));
+        LocalDateTime receivedAt = latestMerchantEvent(order.orderId()).occurredAt();
+        Assertions.assertEquals(paidAt, latestMerchantEvent(order.orderId()).data().paidAt());
+        deliverMerchantOrderReceived(order.orderId());
+
+        LocalDateTime dueAt = jdbcTemplate.queryForObject(
+                "SELECT due_at FROM order_deadlines WHERE order_id = ?", LocalDateTime.class, order.orderId());
+        Assertions.assertTrue(
+                java.time.Duration.between(receivedAt.plusMinutes(10), dueAt).abs().toMillis() < 1,
+                "due_at " + dueAt + " should be the receipt time " + receivedAt + " plus the accept timeout"
+        );
+        Assertions.assertTrue(dueAt.isAfter(LocalDateTime.now().plusMinutes(9)));
+
+        // The poller leaves the order to the merchant, who can still accept it.
+        orderDeadlineProcessor.fireDueDeadlines();
+        Assertions.assertEquals("PAID", orderStatus(order.orderId()));
+        Assertions.assertEquals(List.of("ACCEPT"), deadlineTypes(order.orderId()));
+        merchantOrderService.accept(customerIdOf(BURGER_KING_MERCHANT), order.orderId());
+        Assertions.assertEquals("ACCEPTED", orderStatus(order.orderId()));
+    }
+
+
+    @Test
     void acceptTimeout_afterTheMerchantAccepted_shouldLeaveTheOrderAlone() {
         PaidOrder order = paidOrderAt("Burger King");
         deliverOrderEvent(order.orderId(), "order.paid", orderDeadlineService::handle);
         deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+        deliverMerchantOrderReceived(order.orderId());
+        Assertions.assertEquals(List.of("ACCEPT"), deadlineTypes(order.orderId()));
         merchantOrderService.accept(customerIdOf(BURGER_KING_MERCHANT), order.orderId());
         // The poller fires before the timeout consumer has seen order.accepted.
         makeDeadlinesDue(order.orderId());
@@ -421,6 +465,69 @@ class FulfilmentPostgresIntegrationTests {
         Assertions.assertEquals("ACCEPTED", orderStatus(order.orderId()));
         Assertions.assertTrue(deadlineTypes(order.orderId()).isEmpty());
         Assertions.assertEquals(List.of("order.paid", "order.accepted"), orderEventTypes(order.orderId()));
+    }
+
+
+    @Test
+    void acceptTimeout_atARestaurantWithoutAnyMerchant_shouldNeverBeSet() {
+        String restaurant = newRestaurantWithoutStaff();
+        PaidOrder order = paidOrderAt(restaurant);
+        deliverOrderEvent(order.orderId(), "order.paid", orderDeadlineService::handle);
+        deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+
+        // The order is in the restaurant's inbox for a future merchant, but nothing announces it to the timeout module.
+        Assertions.assertEquals("PAID", inboxStatus(order.orderId()));
+        Assertions.assertEquals(0, merchantEventCount(order.orderId()));
+        Assertions.assertTrue(deadlineTypes(order.orderId()).isEmpty());
+        orderDeadlineProcessor.fireDueDeadlines();
+        Assertions.assertEquals("PAID", orderStatus(order.orderId()));
+    }
+
+
+    @Test
+    void acceptTimeout_whenTheOnlyMerchantWasDeactivatedBeforeTheOrder_shouldNotBeSet() throws Exception {
+        String restaurant = newRestaurantWithoutStaff();
+        Long restaurantId = jdbcTemplate.queryForObject("SELECT id FROM restaurants WHERE name = ?", Long.class, restaurant);
+        MockHttpSession admin = login("demo@laifood.com", "demo123");
+        String merchantEmail = "merchant-" + System.nanoTime() + "@example.com";
+        String created = mockMvc.perform(post("/admin/merchants")
+                        .session(admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"email": "%s", "password": "secret-1", "first_name": "Late", "last_name": "Shift",
+                                 "restaurant_id": %d}
+                                """.formatted(merchantEmail, restaurantId)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        long merchantId = objectMapper.readTree(created).get("merchant_id").asLong();
+
+        // Staffed: the order gets an accept deadline.
+        PaidOrder staffed = paidOrderAt(restaurant);
+        deliverOrderEvent(staffed.orderId(), "order.paid", merchantInboxService::handle);
+        Assertions.assertEquals(1, merchantEventCount(staffed.orderId()));
+        deliverMerchantOrderReceived(staffed.orderId());
+        Assertions.assertEquals(List.of("ACCEPT"), deadlineTypes(staffed.orderId()));
+
+        mockMvc.perform(patch("/admin/merchants/{id}", merchantId)
+                        .session(admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"active\": false}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.active").value(false));
+
+        // Deactivated before the next order arrives: no announcement, no deadline.
+        PaidOrder unstaffed = paidOrderAt(restaurant);
+        deliverOrderEvent(unstaffed.orderId(), "order.paid", orderDeadlineService::handle);
+        deliverOrderEvent(unstaffed.orderId(), "order.paid", merchantInboxService::handle);
+        Assertions.assertEquals(0, merchantEventCount(unstaffed.orderId()));
+        Assertions.assertTrue(deadlineTypes(unstaffed.orderId()).isEmpty());
+
+        // The deadline set while the restaurant was staffed still fires; the unstaffed order is left alone.
+        makeDeadlinesDue(staffed.orderId());
+        orderDeadlineProcessor.fireDueDeadlines();
+        Assertions.assertEquals("CANCELLED", orderStatus(staffed.orderId()));
+        Assertions.assertEquals(OrderLifecycleCommands.MERCHANT_TIMEOUT, cancelReason(staffed.orderId()));
+        Assertions.assertEquals("PAID", orderStatus(unstaffed.orderId()));
     }
 
 
@@ -454,8 +561,11 @@ class FulfilmentPostgresIntegrationTests {
         for (int i = 0; i < 8; i++) {
             PaidOrder order = paidOrderAt(i % 2 == 0 ? "Burger King" : "Fashion Wok");
             deliverOrderEvent(order.orderId(), "order.paid", orderDeadlineService::handle);
+            deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+            deliverMerchantOrderReceived(order.orderId());
             // A duplicate delivery adds no second deadline.
-            deliverOrderEvent(order.orderId(), "order.paid", orderDeadlineService::handle);
+            deliverMerchantOrderReceived(order.orderId());
+            Assertions.assertEquals(List.of("ACCEPT"), deadlineTypes(order.orderId()));
             makeDeadlinesDue(order.orderId());
             orderIds.add(order.orderId());
         }
@@ -932,6 +1042,21 @@ class FulfilmentPostgresIntegrationTests {
     }
 
 
+    /**
+     * A restaurant with one menu item and no merchant account, as an operator would add one before staffing it.
+     */
+    String newRestaurantWithoutStaff() {
+        String name = "Unstaffed Kitchen " + System.nanoTime();
+        jdbcTemplate.update("INSERT INTO restaurants (name, address, phone) VALUES (?, '1 Test St', '(408) 555-0000')", name);
+        Long restaurantId = jdbcTemplate.queryForObject("SELECT id FROM restaurants WHERE name = ?", Long.class, name);
+        jdbcTemplate.update(
+                "INSERT INTO menu_items (restaurant_id, name, price, description) VALUES (?, 'House Noodles', 9.50, 'Test')",
+                restaurantId
+        );
+        return name;
+    }
+
+
     String cancelReason(Long orderId) {
         return jdbcTemplate.queryForObject("SELECT cancel_reason FROM orders WHERE id = ?", String.class, orderId);
     }
@@ -950,6 +1075,42 @@ class FulfilmentPostgresIntegrationTests {
 
     void deliverOrderEvent(Long orderId, String eventType, java.util.function.Consumer<OrderEventEnvelope> handler) {
         handler.accept(latestOrderEvent(orderId, eventType));
+    }
+
+
+    /**
+     * Feeds the timeout module the merchant.order_received the merchant inbox wrote for the order, as its merchant-topic
+     * listener would.
+     */
+    void deliverMerchantOrderReceived(Long orderId) {
+        orderDeadlineService.handle(latestMerchantEvent(orderId));
+    }
+
+
+    MerchantEventEnvelope latestMerchantEvent(Long orderId) {
+        String payload = jdbcTemplate.queryForObject("""
+                SELECT payload
+                FROM outbox_events
+                WHERE aggregate_type = 'MERCHANT_ORDER'
+                  AND aggregate_id = ?
+                  AND event_type = 'merchant.order_received'
+                ORDER BY id DESC
+                LIMIT 1
+                """, String.class, orderId);
+        try {
+            return objectMapper.readValue(payload, MerchantEventEnvelope.class);
+        } catch (java.io.IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+
+
+    int merchantEventCount(Long orderId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM outbox_events WHERE aggregate_type = 'MERCHANT_ORDER' AND aggregate_id = ?",
+                Integer.class,
+                orderId
+        );
     }
 
 

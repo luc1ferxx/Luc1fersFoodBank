@@ -210,7 +210,7 @@ abstract class AbstractLargeIdIntegrationTests {
         // Merchant accept, dispatch to the rider, pick-up and delivery, completion by the delivery event.
         Assertions.assertEquals("ACCEPTED", merchantOrderService.accept(merchantCustomerId, orderId).status());
         dispatchService.handle(latestOrderEvent(orderId, "order.accepted"));
-        DeliveryDto delivery = dispatchService.getDeliveries(orderId, 1).get(0);
+        DeliveryDto delivery = dispatchService.getDeliveries(orderId, null, 1).get(0);
         Assertions.assertEquals(riderId, delivery.riderId());
         assertBeyondInt(delivery.id(), idOf("SELECT order_id FROM dispatch_orders WHERE order_id = ?", orderId));
         dispatchService.markPickedUp(delivery.id());

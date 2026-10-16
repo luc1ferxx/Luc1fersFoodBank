@@ -22,7 +22,8 @@ import java.util.Map;
 /**
  * The event-driven fulfilment flow end to end on PostgreSQL, Redis and Kafka, driven only through the HTTP API:
  * pay -> merchant inbox -> accept -> rider assigned -> picked up -> delivered -> COMPLETED, once with the merchant
- * marking the order PREPARING and once without (completion then passes through PREPARING itself). The timeout paths
+ * marking the order PREPARING and the assigned rider working the delivery through the rider API, and once without
+ * either (completion then passes through PREPARING itself; the admin endpoints simulate the rider). The timeout paths
  * are in {@link FulfilmentTimeoutContainerTests}, which needs short timeouts this class must not have.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -42,9 +43,8 @@ class FulfilmentFlowContainerTests extends FulfilmentContainerTestSupport {
     @DynamicPropertySource
     static void configure(DynamicPropertyRegistry registry) {
         registerInfrastructure(registry, POSTGRES, REDIS, KAFKA);
-        // The accept timeout runs, but far longer than any wait below: a slow runner must not let it cancel an order
-        // before the test accepts it.
-        registry.add("app.fulfilment.accept-timeout-enabled", () -> "true");
+        // The accept timeout runs (it is on by default), but far longer than any wait below: a slow runner must not let
+        // it cancel an order before the test accepts it.
         registry.add("app.fulfilment.accept-timeout", () -> "10m");
     }
 
@@ -69,7 +69,8 @@ class FulfilmentFlowContainerTests extends FulfilmentContainerTestSupport {
 
         Long orderId = payForItemOf(customer, "Burger King", "e2e-happy-" + System.nanoTime());
 
-        // order.paid -> merchant inbox (merchant consumer group) and an ACCEPT deadline (timeout consumer group).
+        // order.paid -> merchant inbox (merchant consumer group) -> merchant.order_received (Burger King is staffed)
+        // -> an ACCEPT deadline (timeout-merchant consumer group).
         await("the order to reach the Burger King inbox", EVENT_WAIT, () ->
                 findById(getList("/merchant/orders?status=PAID", burgerKing), "order_id", orderId) != null);
         await("the accept deadline", EVENT_WAIT, () -> jdbcTemplate.queryForObject(
@@ -103,11 +104,26 @@ class FulfilmentFlowContainerTests extends FulfilmentContainerTestSupport {
 
         Assertions.assertEquals(HttpStatus.FORBIDDEN,
                 post("/admin/deliveries/" + deliveryId + "/picked-up", customer).getStatusCode());
+        // The demo riders have logins: with the merchant path, the assigned rider works the delivery through the rider
+        // API; otherwise the admin endpoints simulate the rider.
+        String rider = login(jdbcTemplate.queryForObject("""
+                SELECT customers.email
+                FROM riders
+                JOIN customers ON customers.id = riders.customer_id
+                WHERE riders.id = ?
+                """, String.class, ((Number) delivery.get("rider_id")).longValue()), "rider123");
+        Map<?, ?> riderView = findById(getList("/rider/deliveries", rider), "delivery_id", deliveryId);
+        Assertions.assertNotNull(riderView, "the delivery in the assigned rider's list");
+        Assertions.assertEquals("Burger King", riderView.get("restaurant_name"));
+        Assertions.assertEquals(HttpStatus.FORBIDDEN,
+                post("/rider/deliveries/" + deliveryId + "/picked-up", customer).getStatusCode());
+        String actions = merchantMarksPreparing ? "/rider/deliveries/" : "/admin/deliveries/";
+        String actor = merchantMarksPreparing ? rider : admin;
         Assertions.assertEquals("PICKED_UP",
-                post("/admin/deliveries/" + deliveryId + "/picked-up", admin).getBody().get("status"));
+                post(actions + deliveryId + "/picked-up", actor).getBody().get("status"));
         Assertions.assertEquals(merchantMarksPreparing ? "PREPARING" : "ACCEPTED", orderOf(customer, orderId).get("status"));
         Assertions.assertEquals("DELIVERED",
-                post("/admin/deliveries/" + deliveryId + "/delivered", admin).getBody().get("status"));
+                post(actions + deliveryId + "/delivered", actor).getBody().get("status"));
 
         // delivery.delivered -> order COMPLETED (order-delivery consumer group) -> notifications. Without the
         // merchant's PREPARING, completion moves ACCEPTED -> PREPARING -> COMPLETED in one transaction.

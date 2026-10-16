@@ -15,6 +15,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.listener.MessageListenerContainer;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -35,7 +36,13 @@ import java.util.function.Supplier;
  * Infrastructure and HTTP helpers for the fulfilment tests that run the whole app on PostgreSQL, Redis and Kafka.
  * Each subclass declares its own containers (so each gets its own broker and consumer groups) and its own
  * fulfilment settings.
+ *
+ * <p>The context is closed after each class ({@link DirtiesContext}): its containers stop with the class, and a cached
+ * context would keep its Kafka consumers polling the stopped broker's address. When Docker hands that host port to the
+ * next class's broker, those stale consumers join the new broker's consumer groups and take partitions away from the
+ * next class's listeners.
  */
+@DirtiesContext
 abstract class FulfilmentContainerTestSupport {
 
     static final Duration EVENT_WAIT = Duration.ofSeconds(30);

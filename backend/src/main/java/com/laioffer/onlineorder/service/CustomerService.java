@@ -23,6 +23,8 @@ import java.time.LocalDateTime;
 @Service
 public class CustomerService {
 
+    public static final String EMAIL_ALREADY_REGISTERED = "EMAIL_ALREADY_REGISTERED";
+
     private static final int LOGIN_LOCK_THRESHOLD = 5;
     private static final long LOGIN_LOCK_MINUTES = 15;
 
@@ -66,6 +68,41 @@ public class CustomerService {
         } catch (DataIntegrityViolationException ex) {
             throw new ConflictException("Email already exists");
         }
+    }
+
+
+    /**
+     * Creates a staff login (a merchant or a rider, provisioned by an admin) with the same password encoding and
+     * lifecycle defaults as {@link #signUp}, but with {@code role} as its only authority and no cart. Runs in the
+     * caller's transaction, so a failure of the caller's next step (binding the login to a restaurant or a rider)
+     * removes the login again.
+     *
+     * @param role the role without its prefix, for example MERCHANT
+     * @throws ConflictException EMAIL_ALREADY_REGISTERED when any login uses this email, in any letter case
+     */
+    @Transactional
+    public CustomerEntity createStaffLogin(String email, String password, String firstName, String lastName, String role) {
+        String normalizedEmail = email.trim().toLowerCase();
+        if (customerRepository.countByEmailIgnoreCase(normalizedEmail) > 0) {
+            throw new ConflictException(EMAIL_ALREADY_REGISTERED, "Email is already registered");
+        }
+        UserDetails user = User.builder()
+                .username(normalizedEmail)
+                .password(passwordEncoder.encode(password))
+                .roles(role)
+                .build();
+        try {
+            userDetailsManager.createUser(user);
+        } catch (DataIntegrityViolationException ex) {
+            // A concurrent request registered the same email after the check above.
+            throw new ConflictException(EMAIL_ALREADY_REGISTERED, "Email is already registered");
+        }
+        customerRepository.updateNameByEmail(normalizedEmail, firstName, lastName);
+        CustomerEntity customer = customerRepository.findByEmail(normalizedEmail);
+        if (customer == null) {
+            throw new IllegalStateException("Staff login " + normalizedEmail + " is missing after its insert");
+        }
+        return customer;
     }
 
 
