@@ -34,7 +34,7 @@ RUN --mount=type=cache,target=/home/gradle/.gradle/caches,uid=1000,gid=1000 \
 
 
 # --- 3. Spring Boot layer extraction: dependencies change less often than the application ---
-FROM eclipse-temurin:17.0.20_8-jre-noble AS layers
+FROM eclipse-temurin:17.0.20.1_1-jre-noble AS layers
 
 WORKDIR /layers
 COPY --from=backend /workspace/application.jar application.jar
@@ -42,7 +42,7 @@ RUN java -Djarmode=tools -jar application.jar extract --layers --destination ext
 
 
 # --- 4. Runtime ---
-FROM eclipse-temurin:17.0.20_8-jre-noble
+FROM eclipse-temurin:17.0.20.1_1-jre-noble
 
 RUN groupadd --system --gid 10001 onlineorder \
     && useradd --system --uid 10001 --gid onlineorder --home-dir /app --shell /usr/sbin/nologin onlineorder

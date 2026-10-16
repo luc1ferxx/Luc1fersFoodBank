@@ -3,3 +3,11 @@
 #   # Not reachable: the application never renders XSLT views. Owner: backend. Review by 2027-01-31.
 #   CVE-2026-00000 exp:2027-01-31
 # Prefer upgrading the dependency or base image; an entry is a dated exception, not a fix.
+
+# spring-webmvc 6.2.19 (Spring Boot 3.5.16). Fixed only in Spring Framework 7.0.9; no fix in the 6.2 line that Spring
+# Boot 3.x uses, so the fix is the Spring Boot 4 migration. Not reachable here: the application renders no XSLT
+# views (no XsltView, JSON API plus static frontend). Accepted 2026-10-16. Owner: backend. Review by 2027-01-31.
+CVE-2026-47884 exp:2027-01-31
+# Same component and fix as above. Not reachable here: the application uses no Server-Sent Events and no view
+# fragments (no SseEmitter, no FragmentsRendering). Accepted 2026-10-16. Owner: backend. Review by 2027-01-31.
+CVE-2026-47890 exp:2027-01-31
