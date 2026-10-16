@@ -47,13 +47,14 @@ import java.util.function.BooleanSupplier;
 
 /**
  * End-to-end catalog caching on PostgreSQL and Redis: cached reads keep their JSON shape, admin writes evict
- * after commit (and not on rollback), admin authorization and cache metrics.
+ * after commit (and not on rollback), HTTP caching headers, admin authorization and cache metrics.
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "spring.autoconfigure.exclude=org.springframework.boot.autoconfigure.session.SessionAutoConfiguration",
-                "app.cache.delayed-double-delete=300ms"
+                "app.cache.delayed-double-delete=300ms",
+                "app.catalog.http-max-age=30s"
         }
 )
 @Testcontainers(disabledWithoutDocker = true)
@@ -299,6 +300,53 @@ class CatalogCacheIntegrationTests {
 
 
     @Test
+    void catalogGets_shouldBePubliclyCacheableWithEtagsAndAnswer304() {
+        for (String path : List.of("/restaurants/menu", "/restaurant/" + restaurantId + "/menu")) {
+            ResponseEntity<String> first = restTemplate.getForEntity(url(path), String.class);
+            Assertions.assertEquals(HttpStatus.OK, first.getStatusCode());
+            String etag = first.getHeaders().getETag();
+            Assertions.assertNotNull(etag, path);
+            Assertions.assertTrue(etag.matches("\"[0-9a-f]{32}\""), etag);
+            Assertions.assertEquals("max-age=30, public", first.getHeaders().getCacheControl(), path);
+            Assertions.assertNull(first.getHeaders().getFirst(HttpHeaders.PRAGMA), "Spring Security's no-cache headers are not added");
+            Assertions.assertNull(first.getHeaders().getFirst(HttpHeaders.EXPIRES));
+            assertSecurityHeaders(first.getHeaders());
+
+            ResponseEntity<String> second = restTemplate.getForEntity(url(path), String.class);
+            Assertions.assertEquals(etag, second.getHeaders().getETag(), "same catalog, same ETag");
+
+            HttpHeaders conditional = new HttpHeaders();
+            conditional.setIfNoneMatch(etag);
+            ResponseEntity<String> notModified = restTemplate.exchange(url(path), HttpMethod.GET, new HttpEntity<>(conditional), String.class);
+            Assertions.assertEquals(HttpStatus.NOT_MODIFIED, notModified.getStatusCode(), path);
+            Assertions.assertNull(notModified.getBody());
+            Assertions.assertEquals(etag, notModified.getHeaders().getETag());
+            Assertions.assertEquals("max-age=30, public", notModified.getHeaders().getCacheControl());
+            assertSecurityHeaders(notModified.getHeaders());
+        }
+
+        String menuPath = "/restaurant/" + restaurantId + "/menu";
+        String menuEtag = restTemplate.getForEntity(url(menuPath), String.class).getHeaders().getETag();
+        String allEtag = restTemplate.getForEntity(url("/restaurants/menu"), String.class).getHeaders().getETag();
+        ResponseEntity<Map> update = patch(
+                "/admin/menu-items/" + whopperId,
+                Map.of("price", new BigDecimal("6.75")),
+                login("demo@laifood.com", "demo123")
+        );
+        Assertions.assertTrue(update.getHeaders().getCacheControl().contains("no-store"), "other responses keep no-store");
+
+        for (Map.Entry<String, String> previous : Map.of(menuPath, menuEtag, "/restaurants/menu", allEtag).entrySet()) {
+            HttpHeaders conditional = new HttpHeaders();
+            conditional.setIfNoneMatch(previous.getValue());
+            ResponseEntity<String> changed = restTemplate.exchange(url(previous.getKey()), HttpMethod.GET, new HttpEntity<>(conditional), String.class);
+            Assertions.assertEquals(HttpStatus.OK, changed.getStatusCode(), previous.getKey());
+            Assertions.assertNotEquals(previous.getValue(), changed.getHeaders().getETag());
+            Assertions.assertTrue(changed.getBody().contains("6.75"), changed.getBody());
+        }
+    }
+
+
+    @Test
     void cacheMetrics_shouldReportL1AndL2HitsAndMisses() {
         getJsonList("/restaurant/" + restaurantId + "/menu");
         getJsonList("/restaurant/" + restaurantId + "/menu");
@@ -309,6 +357,14 @@ class CatalogCacheIntegrationTests {
         Assertions.assertNotNull(meterRegistry.find("cache.gets").tags("cache", "menu", "level", "l2", "result", "hit").functionCounter());
         Assertions.assertNotNull(meterRegistry.find("cache.gets").tags("cache.manager", "cacheManager").functionCounter(),
                 "bound by Spring Boot's cache metrics registrar");
+    }
+
+
+    private void assertSecurityHeaders(HttpHeaders headers) {
+        Assertions.assertTrue(headers.getFirst("Content-Security-Policy").contains("default-src 'self'"));
+        Assertions.assertEquals("nosniff", headers.getFirst("X-Content-Type-Options"));
+        Assertions.assertEquals("SAMEORIGIN", headers.getFirst("X-Frame-Options"));
+        Assertions.assertNotNull(headers.getFirst("Referrer-Policy"));
     }
 
 

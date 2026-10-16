@@ -75,6 +75,7 @@ class CatalogRedisOutageIntegrationTests {
 
         ResponseEntity<List<Map<String, Object>>> menu = getJsonList("/restaurant/" + restaurantId + "/menu");
         Assertions.assertEquals(HttpStatus.OK, menu.getStatusCode());
+        Assertions.assertNotNull(menu.getHeaders().getETag());
         Map<String, Object> item = menu.getBody().get(0);
         long menuItemId = ((Number) item.get("id")).longValue();
         BigDecimal newPrice = new BigDecimal(item.get("price").toString()).add(new BigDecimal("1.11"));

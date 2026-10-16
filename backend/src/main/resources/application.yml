@@ -188,6 +188,9 @@ app:
     # Second eviction after an admin catalog write, for a reader that cached the old row right after the
     # first after-commit eviction. 0 disables it.
     delayed-double-delete: ${CACHE_DELAYED_DOUBLE_DELETE:1s}
+  catalog:
+    # Cache-Control max-age for GET /restaurants/menu and GET /restaurant/{id}/menu (both also send an ETag).
+    http-max-age: ${CATALOG_HTTP_MAX_AGE:30s}
   security:
     rate-limit:
       enabled: ${SECURITY_RATE_LIMIT_ENABLED:true}
