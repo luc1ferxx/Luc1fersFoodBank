@@ -96,7 +96,7 @@ This manually builds the frontend and copies `frontend/build` into `backend/src/
   - `./gradlew test -x buildFrontend -x syncFrontendBuild --no-daemon` in `backend/`
   - `./gradlew bootJar --no-daemon` after installing frontend dependencies
 - `.github/workflows/release.yml` builds and publishes the root `Dockerfile` image to GHCR on `v*` tags or manual dispatch.
-- Prefer the root `Dockerfile` for a full source build. `backend/Dockerfile` expects `backend/build/libs/OnlineOrder-0.0.1-SNAPSHOT.jar` to already exist.
+- Prefer the root `Dockerfile` for a full source build. `backend/Dockerfile` expects `backend/build/libs/OnlineOrder-0.0.1-SNAPSHOT.jar` to already exist and packages it on the same pinned, non-root Java 17 runtime (`docker build --platform linux/amd64 backend` for another architecture).
 
 ## Testing Notes
 
@@ -129,3 +129,13 @@ Optional environment variables include `BASE_URL`, `VUS`, `DURATION`, `USER_COUN
 - The deadline poller runs on its own thread, not the shared `spring.task.scheduling` pool, and follows `app.kafka.enabled` (off in the `h2` profile). Do not register another `TaskScheduler` bean: Spring Boot would back off its scheduler for all `@Scheduled` jobs.
 - Demo merchants (`merchant.burgerking@laifood.com` etc., password `merchant123`) and riders come from `db/demo/afterMigrate__seed_demo_fulfilment.sql` and are demo-only.
 - The merchant accept timeout is off by default (`app.fulfilment.accept-timeout-enabled`): there is no merchant UI or provisioning API, so it would cancel every paid order. Tests that need it turn it on.
+
+## Observability and Delivery
+
+Details in `docs/operations.md`.
+
+- Tracing is Micrometer Tracing + OpenTelemetry with W3C `traceparent`. `X-Trace-Id` and error-body `trace_id` are the OpenTelemetry trace id. Spans are exported only with `TRACING_EXPORT_ENABLED=true`; tests never export, and Spring Boot tests turn propagation off unless the class has `@AutoConfigureObservability` (needed to assert trace ids).
+- Insert outbox rows through `OutboxEventRepository.save(...)`: `OutboxTraceContextCallback` stores the current traceparent in `outbox_events.trace_parent` (V6) and the publisher continues that trace. A hand-written `INSERT` loses the trace. Kafka observation is enabled for every `KafkaTemplate` and listener container factory bean by `TracingConfig`, including new ones.
+- `MANAGEMENT_SERVER_PORT=8081` (Kubernetes ConfigMap, the `app` profile of `deploy/observability`; not baked into the image) serves the actuator on its own port without a session; unset, the actuator stays on 8080 behind `ROLE_ADMIN` (local runs, tests, plain `docker run`). Point k6 at a split management port with `MANAGEMENT_URL`.
+- CI's `backend-test` job runs `./gradlew test jacocoTestReport jacocoTestCoverageVerification spotbugsMain -x buildFrontend -x syncFrontendBuild --no-daemon` (coverage minimums in `backend/build.gradle`; SpotBugs baseline in `backend/config/spotbugs/exclude.xml`). Its `config-lint` job validates `deploy/` and the workflows. `release.yml` runs CI, a Trivy gate (dated exceptions in `.trivyignore`; security patch overrides at the top of `backend/build.gradle`), an SBOM, the GHCR push and kustomize deploys (staging only with a `KUBE_CONFIG` secret; production through the protected environment).
+- Validate observability and Kubernetes changes with promtool (`check rules`, `test rules alerts.test.yml`, `check config`), `docker compose -f deploy/observability/docker-compose.yml --profile app config`, and `kubectl kustomize deploy/k8s/overlays/<env>` + kubeconform; the exact commands are in `docs/operations.md` and the `config-lint` job.

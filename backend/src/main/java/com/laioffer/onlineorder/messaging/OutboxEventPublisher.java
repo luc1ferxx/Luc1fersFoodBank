@@ -3,7 +3,10 @@ package com.laioffer.onlineorder.messaging;
 
 import com.laioffer.onlineorder.entity.OutboxEventEntity;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.observability.OutboxTracing;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.InvalidRecordException;
 import org.apache.kafka.common.errors.RecordBatchTooLargeException;
@@ -94,6 +97,7 @@ public class OutboxEventPublisher {
     private int consecutiveFailedRuns;
     private Instant pausedAt;
     private Duration pause = Duration.ZERO;
+    private volatile ObservationRegistry observationRegistry = ObservationRegistry.NOOP;
 
 
     @Autowired
@@ -152,6 +156,17 @@ public class OutboxEventPublisher {
                     CLAIM_TIMEOUT_MARGIN
             );
         }
+    }
+
+
+    /**
+     * Each send runs in a relay observation that continues the trace stored with the event (see
+     * {@link OutboxTracing}). Without a registry, as in unit tests that build the publisher directly, events are
+     * sent untraced.
+     */
+    @Autowired(required = false)
+    public void setObservationRegistry(ObservationRegistry observationRegistry) {
+        this.observationRegistry = observationRegistry == null ? ObservationRegistry.NOOP : observationRegistry;
     }
 
 
@@ -226,6 +241,109 @@ public class OutboxEventPublisher {
                 backoff,
                 consecutiveFailedRuns
         );
+    }
+
+
+    /**
+     * Sends the event with its relay observation in scope, so the KafkaTemplate send observation (and, through the
+     * record's traceparent header, the consumer) joins the trace of the request that wrote the event. A failure to
+     * open or close the scope only loses the scope; a failure of the send itself is rethrown unchanged.
+     */
+    private CompletableFuture<SendResult<String, String>> sendInScope(Observation relay, OutboxEventEntity event) {
+        RelayScope scope = openScope(relay, event);
+        try {
+            return kafkaTemplate.send(event.topic(), event.eventKey(), event.payload());
+        } finally {
+            closeScope(scope, event);
+        }
+    }
+
+
+    /**
+     * Tracing must never decide whether or how often an event is published: every call into the relay observation
+     * catches its own failures, logs them at debug level and lets the publisher carry on. If the relay observation
+     * cannot be started, the event is sent untraced. KafkaTemplate's own send observation is spring-kafka's and is
+     * not covered: a handler that throws inside it fails the send like any other send error.
+     */
+    private Observation startRelay(OutboxEventEntity event) {
+        try {
+            return OutboxTracing.startRelay(observationRegistry, event);
+        } catch (RuntimeException ex) {
+            LOGGER.debug("Could not start the trace relay for outbox event {}; sending it untraced", event.id(), ex);
+            return Observation.NOOP;
+        }
+    }
+
+
+    /**
+     * Micrometer makes the scope current before it notifies the handlers, and notifies them before it restores the
+     * previous scope on close. When a handler throws, the previous scope is restored here, so a failing handler
+     * cannot leave the relay current on the scheduler thread.
+     *
+     * @return the opened scope, or null when it could not be opened
+     */
+    private RelayScope openScope(Observation relay, OutboxEventEntity event) {
+        ObservationRegistry registry = observationRegistry;
+        Observation.Scope previous = registry.getCurrentObservationScope();
+        try {
+            return new RelayScope(relay.openScope(), registry, previous);
+        } catch (RuntimeException ex) {
+            restoreScope(registry, previous);
+            LOGGER.debug("Could not open the trace relay scope of outbox event {}", event.id(), ex);
+            return null;
+        }
+    }
+
+
+    private static void closeScope(RelayScope scope, OutboxEventEntity event) {
+        if (scope == null) {
+            return;
+        }
+        try {
+            scope.scope().close();
+        } catch (RuntimeException ex) {
+            restoreScope(scope.registry(), scope.previous());
+            LOGGER.debug("Could not close the trace relay scope of outbox event {}", event.id(), ex);
+        }
+    }
+
+
+    private static void restoreScope(ObservationRegistry registry, Observation.Scope previous) {
+        try {
+            registry.setCurrentObservationScope(previous);
+        } catch (RuntimeException ex) {
+            LOGGER.debug("Could not restore the observation scope of the outbox publisher", ex);
+        }
+    }
+
+
+    /**
+     * Runs the action, typically a log statement, with the relay span in scope, so the log line carries the traceId
+     * and spanId of the event's trace instead of those of the scheduled run.
+     */
+    private void inRelayScope(Observation relay, OutboxEventEntity event, Runnable action) {
+        RelayScope scope = openScope(relay, event);
+        try {
+            action.run();
+        } finally {
+            closeScope(scope, event);
+        }
+    }
+
+
+    /**
+     * Ends the relay observation once, when the publisher knows the event's outcome; a failure marks the span as an
+     * error.
+     */
+    private static void endRelay(Observation relay, OutboxEventEntity event, Throwable failure) {
+        try {
+            if (failure != null) {
+                relay.error(failure);
+            }
+            relay.stop();
+        } catch (RuntimeException ex) {
+            LOGGER.debug("Could not end the trace relay of outbox event {}", event.id(), ex);
+        }
     }
 
 
@@ -330,9 +448,9 @@ public class OutboxEventPublisher {
 
                 Deque<OutboxEventEntity> keyEvents = keys.next();
                 OutboxEventEntity event = keyEvents.removeFirst();
-                CompletableFuture<SendResult<String, String>> future = send(event, keyEvents);
-                if (future != null) {
-                    wave.add(new InFlightEvent(event, future));
+                InFlightEvent inFlight = send(event, keyEvents);
+                if (inFlight != null) {
+                    wave.add(inFlight);
                 }
                 if (keyEvents.isEmpty()) {
                     keys.remove();
@@ -346,34 +464,36 @@ public class OutboxEventPublisher {
          * @param laterEvents the later events of the event's key in this batch
          * @return the pending send, or null when the event was not sent
          */
-        private CompletableFuture<SendResult<String, String>> send(
+        private InFlightEvent send(
                 OutboxEventEntity event,
                 Deque<OutboxEventEntity> laterEvents
         ) {
+            Observation relay = startRelay(event);
             CompletableFuture<SendResult<String, String>> future;
             try {
-                future = kafkaTemplate.send(event.topic(), event.eventKey(), event.payload());
+                future = sendInScope(relay, event);
             } catch (RuntimeException ex) {
                 if (Thread.interrupted()) {
                     interrupted = true;
                     sendingStopped = true;
                     unsentIds.add(event.id());
+                    endRelay(relay, event, null);
                 } else {
-                    reject(event, ex, laterEvents);
+                    reject(event, relay, ex, laterEvents);
                 }
                 return null;
             }
 
             if (future == null) {
-                reject(event, new IllegalStateException("Kafka send returned no result"), laterEvents);
+                reject(event, relay, new IllegalStateException("Kafka send returned no result"), laterEvents);
                 return null;
             }
             if (future.isCompletedExceptionally()) {
-                reject(event, failureOf(future), laterEvents);
+                reject(event, relay, failureOf(future), laterEvents);
                 return null;
             }
             previousSendRejected = false;
-            return future;
+            return new InFlightEvent(event, future, relay);
         }
 
 
@@ -383,9 +503,14 @@ public class OutboxEventPublisher {
          * outage (KafkaTemplate throws once the producer gave up after max.block.ms), and a second rejection in a
          * row stop the batch.
          */
-        private void reject(OutboxEventEntity event, Throwable cause, Deque<OutboxEventEntity> laterEvents) {
+        private void reject(
+                OutboxEventEntity event,
+                Observation relay,
+                Throwable cause,
+                Deque<OutboxEventEntity> laterEvents
+        ) {
             FailedEvent failure = new FailedEvent(event, cause);
-            failed.add(failure);
+            fail(failure, relay);
             if (failure.kind() == FailureKind.RECORD && !previousSendRejected) {
                 laterEvents.forEach(laterEvent -> unsentIds.add(laterEvent.id()));
                 laterEvents.clear();
@@ -401,37 +526,73 @@ public class OutboxEventPublisher {
          * events of their keys, which were never sent, are released with the rest of the batch.
          */
         private void awaitWave(List<InFlightEvent> wave) {
-            for (InFlightEvent inFlight : wave) {
+            for (int index = 0; index < wave.size(); index++) {
                 if (interrupted) {
+                    abandon(wave.subList(index, wave.size()));
                     return;
                 }
 
+                InFlightEvent inFlight = wave.get(index);
                 OutboxEventEntity event = inFlight.event();
                 try {
                     inFlight.future().get(Math.max(0L, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
                     published.add(event);
+                    endRelay(inFlight.relay(), event, null);
                     continue;
                 } catch (InterruptedException ex) {
                     interrupted = true;
                     sendingStopped = true;
+                    abandon(wave.subList(index, wave.size()));
                     return;
                 } catch (ExecutionException ex) {
-                    failed.add(new FailedEvent(event, ex.getCause()));
+                    fail(new FailedEvent(event, ex.getCause()), inFlight.relay());
                 } catch (TimeoutException ex) {
-                    failed.add(new FailedEvent(
+                    fail(new FailedEvent(
                             event,
                             "Kafka did not acknowledge the event within " + publishTimeout,
                             null,
                             FailureKind.TRANSIENT
-                    ));
+                    ), inFlight.relay());
                 } catch (CancellationException ex) {
-                    failed.add(new FailedEvent(event, ex));
+                    fail(new FailedEvent(event, ex), inFlight.relay());
                 }
 
                 Deque<OutboxEventEntity> laterEvents = unsentByKey.remove(event.eventKey());
                 if (laterEvents != null) {
                     laterEvents.forEach(laterEvent -> unsentIds.add(laterEvent.id()));
                 }
+            }
+        }
+
+
+        /**
+         * Records the failure and logs it inside the event's trace, then ends the event's relay span as an error.
+         */
+        private void fail(FailedEvent failure, Observation relay) {
+            failed.add(failure);
+            OutboxEventEntity event = failure.event();
+            inRelayScope(relay, event, () -> LOGGER.warn(
+                    "Failed to publish outbox event {} to Kafka topic {}: {}",
+                    event.id(),
+                    event.topic(),
+                    failure.error(),
+                    failure.cause()
+            ));
+            endRelay(
+                    relay,
+                    event,
+                    failure.cause() != null ? failure.cause() : new TimeoutException(failure.error())
+            );
+        }
+
+
+        /**
+         * Ends the relay spans of sends that were still in flight when the publisher was interrupted; the events stay
+         * PROCESSING until the claim timeout.
+         */
+        private void abandon(List<InFlightEvent> inFlightEvents) {
+            for (InFlightEvent inFlight : inFlightEvents) {
+                endRelay(inFlight.relay(), inFlight.event(), null);
             }
         }
 
@@ -463,13 +624,6 @@ public class OutboxEventPublisher {
                     );
                 }
                 metricsService.recordOutboxPublishResult(event.topic(), false);
-                LOGGER.warn(
-                        "Failed to publish outbox event {} to Kafka topic {}: {}",
-                        event.id(),
-                        event.topic(),
-                        failure.error(),
-                        failure.cause()
-                );
             }
             for (Map.Entry<String, List<Long>> idsByError : transientFailureIdsByError.entrySet()) {
                 writeFailure = runWrite(
@@ -501,7 +655,15 @@ public class OutboxEventPublisher {
     }
 
 
-    private record InFlightEvent(OutboxEventEntity event, CompletableFuture<SendResult<String, String>> future) {
+    private record InFlightEvent(
+            OutboxEventEntity event,
+            CompletableFuture<SendResult<String, String>> future,
+            Observation relay
+    ) {
+    }
+
+
+    private record RelayScope(Observation.Scope scope, ObservationRegistry registry, Observation.Scope previous) {
     }
 
 

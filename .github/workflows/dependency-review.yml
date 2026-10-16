@@ -1,0 +1,45 @@
+name: Dependency review
+
+# GitHub's dependency graph reads package-lock.json on its own; Gradle dependencies are submitted by this workflow
+# so pull requests can be compared with the default branch.
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gradle-dependency-graph:
+    # A pull request from a fork gets a read-only token and cannot submit a snapshot.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/dependency-submission@v6
+        with:
+          build-root-directory: backend
+
+  dependency-review:
+    if: always() && github.event_name == 'pull_request'
+    needs: gradle-dependency-graph
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          retry-on-snapshot-warnings: true
+          comment-summary-in-pr: on-failure

@@ -30,7 +30,8 @@ Most demo food apps stop at CRUD. This one goes deeper into the failure modes th
 - **Persistent dead-letter storage and replay** for failed consumers
 - **Failed outbox inspection and retry** for operator recovery
 - **Redis-backed sessions, cache, and rate limiting**
-- **Actuator, Prometheus metrics, structured logs, and trace correlation**
+- **OpenTelemetry tracing from the HTTP request through the outbox to the Kafka consumer**, Prometheus metrics, structured logs, Grafana dashboards and alert rules
+- **Kubernetes manifests and a gated release pipeline** (coverage, SpotBugs, CodeQL, Trivy, SBOM, staged deploys); see [docs/operations.md](docs/operations.md)
 - **Focused tests** for checkout rollback, duplicate requests, order state transitions, outbox behavior, and security controls
 
 The theme of the project is simple:
@@ -46,7 +47,7 @@ The theme of the project is simple:
 | Customer experience | Sign up, log in, browse restaurants, search menus, manage cart, checkout, view orders, cancel eligible orders, view notifications |
 | Admin operations | Move orders through a guarded state machine, inspect failed outbox events, retry failed publishes, replay dead-lettered events |
 | Reliability | Idempotency keys, row locking, transactional outbox, at-least-once event handling, deduplication tables, replay paths |
-| Observability | `X-Trace-Id`, structured logs, Actuator health, Prometheus metrics, readiness and liveness probes |
+| Observability | OpenTelemetry traces (`X-Trace-Id` = trace id), structured logs with trace/span ids, Prometheus metrics on a separate management port, Grafana dashboard, alert rules, readiness and liveness probes |
 | Local development | Docker Compose for PostgreSQL, Redis, and Kafka; H2 fallback profile; React dev server proxy |
 
 ---
@@ -99,7 +100,8 @@ sequenceDiagram
 | Data | PostgreSQL, Flyway migrations, H2 fallback profile |
 | Runtime state | Redis for Spring Session, cache, and distributed rate-limit counters |
 | Messaging | Kafka, transactional outbox table, consumer deduplication table, dead-letter replay |
-| Observability | Spring Boot Actuator, Micrometer, Prometheus endpoint, structured JSON logs, `X-Trace-Id` |
+| Observability | Spring Boot Actuator, Micrometer, Micrometer Tracing + OpenTelemetry (OTLP), Prometheus, Tempo, Grafana, structured JSON logs |
+| Delivery | Multi-stage non-root Docker image, Kubernetes (kustomize), GitHub Actions with JaCoCo, SpotBugs, CodeQL, dependency review, Trivy and SBOM |
 | Verification | JUnit, Spring Boot tests, Testcontainers, GitHub Actions |
 
 ---
@@ -219,13 +221,18 @@ The `h2` profile runs Flyway migrations and includes the demo seed callback by d
 | `GET` | `/v3/api-docs` | OpenAPI JSON |
 | `GET` | `/swagger-ui/index.html` | Swagger UI |
 
-API errors use a consistent JSON shape and include a trace id:
+With `MANAGEMENT_SERVER_PORT=8081` (set on Kubernetes and in the observability stack) the `/actuator` endpoints move
+to that in-cluster port and need no session there; without it they stay on the application port and everything but
+health and info requires `ROLE_ADMIN`. See [docs/operations.md](docs/operations.md).
+
+API errors use a consistent JSON shape and include the OpenTelemetry trace id, which is also returned in the
+`X-Trace-Id` header (send a W3C `traceparent` header to join an existing trace):
 
 ```json
 {
   "code": "VALIDATION_FAILED",
   "message": "Request validation failed",
-  "trace_id": "trace-12345",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
   "status": 400,
   "path": "/signup",
   "timestamp": "2026-05-07T05:00:00Z"
@@ -569,6 +576,9 @@ Some integration tests use Testcontainers and require Docker. Tests annotated wi
 |   |-- src/main/resources/db          Flyway migrations and demo seed data
 |   `-- src/test/java                  unit and integration tests
 |-- load-tests/                        k6 order-flow load test
+|-- deploy/observability/              OTel Collector, Tempo, Prometheus (alerts), Grafana (dashboards)
+|-- deploy/k8s/                        kustomize base + staging/prod overlays
+|-- docs/operations.md                 observability, deployment, CI/CD gates
 |-- Dockerfile                         full source build image
 `-- README.md
 ```
@@ -589,6 +599,10 @@ Some integration tests use Testcontainers and require Docker. Tests annotated wi
 | Copy frontend build into backend | `cd frontend && npm run deploy:backend` |
 | Build executable jar | `cd backend && ./gradlew bootJar --no-daemon` |
 | Run load test | `k6 run load-tests/order-flow.js` |
+| Backend CI gates | `cd backend && ./gradlew test jacocoTestReport jacocoTestCoverageVerification spotbugsMain -x buildFrontend -x syncFrontendBuild --no-daemon` |
+| Observability stack + app | `ONLINEORDER_SCRAPE_TARGETS=./prometheus/targets/compose docker compose -f deploy/observability/docker-compose.yml --profile app up -d --build` (Grafana on 3001) |
+| Build the image | `docker build -t onlineorder:local .` |
+| Render Kubernetes manifests | `kubectl kustomize deploy/k8s/overlays/staging` |
 
 ---
 

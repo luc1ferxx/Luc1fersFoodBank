@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: onlineorder-staging
+  labels:
+    # The pod spec meets the restricted Pod Security Standard (non-root, no privilege escalation, no capabilities,
+    # RuntimeDefault seccomp).
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted

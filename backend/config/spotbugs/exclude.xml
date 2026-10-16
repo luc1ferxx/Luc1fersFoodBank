@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SpotBugs baseline for spotbugsMain. Explain why each entry is accepted; anything not listed here fails the build.
+  New entries should be narrow (pattern + class). The first entry is the exception: it is a global pattern
+  exclusion.
+-->
+<FindBugsFilter>
+    <!--
+      Global: EI_EXPOSE_REP and EI_EXPOSE_REP2 are not reported for any class. Constructor-injected Spring beans
+      (repositories, templates, registries) and records/DTOs that carry lists are stored by reference on purpose;
+      copying them would break injection or cost allocations on the request path. At introduction this hid 46 of the
+      49 findings (41 EI_EXPOSE_REP2 in constructors, 5 EI_EXPOSE_REP on record accessors). It is global rather than
+      per package so that new beans and records in new packages do not each need an entry; it also hides any future
+      finding of these two patterns.
+    -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    </Match>
+
+    <!--
+      Baseline at gate introduction: the constructor validates its Duration settings and throws on invalid
+      configuration, which fails application startup as intended. The class is not subclassed.
+    -->
+    <Match>
+        <Class name="com.laioffer.onlineorder.service.DeadLetterReplayService"/>
+        <Bug pattern="CT_CONSTRUCTOR_THROW"/>
+    </Match>
+
+    <!--
+      Baseline at gate introduction: defensive checks for a null KafkaTemplate#send result and a missing producer
+      factory. The unit tests exercise both with mocks.
+    -->
+    <Match>
+        <Or>
+            <Class name="com.laioffer.onlineorder.messaging.OutboxEventPublisher"/>
+            <Class name="com.laioffer.onlineorder.messaging.OutboxEventPublisher$BatchPublication"/>
+        </Or>
+        <Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/>
+    </Match>
+</FindBugsFilter>

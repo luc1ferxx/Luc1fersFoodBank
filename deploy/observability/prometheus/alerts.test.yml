@@ -1,0 +1,201 @@
+# Unit tests for alerts.yml: promtool test rules alerts.test.yml
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 30s
+
+tests:
+  - name: target down for a minute
+    interval: 1m
+    input_series:
+      - series: 'up{job="onlineorder", instance="app:8081"}'
+        values: '1 1 0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: OnlineOrderTargetDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: OnlineOrderTargetDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: onlineorder
+              instance: app:8081
+            exp_annotations:
+              summary: OnlineOrder instance app:8081 cannot be scraped
+              description: Prometheus has failed to scrape app:8081 for 1 minute. The instance is down or its management port (8081) is unreachable.
+
+  - name: 5xx ratio above 5% for 5 minutes
+    interval: 1m
+    input_series:
+      # 1 request/s answered 200 and 0.1 request/s answered 503: 9.1% errors.
+      - series: 'http_server_requests_seconds_count{application="OnlineOrder", uri="/payments/checkout", status="200"}'
+        values: '0+60x15'
+      - series: 'http_server_requests_seconds_count{application="OnlineOrder", uri="/payments/checkout", status="503"}'
+        values: '0+6x15'
+      # Scrapes of the actuator do not count.
+      - series: 'http_server_requests_seconds_count{application="OnlineOrder", uri="/actuator/prometheus", status="200"}'
+        values: '0+600x15'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: OnlineOrderHighErrorRate
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: OnlineOrderHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: More than 5% of OnlineOrder requests fail with 5xx
+              description: 9.091% of requests answered 5xx over the last 5 minutes. 503 SERVICE_UNAVAILABLE means the Hikari pool is saturated; check the Hikari pending panel.
+
+  - name: healthy traffic raises nothing
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="OnlineOrder", uri="/restaurants/menu", status="200"}'
+        values: '0+60x90'
+      - series: 'http_server_requests_seconds_bucket{application="OnlineOrder", uri="/restaurants/menu", status="200", le="0.5"}'
+        values: '0+60x90'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: OnlineOrderHighErrorRate
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: OnlineOrderLatencySLOFastBurn
+        exp_alerts: []
+
+  - name: latency objective burning fast
+    interval: 1m
+    input_series:
+      # Half of the requests take longer than 500ms: 50% against a 1% budget.
+      - series: 'http_server_requests_seconds_count{application="OnlineOrder", uri="/orders", status="200"}'
+        values: '0+60x90'
+      - series: 'http_server_requests_seconds_bucket{application="OnlineOrder", uri="/orders", status="200", le="0.5"}'
+        values: '0+30x90'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: OnlineOrderLatencySLOFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: OnlineOrder latency SLO is burning fast
+              description: More than 14.4% of requests took longer than 500ms over both the last hour and the last 5 minutes (objective - 99% within 500ms).
+
+  - name: outbox backlog older than two minutes
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_outbox_oldest_pending_age_seconds{application="OnlineOrder", instance="app:8081"}'
+        values: '1 2 3 200 260 320 380 440 500 560'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: OnlineOrderOutboxBacklogStale
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: OnlineOrderOutboxBacklogStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Outbox events wait more than 2 minutes for Kafka
+              description: The oldest unpublished outbox event is 8m 20s old. Order events are not reaching Kafka; check broker reachability and the outbox publisher logs.
+
+  - name: Kafka consumer lag per client
+    interval: 1m
+    input_series:
+      - series: 'kafka_consumer_fetch_manager_records_lag_max{application="OnlineOrder", instance="app:8081", client_id="consumer-onlineorder-1"}'
+        values: '0 2000x14'
+      - series: 'kafka_consumer_fetch_manager_records_lag_max{application="OnlineOrder", instance="app:8081", client_id="consumer-onlineorder-dlt-4"}'
+        values: '0x14'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: OnlineOrderKafkaConsumerLag
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: app:8081
+              client_id: consumer-onlineorder-1
+            exp_annotations:
+              summary: Kafka consumer consumer-onlineorder-1 is falling behind
+              description: Consumer consumer-onlineorder-1 on app:8081 has been more than 1000 records behind for 10 minutes (2k now).
+
+  - name: sustained Hikari pending
+    interval: 1m
+    input_series:
+      - series: 'hikaricp_connections_pending{application="OnlineOrder", pool="onlineorder-db", instance="app:8081"}'
+        values: '0 0 3 4 5 6 7 8 9 10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: OnlineOrderHikariPendingSustained
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: OnlineOrderHikariPendingSustained
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: app:8081
+            exp_annotations:
+              summary: Requests keep waiting for a database connection on app:8081
+              description: Threads have been waiting for a pooled connection for 5 minutes (9 now). Requests that wait longer than the 2s connection-timeout fail with 503.
+
+  # onlineorder.dead_letter.stored is registered by the first dead letter, so its series starts at 1.
+  - name: first dead letter after a start
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_dead_letter_stored_total{application="OnlineOrder", instance="app:8081", source_topic="order-events"}'
+        values: '_ _ _ 1x30'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Order events are being dead-lettered
+              description: Events were stored as dead letters in the last 15 minutes. Inspect them and replay with POST /dead-letters/{id}/replay once the consumer is fixed.
+      # Resolves once the window no longer holds the event.
+      - eval_time: 25m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts: []
+
+  - name: later dead letters on an existing series
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_dead_letter_stored_total{application="OnlineOrder", instance="app:8081", source_topic="order-events"}'
+        values: '1x24 2x10'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts: []
+      - eval_time: 27m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Order events are being dead-lettered
+              description: Events were stored as dead letters in the last 15 minutes. Inspect them and replay with POST /dead-letters/{id}/replay once the consumer is fixed.
+
+  # A restarted pod gets a new instance label; its counter starts over at 1 while the old series goes stale.
+  - name: first dead letter on a replacement instance
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_dead_letter_stored_total{application="OnlineOrder", instance="10.0.0.1:8081", source_topic="order-events"}'
+        values: '3x19 stale'
+      - series: 'onlineorder_dead_letter_stored_total{application="OnlineOrder", instance="10.0.0.2:8081", source_topic="order-events"}'
+        values: '_x25 1x10'
+    alert_rule_test:
+      - eval_time: 22m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts: []
+      - eval_time: 27m
+        alertname: OnlineOrderDeadLettersGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Order events are being dead-lettered
+              description: Events were stored as dead letters in the last 15 minutes. Inspect them and replay with POST /dead-letters/{id}/replay once the consumer is fixed.

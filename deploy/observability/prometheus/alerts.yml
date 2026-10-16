@@ -1,0 +1,170 @@
+# Recording and alerting rules for the OnlineOrder service. Metric names are those of /actuator/prometheus; every
+# application meter carries application="OnlineOrder" (management.metrics.tags.application).
+#
+# SLOs behind the rules:
+#   - availability: fewer than 1% of requests answer 5xx
+#   - latency: 99% of requests complete within 500ms (the le="0.5" SLO bucket of http.server.requests)
+# Validate with: promtool check rules alerts.yml && promtool test rules alerts.test.yml
+groups:
+  - name: onlineorder-slo-recording
+    interval: 30s
+    rules:
+      - record: onlineorder:http_requests:rate5m
+        expr: sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*"}[5m]))
+
+      - record: onlineorder:http_server_errors:ratio_rate5m
+        expr: |
+          sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*", status=~"5.."}[5m]))
+          /
+          sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*"}[5m]))
+
+      # Share of requests slower than the 500ms latency objective, over the burn-rate windows.
+      - record: onlineorder:http_slow_requests:ratio_rate5m
+        expr: |
+          1 - (
+            sum(rate(http_server_requests_seconds_bucket{application="OnlineOrder", uri!~"/actuator.*", le="0.5"}[5m]))
+            /
+            sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*"}[5m]))
+          )
+      - record: onlineorder:http_slow_requests:ratio_rate30m
+        expr: |
+          1 - (
+            sum(rate(http_server_requests_seconds_bucket{application="OnlineOrder", uri!~"/actuator.*", le="0.5"}[30m]))
+            /
+            sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*"}[30m]))
+          )
+      - record: onlineorder:http_slow_requests:ratio_rate1h
+        expr: |
+          1 - (
+            sum(rate(http_server_requests_seconds_bucket{application="OnlineOrder", uri!~"/actuator.*", le="0.5"}[1h]))
+            /
+            sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*"}[1h]))
+          )
+      - record: onlineorder:http_slow_requests:ratio_rate6h
+        expr: |
+          1 - (
+            sum(rate(http_server_requests_seconds_bucket{application="OnlineOrder", uri!~"/actuator.*", le="0.5"}[6h]))
+            /
+            sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*"}[6h]))
+          )
+
+  - name: onlineorder-alerts
+    rules:
+      - alert: OnlineOrderTargetDown
+        expr: up{job="onlineorder"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: OnlineOrder instance {{ $labels.instance }} cannot be scraped
+          description: Prometheus has failed to scrape {{ $labels.instance }} for 1 minute. The instance is down or its management port (8081) is unreachable.
+
+      - alert: OnlineOrderHighErrorRate
+        expr: onlineorder:http_server_errors:ratio_rate5m > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: More than 5% of OnlineOrder requests fail with 5xx
+          description: '{{ $value | humanizePercentage }} of requests answered 5xx over the last 5 minutes. 503 SERVICE_UNAVAILABLE means the Hikari pool is saturated; check the Hikari pending panel.'
+
+      # Multi-window burn rate on the latency objective (1% budget): 14.4x burns 2% of a 30-day budget in an hour.
+      - alert: OnlineOrderLatencySLOFastBurn
+        expr: |
+          onlineorder:http_slow_requests:ratio_rate1h > (14.4 * 0.01)
+          and
+          onlineorder:http_slow_requests:ratio_rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: OnlineOrder latency SLO is burning fast
+          description: More than 14.4% of requests took longer than 500ms over both the last hour and the last 5 minutes (objective - 99% within 500ms).
+
+      - alert: OnlineOrderLatencySLOSlowBurn
+        expr: |
+          onlineorder:http_slow_requests:ratio_rate6h > (6 * 0.01)
+          and
+          onlineorder:http_slow_requests:ratio_rate30m > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: OnlineOrder latency SLO is burning steadily
+          description: More than 6% of requests took longer than 500ms over both the last 6 hours and the last 30 minutes (objective - 99% within 500ms).
+
+      # The publisher polls every 500ms, so a healthy backlog is seconds old. A Kafka outage pauses it with a backoff
+      # capped at app.outbox.failure-backoff-max (60s).
+      - alert: OnlineOrderOutboxBacklogStale
+        expr: max(onlineorder_outbox_oldest_pending_age_seconds{application="OnlineOrder"}) > 120
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Outbox events wait more than 2 minutes for Kafka
+          description: The oldest unpublished outbox event is {{ $value | humanizeDuration }} old. Order events are not reaching Kafka; check broker reachability and the outbox publisher logs.
+
+      - alert: OnlineOrderOutboxBacklogCritical
+        expr: max(onlineorder_outbox_oldest_pending_age_seconds{application="OnlineOrder"}) > 900
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Outbox events wait more than 15 minutes for Kafka
+          description: The oldest unpublished outbox event is {{ $value | humanizeDuration }} old.
+
+      - alert: OnlineOrderOutboxEventsFailed
+        expr: max(onlineorder_outbox_failed{application="OnlineOrder"}) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Outbox events reached FAILED
+          description: '{{ $value }} outbox event(s) used up app.outbox.max-attempts. Fix the cause, then retry them with POST /admin/outbox/events/{id}/retry.'
+
+      # The counter is registered by the first dead letter an instance stores, so its series starts at 1 and
+      # increase() cannot see that first event. The second branch catches a series that appeared within the window
+      # (the first dead letter after a start, or of a new source topic); increase() covers the rest, counter resets
+      # included.
+      - alert: OnlineOrderDeadLettersGrowing
+        expr: |
+          sum(increase(onlineorder_dead_letter_stored_total{application="OnlineOrder"}[15m])) > 0
+          or
+          count(
+            onlineorder_dead_letter_stored_total{application="OnlineOrder"}
+            unless
+            onlineorder_dead_letter_stored_total{application="OnlineOrder"} offset 15m
+          ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Order events are being dead-lettered
+          description: Events were stored as dead letters in the last 15 minutes. Inspect them and replay with POST /dead-letters/{id}/replay once the consumer is fixed.
+
+      - alert: OnlineOrderHikariPendingSustained
+        expr: max by (instance) (hikaricp_connections_pending{application="OnlineOrder", pool="onlineorder-db"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Requests keep waiting for a database connection on {{ $labels.instance }}
+          description: Threads have been waiting for a pooled connection for 5 minutes ({{ $value }} now). Requests that wait longer than the 2s connection-timeout fail with 503.
+
+      - alert: OnlineOrderHikariConnectionTimeouts
+        expr: sum by (instance) (increase(hikaricp_connections_timeout_total{application="OnlineOrder", pool="onlineorder-db"}[5m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Database connection requests time out on {{ $labels.instance }}
+          description: '{{ $value | humanize }} connection request(s) timed out in the last 5 minutes and were answered 503.'
+
+      # records-lag-max is reported per consumer client (consumer-onlineorder-* for order events,
+      # consumer-onlineorder-dlt-* for the dead-letter topic), not per topic.
+      - alert: OnlineOrderKafkaConsumerLag
+        expr: max by (instance, client_id) (kafka_consumer_fetch_manager_records_lag_max{application="OnlineOrder"}) > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Kafka consumer {{ $labels.client_id }} is falling behind
+          description: Consumer {{ $labels.client_id }} on {{ $labels.instance }} has been more than 1000 records behind for 10 minutes ({{ $value | humanize }} now).

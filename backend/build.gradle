@@ -2,8 +2,10 @@ import org.gradle.internal.os.OperatingSystem
 
 plugins {
     id 'java'
-    id 'org.springframework.boot' version '3.5.6'
+    id 'org.springframework.boot' version '3.5.16'
     id 'io.spring.dependency-management' version '1.1.7'
+    id 'jacoco'
+    id 'com.github.spotbugs' version '6.5.11'
 }
 
 
@@ -24,6 +26,21 @@ repositories {
 }
 
 
+// Security patches above the versions Spring Boot 3.5.16 manages, for fixable HIGH/CRITICAL findings of the release
+// image scan (Trivy, 2026-10-16). Remove an entry once Spring Boot manages that version or a later one; left in
+// place it would pin the older version.
+ext['tomcat.version'] = '10.1.61'
+ext['netty.version'] = '4.1.139.Final'
+ext['jackson-bom.version'] = '2.21.7'
+
+dependencyManagement {
+    dependencies {
+        // LZ4 codec of kafka-clients (CVE-2026-106451, fixed in 1.11.4).
+        dependency 'at.yawk.lz4:lz4-java:1.11.4'
+    }
+}
+
+
 def frontendDir = file("${rootDir}/../frontend")
 def frontendBuildDir = file("${frontendDir}/build")
 def generatedFrontendResourcesDir = layout.buildDirectory.dir('generated/frontend-public')
@@ -37,6 +54,8 @@ dependencies {
     implementation 'org.springframework.kafka:spring-kafka'
     implementation 'org.flywaydb:flyway-core'
     implementation 'io.micrometer:micrometer-registry-prometheus'
+    implementation 'io.micrometer:micrometer-tracing-bridge-otel'
+    implementation 'io.opentelemetry:opentelemetry-exporter-otlp'
     implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.17'
     implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
@@ -45,12 +64,13 @@ dependencies {
     implementation 'com.github.ben-manes.caffeine:caffeine'
     runtimeOnly 'com.h2database:h2'
     runtimeOnly 'org.flywaydb:flyway-database-postgresql'
-    runtimeOnly 'org.postgresql:postgresql:42.7.7'
+    runtimeOnly 'org.postgresql:postgresql:42.7.14'
     testImplementation 'org.testcontainers:junit-jupiter:1.21.4'
     testImplementation 'org.testcontainers:postgresql:1.21.4'
     testImplementation 'org.testcontainers:kafka:1.21.4'
     testImplementation 'org.testcontainers:testcontainers:1.21.4'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'io.opentelemetry:opentelemetry-sdk-testing'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
@@ -100,5 +120,78 @@ tasks.named('processResources') {
     exclude 'public/**'
     from(generatedFrontendResourcesDir) {
         into 'public'
+    }
+}
+
+
+// Quality gates run by CI (see docs/operations.md). The coverage minimums sit just below the values
+// measured with Docker available (2026-10: 88.6% of lines, 73.9% of branches), so the Testcontainers suites
+// count; without Docker those suites skip and jacocoTestCoverageVerification fails. Raise them as coverage grows.
+jacoco {
+    toolVersion = '0.8.13'
+}
+
+
+tasks.named('jacocoTestReport') {
+    dependsOn tasks.named('test')
+    reports {
+        xml.required = true
+        html.required = true
+    }
+}
+
+
+tasks.named('jacocoTestCoverageVerification') {
+    dependsOn tasks.named('test')
+    violationRules {
+        rule {
+            limit {
+                counter = 'LINE'
+                value = 'COVEREDRATIO'
+                minimum = 0.87
+            }
+            limit {
+                counter = 'BRANCH'
+                value = 'COVEREDRATIO'
+                minimum = 0.72
+            }
+        }
+    }
+}
+
+
+// SpotBugs scans production code only. config/spotbugs/exclude.xml is the accepted baseline: a global exclusion
+// of EI_EXPOSE_REP/EI_EXPOSE_REP2 (Spring and record idioms) plus the findings reviewed when the gate was
+// introduced. Any other new finding fails the build.
+spotbugs {
+    ignoreFailures = false
+    excludeFilter = file('config/spotbugs/exclude.xml')
+}
+
+
+tasks.named('spotbugsTest') {
+    enabled = false
+}
+
+
+// Spring Boot's dependency management would downgrade SpotBugs' own commons-lang3 to the Boot-managed
+// version, which lacks classes SpotBugs needs; the tool classpath keeps the versions SpotBugs asks for.
+configurations.named('spotbugs') {
+    resolutionStrategy.eachDependency { details ->
+        if (details.requested.group == 'org.apache.commons' && details.requested.name == 'commons-lang3') {
+            details.useVersion(details.requested.version)
+        }
+    }
+}
+
+
+tasks.withType(com.github.spotbugs.snom.SpotBugsTask).configureEach {
+    reports {
+        html {
+            required = true
+        }
+        xml {
+            required = true
+        }
     }
 }

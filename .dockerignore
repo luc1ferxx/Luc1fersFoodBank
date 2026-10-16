@@ -6,3 +6,9 @@ backend/.gradle-home*
 frontend/node_modules
 frontend/.cache
 frontend/coverage
+# Not needed by the image build
+.claude
+deploy
+docs
+load-tests
+**/node_modules

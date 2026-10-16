@@ -1,0 +1,4 @@
+# The application runs in the observability stack (docker compose --profile app).
+- targets: ["onlineorder:8081"]
+  labels:
+    environment: local

@@ -1,0 +1,30 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: onlineorder-local
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # The application's management port (MANAGEMENT_SERVER_PORT=8081): no session needed there. The target comes from
+  # targets/host (app on the host) or targets/compose (app in this stack), selected by ONLINEORDER_SCRAPE_TARGETS.
+  - job_name: onlineorder
+    metrics_path: /actuator/prometheus
+    scrape_interval: 10s
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/*.yml
+
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8888"]
+
+  - job_name: tempo
+    static_configs:
+      - targets: ["tempo:3200"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -33,6 +33,11 @@ public class ApiErrorResponseFactory {
 
 
     private String resolveTraceId(HttpServletRequest request) {
+        // The id RequestTraceFilter returned in the X-Trace-Id header, so the body and the header always agree.
+        if (request.getAttribute(RequestTraceFilter.TRACE_ID_ATTRIBUTE) instanceof String requestTraceId
+                && !requestTraceId.isBlank()) {
+            return requestTraceId;
+        }
         String traceId = MDC.get("traceId");
         if (traceId != null && !traceId.isBlank()) {
             return traceId;

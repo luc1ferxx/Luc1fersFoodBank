@@ -1,0 +1,51 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# OnlineOrder on Kubernetes. PostgreSQL, Redis and Kafka are managed services outside the cluster; their addresses
+# are in the ConfigMap below and their credentials in the onlineorder-secrets Secret, which is never committed
+# (see docs/operations.md). Overlays set the namespace, image, replicas, hosts and sizing.
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: onlineorder
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
+
+resources:
+  - serviceaccount.yaml
+  - deployment.yaml
+  - service.yaml
+  - hpa.yaml
+  - pdb.yaml
+  - ingress.yaml
+  - networkpolicy.yaml
+
+images:
+  - name: onlineorder
+    newName: ghcr.io/your-github-owner/onlineorder
+    newTag: latest
+
+configMapGenerator:
+  - name: onlineorder-config
+    literals:
+      - APP_ENV=base
+      # Actuator, probes and /actuator/prometheus on their own port; the Service and Ingress expose only 8080.
+      - MANAGEMENT_SERVER_PORT=8081
+      # Managed PostgreSQL. DATABASE_USERNAME and DATABASE_PASSWORD come from the Secret.
+      - DATABASE_URL=jdbc:postgresql://postgres.example.internal:5432/onlineorder?sslmode=require
+      - DATABASE_POOL_MAX_SIZE=30
+      # Managed Redis (sessions, cache, rate limits). A password goes in the Secret as SPRING_DATA_REDIS_PASSWORD.
+      - REDIS_HOST=redis.example.internal
+      - REDIS_PORT=6379
+      # Managed Kafka. SASL credentials go in the Secret (SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG and friends).
+      - KAFKA_BOOTSTRAP_SERVERS=kafka.example.internal:9092
+      - KAFKA_ORDER_TOPIC_REPLICAS=3
+      # Traces to an in-cluster OpenTelemetry Collector.
+      - TRACING_EXPORT_ENABLED=true
+      - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://otel-collector.observability.svc.cluster.local:4318/v1/traces
+      - TRACING_SAMPLING_PROBABILITY=0.1
+      # TLS terminates at the Ingress: secure session cookies, and client IPs (rate limiting) from X-Forwarded-For.
+      - SESSION_COOKIE_SECURE=true
+      - SERVER_FORWARD_HEADERS_STRATEGY=native
+      # Graceful shutdown budget; terminationGracePeriodSeconds (60) covers the preStop sleep (10s) plus this.
+      - SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE=30s
