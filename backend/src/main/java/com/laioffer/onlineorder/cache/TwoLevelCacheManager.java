@@ -16,7 +16,7 @@ import java.util.Map;
  * annotated call) instead of creating an untyped cache on the fly: every cache needs a declared value type
  * for its Redis serializer and a key version.
  */
-public class TwoLevelCacheManager implements CacheManager {
+public final class TwoLevelCacheManager implements CacheManager {
 
     private final Map<String, TwoLevelCache> caches;
 
