@@ -1,8 +1,10 @@
 package com.laioffer.onlineorder.service;
 
 
-import com.laioffer.onlineorder.entity.MenuItemEntity;
+import com.laioffer.onlineorder.cache.CatalogCaches;
+import com.laioffer.onlineorder.model.CatalogMenuItemDto;
 import com.laioffer.onlineorder.repository.MenuItemRepository;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 
@@ -21,12 +23,16 @@ public class MenuItemService {
     }
 
 
-    public List<MenuItemEntity> getMenuItemsByRestaurantId(long restaurantId) {
-        return menuItemRepository.getByRestaurantId(restaurantId);
+    /**
+     * One restaurant's menu, cached under {@code menu::<restaurantId>}. Callers must check that the restaurant
+     * exists first (see {@link CatalogService#getMenu(long)}) so unknown ids never reach the database or the
+     * cache. The returned list is shared by every caller that hits the cache and must not be modified.
+     */
+    @Cacheable(cacheNames = CatalogCaches.MENU, key = "#restaurantId", sync = true)
+    public List<CatalogMenuItemDto> getMenu(long restaurantId) {
+        return menuItemRepository.findByRestaurantIdOrderById(restaurantId).stream()
+                .map(CatalogMenuItemDto::new)
+                .toList();
     }
 
-
-    public MenuItemEntity getMenuItemById(long id) {
-        return menuItemRepository.findById(id).get();
-    }
 }

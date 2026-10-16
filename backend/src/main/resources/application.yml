@@ -173,6 +173,18 @@ app:
     dead-letter-retention: ${CLEANUP_DEAD_LETTER_RETENTION:30d}
     # Rows per DELETE statement; each statement must finish well within the pool's statement_timeout.
     batch-size: ${CLEANUP_BATCH_SIZE:5000}
+  # Two-level catalog cache (spring.cache.type=redis): Caffeine L1 per instance in front of Redis L2, with
+  # Redis pub/sub dropping other instances' L1 copies on writes. The L2 base TTL is
+  # spring.cache.redis.time-to-live. Redis keys: <key-namespace>:<version>:<cache>::<key>.
+  cache:
+    key-namespace: ${CACHE_KEY_NAMESPACE:onlineorder:cache}
+    l1:
+      # Upper bound for serving an entry whose invalidation message this instance missed.
+      ttl: ${CACHE_L1_TTL:30s}
+      menu-maximum-size: ${CACHE_L1_MENU_MAXIMUM_SIZE:10000}
+    l2:
+      # Each Redis write gets TTL * [1 - jitter, 1 + jitter] so entries loaded together do not expire together.
+      ttl-jitter: ${CACHE_L2_TTL_JITTER:0.15}
   security:
     rate-limit:
       enabled: ${SECURITY_RATE_LIMIT_ENABLED:true}

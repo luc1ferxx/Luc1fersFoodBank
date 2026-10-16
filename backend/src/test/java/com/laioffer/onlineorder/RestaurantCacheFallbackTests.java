@@ -1,32 +1,37 @@
 package com.laioffer.onlineorder;
 
 
+import com.laioffer.onlineorder.cache.CatalogCaches;
+import com.laioffer.onlineorder.cache.TwoLevelCacheManager;
 import com.laioffer.onlineorder.entity.MenuItemEntity;
 import com.laioffer.onlineorder.entity.RestaurantEntity;
+import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.model.RestaurantDto;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.MenuItemRepository;
 import com.laioffer.onlineorder.repository.RestaurantRepository;
+import com.laioffer.onlineorder.service.CatalogService;
+import com.laioffer.onlineorder.service.MenuItemService;
 import com.laioffer.onlineorder.service.RestaurantService;
 import io.lettuce.core.ClientOptions;
 import io.lettuce.core.SocketOptions;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.convert.ApplicationConversionService;
 import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
-import org.springframework.data.redis.cache.RedisCacheConfiguration;
-import org.springframework.data.redis.cache.RedisCacheManager;
+import org.springframework.core.convert.ConversionService;
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
-import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
-import org.springframework.data.redis.serializer.RedisSerializationContext;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 
 
@@ -39,14 +44,14 @@ import java.util.List;
 
 
 /**
- * Points a real Redis cache at a port with nothing listening, so cache reads and writes fail the
- * same way they do during a Redis outage.
+ * Wires the real two-level cache configuration ({@link RedisConfig}, including the pub/sub listener container)
+ * against a Redis port with nothing listening, so every Redis call fails the way it does during an outage.
  */
 @SpringJUnitConfig(RestaurantCacheFallbackTests.CacheFallbackTestConfig.class)
 class RestaurantCacheFallbackTests {
 
     @Autowired
-    private RestaurantService restaurantService;
+    private CatalogService catalogService;
 
     @Autowired
     private RestaurantRepository restaurantRepository;
@@ -55,40 +60,93 @@ class RestaurantCacheFallbackTests {
     private MenuItemRepository menuItemRepository;
 
     @Autowired
+    private TwoLevelCacheManager cacheManager;
+
+    @Autowired
     private MeterRegistry meterRegistry;
 
 
-    @Test
-    void getRestaurants_whenRedisIsUnavailable_shouldFallBackToDatabaseAndRecordCacheErrors() {
-        Mockito.when(restaurantRepository.findAll()).thenReturn(List.of(
+    @BeforeEach
+    void stubDatabase() {
+        Mockito.reset(restaurantRepository, menuItemRepository);
+        cacheManager.clearLocal();
+        Mockito.when(restaurantRepository.findAllOrderById()).thenReturn(List.of(
                 new RestaurantEntity(1L, "Burger King", "773 N Mathilda Ave", "(408) 736-0101", "")
         ));
-        Mockito.when(menuItemRepository.findAll()).thenReturn(List.of(
+        Mockito.when(menuItemRepository.findByRestaurantIdOrderById(1L)).thenReturn(List.of(
                 new MenuItemEntity(10L, 1L, "Whopper", "Flame grilled burger", new BigDecimal("6.39"), "")
         ));
+    }
 
-        List<RestaurantDto> first = restaurantService.getRestaurants();
-        List<RestaurantDto> second = restaurantService.getRestaurants();
+
+    @Test
+    void getRestaurantsWithMenus_whenRedisIsUnavailable_shouldLoadFromDatabaseAndKeepServingFromL1() {
+        double getErrorsBefore = cacheErrors(CatalogCaches.RESTAURANTS, "get") + cacheErrors(CatalogCaches.MENU, "get");
+        double putErrorsBefore = cacheErrors(CatalogCaches.RESTAURANTS, "put") + cacheErrors(CatalogCaches.MENU, "put");
+
+        List<RestaurantDto> first = catalogService.getRestaurantsWithMenus();
+        List<RestaurantDto> second = catalogService.getRestaurantsWithMenus();
 
         Assertions.assertEquals(first, second);
         Assertions.assertEquals(1, first.size());
         Assertions.assertEquals("Burger King", first.get(0).name());
         Assertions.assertEquals("Whopper", first.get(0).menuItems().get(0).name());
-        Mockito.verify(restaurantRepository, Mockito.times(2)).findAll();
-        Assertions.assertEquals(2.0, cacheErrors("get"));
-        Assertions.assertEquals(2.0, cacheErrors("put"));
+        // Redis is down: the first call goes to the database, the second is served by the in-process L1.
+        Mockito.verify(restaurantRepository, Mockito.times(1)).findAllOrderById();
+        Mockito.verify(menuItemRepository, Mockito.times(1)).findByRestaurantIdOrderById(1L);
+        // One failed Redis read and one failed Redis write per cache, recorded by the existing error handler.
+        Assertions.assertEquals(2.0, cacheErrors(CatalogCaches.RESTAURANTS, "get") + cacheErrors(CatalogCaches.MENU, "get") - getErrorsBefore);
+        Assertions.assertEquals(2.0, cacheErrors(CatalogCaches.RESTAURANTS, "put") + cacheErrors(CatalogCaches.MENU, "put") - putErrorsBefore);
     }
 
 
-    private double cacheErrors(String operation) {
-        return meterRegistry.counter("onlineorder.cache.errors", "cache", "restaurants", "operation", operation).count();
+    @Test
+    void getRestaurantsWithMenus_whenRedisIsUnavailableAndL1Expired_shouldFallBackToDatabaseAgain() {
+        catalogService.getRestaurantsWithMenus();
+        cacheManager.clearLocal();
+
+        List<RestaurantDto> restaurants = catalogService.getRestaurantsWithMenus();
+
+        Assertions.assertEquals("Whopper", restaurants.get(0).menuItems().get(0).name());
+        Mockito.verify(restaurantRepository, Mockito.times(2)).findAllOrderById();
+        Mockito.verify(menuItemRepository, Mockito.times(2)).findByRestaurantIdOrderById(1L);
+    }
+
+
+    @Test
+    void getMenu_whenRedisIsUnavailable_shouldStillRejectUnknownRestaurantsWithoutQueryingMenus() {
+        Assertions.assertEquals("Whopper", catalogService.getMenu(1L).get(0).name());
+        Assertions.assertThrows(ResourceNotFoundException.class, () -> catalogService.getMenu(404L));
+
+        Mockito.verify(menuItemRepository, Mockito.never()).findByRestaurantIdOrderById(404L);
+        Mockito.verify(restaurantRepository, Mockito.times(1)).findAllOrderById();
+    }
+
+
+    private double cacheErrors(String cacheName, String operation) {
+        return meterRegistry.counter("onlineorder.cache.errors", "cache", cacheName, "operation", operation).count();
     }
 
 
     @Configuration
     @EnableCaching
-    @Import(CacheConfig.class)
+    @Import({
+            CacheConfig.class,
+            RedisConfig.class,
+            RestaurantService.class,
+            MenuItemService.class,
+            CatalogService.class
+    })
     static class CacheFallbackTestConfig {
+
+        /**
+         * Lets {@code @Value} bind Boot-style durations such as {@code 30s} outside a Spring Boot context.
+         */
+        @Bean
+        static ConversionService conversionService() {
+            return ApplicationConversionService.getSharedInstance();
+        }
+
 
         @Bean
         LettuceConnectionFactory redisConnectionFactory() {
@@ -106,12 +164,8 @@ class RestaurantCacheFallbackTests {
 
 
         @Bean
-        RedisCacheManager cacheManager(LettuceConnectionFactory redisConnectionFactory) {
-            RedisCacheConfiguration cacheConfiguration = RedisCacheConfiguration.defaultCacheConfig()
-                    .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(
-                            new GenericJackson2JsonRedisSerializer()
-                    ));
-            return RedisCacheManager.builder(redisConnectionFactory).cacheDefaults(cacheConfiguration).build();
+        StringRedisTemplate stringRedisTemplate(LettuceConnectionFactory redisConnectionFactory) {
+            return new StringRedisTemplate(redisConnectionFactory);
         }
 
 
@@ -136,12 +190,6 @@ class RestaurantCacheFallbackTests {
         @Bean
         MenuItemRepository menuItemRepository() {
             return Mockito.mock(MenuItemRepository.class);
-        }
-
-
-        @Bean
-        RestaurantService restaurantService(RestaurantRepository restaurantRepository, MenuItemRepository menuItemRepository) {
-            return new RestaurantService(restaurantRepository, menuItemRepository);
         }
 
 

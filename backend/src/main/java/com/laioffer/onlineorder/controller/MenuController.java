@@ -1,10 +1,9 @@
 package com.laioffer.onlineorder.controller;
 
 
-import com.laioffer.onlineorder.entity.MenuItemEntity;
+import com.laioffer.onlineorder.model.CatalogMenuItemDto;
 import com.laioffer.onlineorder.model.RestaurantDto;
-import com.laioffer.onlineorder.service.MenuItemService;
-import com.laioffer.onlineorder.service.RestaurantService;
+import com.laioffer.onlineorder.service.CatalogService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
@@ -17,24 +16,22 @@ import java.util.List;
 public class MenuController {
 
 
-    private final RestaurantService restaurantService;
-    private final MenuItemService menuItemService;
+    private final CatalogService catalogService;
 
 
-    public MenuController(RestaurantService restaurantService, MenuItemService menuItemService) {
-        this.restaurantService = restaurantService;
-        this.menuItemService = menuItemService;
+    public MenuController(CatalogService catalogService) {
+        this.catalogService = catalogService;
     }
 
 
     @GetMapping("/restaurant/{restaurantId}/menu")
-    public List<MenuItemEntity> getMenuByRestaurant(@PathVariable("restaurantId") long restaurantId) {
-        return menuItemService.getMenuItemsByRestaurantId(restaurantId);
+    public List<CatalogMenuItemDto> getMenuByRestaurant(@PathVariable("restaurantId") long restaurantId) {
+        return catalogService.getMenu(restaurantId);
     }
 
 
     @GetMapping("/restaurants/menu")
     public List<RestaurantDto> getMenuForAllRestaurants() {
-        return restaurantService.getRestaurants();
+        return catalogService.getRestaurantsWithMenus();
     }
 }

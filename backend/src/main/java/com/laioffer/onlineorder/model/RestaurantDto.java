@@ -20,4 +20,9 @@ public record RestaurantDto(
     public RestaurantDto(RestaurantEntity entity, List<MenuItemDto> menuItems) {
         this(entity.id(), entity.name(), entity.address(), entity.phone(), entity.imageUrl(), menuItems);
     }
+
+
+    public RestaurantDto(CatalogRestaurantDto restaurant, List<MenuItemDto> menuItems) {
+        this(restaurant.id(), restaurant.name(), restaurant.address(), restaurant.phone(), restaurant.imageUrl(), menuItems);
+    }
 }
