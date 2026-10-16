@@ -156,8 +156,9 @@ tasks.named('jacocoTestCoverageVerification') {
 }
 
 
-// SpotBugs scans production code only. config/spotbugs/exclude.xml is the accepted baseline: Spring and
-// record idioms plus the findings reviewed when the gate was introduced. Any new finding fails the build.
+// SpotBugs scans production code only. config/spotbugs/exclude.xml is the accepted baseline: a global exclusion
+// of EI_EXPOSE_REP/EI_EXPOSE_REP2 (Spring and record idioms) plus the findings reviewed when the gate was
+// introduced. Any other new finding fails the build.
 spotbugs {
     ignoreFailures = false
     excludeFilter = file('config/spotbugs/exclude.xml')

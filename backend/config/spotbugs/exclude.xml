@@ -1,13 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  SpotBugs baseline for spotbugsMain. Keep entries narrow (pattern + class) and explain why each one is accepted;
-  anything not listed here fails the build.
+  SpotBugs baseline for spotbugsMain. Explain why each entry is accepted; anything not listed here fails the build.
+  New entries should be narrow (pattern + class). The first entry is the exception: it is a global pattern
+  exclusion.
 -->
 <FindBugsFilter>
     <!--
-      Constructor-injected Spring beans (repositories, templates, registries) and records/DTOs that carry lists or
-      mutable values are stored by reference on purpose. Copying them would break injection or cost allocations on
-      the request path.
+      Global: EI_EXPOSE_REP and EI_EXPOSE_REP2 are not reported for any class. Constructor-injected Spring beans
+      (repositories, templates, registries) and records/DTOs that carry lists are stored by reference on purpose;
+      copying them would break injection or cost allocations on the request path. At introduction this hid 46 of the
+      49 findings (41 EI_EXPOSE_REP2 in constructors, 5 EI_EXPOSE_REP on record accessors). It is global rather than
+      per package so that new beans and records in new packages do not each need an entry; it also hides any future
+      finding of these two patterns.
     -->
     <Match>
         <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
