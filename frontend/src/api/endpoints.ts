@@ -2,11 +2,14 @@ import { createIdempotencyKey, request } from "./client";
 import { decodeArray } from "./decode";
 import {
   type Cart,
+  type CreateMerchantRequest,
+  type CreateRiderRequest,
   type Credentials,
   type CurrentUser,
   type DeadLetterReplay,
   type DeliveryStatus,
   type MenuItem,
+  type MerchantAccount,
   type MerchantOrder,
   type Order,
   type OrderNotification,
@@ -14,6 +17,7 @@ import {
   type OrderStatusChange,
   type PaymentDetails,
   type Restaurant,
+  type RiderAccount,
   type RiderDelivery,
   type RiderProfile,
   type SignupRequest,
@@ -21,11 +25,13 @@ import {
   decodeCurrentUser,
   decodeDeadLetterReplay,
   decodeMenuItem,
+  decodeMerchantAccount,
   decodeMerchantOrder,
   decodeNotification,
   decodeOrder,
   decodeOrderStatusChange,
   decodeRestaurant,
+  decodeRiderAccount,
   decodeRiderDelivery,
   decodeRiderProfile,
 } from "./dto";
@@ -321,7 +327,76 @@ export const markDeliveryDelivered = async (deliveryId: number): Promise<RiderDe
     "delivery",
   );
 
-// ---- Admin ----
+// ---- Admin (ROLE_ADMIN) ----
+
+// Account provisioning: an email that already has a login is 409
+// EMAIL_ALREADY_REGISTERED; an unknown restaurant for a merchant is 404.
+
+export const getMerchantAccounts = async ({ signal }: RequestControl = {}): Promise<
+  MerchantAccount[]
+> =>
+  decodeArray(decodeMerchantAccount)(
+    await request("/admin/merchants", { signal, fallbackMessage: "Fail to load the merchants" }),
+    "merchants",
+  );
+
+export const createMerchantAccount = async (
+  body: CreateMerchantRequest,
+): Promise<MerchantAccount> =>
+  decodeMerchantAccount(
+    await request("/admin/merchants", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(body),
+      fallbackMessage: "Fail to create the merchant",
+    }),
+    "merchant",
+  );
+
+export const setMerchantAccountActive = async (
+  merchantId: number,
+  active: boolean,
+): Promise<MerchantAccount> =>
+  decodeMerchantAccount(
+    await request(`/admin/merchants/${merchantId}`, {
+      method: "PATCH",
+      headers: jsonHeaders,
+      body: JSON.stringify({ active }),
+      fallbackMessage: "Fail to update the merchant",
+    }),
+    "merchant",
+  );
+
+export const getRiderAccounts = async ({ signal }: RequestControl = {}): Promise<RiderAccount[]> =>
+  decodeArray(decodeRiderAccount)(
+    await request("/admin/riders", { signal, fallbackMessage: "Fail to load the riders" }),
+    "riders",
+  );
+
+export const createRiderAccount = async (body: CreateRiderRequest): Promise<RiderAccount> =>
+  decodeRiderAccount(
+    await request("/admin/riders", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(body),
+      fallbackMessage: "Fail to create the rider",
+    }),
+    "rider",
+  );
+
+export const setRiderAccountActive = async (
+  riderId: number,
+  active: boolean,
+): Promise<RiderAccount> =>
+  decodeRiderAccount(
+    await request(`/admin/riders/${riderId}`, {
+      method: "PATCH",
+      headers: jsonHeaders,
+      body: JSON.stringify({ active }),
+      fallbackMessage: "Fail to update the rider",
+    }),
+    "rider",
+  );
 
 export const updateOrderStatus = async (
   orderId: number,

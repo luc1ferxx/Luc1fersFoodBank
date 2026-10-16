@@ -45,7 +45,7 @@ function App() {
       <ErrorBoundary key={`${userKey}:${workspace}`} label={WORKSPACE_LABELS[workspace]}>
         {user && workspace === "merchant" ? <MerchantConsole user={user} /> : null}
         {user && workspace === "rider" ? <RiderConsole /> : null}
-        {user && workspace === "admin" ? <AdminConsole /> : null}
+        {user && workspace === "admin" ? <AdminConsole menu={menu} /> : null}
         {workspace === "order" ? (
           <OrderingPage
             session={session}

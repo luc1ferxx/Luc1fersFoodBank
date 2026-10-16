@@ -21,6 +21,8 @@ export interface FakeContext {
     actorType: ActorType,
     reason?: string | null,
   ) => void;
+  /** Whether a login (seeded or provisioned) already uses this email. */
+  emailRegistered: (email: string) => boolean;
 }
 
 /** A paid order in the merchant inbox, with defaults for what a test does not care about. */

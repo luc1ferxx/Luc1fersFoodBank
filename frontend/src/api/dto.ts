@@ -24,6 +24,8 @@ export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
 export const ERROR_CODES = {
   /** POST /cart: the cart already holds items of another restaurant (409). */
   cartRestaurantConflict: "CART_RESTAURANT_CONFLICT",
+  /** POST /admin/merchants and /admin/riders: the email already has a login (409). */
+  emailAlreadyRegistered: "EMAIL_ALREADY_REGISTERED",
 } as const;
 
 /** The OrderStatus spelled by `value` (e.g. a <select> value), or null. */
@@ -407,7 +409,88 @@ export const decodeRiderDelivery: Decoder<RiderDelivery> = (value, path) => {
   };
 };
 
-// ---- Admin ----
+// ---- Admin (ROLE_ADMIN) ----
+
+/** GET /admin/merchants, and the POST / PATCH responses: a merchant login and its restaurant. */
+export interface MerchantAccount {
+  merchant_id: number;
+  customer_id: number;
+  email: string;
+  first_name: string | null;
+  last_name: string | null;
+  restaurant_id: number;
+  restaurant_name: string | null;
+  active: boolean;
+  created_at: string | null;
+}
+
+export const decodeMerchantAccount: Decoder<MerchantAccount> = (value, path) => {
+  const f = fieldsOf(value, path);
+  return {
+    merchant_id: f.number("merchant_id"),
+    customer_id: f.number("customer_id"),
+    email: f.string("email"),
+    first_name: f.optionalString("first_name"),
+    last_name: f.optionalString("last_name"),
+    restaurant_id: f.number("restaurant_id"),
+    restaurant_name: f.optionalString("restaurant_name"),
+    active: f.boolean("active"),
+    created_at: f.optionalString("created_at"),
+  };
+};
+
+/** POST /admin/merchants body. */
+export interface CreateMerchantRequest {
+  email: string;
+  password: string;
+  first_name: string;
+  last_name: string;
+  restaurant_id: number;
+}
+
+/**
+ * GET /admin/riders, and the POST / PATCH responses. `customer_id` and `email` are
+ * nullable because riders seeded before provisioning (the demo riders) have no login.
+ */
+export interface RiderAccount {
+  rider_id: number;
+  customer_id: number | null;
+  email: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  name: string;
+  phone: string | null;
+  active: boolean;
+  on_duty: boolean;
+  active_deliveries: number;
+  created_at: string | null;
+}
+
+export const decodeRiderAccount: Decoder<RiderAccount> = (value, path) => {
+  const f = fieldsOf(value, path);
+  return {
+    rider_id: f.number("rider_id"),
+    customer_id: f.optionalNumber("customer_id"),
+    email: f.optionalString("email"),
+    first_name: f.optionalString("first_name"),
+    last_name: f.optionalString("last_name"),
+    name: f.string("name"),
+    phone: f.optionalString("phone"),
+    active: f.boolean("active"),
+    on_duty: f.boolean("on_duty"),
+    active_deliveries: f.optionalNumber("active_deliveries") ?? 0,
+    created_at: f.optionalString("created_at"),
+  };
+};
+
+/** POST /admin/riders body. */
+export interface CreateRiderRequest {
+  email: string;
+  password: string;
+  first_name: string;
+  last_name: string;
+  phone: string;
+}
 
 /** POST /dead-letters/{id}/replay (DeadLetterReplayDto). */
 export interface DeadLetterReplay {

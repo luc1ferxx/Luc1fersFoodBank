@@ -30,6 +30,20 @@ const merchantOrderJson = {
   items: [{ menu_item_id: 10, menu_item_name: "Whopper", price: 6.39, quantity: 2 }],
 };
 const riderJson = { rider_id: 3, name: "Alice", active: true, on_duty: true, active_deliveries: 0 };
+const merchantAccountJson = {
+  merchant_id: 3,
+  customer_id: 21,
+  email: "m@b.c",
+  restaurant_id: 1,
+  active: true,
+};
+const riderAccountJson = {
+  rider_id: 4,
+  name: "Rider",
+  active: true,
+  on_duty: false,
+  active_deliveries: 0,
+};
 const deliveryJson = {
   delivery_id: 5,
   order_id: 7,
@@ -153,6 +167,32 @@ describe("API endpoints", () => {
       [() => api.getRiderDeliveries({ status: "DELIVERED" }), []],
       [() => api.markDeliveryPickedUp(5), deliveryJson],
       [() => api.markDeliveryDelivered(5), deliveryJson],
+      [() => api.getMerchantAccounts(), [merchantAccountJson]],
+      [
+        () =>
+          api.createMerchantAccount({
+            email: "m@b.c",
+            password: "x",
+            first_name: "M",
+            last_name: "B",
+            restaurant_id: 1,
+          }),
+        merchantAccountJson,
+      ],
+      [() => api.setMerchantAccountActive(3, false), merchantAccountJson],
+      [() => api.getRiderAccounts(), [riderAccountJson]],
+      [
+        () =>
+          api.createRiderAccount({
+            email: "r@b.c",
+            password: "x",
+            first_name: "R",
+            last_name: "B",
+            phone: "1",
+          }),
+        riderAccountJson,
+      ],
+      [() => api.setRiderAccountActive(4, true), riderAccountJson],
     ];
     const fetchMock = stubFetch();
     for (const [call, body] of calls) {
@@ -190,6 +230,10 @@ describe("role endpoints", () => {
     await api.getRiderDeliveries();
     fetchMock.mockImplementation(() => Promise.resolve(new Response(null, { status: 204 })));
     await api.clearCart();
+    fetchMock.mockImplementation(() => Promise.resolve(json(merchantAccountJson)));
+    await api.setMerchantAccountActive(3, false);
+    fetchMock.mockImplementation(() => Promise.resolve(json(riderAccountJson)));
+    await api.setRiderAccountActive(4, true);
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
@@ -207,6 +251,16 @@ describe("role endpoints", () => {
       5,
       "/cart",
       expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
+      "/admin/merchants/3",
+      expect.objectContaining({ method: "PATCH", body: JSON.stringify({ active: false }) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      7,
+      "/admin/riders/4",
+      expect.objectContaining({ method: "PATCH", body: JSON.stringify({ active: true }) }),
     );
   });
 

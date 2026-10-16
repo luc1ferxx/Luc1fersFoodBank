@@ -790,6 +790,90 @@ button:disabled {
   font-size: 15px;
 }
 
+.admin-tabs {
+  grid-template-columns: repeat(3, 1fr);
+  margin: 0 0 16px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.table-scroll {
+  margin-top: 14px;
+  overflow-x: auto;
+  border: 1px solid #e1e6dc;
+  border-radius: 8px;
+}
+
+.accounts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.accounts-table th,
+.accounts-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #edf0e8;
+  text-align: left;
+  vertical-align: top;
+}
+
+.accounts-table th {
+  background: #f6f8f3;
+  color: #4e554b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.accounts-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.accounts-table td strong,
+.accounts-table td span {
+  display: block;
+}
+
+.accounts-table td span {
+  color: #646d5f;
+}
+
+.accounts-table button {
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
+.accounts-table .account-status {
+  display: inline-flex;
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.accounts-table .account-status--active {
+  background: #e9f7ec;
+  color: #246238;
+}
+
+.accounts-table .account-status--inactive {
+  background: #fff0ec;
+  color: #90301e;
+}
+
+.accounts-table .quiet-inline {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
 .order-card__actions {
   display: flex;
   flex-wrap: wrap;

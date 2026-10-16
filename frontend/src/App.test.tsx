@@ -246,6 +246,7 @@ describe("admin console order tools", () => {
 
     await signedInLabel();
     await user.click(screen.getByRole("button", { name: "Admin console" }));
+    await user.click(screen.getByRole("button", { name: "Order tools" }));
     await user.type(screen.getByLabelText("Order ID"), "7");
     expect(screen.getByLabelText("Target status")).toHaveValue("ACCEPTED");
 

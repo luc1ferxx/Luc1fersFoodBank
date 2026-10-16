@@ -6,16 +6,18 @@ import {
   type CartItem,
   type CurrentUser,
   type MenuItem,
+  type MerchantAccount,
   type MerchantOrder,
   type Order,
   type OrderNotification,
   type OrderStatusChange,
   ROLES,
-  type Restaurant,
+  type RiderAccount,
   type RiderDelivery,
   type RiderProfile,
   parseOrderStatus,
 } from "../api/dto";
+import { adminRoutes } from "./fakeAdmin";
 import { type FakeContext, merchantRoutes, riderRoutes } from "./fakeFulfilment";
 import {
   type FakeHandler,
@@ -27,6 +29,7 @@ import {
   noContent,
   requestJson,
 } from "./fakeHttp";
+import { PASSWORDS, menusFixture, restaurantsFixture, riderProfileFixture } from "./fixtures";
 
 export {
   apiError,
@@ -38,102 +41,17 @@ export {
   type FakeRequest,
 } from "./fakeHttp";
 export { deliveryFixture, merchantOrderFixture } from "./fakeFulfilment";
-
-/** A customer who is also an admin, like the demo seed's demo@laifood.com. */
-export const demoUser: CurrentUser = {
-  id: 1,
-  email: "demo@laifood.com",
-  first_name: "Demo",
-  last_name: "User",
-  roles: [ROLES.user, ROLES.admin],
-  merchant: null,
-  rider: null,
-};
-
-/** A customer without other roles. */
-export const customerUser: CurrentUser = {
-  id: 2,
-  email: "casey@example.com",
-  first_name: "Casey",
-  last_name: "Customer",
-  roles: [ROLES.user],
-  merchant: null,
-  rider: null,
-};
-
-/** A merchant login bound to Burger Barn (no ROLE_USER, like the demo merchants). */
-export const merchantUser: CurrentUser = {
-  id: 21,
-  email: "merchant.burgerbarn@laifood.com",
-  first_name: "Burger Barn",
-  last_name: "Merchant",
-  roles: [ROLES.merchant],
-  merchant: { merchant_id: 3, restaurant_id: 1, restaurant_name: "Burger Barn", active: true },
-  rider: null,
-};
-
-export const riderProfileFixture: RiderProfile = {
-  rider_id: 7,
-  name: "Alice Rider",
-  phone: "(408) 555-0101",
-  active: true,
-  on_duty: false,
-  active_deliveries: 0,
-};
-
-/** A rider login. */
-export const riderUser: CurrentUser = {
-  id: 31,
-  email: "rider.alice@laifood.com",
-  first_name: "Alice",
-  last_name: "Rider",
-  roles: [ROLES.rider],
-  merchant: null,
-  rider: { rider_id: 7, name: "Alice Rider", on_duty: false, active: true },
-};
-
-/** Logins the fake's POST /login accepts. */
-const PASSWORDS: ReadonlyMap<string, [CurrentUser, string]> = new Map([
-  [demoUser.email, [demoUser, "demo123"]],
-  [merchantUser.email, [merchantUser, "merchant123"]],
-  [riderUser.email, [riderUser, "rider123"]],
-]);
-
-export const restaurantsFixture: Restaurant[] = [
-  {
-    id: 1,
-    name: "Burger Barn",
-    address: "773 N Mathilda Ave",
-    phone: "(408) 736-0101",
-    image_url: "",
-  },
-  { id: 2, name: "Noodle Nook", address: "1 Market St", phone: "", image_url: "" },
-  { id: 3, name: "Taco Town", address: "2 Mission St", phone: "", image_url: "" },
-];
-
-export const menusFixture: Readonly<Record<number, MenuItem[]>> = {
-  1: [
-    {
-      id: 10,
-      restaurant_id: 1,
-      name: "Whopper",
-      description: "Flame grilled burger",
-      price: 6.39,
-      image_url: "",
-    },
-  ],
-  2: [
-    {
-      id: 20,
-      restaurant_id: 2,
-      name: "Dan Dan Noodles",
-      description: "",
-      price: 11,
-      image_url: "",
-    },
-  ],
-  3: [{ id: 30, restaurant_id: 3, name: "Fish Taco", description: "", price: 4.5, image_url: "" }],
-};
+export { merchantAccountFixture, riderAccountFixture } from "./fakeAdmin";
+export {
+  customerUser,
+  demoUser,
+  menusFixture,
+  merchantUser,
+  orderFixture,
+  restaurantsFixture,
+  riderProfileFixture,
+  riderUser,
+} from "./fixtures";
 
 const menuItemById = (id: number): MenuItem | undefined =>
   Object.values(menusFixture)
@@ -150,17 +68,6 @@ const requestUrl = (input: RequestInfo | URL): string => {
   }
   return input instanceof URL ? `${input.pathname}${input.search}` : input.url;
 };
-
-/** A placed order with defaults for the fields a test does not care about. */
-export const orderFixture = (overrides: Partial<Order> & Pick<Order, "id">): Order => ({
-  status: "PAID",
-  total_price: 9,
-  created_at: null,
-  items: [],
-  restaurant_id: 1,
-  cancel_reason: null,
-  ...overrides,
-});
 
 export interface FakeBackendOptions {
   user?: CurrentUser | null;
@@ -181,6 +88,10 @@ export interface FakeState {
   riderProfile: RiderProfile | null;
   /** The signed-in rider's deliveries. */
   deliveries: RiderDelivery[];
+  /** Provisioned logins listed by /admin/merchants and /admin/riders. */
+  merchantAccounts: MerchantAccount[];
+  riderAccounts: RiderAccount[];
+  nextAccountId: number;
   nextOrderItemId: number;
   nextOrderId: number;
 }
@@ -201,6 +112,9 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
     merchantOrders: [],
     riderProfile: user?.roles.includes(ROLES.rider) ? { ...riderProfileFixture } : null,
     deliveries: [],
+    merchantAccounts: [],
+    riderAccounts: [],
+    nextAccountId: 40,
     nextOrderItemId: 500,
     nextOrderId: 100,
   };
@@ -235,6 +149,14 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
         occurred_at: `2026-10-16T12:0${history.length}:00Z`,
       });
       state.orderHistory.set(orderId, history);
+    },
+    emailRegistered: (email) => {
+      const normalized = email.trim().toLowerCase();
+      return [
+        ...PASSWORDS.keys(),
+        ...state.merchantAccounts.map((account) => account.email),
+        ...state.riderAccounts.flatMap((account) => (account.email ? [account.email] : [])),
+      ].some((known) => known.toLowerCase() === normalized);
     },
   };
   const { recordStatusChange } = context;
@@ -440,6 +362,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
     ...customerRoutes,
     ...merchantRoutes(context),
     ...riderRoutes(context),
+    ...adminRoutes(context),
   ];
 
   const fetchMock: Mock<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>> =
