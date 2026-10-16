@@ -11,6 +11,9 @@
 # production
 /build
 
+# TypeScript incremental state (editors running tsc -b on tsconfig.json)
+*.tsbuildinfo
+
 # misc
 .DS_Store
 .env.local

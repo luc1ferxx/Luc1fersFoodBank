@@ -1,0 +1,7 @@
+{
+  // Solution file for editors. `npm run typecheck` checks both projects with tsc --noEmit:
+  // tsconfig.app.json (browser code and its tests) and tsconfig.node.json (Vite config,
+  // build scripts, and the Node-side CSP build test).
+  "files": [],
+  "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }]
+}

@@ -94,7 +94,8 @@ tasks.register('buildFrontend', Exec) {
             "${frontendDir}/package.json",
             "${frontendDir}/package-lock.json",
             "${frontendDir}/index.html",
-            "${frontendDir}/vite.config.js"
+            "${frontendDir}/vite.config.ts",
+            fileTree(dir: frontendDir, include: 'tsconfig*.json')
     )
     outputs.dir(frontendBuildDir)
 
