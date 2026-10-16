@@ -91,7 +91,7 @@ services:
 
   redis:
     profiles: ["app"]
-    image: redis:7.4-alpine
+    image: redis:8.10-alpine
     command: redis-server --maxmemory 256mb --maxmemory-policy volatile-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
