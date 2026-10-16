@@ -70,7 +70,7 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(ConflictException.class)
     public ResponseEntity<ApiErrorResponse> handleConflict(ConflictException ex, HttpServletRequest request) {
-        return build("CONFLICT", safeMessage(ex, "Conflict"), HttpStatus.CONFLICT, request);
+        return build(ex.getCode(), safeMessage(ex, "Conflict"), HttpStatus.CONFLICT, request);
     }
 
 

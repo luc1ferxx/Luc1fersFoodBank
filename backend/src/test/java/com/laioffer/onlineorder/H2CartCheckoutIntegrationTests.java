@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder;
 
 
+import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.model.CartDto;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.PaymentCheckoutBody;
@@ -72,6 +73,48 @@ class H2CartCheckoutIntegrationTests {
         Assertions.assertEquals(2, paidOrder.items().get(0).quantity());
         Assertions.assertTrue(cartService.getCart(customerId).orderItems().isEmpty());
     }
+
+    @Test
+    void h2Profile_shouldKeepTheCartToOneRestaurantAndRecordItOnTheOrder() {
+        Long customerId = customerId("demo@laifood.com");
+        cartService.clearCart(customerId);
+        Long burgerRestaurantId = restaurantIdOfMenuItem(1L);
+        Long otherRestaurantItemId = jdbcTemplate.queryForObject(
+                "SELECT MIN(id) FROM menu_items WHERE restaurant_id <> ?",
+                Long.class,
+                burgerRestaurantId
+        );
+
+        try {
+            cartService.addMenuItemToCart(customerId, 1L);
+            ConflictException conflict = Assertions.assertThrows(
+                    ConflictException.class,
+                    () -> cartService.addMenuItemToCart(customerId, otherRestaurantItemId)
+            );
+            Assertions.assertEquals(CartService.CART_RESTAURANT_CONFLICT, conflict.getCode());
+            Assertions.assertEquals(1, cartService.getCart(customerId).orderItems().size());
+
+            OrderDto order = cartService.checkout(customerId);
+
+            Assertions.assertEquals(burgerRestaurantId, order.restaurantId());
+            Assertions.assertEquals(burgerRestaurantId, jdbcTemplate.queryForObject(
+                    "SELECT restaurant_id FROM orders WHERE id = ?",
+                    Long.class,
+                    order.id()
+            ));
+
+            // An empty cart accepts any restaurant again.
+            cartService.addMenuItemToCart(customerId, otherRestaurantItemId);
+        } finally {
+            cartService.clearCart(customerId);
+        }
+    }
+
+
+    private Long restaurantIdOfMenuItem(Long menuItemId) {
+        return jdbcTemplate.queryForObject("SELECT restaurant_id FROM menu_items WHERE id = ?", Long.class, menuItemId);
+    }
+
 
     private Long customerId(String email) {
         return jdbcTemplate.queryForObject(

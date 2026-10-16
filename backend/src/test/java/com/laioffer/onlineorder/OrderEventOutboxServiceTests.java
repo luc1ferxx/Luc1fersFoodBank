@@ -59,6 +59,38 @@ class OrderEventOutboxServiceTests {
 
 
     @Test
+    void enqueueOrderEvent_shouldCarryTheRestaurantAndCancelReason() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        LocalDateTime createdAt = LocalDateTime.of(2026, 4, 25, 12, 0);
+        OrderEntity cancelledOrder = new OrderEntity(
+                10L, 3L, new BigDecimal("19.00"), "CANCELLED", createdAt, 2L, "MERCHANT_TIMEOUT");
+
+        service.enqueueOrderEvent(cancelledOrder, List.of(), null, createdAt.plusMinutes(10));
+
+        OrderEventEnvelope envelope = service.readEnvelope(savedOutboxEvent(repository).payload());
+        Assertions.assertEquals("order.cancelled", envelope.eventType());
+        Assertions.assertEquals(2L, envelope.data().restaurantId());
+        Assertions.assertEquals("MERCHANT_TIMEOUT", envelope.data().reason());
+    }
+
+
+    @Test
+    void readEnvelope_whenPayloadPredatesRestaurantAndReason_shouldLeaveThemNull() {
+        OrderEventOutboxService service = newService(Mockito.mock(OutboxEventRepository.class));
+
+        OrderEventEnvelope envelope = service.readEnvelope("""
+                {"eventId":"evt-legacy","eventVersion":1,"eventType":"order.paid","aggregateType":"ORDER",
+                 "aggregateId":10,"data":{"customerId":3,"status":"PAID","totalPrice":19.0,"items":[]}}
+                """);
+
+        Assertions.assertEquals(3L, envelope.data().customerId());
+        Assertions.assertNull(envelope.data().restaurantId());
+        Assertions.assertNull(envelope.data().reason());
+    }
+
+
+    @Test
     void claimNextBatch_shouldMarkClaimedEventsProcessingWithOneBulkUpdate() {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
         OrderEventOutboxService service = newService(repository);

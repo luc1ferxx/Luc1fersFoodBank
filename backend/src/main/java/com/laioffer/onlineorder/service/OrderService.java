@@ -229,7 +229,9 @@ public class OrderService {
                 currentOrder.customerId(),
                 currentOrder.totalPrice(),
                 targetStatus.name(),
-                currentOrder.createdAt()
+                currentOrder.createdAt(),
+                currentOrder.restaurantId(),
+                currentOrder.cancelReason()
         ));
         List<OrderHistoryItemDto> items = getOrderItems(updatedOrder.id());
         orderEventOutboxService.enqueueOrderEvent(updatedOrder, items, null, transitionedAt);

@@ -90,7 +90,9 @@ public class OrderEventOutboxService {
                         order.status(),
                         order.totalPrice(),
                         order.createdAt(),
-                        items
+                        items,
+                        order.restaurantId(),
+                        order.cancelReason()
                 )
         );
         LocalDateTime now = LocalDateTime.now();

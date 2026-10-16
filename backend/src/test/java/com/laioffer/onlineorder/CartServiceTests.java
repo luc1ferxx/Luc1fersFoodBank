@@ -7,6 +7,7 @@ import com.laioffer.onlineorder.entity.MenuItemEntity;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.entity.OrderItemEntity;
+import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.model.CartDto;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
@@ -24,6 +25,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -108,6 +110,120 @@ public class CartServiceTests {
 
         Mockito.verify(cartItemQuantityUpdater).incrementQuantity(cartId, menuItemId, amount("10.0"));
         Mockito.verify(cartRepository).updateTotalPrice(cartId, amount("10.0"));
+    }
+
+
+    @Test
+    void addMenuItemToCart_whenCartHoldsAnotherRestaurant_shouldRejectWithCartRestaurantConflict() {
+        long customerId = 1L;
+        long menuItemId = 2L;
+        long cartId = 3L;
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.0"));
+        MenuItemEntity otherRestaurantItem = new MenuItemEntity(menuItemId, 7L, "Tofu", "", amount("17.0"), "");
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(menuItemRepository.findById(menuItemId)).thenReturn(Optional.of(otherRestaurantItem));
+        Mockito.when(orderItemRepository.findOtherRestaurantIdsInCart(cartId, 7L)).thenReturn(List.of(1L));
+
+        ConflictException conflict = Assertions.assertThrows(
+                ConflictException.class,
+                () -> cartService.addMenuItemToCart(customerId, menuItemId)
+        );
+
+        Assertions.assertEquals(CartService.CART_RESTAURANT_CONFLICT, conflict.getCode());
+        Mockito.verifyNoInteractions(cartItemQuantityUpdater);
+        Mockito.verify(cartRepository, Mockito.never()).updateTotalPrice(Mockito.anyLong(), Mockito.any());
+    }
+
+
+    @Test
+    void addMenuItemToCart_whenCartHoldsTheSameRestaurant_shouldAddTheItem() {
+        long customerId = 1L;
+        long menuItemId = 2L;
+        long cartId = 3L;
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.0"));
+        MenuItemEntity sameRestaurantItem = new MenuItemEntity(menuItemId, 1L, "Fries", "", amount("4.0"), "");
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(menuItemRepository.findById(menuItemId)).thenReturn(Optional.of(sameRestaurantItem));
+        Mockito.when(orderItemRepository.findOtherRestaurantIdsInCart(cartId, 1L)).thenReturn(List.of());
+        Mockito.when(orderItemRepository.getTotalPriceByCartId(cartId)).thenReturn(amount("14.0"));
+
+        cartService.addMenuItemToCart(customerId, menuItemId);
+
+        Mockito.verify(cartItemQuantityUpdater).incrementQuantity(cartId, menuItemId, amount("4.0"));
+        Mockito.verify(cartRepository).updateTotalPrice(cartId, amount("14.0"));
+    }
+
+
+    @Test
+    void checkout_shouldRecordTheRestaurantOfTheCartOnTheOrder() {
+        long customerId = 1L;
+        long cartId = 2L;
+        long menuItemId = 3L;
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.0"));
+        OrderItemEntity cartItem = new OrderItemEntity(5L, menuItemId, cartId, amount("10.0"), 1);
+        MenuItemEntity menuItem = new MenuItemEntity(menuItemId, 9L, "Burger", "Classic burger", amount("10.0"), "image");
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(cartRepository.getByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(List.of(cartItem));
+        Mockito.when(orderItemRepository.getTotalPriceByCartId(cartId)).thenReturn(amount("10.0"));
+        Mockito.when(menuItemRepository.findAllById(List.of(menuItemId))).thenReturn(List.of(menuItem));
+        Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class)))
+                .thenAnswer(invocation -> {
+                    OrderEntity order = invocation.getArgument(0);
+                    return new OrderEntity(4L, order.customerId(), order.totalPrice(), order.status(),
+                            order.createdAt(), order.restaurantId(), order.cancelReason());
+                });
+        Mockito.when(orderHistoryItemRepository.saveAll(Mockito.anyIterable())).thenReturn(List.of());
+
+        OrderDto orderDto = cartService.checkout(customerId, "PAID");
+
+        ArgumentCaptor<OrderEntity> savedOrder = ArgumentCaptor.forClass(OrderEntity.class);
+        Mockito.verify(orderRepository).save(savedOrder.capture());
+        Assertions.assertEquals(9L, savedOrder.getValue().restaurantId());
+        Assertions.assertNull(savedOrder.getValue().cancelReason());
+        Assertions.assertEquals(9L, orderDto.restaurantId());
+        Mockito.verify(orderEventOutboxService).enqueueOrderEvent(
+                Mockito.argThat(order -> Long.valueOf(9L).equals(order.restaurantId())),
+                Mockito.anyList(),
+                Mockito.isNull(),
+                Mockito.any()
+        );
+    }
+
+
+    @Test
+    void checkout_whenCartMixesRestaurants_shouldRejectWithoutCreatingAnOrder() {
+        long customerId = 1L;
+        long cartId = 2L;
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("27.0"));
+        List<OrderItemEntity> cartItems = List.of(
+                new OrderItemEntity(5L, 3L, cartId, amount("10.0"), 1),
+                new OrderItemEntity(6L, 4L, cartId, amount("17.0"), 1)
+        );
+        List<MenuItemEntity> menuItems = List.of(
+                new MenuItemEntity(3L, 1L, "Burger", "", amount("10.0"), ""),
+                new MenuItemEntity(4L, 2L, "Tofu", "", amount("17.0"), "")
+        );
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(cartRepository.getByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(cartItems);
+        Mockito.when(orderItemRepository.getTotalPriceByCartId(cartId)).thenReturn(amount("27.0"));
+        Mockito.when(menuItemRepository.findAllById(List.of(3L, 4L))).thenReturn(menuItems);
+
+        ConflictException conflict = Assertions.assertThrows(
+                ConflictException.class,
+                () -> cartService.checkout(customerId)
+        );
+
+        Assertions.assertEquals(CartService.CART_HAS_MULTIPLE_RESTAURANTS, conflict.getCode());
+        Mockito.verify(orderRepository, Mockito.never()).save(Mockito.any());
+        Mockito.verify(orderItemRepository, Mockito.never()).deleteByCartId(Mockito.anyLong());
+        Mockito.verifyNoInteractions(orderEventOutboxService);
+        Mockito.verify(metricsService).recordCheckoutFailure("ConflictException");
     }
 
 
