@@ -3,9 +3,9 @@ package com.laioffer.onlineorder;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.micrometer.tracing.test.autoconfigure.AutoConfigureTracing;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpSession;
@@ -24,13 +24,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest(properties = {
         "spring.autoconfigure.exclude=" +
-                "org.springframework.boot.autoconfigure.session.SessionAutoConfiguration," +
-                "org.springframework.boot.autoconfigure.session.RedisSessionAutoConfiguration"
+                "org.springframework.boot.session.autoconfigure.SessionAutoConfiguration," +
+                "org.springframework.boot.session.data.redis.autoconfigure.SessionDataRedisAutoConfiguration"
 })
 @AutoConfigureMockMvc
-// Spring Boot tests switch tracing propagation off unless asked for; the trace id contract needs W3C extraction.
-// Span export stays off (management.otlp.tracing.export.enabled defaults to false).
-@AutoConfigureObservability(metrics = false)
+// Spring Boot tests set management.tracing.export.enabled=false unless asked for, which also switches W3C propagation
+// off; the trace id contract needs W3C extraction. Span export stays off (management.tracing.export.otlp.enabled
+// follows TRACING_EXPORT_ENABLED, false by default).
+@AutoConfigureTracing
 @ActiveProfiles("h2")
 class ApiContractIntegrationTests {
 

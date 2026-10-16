@@ -1,7 +1,6 @@
 package com.laioffer.onlineorder.cache;
 
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.model.CatalogMenuItemDto;
 import com.laioffer.onlineorder.model.CatalogRestaurantDto;
 import org.junit.jupiter.api.AfterAll;
@@ -20,6 +19,7 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
+import tools.jackson.databind.ObjectMapper;
 
 
 import java.io.IOException;

@@ -2,7 +2,7 @@ package com.laioffer.onlineorder.security;
 
 
 import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.boot.web.context.WebServerApplicationContext;
+import org.springframework.boot.web.server.context.WebServerApplicationContext;
 import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.context.WebApplicationContext;
 import org.springframework.web.context.support.WebApplicationContextUtils;

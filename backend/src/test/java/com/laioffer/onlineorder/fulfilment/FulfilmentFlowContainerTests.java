@@ -9,10 +9,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 
 
 import java.util.List;
@@ -30,7 +30,7 @@ import java.util.Map;
 class FulfilmentFlowContainerTests extends FulfilmentContainerTestSupport {
 
     @Container
-    static PostgreSQLContainer<?> POSTGRES = postgres();
+    static PostgreSQLContainer POSTGRES = postgres();
 
     @Container
     static GenericContainer<?> REDIS = redis();

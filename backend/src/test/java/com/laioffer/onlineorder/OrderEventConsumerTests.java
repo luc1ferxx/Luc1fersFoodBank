@@ -1,7 +1,6 @@
 package com.laioffer.onlineorder;
 
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.messaging.OrderEventConsumer;
 import com.laioffer.onlineorder.messaging.OrderEventDeadLetterConsumer;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
@@ -14,6 +13,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 
 import java.math.BigDecimal;
@@ -33,7 +34,7 @@ class OrderEventConsumerTests {
 
     @Test
     void consume_shouldConvertPayloadAndRecordNotification() throws Exception {
-        ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+        ObjectMapper objectMapper = JsonMapper.builder().build();
         OrderEventConsumer consumer = new OrderEventConsumer(objectMapper, orderEventHandlerService);
         LocalDateTime occurredAt = LocalDateTime.of(2026, 4, 4, 12, 0);
         OrderEventEnvelope payload = new OrderEventEnvelope(
@@ -64,7 +65,7 @@ class OrderEventConsumerTests {
 
     @Test
     void consume_shouldThrowWhenPayloadIsInvalid() {
-        ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+        ObjectMapper objectMapper = JsonMapper.builder().build();
         OrderEventConsumer consumer = new OrderEventConsumer(objectMapper, orderEventHandlerService);
 
         Assertions.assertThrows(IllegalStateException.class, () -> consumer.consume("{not-json}"));

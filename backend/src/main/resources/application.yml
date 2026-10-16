@@ -30,6 +30,10 @@ spring:
   jackson:
     default-property-inclusion: non_null
     property-naming-strategy: SNAKE_CASE
+    mapper:
+      # Jackson 3 sorts properties alphabetically by default; the API (and the outbox payloads written with this
+      # mapper) keep their declaration order, as with Jackson 2.
+      sort-properties-alphabetically: false
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
@@ -110,8 +114,9 @@ spring:
     user: ${spring.datasource.username}
   session:
     store-type: redis
-    redis:
-      namespace: ${REDIS_SESSION_NAMESPACE:onlineorder:session}
+    data:
+      redis:
+        namespace: ${REDIS_SESSION_NAMESPACE:onlineorder:session}
   cache:
     type: redis
     redis:
@@ -290,11 +295,14 @@ management:
   tracing:
     sampling:
       probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
-  otlp:
-    tracing:
-      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
-      export:
+    export:
+      otlp:
         enabled: ${TRACING_EXPORT_ENABLED:false}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   # The actuator moves to its own port when MANAGEMENT_SERVER_PORT is set (8081 on Kubernetes and in
   # deploy/observability): Prometheus scrapes and the kubelet probes it without a session, and it is never
   # exposed publicly.

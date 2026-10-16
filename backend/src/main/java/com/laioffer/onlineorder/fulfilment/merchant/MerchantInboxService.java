@@ -1,14 +1,14 @@
 package com.laioffer.onlineorder.fulfilment.merchant;
 
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.fulfilment.FulfilmentEvents;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 
 
 import java.time.LocalDateTime;
@@ -147,7 +147,7 @@ public class MerchantInboxService {
     private String serializeItems(OrderEventPayload data) {
         try {
             return objectMapper.writeValueAsString(data.items() == null ? List.of() : data.items());
-        } catch (JsonProcessingException ex) {
+        } catch (JacksonException ex) {
             throw new IllegalStateException("Unable to serialize order items for the merchant inbox", ex);
         }
     }

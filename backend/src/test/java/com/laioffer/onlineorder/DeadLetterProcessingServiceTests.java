@@ -1,8 +1,6 @@
 package com.laioffer.onlineorder;
 
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.laioffer.onlineorder.service.DeadLetterEventService;
 import com.laioffer.onlineorder.service.DeadLetterProcessingService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
@@ -11,6 +9,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
+import tools.jackson.databind.PropertyNamingStrategies;
+import tools.jackson.databind.json.JsonMapper;
 
 
 @ExtendWith(MockitoExtension.class)
@@ -74,7 +74,7 @@ class DeadLetterProcessingServiceTests {
         return new DeadLetterProcessingService(
                 deadLetterEventService,
                 // The application's mapper writes and reads envelopes in snake_case.
-                new ObjectMapper().findAndRegisterModules().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE),
+                JsonMapper.builder().propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE).build(),
                 processedEventService
         );
     }

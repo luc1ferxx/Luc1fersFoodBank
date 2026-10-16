@@ -1,15 +1,15 @@
 package com.laioffer.onlineorder.cache;
 
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.connection.SubscriptionListener;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -41,7 +41,7 @@ public class CacheInvalidationListener implements MessageListener, SubscriptionL
         CacheInvalidationMessage invalidation;
         try {
             invalidation = objectMapper.readValue(message.getBody(), CacheInvalidationMessage.class);
-        } catch (IOException ex) {
+        } catch (JacksonException ex) {
             LOGGER.warn("Ignoring malformed cache invalidation message: {}", ex.toString());
             return;
         }

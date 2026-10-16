@@ -1,8 +1,6 @@
 package com.laioffer.onlineorder.service;
 
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OutboxEventEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
@@ -19,6 +17,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 
 
 import java.time.Duration;
@@ -272,7 +272,7 @@ public class OrderEventOutboxService {
     public OrderEventEnvelope readEnvelope(String payload) {
         try {
             return objectMapper.readValue(payload, OrderEventEnvelope.class);
-        } catch (JsonProcessingException ex) {
+        } catch (JacksonException ex) {
             throw new IllegalStateException("Unable to deserialize order event payload", ex);
         }
     }
@@ -293,7 +293,7 @@ public class OrderEventOutboxService {
     private String serializePayload(Object payload) {
         try {
             return objectMapper.writeValueAsString(payload);
-        } catch (JsonProcessingException ex) {
+        } catch (JacksonException ex) {
             throw new IllegalStateException("Unable to serialize order event payload", ex);
         }
     }

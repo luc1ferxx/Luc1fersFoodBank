@@ -1,6 +1,5 @@
 package com.laioffer.onlineorder;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OutboxEventEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
@@ -15,6 +14,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -223,7 +223,7 @@ class OrderEventOutboxServiceTests {
                 Duration.ofSeconds(30),
                 2,
                 "order-events",
-                new ObjectMapper().findAndRegisterModules(),
+                JsonMapper.builder().build(),
                 repository
         );
         OutboxEventEntity event = eventWithAttempts(2);
@@ -253,7 +253,7 @@ class OrderEventOutboxServiceTests {
                 Duration.ofSeconds(30),
                 2,
                 "order-events",
-                new ObjectMapper().findAndRegisterModules(),
+                JsonMapper.builder().build(),
                 repository
         );
         OutboxEventEntity event = eventWithAttempts(1);
@@ -354,7 +354,7 @@ class OrderEventOutboxServiceTests {
                 Duration.ofSeconds(30),
                 2,
                 "order-events",
-                new ObjectMapper().findAndRegisterModules(),
+                JsonMapper.builder().build(),
                 repository
         );
     }

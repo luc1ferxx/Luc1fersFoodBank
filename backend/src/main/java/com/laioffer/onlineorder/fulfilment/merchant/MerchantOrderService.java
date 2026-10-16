@@ -1,9 +1,6 @@
 package com.laioffer.onlineorder.fulfilment.merchant;
 
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.fulfilment.AfterCommit;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
@@ -17,6 +14,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 
 
 import java.time.LocalDateTime;
@@ -189,7 +189,7 @@ public class MerchantOrderService {
                             item.quantity()
                     ))
                     .toList();
-        } catch (JsonProcessingException ex) {
+        } catch (JacksonException ex) {
             throw new IllegalStateException("Unable to read merchant order items", ex);
         }
     }

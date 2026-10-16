@@ -1,7 +1,7 @@
 package com.laioffer.onlineorder.cache;
 
 
-import com.fasterxml.jackson.databind.JavaType;
+import tools.jackson.databind.JavaType;
 
 
 /**

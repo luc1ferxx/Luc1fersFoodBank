@@ -9,10 +9,11 @@ import io.opentelemetry.sdk.trace.data.SpanData;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
+import org.springframework.boot.micrometer.tracing.test.autoconfigure.AutoConfigureTracing;
+import org.springframework.boot.resttestclient.TestRestTemplate;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
 import org.springframework.http.HttpEntity;
@@ -26,10 +27,10 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 
@@ -51,17 +52,19 @@ import java.util.concurrent.ThreadLocalRandom;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "management.tracing.sampling.probability=1.0",
-                "management.tracing.opentelemetry.export.schedule-delay=100ms"
+                "management.opentelemetry.tracing.export.schedule-delay=100ms"
         }
 )
-// Spring Boot tests switch tracing propagation off unless asked for. OTLP export stays off
-// (management.otlp.tracing.export.enabled defaults to false); spans go to the in-memory exporter below.
-@AutoConfigureObservability(metrics = false)
+// Spring Boot tests set management.tracing.export.enabled=false unless asked for, which also switches W3C propagation
+// off. OTLP export stays off (management.tracing.export.otlp.enabled follows TRACING_EXPORT_ENABLED, false by
+// default); spans go to the in-memory exporter below.
+@AutoConfigureTracing
 @Testcontainers(disabledWithoutDocker = true)
+@AutoConfigureTestRestTemplate
 class OutboxKafkaTraceContinuityTests {
 
     @Container
-    static PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
+    static PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine")
             .withDatabaseName("onlineorder")
             .withUsername("postgres")
             .withPassword("secret");
@@ -159,7 +162,8 @@ class OutboxKafkaTraceContinuityTests {
                         () -> "outbox row should carry the request trace, got " + traceParent
                 ));
 
-        SpanData consumerSpan = awaitSpan(Duration.ofSeconds(30), traceId, SpanKind.CONSUMER, ORDER_TOPIC + " receive");
+        // Spring Kafka 4 names the listener span "<topic> process" (OpenTelemetry messaging conventions; 3.x: "receive").
+        SpanData consumerSpan = awaitSpan(Duration.ofSeconds(30), traceId, SpanKind.CONSUMER, ORDER_TOPIC + " process");
         SpanData producerSpan = findSpan(traceId, SpanKind.PRODUCER, ORDER_TOPIC + " send")
                 .orElseThrow(() -> new AssertionError("No Kafka send span in trace " + traceId + ": " + spans(traceId)));
         SpanData relaySpan = findSpan(traceId, SpanKind.CONSUMER, ORDER_TOPIC + " outbox relay")

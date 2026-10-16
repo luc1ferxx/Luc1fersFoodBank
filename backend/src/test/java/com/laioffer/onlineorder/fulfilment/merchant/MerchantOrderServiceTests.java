@@ -1,7 +1,6 @@
 package com.laioffer.onlineorder.fulfilment.merchant;
 
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
@@ -17,6 +16,7 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.access.AccessDeniedException;
+import tools.jackson.databind.json.JsonMapper;
 
 
 import java.math.BigDecimal;
@@ -53,7 +53,7 @@ class MerchantOrderServiceTests {
                 merchantOrderRepository,
                 orderLifecycleCommands,
                 metricsService,
-                new ObjectMapper().findAndRegisterModules()
+                JsonMapper.builder().build()
         );
     }
 

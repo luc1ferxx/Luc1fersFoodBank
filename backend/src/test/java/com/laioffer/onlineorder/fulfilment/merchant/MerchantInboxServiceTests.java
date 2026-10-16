@@ -1,7 +1,6 @@
 package com.laioffer.onlineorder.fulfilment.merchant;
 
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.junit.jupiter.api.BeforeEach;
@@ -11,6 +10,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
+import tools.jackson.databind.json.JsonMapper;
 
 
 import java.math.BigDecimal;
@@ -39,7 +39,7 @@ class MerchantInboxServiceTests {
     void setup() {
         service = new MerchantInboxService(
                 merchantOrderRepository,
-                new ObjectMapper().findAndRegisterModules(),
+                JsonMapper.builder().build(),
                 processedEventService
         );
     }
