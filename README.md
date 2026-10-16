@@ -289,6 +289,16 @@ The public catalog reads (`GET /restaurants/menu`, `GET /restaurant/{restaurantI
 - **Prices and checkout.** The cache only serves the catalog. Adding to the cart reads the menu item from the database and snapshots its price on the cart line (adding the same item again re-snapshots it), and checkout charges the cart-line snapshots. A price change therefore never reprices existing cart lines, and a client showing a cached menu for up to `max-age` still gets the current price when it adds the item.
 - **Metrics.** Micrometer's cache meters with a `level` tag: `cache.gets{level="l1"|"l2", result="hit"|"miss"}`, `cache.puts`, `cache.evictions`, plus `cache.size{level="l1"}`, `onlineorder.cache.invalidations.received` and `onlineorder.cache.errors`. An L2 miss is a database load. Overall hit ratio: `1 - sum(rate(cache_gets_total{level="l2",result="miss"}[5m])) / sum(rate(cache_gets_total{level="l1"}[5m]))`.
 
+Read benchmark with `load-tests/catalog-read.js`: 50 VUs for 30s in a closed loop, half `GET /restaurants/menu` and half `GET /restaurant/{id}/menu`, on the demo data, PostgreSQL 16 and Redis 7.4. k6, the JVM and Docker Desktop shared one laptop with other builds running, so compare the rows rather than reading the numbers as capacity. Each cell shows two alternating rounds.
+
+| Build | Throughput | p95 | p99 |
+| --- | --- | --- | --- |
+| Before: one Redis key for the whole catalog, menu endpoint uncached | 18.6k / 24.5k req/s | 5.32 / 3.67 ms | 9.45 / 7.08 ms |
+| After: two-level cache | 51.0k / 60.6k req/s | 1.76 / 1.45 ms | 2.81 / 2.31 ms |
+| After, with `If-None-Match` (every response a `304`) | 70.7k / 71.5k req/s | 1.13 / 1.13 ms | 1.65 / 1.61 ms |
+
+In the second "after" round, L1 answered 11.9M cache reads with 12 misses, and only 4 reads reached PostgreSQL (L2 misses). To repeat it: `BASE_URL=http://localhost:8080 VUS=50 DURATION=30s k6 run load-tests/catalog-read.js`, adding `CONDITIONAL=true` for the `304` case.
+
 ### Security and Abuse Controls
 
 - Authentication uses server-side sessions backed by Redis.

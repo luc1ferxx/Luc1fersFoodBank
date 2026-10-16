@@ -106,6 +106,8 @@ k6 run load-tests/order-flow.js
 
 Optional environment variables include `BASE_URL`, `VUS`, `DURATION`, `USER_COUNT`, `USER_PASSWORD`, and `USER_PREFIX`.
 
+`load-tests/catalog-read.js` is an anonymous read-only benchmark for the cached catalog endpoints (`BASE_URL`, `VUS`, `DURATION`; `CONDITIONAL=true` sends `If-None-Match`).
+
 ## Edit Guidelines
 
 - Do not hand-edit generated frontend build output under `frontend/build/` or copied backend static output under `backend/src/main/resources/public/`; regenerate it through the frontend build/deploy commands when intentionally updating embedded assets.
