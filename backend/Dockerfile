@@ -6,7 +6,7 @@
 # For another architecture than the host's, pass it to the build: docker build --platform linux/amd64 backend
 
 # --- 1. Spring Boot layer extraction ---
-FROM eclipse-temurin:17.0.20.1_1-jre-noble AS layers
+FROM eclipse-temurin:24.0.2_12-jre-noble AS layers
 
 WORKDIR /layers
 COPY build/libs/OnlineOrder-0.0.1-SNAPSHOT.jar application.jar
@@ -14,7 +14,7 @@ RUN java -Djarmode=tools -jar application.jar extract --layers --destination ext
 
 
 # --- 2. Runtime ---
-FROM eclipse-temurin:17.0.20.1_1-jre-noble
+FROM eclipse-temurin:24.0.2_12-jre-noble
 
 RUN groupadd --system --gid 10001 onlineorder \
     && useradd --system --uid 10001 --gid onlineorder --home-dir /app --shell /usr/sbin/nologin onlineorder
