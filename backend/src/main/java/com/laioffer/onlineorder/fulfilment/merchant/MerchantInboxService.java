@@ -22,6 +22,13 @@ import java.util.Set;
  * consumer (processed_events, in the same transaction as the inbox write), and the unique order_id makes a second
  * order.paid for one order a no-op as well.
  *
+ * <p>Events can arrive out of order: an order.paid dead-lettered from this group and replayed after the order was
+ * cancelled, for example. A later event that finds no row creates it with the status it reports (a tombstone for
+ * order.cancelled), without a paid_at, so the merchant does not see it yet. The replayed order.paid then only sets
+ * paid_at and leaves the status alone: the row shows up with the order's real status instead of a stale PAID that no
+ * merchant command could ever resolve. Both writes go through the unique order_id, so a concurrent order.paid and
+ * order.cancelled end in the same state in either order.
+ *
  * <p>Orders without a restaurant (placed before single-restaurant carts) are not shown to merchants.
  */
 @Service
@@ -72,26 +79,68 @@ public class MerchantInboxService {
         LocalDateTime now = LocalDateTime.now();
         Long orderId = event.aggregateId();
         switch (event.eventType()) {
-            case FulfilmentEvents.ORDER_PAID -> merchantOrderRepository.insertPaidOrderIfAbsent(
-                    orderId,
-                    data.restaurantId(),
-                    data.customerId(),
-                    data.totalPrice(),
-                    serializeItems(data),
-                    event.occurredAt() == null ? now : event.occurredAt(),
-                    now
-            );
-            case FulfilmentEvents.ORDER_ACCEPTED ->
+            case FulfilmentEvents.ORDER_PAID -> {
+                LocalDateTime paidAt = event.occurredAt() == null ? now : event.occurredAt();
+                int inserted = merchantOrderRepository.insertPaidOrderIfAbsent(
+                        orderId,
+                        data.restaurantId(),
+                        data.customerId(),
+                        data.totalPrice(),
+                        serializeItems(data),
+                        paidAt,
+                        now
+                );
+                if (inserted == 0) {
+                    merchantOrderRepository.recordPayment(orderId, paidAt, now);
+                }
+            }
+            case FulfilmentEvents.ORDER_ACCEPTED -> {
+                if (insertUnpaidIfAbsent(orderId, data, "ACCEPTED", null, now) == 0) {
                     merchantOrderRepository.advanceStatus(orderId, BEFORE_ACCEPTED, "ACCEPTED", now);
-            case FulfilmentEvents.ORDER_PREPARING ->
+                }
+            }
+            case FulfilmentEvents.ORDER_PREPARING -> {
+                if (insertUnpaidIfAbsent(orderId, data, "PREPARING", null, now) == 0) {
                     merchantOrderRepository.advanceStatus(orderId, BEFORE_PREPARING, "PREPARING", now);
-            case FulfilmentEvents.ORDER_COMPLETED ->
+                }
+            }
+            case FulfilmentEvents.ORDER_COMPLETED -> {
+                if (insertUnpaidIfAbsent(orderId, data, "COMPLETED", null, now) == 0) {
                     merchantOrderRepository.advanceStatus(orderId, NOT_FINISHED, "COMPLETED", now);
-            case FulfilmentEvents.ORDER_CANCELLED ->
+                }
+            }
+            case FulfilmentEvents.ORDER_CANCELLED -> {
+                if (insertUnpaidIfAbsent(orderId, data, "CANCELLED", data.reason(), now) == 0) {
                     merchantOrderRepository.cancel(orderId, NOT_FINISHED, data.reason(), now);
+                }
+            }
             default -> {
             }
         }
+    }
+
+
+    /**
+     * @return 1 when this event created the order's row (it reached the group before order.paid), 0 when the order
+     * already has one
+     */
+    private int insertUnpaidIfAbsent(
+            Long orderId,
+            OrderEventPayload data,
+            String status,
+            String cancelReason,
+            LocalDateTime now
+    ) {
+        return merchantOrderRepository.insertUnpaidOrderIfAbsent(
+                orderId,
+                data.restaurantId(),
+                data.customerId(),
+                status,
+                data.totalPrice(),
+                serializeItems(data),
+                cancelReason,
+                now
+        );
     }
 
 

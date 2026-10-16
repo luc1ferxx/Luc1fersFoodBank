@@ -74,7 +74,9 @@ public class ApplicationMetricsService {
 
 
     /**
-     * @param result assigned, duplicate (the order already had a rider) or no_rider (no active rider; retried)
+     * @param result assigned; duplicate (the order already had a rider); cancelled (order.cancelled was handled first,
+     *               so no rider was assigned); or no_rider_attempt (an attempt found no active rider and failed for a
+     *               retry: counted once per listener attempt and DLT replay, not once per order)
      */
     public void recordDispatchAssignment(String result) {
         meterRegistry.counter(

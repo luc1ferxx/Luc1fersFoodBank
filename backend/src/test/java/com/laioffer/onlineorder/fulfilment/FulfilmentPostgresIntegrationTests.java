@@ -562,7 +562,139 @@ class FulfilmentPostgresIntegrationTests {
     }
 
 
+    @Test
+    void orderPaidReplayedAfterTheOrderWasCancelled_shouldShowTheCancelledOrderNotAStalePaidOne() throws Exception {
+        PaidOrder order = paidOrderAt("Burger King");
+        OrderEventEnvelope paid = latestOrderEvent(order.orderId(), "order.paid");
+        orderService.cancelOrder(order.customerId(), order.orderId());
+        MockHttpSession burgerKing = login(BURGER_KING_MERCHANT, MERCHANT_PASSWORD);
+
+        // order.paid was dead-lettered from the merchant group, so order.cancelled arrives there first: it leaves a
+        // tombstone the merchant does not see yet (the order was never in their inbox).
+        deliverOrderEvent(order.orderId(), "order.cancelled", merchantInboxService::handle);
+        Assertions.assertEquals("CANCELLED", inboxStatus(order.orderId()));
+        mockMvc.perform(get("/merchant/orders").session(burgerKing))
+                .andExpect(jsonPath("$[?(@.order_id == %d)]".formatted(order.orderId())).isEmpty());
+        mockMvc.perform(post("/merchant/orders/{id}/accept", order.orderId()).session(burgerKing))
+                .andExpect(status().isNotFound());
+
+        // The operator replays the dead-lettered order.paid.
+        merchantInboxService.handle(paid);
+
+        Assertions.assertEquals("CANCELLED", inboxStatus(order.orderId()));
+        Assertions.assertNotNull(jdbcTemplate.queryForObject(
+                "SELECT paid_at FROM merchant_orders WHERE order_id = ?", LocalDateTime.class, order.orderId()));
+        mockMvc.perform(get("/merchant/orders").param("status", "PAID").session(burgerKing))
+                .andExpect(jsonPath("$[?(@.order_id == %d)]".formatted(order.orderId())).isEmpty());
+        mockMvc.perform(get("/merchant/orders").param("status", "CANCELLED").session(burgerKing))
+                .andExpect(jsonPath("$[?(@.order_id == %d)].cancel_reason".formatted(order.orderId()))
+                        .value(OrderLifecycleCommands.CUSTOMER_CANCELLED));
+        mockMvc.perform(post("/merchant/orders/{id}/accept", order.orderId()).session(burgerKing))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value(OrderLifecycleCommands.ORDER_STATUS_CONFLICT));
+        Assertions.assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM merchant_orders WHERE order_id = ?", Integer.class, order.orderId()));
+    }
+
+
+    @Test
+    void orderPaidReplayedAfterTheOrderWasAccepted_shouldShowTheAcceptedOrder() throws Exception {
+        PaidOrder order = paidOrderAt("SGD Tofu House");
+        OrderEventEnvelope paid = latestOrderEvent(order.orderId(), "order.paid");
+        orderService.transitionOrderStatus(order.orderId(), "ACCEPTED");
+        MockHttpSession sgdTofu = login(SGD_TOFU_MERCHANT, MERCHANT_PASSWORD);
+
+        deliverOrderEvent(order.orderId(), "order.accepted", merchantInboxService::handle);
+        merchantInboxService.handle(paid);
+
+        Assertions.assertEquals("ACCEPTED", inboxStatus(order.orderId()));
+        mockMvc.perform(post("/merchant/orders/{id}/preparing", order.orderId()).session(sgdTofu))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("PREPARING"));
+    }
+
+
+    @Test
+    void orderAcceptedReplayedAfterTheOrderWasCancelled_shouldAssignNoRider() {
+        PaidOrder order = paidOrderAt("Burger King");
+        orderLifecycleCommands.transitionRestaurantOrder(
+                order.orderId(), order.restaurantId(), OrderStatus.PAID, OrderStatus.ACCEPTED, null);
+        OrderEventEnvelope accepted = latestOrderEvent(order.orderId(), "order.accepted");
+        orderService.cancelOrder(order.customerId(), order.orderId());
+        int totalLoadBefore = totalRiderLoad();
+
+        // order.accepted failed in the dispatch group (no active rider) and was dead-lettered; order.cancelled got
+        // through first. Then the operator replays the dead letter.
+        deliverOrderEvent(order.orderId(), "order.cancelled", dispatchService::handle);
+        dispatchService.handle(accepted);
+
+        Assertions.assertEquals("CANCELLED", orderStatus(order.orderId()));
+        Assertions.assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM deliveries WHERE order_id = ?", Integer.class, order.orderId()));
+        Assertions.assertEquals(totalLoadBefore, totalRiderLoad());
+        Assertions.assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM outbox_events WHERE aggregate_type = 'DELIVERY' AND event_key = ?",
+                Integer.class,
+                String.valueOf(order.orderId())
+        ));
+        Assertions.assertNotNull(jdbcTemplate.queryForObject(
+                "SELECT cancelled_at FROM dispatch_orders WHERE order_id = ?", LocalDateTime.class, order.orderId()));
+    }
+
+
+    @Test
+    void acceptedAndCancelledHandledConcurrently_shouldNeverLeaveARiderOnACancelledOrder() throws Exception {
+        ExecutorService dispatchers = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 8; round++) {
+                PaidOrder order = paidOrderAt(round % 2 == 0 ? "Fashion Wok" : "SGD Tofu House");
+                orderLifecycleCommands.transitionRestaurantOrder(
+                        order.orderId(), order.restaurantId(), OrderStatus.PAID, OrderStatus.ACCEPTED, null);
+                orderService.cancelOrder(order.customerId(), order.orderId());
+                OrderEventEnvelope accepted = latestOrderEvent(order.orderId(), "order.accepted");
+                OrderEventEnvelope cancelled = latestOrderEvent(order.orderId(), "order.cancelled");
+                CountDownLatch start = new CountDownLatch(1);
+
+                Future<Object> acceptedRun = dispatchers.submit(awaiting(start, () -> {
+                    dispatchService.handle(accepted);
+                    return null;
+                }));
+                Future<Object> cancelledRun = dispatchers.submit(awaiting(start, () -> {
+                    dispatchService.handle(cancelled);
+                    return null;
+                }));
+                start.countDown();
+                acceptedRun.get(30, TimeUnit.SECONDS);
+                cancelledRun.get(30, TimeUnit.SECONDS);
+
+                // Either order: no delivery at all, or a delivery that was assigned and then cancelled.
+                List<String> deliveries = jdbcTemplate.queryForList(
+                        "SELECT status FROM deliveries WHERE order_id = ?", String.class, order.orderId());
+                Assertions.assertTrue(
+                        deliveries.isEmpty() || deliveries.equals(List.of("CANCELLED")),
+                        "round " + round + ": deliveries " + deliveries
+                );
+            }
+        } finally {
+            dispatchers.shutdownNow();
+        }
+        Assertions.assertEquals(0, jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM riders
+                WHERE active_deliveries <> (
+                    SELECT COUNT(*) FROM deliveries
+                    WHERE deliveries.rider_id = riders.id AND deliveries.status IN ('ASSIGNED', 'PICKED_UP')
+                )
+                """, Integer.class), "Every rider's load matches their open deliveries");
+    }
+
+
     // ---- helpers shared by the fulfilment tests ----
+
+    String inboxStatus(Long orderId) {
+        return jdbcTemplate.queryForObject("SELECT status FROM merchant_orders WHERE order_id = ?", String.class, orderId);
+    }
+
 
     int totalRiderLoad() {
         return jdbcTemplate.queryForObject("SELECT COALESCE(SUM(active_deliveries), 0) FROM riders", Integer.class);

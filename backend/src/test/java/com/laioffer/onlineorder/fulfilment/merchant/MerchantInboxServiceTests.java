@@ -49,6 +49,9 @@ class MerchantInboxServiceTests {
     void orderPaid_shouldAddTheOrderToItsRestaurantsInbox() {
         OrderEventEnvelope paid = orderEvent("order.paid", 10L, 2L, "PAID");
         Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
+        Mockito.when(merchantOrderRepository.insertPaidOrderIfAbsent(
+                Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(), Mockito.anyString(),
+                Mockito.any(), Mockito.any())).thenReturn(1);
 
         service.handle(paid);
 
@@ -63,6 +66,51 @@ class MerchantInboxServiceTests {
                 Mockito.any(LocalDateTime.class)
         );
         assertTrue(items.getValue().contains("Whopper Meal"));
+        Mockito.verify(merchantOrderRepository, Mockito.never())
+                .recordPayment(Mockito.anyLong(), Mockito.any(), Mockito.any());
+    }
+
+
+    @Test
+    void orderPaid_afterALaterEventCreatedTheRow_shouldOnlyRecordThePayment() {
+        OrderEventEnvelope paid = orderEvent("order.paid", 10L, 2L, "PAID");
+        Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
+        // The row exists already (insert is a no-op): for example a tombstone order.cancelled wrote.
+
+        service.handle(paid);
+
+        Mockito.verify(merchantOrderRepository).recordPayment(
+                Mockito.eq(10L), Mockito.eq(LocalDateTime.of(2026, 4, 4, 12, 0)), Mockito.any(LocalDateTime.class));
+        Mockito.verify(merchantOrderRepository, Mockito.never())
+                .advanceStatus(Mockito.anyLong(), Mockito.anyCollection(), Mockito.anyString(), Mockito.any());
+        Mockito.verify(merchantOrderRepository, Mockito.never())
+                .cancel(Mockito.anyLong(), Mockito.anyCollection(), Mockito.any(), Mockito.any());
+    }
+
+
+    @Test
+    void orderCancelled_beforeOrderPaid_shouldLeaveAHiddenCancelledTombstone() {
+        OrderEventEnvelope cancelled = orderEvent(
+                "order.cancelled", 10L, 3L, 2L, "CANCELLED", "CUSTOMER_CANCELLED", LocalDateTime.of(2026, 4, 4, 12, 5));
+        Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", cancelled)).thenReturn(true);
+        Mockito.when(merchantOrderRepository.insertUnpaidOrderIfAbsent(
+                Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyString(), Mockito.any(),
+                Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
+
+        service.handle(cancelled);
+
+        Mockito.verify(merchantOrderRepository).insertUnpaidOrderIfAbsent(
+                Mockito.eq(10L),
+                Mockito.eq(2L),
+                Mockito.eq(3L),
+                Mockito.eq("CANCELLED"),
+                Mockito.eq(new BigDecimal("10.59")),
+                Mockito.contains("Whopper Meal"),
+                Mockito.eq("CUSTOMER_CANCELLED"),
+                Mockito.any(LocalDateTime.class)
+        );
+        Mockito.verify(merchantOrderRepository, Mockito.never())
+                .cancel(Mockito.anyLong(), Mockito.anyCollection(), Mockito.any(), Mockito.any());
     }
 
 
@@ -101,6 +149,13 @@ class MerchantInboxServiceTests {
         service.handle(orderEvent("order.accepted", 10L, 2L, "ACCEPTED"));
         service.handle(orderEvent("order.preparing", 10L, 2L, "PREPARING"));
         service.handle(orderEvent("order.completed", 10L, 2L, "COMPLETED"));
+
+        // The row exists (every insert below is a no-op), so the events only move it forward.
+        for (String status : List.of("ACCEPTED", "PREPARING", "COMPLETED")) {
+            Mockito.verify(merchantOrderRepository).insertUnpaidOrderIfAbsent(
+                    Mockito.eq(10L), Mockito.eq(2L), Mockito.eq(3L), Mockito.eq(status), Mockito.any(),
+                    Mockito.anyString(), Mockito.isNull(), Mockito.any());
+        }
 
         Mockito.verify(merchantOrderRepository).advanceStatus(
                 Mockito.eq(10L), Mockito.eq(List.of("PAID")), Mockito.eq("ACCEPTED"), Mockito.any());

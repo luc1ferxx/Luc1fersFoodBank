@@ -27,13 +27,18 @@ import java.util.UUID;
 /**
  * Assigns simulated riders to accepted orders (dispatch consumer group) and tracks each delivery.
  *
+ * <p>Both order event handlers first create (if absent) and lock the order's dispatch_orders row, so they serialize
+ * per order even on different consumers, and an order.cancelled that was handled first leaves a tombstone there.
+ *
  * <p>order.accepted: the least-loaded active rider is locked with FOR UPDATE SKIP LOCKED, the delivery is inserted
  * (unique per order) and the rider's load incremented in one transaction, together with the processed_events mark and
  * the delivery.assigned outbox event. A duplicate delivery of the event, or another event for an order that already
- * has a delivery, assigns no second rider. With no active rider the event fails, is retried and finally
- * dead-lettered for an operator to replay.
+ * has a delivery, assigns no second rider. An order.accepted for an order whose order.cancelled was already handled
+ * (a late or replayed event, for example the DLT replay below) assigns no rider. With no active rider the event fails,
+ * is retried and finally dead-lettered for an operator to replay.
  *
- * <p>order.cancelled: an open delivery is cancelled and its rider released (delivery.cancelled).
+ * <p>order.cancelled: the tombstone is set, and an open delivery is cancelled and its rider released
+ * (delivery.cancelled).
  *
  * <p>Simulated rider actions (ADMIN): picked up and delivered, each a guarded {@link DeliveryStatus} transition
  * under the delivery row lock that writes its delivery event to the outbox in the same transaction. Repeating an
@@ -48,6 +53,7 @@ public class DispatchService {
     private static final Logger LOGGER = LoggerFactory.getLogger(DispatchService.class);
 
     private final DeliveryRepository deliveryRepository;
+    private final DispatchOrderRepository dispatchOrderRepository;
     private final RiderRepository riderRepository;
     private final OrderEventOutboxService outboxService;
     private final ProcessedEventService processedEventService;
@@ -57,6 +63,7 @@ public class DispatchService {
 
     public DispatchService(
             DeliveryRepository deliveryRepository,
+            DispatchOrderRepository dispatchOrderRepository,
             RiderRepository riderRepository,
             OrderEventOutboxService outboxService,
             ProcessedEventService processedEventService,
@@ -64,6 +71,7 @@ public class DispatchService {
             @Value("${app.fulfilment.delivery-topic:delivery-events}") String deliveryTopic
     ) {
         this.deliveryRepository = deliveryRepository;
+        this.dispatchOrderRepository = dispatchOrderRepository;
         this.riderRepository = riderRepository;
         this.outboxService = outboxService;
         this.processedEventService = processedEventService;
@@ -121,6 +129,16 @@ public class DispatchService {
 
 
     private void assignRider(Long orderId, OrderEventPayload order) {
+        DispatchOrderEntity dispatchOrder = lockDispatchOrder(orderId);
+        if (dispatchOrder.cancelledAt() != null) {
+            AfterCommit.run(() -> metricsService.recordDispatchAssignment("cancelled"));
+            LOGGER.info(
+                    "Order {} was cancelled at {} before dispatch saw it accepted; no rider assigned",
+                    orderId,
+                    dispatchOrder.cancelledAt()
+            );
+            return;
+        }
         if (deliveryRepository.findByOrderId(orderId) != null) {
             AfterCommit.run(() -> metricsService.recordDispatchAssignment("duplicate"));
             return;
@@ -131,7 +149,8 @@ public class DispatchService {
             rider = riderRepository.lockLeastLoadedRider();
         }
         if (rider == null) {
-            metricsService.recordDispatchAssignment("no_rider");
+            // Counted per attempt (this transaction rolls back and the listener retries the record), not per order.
+            metricsService.recordDispatchAssignment("no_rider_attempt");
             throw new IllegalStateException("No active rider is available for order " + orderId);
         }
 
@@ -162,11 +181,28 @@ public class DispatchService {
 
 
     private void cancelDelivery(Long orderId) {
+        lockDispatchOrder(orderId);
+        // The tombstone, also when the order has no delivery yet: a later order.accepted must not assign a rider.
+        dispatchOrderRepository.markCancelled(orderId, LocalDateTime.now());
         DeliveryEntity delivery = deliveryRepository.lockByOrderId(orderId);
         if (delivery == null || !DeliveryStatus.valueOf(delivery.status()).holdsRider()) {
             return;
         }
         applyTransition(delivery, DeliveryStatus.CANCELLED);
+    }
+
+
+    /**
+     * Creates the order's dispatch row if absent and locks it. When another transaction is inserting or holding the
+     * same row, this waits for it to finish, so the accepted and cancelled handlers of one order never interleave.
+     */
+    private DispatchOrderEntity lockDispatchOrder(Long orderId) {
+        dispatchOrderRepository.insertIfAbsent(orderId, LocalDateTime.now());
+        DispatchOrderEntity dispatchOrder = dispatchOrderRepository.lockByOrderId(orderId);
+        if (dispatchOrder == null) {
+            throw new IllegalStateException("Dispatch row of order " + orderId + " is missing after its insert");
+        }
+        return dispatchOrder;
     }
 
 

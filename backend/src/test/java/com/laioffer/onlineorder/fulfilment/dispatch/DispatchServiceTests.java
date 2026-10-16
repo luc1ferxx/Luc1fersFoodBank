@@ -34,6 +34,9 @@ class DispatchServiceTests {
     private DeliveryRepository deliveryRepository;
 
     @Mock
+    private DispatchOrderRepository dispatchOrderRepository;
+
+    @Mock
     private RiderRepository riderRepository;
 
     @Mock
@@ -52,6 +55,7 @@ class DispatchServiceTests {
     void setup() {
         service = new DispatchService(
                 deliveryRepository,
+                dispatchOrderRepository,
                 riderRepository,
                 outboxService,
                 processedEventService,
@@ -65,6 +69,7 @@ class DispatchServiceTests {
     void orderAccepted_shouldAssignTheLeastLoadedRiderAndPublishDeliveryAssigned() {
         OrderEventEnvelope accepted = acceptedEvent();
         Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", accepted)).thenReturn(true);
+        openDispatchOrder();
         Mockito.when(deliveryRepository.findByOrderId(ORDER_ID)).thenReturn(null, delivery(7L, "ASSIGNED"));
         Mockito.when(riderRepository.lockLeastLoadedUnlockedRider()).thenReturn(rider(3L, "Alice"));
         Mockito.when(deliveryRepository.insertAssignedIfAbsent(
@@ -72,6 +77,11 @@ class DispatchServiceTests {
 
         service.handle(accepted);
 
+        // The dispatch row is created and locked before the rider is chosen.
+        org.mockito.InOrder lockOrder = Mockito.inOrder(dispatchOrderRepository, riderRepository);
+        lockOrder.verify(dispatchOrderRepository).insertIfAbsent(Mockito.eq(ORDER_ID), Mockito.any());
+        lockOrder.verify(dispatchOrderRepository).lockByOrderId(ORDER_ID);
+        lockOrder.verify(riderRepository).lockLeastLoadedUnlockedRider();
         Mockito.verify(riderRepository).incrementLoad(Mockito.eq(3L), Mockito.any());
         Mockito.verify(riderRepository, Mockito.never()).lockLeastLoadedRider();
         ArgumentCaptor<Object> envelope = ArgumentCaptor.forClass(Object.class);
@@ -96,6 +106,7 @@ class DispatchServiceTests {
     void orderAccepted_whenEveryRiderIsLockedByAnotherAssignment_shouldWaitForTheLeastLoadedOne() {
         OrderEventEnvelope accepted = acceptedEvent();
         Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", accepted)).thenReturn(true);
+        openDispatchOrder();
         Mockito.when(deliveryRepository.findByOrderId(ORDER_ID)).thenReturn(null, delivery(7L, "ASSIGNED"));
         Mockito.when(riderRepository.lockLeastLoadedUnlockedRider()).thenReturn(null);
         Mockito.when(riderRepository.lockLeastLoadedRider()).thenReturn(rider(4L, "Bob"));
@@ -112,11 +123,13 @@ class DispatchServiceTests {
     void orderAccepted_whenNoRiderIsActive_shouldFailForARetry() {
         OrderEventEnvelope accepted = acceptedEvent();
         Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", accepted)).thenReturn(true);
+        openDispatchOrder();
         Mockito.when(deliveryRepository.findByOrderId(ORDER_ID)).thenReturn(null);
 
         Assertions.assertThrows(IllegalStateException.class, () -> service.handle(accepted));
 
-        Mockito.verify(metricsService).recordDispatchAssignment("no_rider");
+        // Counted per attempt: the listener retries the record and every attempt counts again.
+        Mockito.verify(metricsService).recordDispatchAssignment("no_rider_attempt");
         Mockito.verify(deliveryRepository, Mockito.never())
                 .insertAssignedIfAbsent(Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any());
         Mockito.verifyNoInteractions(outboxService);
@@ -130,7 +143,22 @@ class DispatchServiceTests {
 
         service.handle(accepted);
 
+        Mockito.verifyNoInteractions(deliveryRepository, dispatchOrderRepository, riderRepository, outboxService);
+    }
+
+
+    @Test
+    void orderAccepted_afterTheOrderWasCancelled_shouldAssignNoRider() {
+        OrderEventEnvelope accepted = acceptedEvent();
+        Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", accepted)).thenReturn(true);
+        LocalDateTime cancelledAt = LocalDateTime.of(2026, 4, 4, 12, 5);
+        Mockito.when(dispatchOrderRepository.lockByOrderId(ORDER_ID))
+                .thenReturn(new DispatchOrderEntity(ORDER_ID, cancelledAt, cancelledAt, cancelledAt));
+
+        service.handle(accepted);
+
         Mockito.verifyNoInteractions(deliveryRepository, riderRepository, outboxService);
+        Mockito.verify(metricsService).recordDispatchAssignment("cancelled");
     }
 
 
@@ -138,6 +166,7 @@ class DispatchServiceTests {
     void orderAccepted_whenTheOrderAlreadyHasADelivery_shouldNotAssignASecondRider() {
         OrderEventEnvelope accepted = acceptedEvent();
         Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", accepted)).thenReturn(true);
+        openDispatchOrder();
         Mockito.when(deliveryRepository.findByOrderId(ORDER_ID)).thenReturn(delivery(7L, "ASSIGNED"));
 
         service.handle(accepted);
@@ -151,6 +180,7 @@ class DispatchServiceTests {
     void orderAccepted_whenAConcurrentAssignmentInsertedFirst_shouldNotLoadTheRider() {
         OrderEventEnvelope accepted = acceptedEvent();
         Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", accepted)).thenReturn(true);
+        openDispatchOrder();
         Mockito.when(deliveryRepository.findByOrderId(ORDER_ID)).thenReturn(null);
         Mockito.when(riderRepository.lockLeastLoadedUnlockedRider()).thenReturn(rider(3L, "Alice"));
         Mockito.when(deliveryRepository.insertAssignedIfAbsent(
@@ -167,6 +197,7 @@ class DispatchServiceTests {
     void orderCancelled_shouldCancelTheOpenDeliveryAndReleaseTheRider() {
         OrderEventEnvelope cancelled = orderEvent("order.cancelled", ORDER_ID, 2L, "CANCELLED");
         Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", cancelled)).thenReturn(true);
+        openDispatchOrder();
         Mockito.when(deliveryRepository.lockByOrderId(ORDER_ID)).thenReturn(delivery(7L, "ASSIGNED"));
         Mockito.when(riderRepository.findById(3L)).thenReturn(Optional.of(rider(3L, "Alice")));
 
@@ -182,13 +213,18 @@ class DispatchServiceTests {
 
 
     @Test
-    void orderCancelled_whenThereIsNoDelivery_shouldDoNothing() {
+    void orderCancelled_whenThereIsNoDelivery_shouldOnlyLeaveTheTombstone() {
         OrderEventEnvelope cancelled = orderEvent("order.cancelled", ORDER_ID, 2L, "CANCELLED");
         Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", cancelled)).thenReturn(true);
+        openDispatchOrder();
 
         service.handle(cancelled);
 
-        Mockito.verify(deliveryRepository).lockByOrderId(ORDER_ID);
+        org.mockito.InOrder tombstone = Mockito.inOrder(dispatchOrderRepository, deliveryRepository);
+        tombstone.verify(dispatchOrderRepository).insertIfAbsent(Mockito.eq(ORDER_ID), Mockito.any());
+        tombstone.verify(dispatchOrderRepository).lockByOrderId(ORDER_ID);
+        tombstone.verify(dispatchOrderRepository).markCancelled(Mockito.eq(ORDER_ID), Mockito.any());
+        tombstone.verify(deliveryRepository).lockByOrderId(ORDER_ID);
         Mockito.verifyNoMoreInteractions(deliveryRepository);
         Mockito.verifyNoInteractions(riderRepository, outboxService);
     }
@@ -238,6 +274,13 @@ class DispatchServiceTests {
     @Test
     void markPickedUp_whenDeliveryDoesNotExist_shouldReturnNotFound() {
         Assertions.assertThrows(ResourceNotFoundException.class, () -> service.markPickedUp(99L));
+    }
+
+
+    private void openDispatchOrder() {
+        LocalDateTime createdAt = LocalDateTime.of(2026, 4, 4, 12, 0);
+        Mockito.when(dispatchOrderRepository.lockByOrderId(ORDER_ID))
+                .thenReturn(new DispatchOrderEntity(ORDER_ID, null, createdAt, createdAt));
     }
 
 

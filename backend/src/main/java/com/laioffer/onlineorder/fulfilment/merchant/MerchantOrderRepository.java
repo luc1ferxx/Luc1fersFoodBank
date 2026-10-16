@@ -16,6 +16,7 @@ public interface MerchantOrderRepository extends ListCrudRepository<MerchantOrde
 
     /**
      * Adds the inbox row of a paid order unless the order already has one, and returns the rows inserted: 1 or 0.
+     * Inbox rows are only shown to the merchant (listings and commands) once they have a paid_at.
      * Target-less ON CONFLICT so that H2 (PostgreSQL mode) parses it; the only constraint an insert can violate is
      * uq_merchant_order_order.
      */
@@ -53,6 +54,64 @@ public interface MerchantOrderRepository extends ListCrudRepository<MerchantOrde
             LocalDateTime paidAt,
             LocalDateTime createdAt
     );
+
+
+    /**
+     * Adds the inbox row of an order whose later event (order.accepted, order.cancelled, ...) reached the merchant
+     * group before its order.paid, with the status that event reports, unless the order already has a row; returns the
+     * rows inserted: 1 or 0. The row has no paid_at, so the merchant does not see it until order.paid sets one
+     * ({@link #recordPayment}); a replayed order.paid can then no longer add a PAID row for an order that moved on.
+     */
+    @Modifying
+    @Query("""
+            INSERT INTO merchant_orders (
+                order_id,
+                restaurant_id,
+                customer_id,
+                status,
+                total_price,
+                items,
+                cancel_reason,
+                created_at,
+                updated_at
+            ) VALUES (
+                :orderId,
+                :restaurantId,
+                :customerId,
+                :status,
+                :totalPrice,
+                :items,
+                :cancelReason,
+                :createdAt,
+                :createdAt
+            )
+            ON CONFLICT DO NOTHING
+            """)
+    int insertUnpaidOrderIfAbsent(
+            Long orderId,
+            Long restaurantId,
+            Long customerId,
+            String status,
+            BigDecimal totalPrice,
+            String items,
+            String cancelReason,
+            LocalDateTime createdAt
+    );
+
+
+    /**
+     * order.paid for an order that already has a row: sets its paid_at if a later event created the row first. Its
+     * status stays whatever the later events made it.
+     */
+    @Modifying
+    @Query("""
+            UPDATE merchant_orders
+            SET paid_at = :paidAt,
+                updated_at = :updatedAt
+            WHERE order_id = :orderId
+              AND paid_at IS NULL
+            """)
+    int recordPayment(Long orderId, LocalDateTime paidAt, LocalDateTime updatedAt);
 
 
     /**
@@ -101,6 +160,7 @@ public interface MerchantOrderRepository extends ListCrudRepository<MerchantOrde
             FROM merchant_orders
             WHERE order_id = :orderId
               AND restaurant_id = :restaurantId
+              AND paid_at IS NOT NULL
             FOR UPDATE
             """)
     MerchantOrderEntity lockByOrderIdAndRestaurantId(Long orderId, Long restaurantId);
@@ -118,6 +178,7 @@ public interface MerchantOrderRepository extends ListCrudRepository<MerchantOrde
             SELECT *
             FROM merchant_orders
             WHERE restaurant_id = :restaurantId
+              AND paid_at IS NOT NULL
             ORDER BY paid_at DESC, id DESC
             LIMIT :limit
             """)
@@ -129,6 +190,7 @@ public interface MerchantOrderRepository extends ListCrudRepository<MerchantOrde
             FROM merchant_orders
             WHERE restaurant_id = :restaurantId
               AND status = :status
+              AND paid_at IS NOT NULL
             ORDER BY paid_at DESC, id DESC
             LIMIT :limit
             """)
