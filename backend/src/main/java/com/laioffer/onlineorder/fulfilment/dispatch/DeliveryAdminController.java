@@ -12,7 +12,8 @@ import java.util.List;
 
 
 /**
- * Simulated rider actions for demos and tests (ROLE_ADMIN only, see AppConfig).
+ * Rider actions on any delivery, for ops and tests (ROLE_ADMIN only, see AppConfig). Riders themselves use
+ * {@link RiderController}.
  */
 @RestController
 public class DeliveryAdminController {

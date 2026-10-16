@@ -105,6 +105,11 @@ public class AppConfig {
                                 // Fulfilment: merchant endpoints are scoped to the merchant's restaurant in the service.
                                 .requestMatchers("/merchant/**").hasRole("MERCHANT")
                                 .requestMatchers("/admin/deliveries/**", "/admin/deliveries").hasRole("ADMIN")
+                                // Staff: provisioning is admin-only; riders reach only their own data (checked in the
+                                // service, which also answers 403 for a deactivated merchant or rider).
+                                .requestMatchers("/admin/merchants/**", "/admin/merchants").hasRole("ADMIN")
+                                .requestMatchers("/admin/riders/**", "/admin/riders").hasRole("ADMIN")
+                                .requestMatchers("/rider/**").hasRole("RIDER")
                                 .anyRequest().authenticated()
                 )
                 .exceptionHandling(exception -> exception

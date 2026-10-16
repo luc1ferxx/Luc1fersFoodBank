@@ -23,6 +23,10 @@ public interface CustomerRepository extends ListCrudRepository<CustomerEntity, L
     CustomerEntity findByEmail(String email);
 
 
+    @Query("SELECT COUNT(*) FROM customers WHERE LOWER(email) = LOWER(:email)")
+    long countByEmailIgnoreCase(String email);
+
+
     @Modifying
     @Query("""
             UPDATE customers

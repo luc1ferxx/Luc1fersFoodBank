@@ -3,6 +3,7 @@ package com.laioffer.onlineorder.service;
 
 import com.laioffer.onlineorder.cache.CatalogCacheInvalidator;
 import com.laioffer.onlineorder.cache.CatalogCaches;
+import com.laioffer.onlineorder.entity.RestaurantEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.model.CatalogRestaurantDto;
@@ -13,7 +14,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 
 
 @Service
@@ -49,6 +54,21 @@ public class RestaurantService {
      */
     public boolean restaurantExists(long restaurantId) {
         return restaurantRepository.existsById(restaurantId);
+    }
+
+
+    /**
+     * Uncached names of the given restaurants, for the staff and rider views; ids without a restaurant are absent.
+     */
+    public Map<Long, String> findNames(Collection<Long> restaurantIds) {
+        if (restaurantIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, String> names = new HashMap<>();
+        for (RestaurantEntity restaurant : restaurantRepository.findAllById(new HashSet<>(restaurantIds))) {
+            names.put(restaurant.id(), restaurant.name());
+        }
+        return names;
     }
 
 

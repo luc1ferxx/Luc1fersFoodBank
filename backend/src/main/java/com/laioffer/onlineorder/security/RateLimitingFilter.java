@@ -178,6 +178,12 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         if (HttpMethod.PATCH.matches(method) && path.matches("^/admin/(menu-items|restaurants)/\\d+$")) {
             return new RateLimitRule("admin-catalog", 30, 1, Duration.ofSeconds(2), 1, false);
         }
+        if (HttpMethod.POST.matches(method) && path.matches("^/admin/(merchants|riders)$")) {
+            return new RateLimitRule("admin-provisioning", 10, 1, Duration.ofSeconds(6), 1, false);
+        }
+        if (HttpMethod.PATCH.matches(method) && path.matches("^/admin/(merchants|riders)/\\d+$")) {
+            return new RateLimitRule("admin-staff-status", 30, 1, Duration.ofSeconds(2), 1, false);
+        }
         if (HttpMethod.PATCH.matches(method) && path.matches("^/orders/\\d+/status$")) {
             return new RateLimitRule("order-status", 30, 1, Duration.ofSeconds(2), 1, false);
         }
