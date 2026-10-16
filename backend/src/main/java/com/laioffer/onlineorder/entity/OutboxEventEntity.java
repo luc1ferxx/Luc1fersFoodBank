@@ -39,6 +39,71 @@ public record OutboxEventEntity(
         @Column("updated_at")
         LocalDateTime updatedAt,
         @Column("published_at")
-        LocalDateTime publishedAt
+        LocalDateTime publishedAt,
+        // W3C traceparent of the span that inserted the event; the publisher continues that trace when it
+        // relays the event to Kafka. Filled in on insert by OutboxTraceContextCallback; null for rows written
+        // before V6 or outside a traced request.
+        @Column("trace_parent")
+        String traceParent
 ) {
+
+    /**
+     * Event without a captured trace context. The trace context is added on insert, so callers that build new
+     * events do not deal with it.
+     */
+    public OutboxEventEntity(
+            Long id,
+            String aggregateType,
+            Long aggregateId,
+            String eventId,
+            String topic,
+            String eventKey,
+            String eventType,
+            String payload,
+            String status,
+            Integer attempts,
+            String lastError,
+            LocalDateTime createdAt,
+            LocalDateTime updatedAt,
+            LocalDateTime publishedAt
+    ) {
+        this(
+                id,
+                aggregateType,
+                aggregateId,
+                eventId,
+                topic,
+                eventKey,
+                eventType,
+                payload,
+                status,
+                attempts,
+                lastError,
+                createdAt,
+                updatedAt,
+                publishedAt,
+                null
+        );
+    }
+
+
+    public OutboxEventEntity withTraceParent(String traceParent) {
+        return new OutboxEventEntity(
+                id,
+                aggregateType,
+                aggregateId,
+                eventId,
+                topic,
+                eventKey,
+                eventType,
+                payload,
+                status,
+                attempts,
+                lastError,
+                createdAt,
+                updatedAt,
+                publishedAt,
+                traceParent
+        );
+    }
 }

@@ -3,7 +3,10 @@ package com.laioffer.onlineorder.messaging;
 
 import com.laioffer.onlineorder.entity.OutboxEventEntity;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.observability.OutboxTracing;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.InvalidRecordException;
 import org.apache.kafka.common.errors.RecordBatchTooLargeException;
@@ -94,6 +97,7 @@ public class OutboxEventPublisher {
     private int consecutiveFailedRuns;
     private Instant pausedAt;
     private Duration pause = Duration.ZERO;
+    private volatile ObservationRegistry observationRegistry = ObservationRegistry.NOOP;
 
 
     @Autowired
@@ -152,6 +156,17 @@ public class OutboxEventPublisher {
                     CLAIM_TIMEOUT_MARGIN
             );
         }
+    }
+
+
+    /**
+     * Each send runs in a relay observation that continues the trace stored with the event (see
+     * {@link OutboxTracing}). Without a registry, as in unit tests that build the publisher directly, events are
+     * sent untraced.
+     */
+    @Autowired(required = false)
+    public void setObservationRegistry(ObservationRegistry observationRegistry) {
+        this.observationRegistry = observationRegistry == null ? ObservationRegistry.NOOP : observationRegistry;
     }
 
 
@@ -226,6 +241,36 @@ public class OutboxEventPublisher {
                 backoff,
                 consecutiveFailedRuns
         );
+    }
+
+
+    /**
+     * Sends the event with its relay observation in scope, so the KafkaTemplate send observation (and, through the
+     * record's traceparent header, the consumer) joins the trace of the request that wrote the event. The relay
+     * observation ends when the send completes. Failures are rethrown or returned unchanged.
+     */
+    private CompletableFuture<SendResult<String, String>> sendInTraceOf(OutboxEventEntity event) {
+        Observation relay = OutboxTracing.startRelay(observationRegistry, event);
+        CompletableFuture<SendResult<String, String>> future;
+        try (Observation.Scope ignored = relay.openScope()) {
+            future = kafkaTemplate.send(event.topic(), event.eventKey(), event.payload());
+        } catch (RuntimeException ex) {
+            relay.error(ex);
+            relay.stop();
+            throw ex;
+        }
+
+        if (future == null) {
+            relay.stop();
+            return null;
+        }
+        future.whenComplete((result, failure) -> {
+            if (failure != null) {
+                relay.error(failure);
+            }
+            relay.stop();
+        });
+        return future;
     }
 
 
@@ -352,7 +397,7 @@ public class OutboxEventPublisher {
         ) {
             CompletableFuture<SendResult<String, String>> future;
             try {
-                future = kafkaTemplate.send(event.topic(), event.eventKey(), event.payload());
+                future = sendInTraceOf(event);
             } catch (RuntimeException ex) {
                 if (Thread.interrupted()) {
                     interrupted = true;
