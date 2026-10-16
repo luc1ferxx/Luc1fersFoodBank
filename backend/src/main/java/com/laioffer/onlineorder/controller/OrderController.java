@@ -3,10 +3,12 @@ package com.laioffer.onlineorder.controller;
 
 import com.laioffer.onlineorder.entity.CustomerEntity;
 import com.laioffer.onlineorder.model.OrderDto;
+import com.laioffer.onlineorder.model.OrderStatusHistoryDto;
 import com.laioffer.onlineorder.model.UpdateOrderStatusBody;
 import com.laioffer.onlineorder.service.CustomerService;
 import com.laioffer.onlineorder.service.OrderService;
 import jakarta.validation.Valid;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -41,6 +43,18 @@ public class OrderController {
     ) {
         CustomerEntity customer = customerService.getCustomerByEmail(principal.getName());
         return orderService.getOrdersByCustomerId(customer.id(), limit);
+    }
+
+
+    /**
+     * The order's status changes, oldest first: for the order's owner and for admins; 404 for anyone else.
+     */
+    @GetMapping("/orders/{orderId}/history")
+    public List<OrderStatusHistoryDto> getOrderHistory(Authentication authentication, @PathVariable Long orderId) {
+        CustomerEntity reader = customerService.getCustomerByEmail(authentication.getName());
+        boolean admin = authentication.getAuthorities().stream()
+                .anyMatch(authority -> "ROLE_ADMIN".equals(authority.getAuthority()));
+        return orderService.getStatusHistory(orderId, reader.id(), admin);
     }
 
 

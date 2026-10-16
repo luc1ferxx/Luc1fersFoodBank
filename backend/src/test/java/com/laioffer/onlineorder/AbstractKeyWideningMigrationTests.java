@@ -19,8 +19,8 @@ import java.util.List;
 
 /**
  * Upgrades a populated V6 database to the current schema with Flyway: V7 (64-bit keys) must keep every row and
- * foreign key, and lift the INTEGER limit that the orders key generator has just reached. Subclasses pick the
- * database.
+ * foreign key, and lift the INTEGER limit that the orders key generator has just reached; V7_1 backfills
+ * orders.updated_at and one order_status_history row per existing order. Subclasses pick the database.
  */
 abstract class AbstractKeyWideningMigrationTests {
 
@@ -66,6 +66,18 @@ abstract class AbstractKeyWideningMigrationTests {
                     JOIN riders ON riders.id = deliveries.rider_id
                     JOIN dispatch_orders ON dispatch_orders.order_id = deliveries.order_id
                     JOIN orders ON orders.id = deliveries.order_id
+                    """));
+
+            // V7_1: updated_at backfilled from created_at, one SYSTEM history row per existing order.
+            Assertions.assertEquals(List.of("0"), strings(statement,
+                    "SELECT COUNT(*) FROM orders WHERE updated_at IS NULL OR updated_at <> created_at"));
+            Assertions.assertEquals(List.of("ACCEPTED|SYSTEM|backfill|true", "PLACED|SYSTEM|backfill|true"), strings(statement, """
+                    SELECT h.to_status || '|' || h.actor_type || '|' || h.reason || '|'
+                           || CASE WHEN h.from_status IS NULL AND h.actor_id IS NULL AND h.occurred_at = o.created_at
+                                   THEN 'true' ELSE 'false' END
+                    FROM order_status_history h
+                    JOIN orders o ON o.id = h.order_id
+                    ORDER BY h.order_id
                     """));
 
             // V7: the next order gets an id past the INTEGER maximum, and the foreign keys still hold.

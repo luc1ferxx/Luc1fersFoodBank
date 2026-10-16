@@ -89,6 +89,12 @@ class CheckoutTransactionRollbackTests {
         Assertions.assertEquals(0, countOrderHistoryItemsForCustomer(testCustomer.customerId()));
         Assertions.assertEquals(0, countOutboxEventsForCustomer(testCustomer.customerId()));
         Assertions.assertEquals(0, countIdempotencyRequestsForCustomer(testCustomer.customerId(), "rollback-key"));
+        // The creation's history row was written before the outbox step and rolled back with it.
+        Assertions.assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM order_status_history WHERE actor_type = 'CUSTOMER' AND actor_id = ?",
+                Long.class,
+                testCustomer.customerId()
+        ));
 
         Assertions.assertEquals(1, orderItemRepository.getAllByCartId(testCustomer.cartId()).size());
         CartEntity cart = cartRepository.getByCustomerId(testCustomer.customerId());

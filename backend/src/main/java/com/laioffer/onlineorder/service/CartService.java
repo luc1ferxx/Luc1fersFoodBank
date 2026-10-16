@@ -10,6 +10,7 @@ import com.laioffer.onlineorder.entity.OrderItemEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.model.CartDto;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
@@ -62,6 +63,7 @@ public class CartService {
     private final OrderRepository orderRepository;
     private final OrderHistoryItemRepository orderHistoryItemRepository;
     private final OrderEventOutboxService orderEventOutboxService;
+    private final OrderStatusHistoryService orderStatusHistoryService;
     private final ApplicationMetricsService metricsService;
 
 
@@ -75,6 +77,7 @@ public class CartService {
             OrderRepository orderRepository,
             OrderHistoryItemRepository orderHistoryItemRepository,
             OrderEventOutboxService orderEventOutboxService,
+            OrderStatusHistoryService orderStatusHistoryService,
             ApplicationMetricsService metricsService
     ) {
         this.cartRepository = cartRepository;
@@ -86,6 +89,7 @@ public class CartService {
         this.orderRepository = orderRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
         this.orderEventOutboxService = orderEventOutboxService;
+        this.orderStatusHistoryService = orderStatusHistoryService;
         this.metricsService = metricsService;
     }
 
@@ -245,15 +249,26 @@ public class CartService {
         Map<Long, MenuItemEntity> menuItemsById = getRequiredMenuItemsById(cartItems);
         Long restaurantId = requireSingleRestaurant(menuItemsById);
 
+        LocalDateTime createdAt = LocalDateTime.now();
+        OrderStatus initialStatus = OrderStatus.normalizeForCheckout(status);
         OrderEntity savedOrder = orderRepository.save(new OrderEntity(
                 null,
                 customerId,
                 refreshedCart.totalPrice(),
-                normalizeStatus(status),
-                LocalDateTime.now(),
+                initialStatus.name(),
+                createdAt,
                 restaurantId,
-                null
+                null,
+                createdAt
         ));
+        orderStatusHistoryService.record(
+                savedOrder.id(),
+                null,
+                initialStatus,
+                OrderActor.customer(customerId),
+                null,
+                createdAt
+        );
 
         List<OrderHistoryItemEntity> orderHistoryItems = new ArrayList<>();
         List<OrderHistoryItemDto> orderHistoryItemDtos = new ArrayList<>();

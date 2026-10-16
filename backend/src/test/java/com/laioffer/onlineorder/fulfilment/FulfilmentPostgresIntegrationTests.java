@@ -20,6 +20,7 @@ import com.laioffer.onlineorder.service.CustomerService;
 import com.laioffer.onlineorder.service.OrderService;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -222,8 +223,57 @@ class FulfilmentPostgresIntegrationTests {
         Assertions.assertEquals("CANCELLED", orderStatus(order.orderId()));
         Assertions.assertEquals("MERCHANT_REJECTED: Out of buns", jdbcTemplate.queryForObject(
                 "SELECT cancel_reason FROM orders WHERE id = ?", String.class, order.orderId()));
+        Assertions.assertEquals(
+                "PAID->CANCELLED|MERCHANT|" + customerIdOf(BURGER_KING_MERCHANT) + "|MERCHANT_REJECTED: Out of buns",
+                statusHistory(order.orderId()).get(1)
+        );
         OrderEventEnvelope cancelled = latestOrderEvent(order.orderId(), "order.cancelled");
         Assertions.assertEquals("MERCHANT_REJECTED: Out of buns", cancelled.data().reason());
+    }
+
+
+    @Test
+    void orderHistoryEndpoint_shouldServeTheOwnerAndAdminsOnly() throws Exception {
+        PaidOrder order = paidOrderAt("SGD Tofu House");
+        deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+        merchantOrderService.reject(customerIdOf(SGD_TOFU_MERCHANT), order.orderId(), "Closed early");
+        PaidOrder otherOrder = paidOrderAt("SGD Tofu House");
+        MockHttpSession owner = login(order.customerEmail(), "demo123");
+        MockHttpSession admin = login("demo@laifood.com", "demo123");
+        MockHttpSession merchant = login(SGD_TOFU_MERCHANT, MERCHANT_PASSWORD);
+        MockHttpSession otherCustomer = login(otherOrder.customerEmail(), "demo123");
+
+        for (MockHttpSession reader : List.of(owner, admin)) {
+            mockMvc.perform(get("/orders/{id}/history", order.orderId()).session(reader))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.length()").value(2))
+                    // Every entry has every key, with null where there is no value.
+                    .andExpect(jsonPath("$[0]", Matchers.hasKey("from_status")))
+                    .andExpect(jsonPath("$[0].from_status").value(Matchers.nullValue()))
+                    .andExpect(jsonPath("$[0].to_status").value("PAID"))
+                    .andExpect(jsonPath("$[0].actor_type").value("CUSTOMER"))
+                    .andExpect(jsonPath("$[0].actor_id").value(order.customerId()))
+                    .andExpect(jsonPath("$[0]", Matchers.hasKey("reason")))
+                    .andExpect(jsonPath("$[0].occurred_at").isNotEmpty())
+                    .andExpect(jsonPath("$[1].from_status").value("PAID"))
+                    .andExpect(jsonPath("$[1].to_status").value("CANCELLED"))
+                    .andExpect(jsonPath("$[1].actor_type").value("MERCHANT"))
+                    .andExpect(jsonPath("$[1].actor_id").value(customerIdOf(SGD_TOFU_MERCHANT)))
+                    .andExpect(jsonPath("$[1].reason").value("MERCHANT_REJECTED: Closed early"));
+        }
+        // Not the owner and not an admin (the restaurant's merchant included): the order does not exist for them.
+        for (MockHttpSession stranger : List.of(otherCustomer, merchant)) {
+            mockMvc.perform(get("/orders/{id}/history", order.orderId()).session(stranger))
+                    .andExpect(status().isNotFound())
+                    .andExpect(jsonPath("$.code").value("NOT_FOUND"));
+        }
+        mockMvc.perform(get("/orders/{id}/history", 987_654_321_987L).session(admin))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/orders/{id}/history", order.orderId()))
+                .andExpect(status().isUnauthorized());
+        // The order itself reports when it last changed.
+        mockMvc.perform(get("/orders").session(owner))
+                .andExpect(jsonPath("$[?(@.id == %d)].updated_at".formatted(order.orderId())).isNotEmpty());
     }
 
 
@@ -292,14 +342,21 @@ class FulfilmentPostgresIntegrationTests {
                 String acceptResult = accept.get(20, TimeUnit.SECONDS);
                 boolean timedOut = timeout.get(20, TimeUnit.SECONDS);
                 List<String> events = orderEventTypes(order.orderId());
+                // The history has exactly one entry for the change, by the winner.
+                List<String> history = statusHistory(order.orderId());
+                Assertions.assertEquals(2, history.size(), history.toString());
                 if (timedOut) {
                     Assertions.assertEquals("CONFLICT", acceptResult);
                     Assertions.assertEquals("CANCELLED", orderStatus(order.orderId()));
                     Assertions.assertEquals(List.of("order.paid", "order.cancelled"), events);
+                    Assertions.assertEquals(
+                            "PAID->CANCELLED|SYSTEM|null|" + OrderLifecycleCommands.MERCHANT_TIMEOUT, history.get(1));
                 } else {
                     Assertions.assertEquals("ACCEPTED", acceptResult);
                     Assertions.assertEquals("ACCEPTED", orderStatus(order.orderId()));
                     Assertions.assertEquals(List.of("order.paid", "order.accepted"), events);
+                    Assertions.assertEquals(
+                            "PAID->ACCEPTED|MERCHANT|" + customerIdOf(BURGER_KING_MERCHANT) + "|null", history.get(1));
                 }
             }
         } finally {
@@ -331,6 +388,10 @@ class FulfilmentPostgresIntegrationTests {
         Assertions.assertEquals("CANCELLED", orderStatus(order.orderId()));
         Assertions.assertEquals(OrderLifecycleCommands.MERCHANT_TIMEOUT, cancelReason(order.orderId()));
         Assertions.assertTrue(deadlineTypes(order.orderId()).isEmpty());
+        Assertions.assertEquals(List.of(
+                "->PAID|CUSTOMER|" + order.customerId() + "|null",
+                "PAID->CANCELLED|SYSTEM|null|" + OrderLifecycleCommands.MERCHANT_TIMEOUT
+        ), statusHistory(order.orderId()));
         OrderEventEnvelope cancelled = latestOrderEvent(order.orderId(), "order.cancelled");
         Assertions.assertEquals(OrderLifecycleCommands.MERCHANT_TIMEOUT, cancelled.data().reason());
 
@@ -379,6 +440,10 @@ class FulfilmentPostgresIntegrationTests {
         Assertions.assertEquals("CANCELLED", orderStatus(placed.id()));
         Assertions.assertEquals(OrderLifecycleCommands.PAYMENT_TIMEOUT, cancelReason(placed.id()));
         Assertions.assertTrue(deadlineTypes(placed.id()).isEmpty());
+        Assertions.assertEquals(List.of(
+                "->PLACED|CUSTOMER|" + customerId + "|null",
+                "PLACED->CANCELLED|SYSTEM|null|" + OrderLifecycleCommands.PAYMENT_TIMEOUT
+        ), statusHistory(placed.id()));
     }
 
 
@@ -414,6 +479,7 @@ class FulfilmentPostgresIntegrationTests {
             Assertions.assertEquals("CANCELLED", orderStatus(orderId));
             Assertions.assertEquals(List.of("order.paid", "order.cancelled"), orderEventTypes(orderId));
             Assertions.assertTrue(deadlineTypes(orderId).isEmpty());
+            Assertions.assertEquals(2, statusHistory(orderId).size(), "one history row per change, not per poller");
         }
     }
 
@@ -478,6 +544,19 @@ class FulfilmentPostgresIntegrationTests {
         Assertions.assertEquals(
                 List.of("order.paid", "order.accepted", "order.preparing", "order.completed"),
                 orderEventTypes(order.orderId())
+        );
+        Long riderId = delivered.data().riderId();
+        Assertions.assertEquals(List.of(
+                "->PAID|CUSTOMER|" + order.customerId() + "|null",
+                "PAID->ACCEPTED|MERCHANT|" + customerIdOf(BURGER_KING_MERCHANT) + "|null",
+                "ACCEPTED->PREPARING|RIDER|" + riderId + "|DELIVERED",
+                "PREPARING->COMPLETED|RIDER|" + riderId + "|DELIVERED"
+        ), statusHistory(order.orderId()));
+        Assertions.assertEquals(
+                jdbcTemplate.queryForObject("SELECT MAX(occurred_at) FROM order_status_history WHERE order_id = ?",
+                        LocalDateTime.class, order.orderId()),
+                jdbcTemplate.queryForObject("SELECT updated_at FROM orders WHERE id = ?", LocalDateTime.class, order.orderId()),
+                "updated_at is the time of the last status change"
         );
 
         for (String eventType : List.of("delivery.assigned", "delivery.picked_up", "delivery.delivered")) {
@@ -753,6 +832,23 @@ class FulfilmentPostgresIntegrationTests {
 
 
     // ---- helpers shared by the fulfilment tests ----
+
+    /**
+     * The order's history rows, oldest first, as "from->to|actor_type|actor_id|reason".
+     */
+    List<String> statusHistory(Long orderId) {
+        return jdbcTemplate.query("""
+                SELECT from_status, to_status, actor_type, actor_id, reason
+                FROM order_status_history
+                WHERE order_id = ?
+                ORDER BY id
+                """, (row, index) -> (row.getString("from_status") == null ? "" : row.getString("from_status"))
+                + "->" + row.getString("to_status")
+                + "|" + row.getString("actor_type")
+                + "|" + row.getObject("actor_id")
+                + "|" + row.getString("reason"), orderId);
+    }
+
 
     Long customerIdOf(String email) {
         return jdbcTemplate.queryForObject("SELECT id FROM customers WHERE LOWER(email) = LOWER(?)", Long.class, email);

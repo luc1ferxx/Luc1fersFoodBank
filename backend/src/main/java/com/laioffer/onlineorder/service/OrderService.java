@@ -7,10 +7,12 @@ import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 import com.laioffer.onlineorder.model.OrderStatus;
+import com.laioffer.onlineorder.model.OrderStatusHistoryDto;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
@@ -33,8 +35,18 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 
+/**
+ * The order module: reads orders and owns the order state machine. Every status change goes through
+ * {@link #applyTransition}, which saves the new status and updated_at, writes the order_status_history row and the
+ * order event to the outbox, all in the caller's transaction and under the order's row lock.
+ */
 @Service
 public class OrderService implements OrderLifecycleCommands {
+
+    /**
+     * The history reason of the steps a delivered order is completed with.
+     */
+    static final String DELIVERED_REASON = "DELIVERED";
 
     private static final int IDEMPOTENCY_KEY_MAX_LENGTH = 255;
     private static final String IDEMPOTENCY_STATUS_PROCESSING = "PROCESSING";
@@ -54,6 +66,7 @@ public class OrderService implements OrderLifecycleCommands {
     private final OrderEventOutboxService orderEventOutboxService;
     private final OrderRepository orderRepository;
     private final OrderHistoryItemRepository orderHistoryItemRepository;
+    private final OrderStatusHistoryService orderStatusHistoryService;
 
 
     public OrderService(
@@ -62,7 +75,8 @@ public class OrderService implements OrderLifecycleCommands {
             OrderEventOutboxService orderEventOutboxService,
             ApplicationMetricsService metricsService,
             IdempotencyRequestRepository idempotencyRequestRepository,
-            IdempotencyRequestInitializer idempotencyRequestInitializer
+            IdempotencyRequestInitializer idempotencyRequestInitializer,
+            OrderStatusHistoryService orderStatusHistoryService
     ) {
         this.orderRepository = orderRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
@@ -70,6 +84,7 @@ public class OrderService implements OrderLifecycleCommands {
         this.metricsService = metricsService;
         this.idempotencyRequestRepository = idempotencyRequestRepository;
         this.idempotencyRequestInitializer = idempotencyRequestInitializer;
+        this.orderStatusHistoryService = orderStatusHistoryService;
     }
 
 
@@ -94,16 +109,46 @@ public class OrderService implements OrderLifecycleCommands {
     }
 
 
+    /**
+     * The status changes of an order, oldest first, for its owner or an admin. Anyone else gets 404, the same as for
+     * an order that does not exist, so order ids cannot be probed.
+     */
+    public List<OrderStatusHistoryDto> getStatusHistory(Long orderId, Long readerCustomerId, boolean readerIsAdmin) {
+        boolean readable = readerIsAdmin
+                ? orderRepository.existsById(orderId)
+                : orderRepository.findByIdAndCustomerId(orderId, readerCustomerId).isPresent();
+        if (!readable) {
+            throw new ResourceNotFoundException("Order not found");
+        }
+        return orderStatusHistoryService.getHistory(orderId);
+    }
+
+
+    /**
+     * A status change without a known actor (recorded as SYSTEM). The admin endpoint uses
+     * {@link #idempotentTransitionOrderStatus}.
+     */
     @Transactional
     public OrderDto transitionOrderStatus(Long orderId, String targetStatus) {
+        return transitionOrderStatus(orderId, targetStatus, OrderActor.system());
+    }
+
+
+    @Transactional
+    public OrderDto transitionOrderStatus(Long orderId, String targetStatus, OrderActor actor) {
         OrderEntity order = orderRepository.lockById(orderId);
         if (order == null) {
             throw new ResourceNotFoundException("Order not found");
         }
-        return transitionLockedOrder(order, OrderStatus.normalize(targetStatus), OrderLifecycleCommands.ADMIN_CANCELLED);
+        return transitionLockedOrder(order, OrderStatus.normalize(targetStatus), OrderLifecycleCommands.ADMIN_CANCELLED, actor)
+                .order();
     }
 
 
+    /**
+     * The admin status change (PATCH /orders/{orderId}/status, ROLE_ADMIN only): recorded in the order history with
+     * an ADMIN actor, once per idempotency key.
+     */
     @Transactional
     public OrderDto idempotentTransitionOrderStatus(Long actorCustomerId, Long orderId, String targetStatus, String idempotencyKey) {
         OrderStatus normalizedTargetStatus = OrderStatus.normalize(targetStatus);
@@ -128,7 +173,12 @@ public class OrderService implements OrderLifecycleCommands {
                     if (order == null) {
                         throw new ResourceNotFoundException("Order not found");
                     }
-                    return transitionLockedOrder(order, normalizedTargetStatus, OrderLifecycleCommands.ADMIN_CANCELLED);
+                    return transitionLockedOrder(
+                            order,
+                            normalizedTargetStatus,
+                            OrderLifecycleCommands.ADMIN_CANCELLED,
+                            OrderActor.admin(actorCustomerId)
+                    ).order();
                 }
         );
     }
@@ -140,7 +190,12 @@ public class OrderService implements OrderLifecycleCommands {
         if (order == null) {
             throw new ResourceNotFoundException("Order not found");
         }
-        return transitionLockedOrder(order, OrderStatus.CANCELLED, OrderLifecycleCommands.CUSTOMER_CANCELLED);
+        return transitionLockedOrder(
+                order,
+                OrderStatus.CANCELLED,
+                OrderLifecycleCommands.CUSTOMER_CANCELLED,
+                OrderActor.customer(customerId)
+        ).order();
     }
 
 
@@ -167,7 +222,12 @@ public class OrderService implements OrderLifecycleCommands {
                     if (order == null) {
                         throw new ResourceNotFoundException("Order not found");
                     }
-                    return transitionLockedOrder(order, OrderStatus.CANCELLED, OrderLifecycleCommands.CUSTOMER_CANCELLED);
+                    return transitionLockedOrder(
+                            order,
+                            OrderStatus.CANCELLED,
+                            OrderLifecycleCommands.CUSTOMER_CANCELLED,
+                            OrderActor.customer(actorCustomerId)
+                    ).order();
                 }
         );
     }
@@ -219,6 +279,8 @@ public class OrderService implements OrderLifecycleCommands {
     }
 
 
+    // The overloads without an actor are the interface's defaults, overridden here so that a call through the bean's
+    // proxy also starts the transaction itself.
     @Override
     @Transactional
     public RestaurantOrderTransition transitionRestaurantOrder(
@@ -227,6 +289,34 @@ public class OrderService implements OrderLifecycleCommands {
             OrderStatus requiredStatus,
             OrderStatus targetStatus,
             String cancelReason
+    ) {
+        return transitionRestaurantOrder(orderId, restaurantId, requiredStatus, targetStatus, cancelReason, OrderActor.system());
+    }
+
+
+    @Override
+    @Transactional
+    public Optional<OrderDto> cancelIfStillIn(Long orderId, OrderStatus expectedStatus, String cancelReason) {
+        return cancelIfStillIn(orderId, expectedStatus, cancelReason, OrderActor.system());
+    }
+
+
+    @Override
+    @Transactional
+    public DeliveryCompletion completeDeliveredOrder(Long orderId) {
+        return completeDeliveredOrder(orderId, OrderActor.system());
+    }
+
+
+    @Override
+    @Transactional
+    public RestaurantOrderTransition transitionRestaurantOrder(
+            Long orderId,
+            Long restaurantId,
+            OrderStatus requiredStatus,
+            OrderStatus targetStatus,
+            String cancelReason,
+            OrderActor actor
     ) {
         OrderEntity order = orderRepository.lockById(orderId);
         if (order == null || restaurantId == null || !restaurantId.equals(order.restaurantId())) {
@@ -248,7 +338,7 @@ public class OrderService implements OrderLifecycleCommands {
                             + targetStatus
             );
         }
-        return new RestaurantOrderTransition(transitionLockedOrder(order, targetStatus, cancelReason), true);
+        return new RestaurantOrderTransition(transitionLockedOrder(order, targetStatus, cancelReason, actor).order(), true);
     }
 
 
@@ -266,30 +356,35 @@ public class OrderService implements OrderLifecycleCommands {
 
     @Override
     @Transactional
-    public Optional<OrderDto> cancelIfStillIn(Long orderId, OrderStatus expectedStatus, String cancelReason) {
+    public Optional<OrderDto> cancelIfStillIn(
+            Long orderId,
+            OrderStatus expectedStatus,
+            String cancelReason,
+            OrderActor actor
+    ) {
         OrderEntity order = orderRepository.lockById(orderId);
         if (order == null || OrderStatus.normalize(order.status()) != expectedStatus) {
             return Optional.empty();
         }
-        return Optional.of(transitionLockedOrder(order, OrderStatus.CANCELLED, cancelReason));
+        return Optional.of(transitionLockedOrder(order, OrderStatus.CANCELLED, cancelReason, actor).order());
     }
 
 
     @Override
     @Transactional
-    public DeliveryCompletion completeDeliveredOrder(Long orderId) {
+    public DeliveryCompletion completeDeliveredOrder(Long orderId, OrderActor actor) {
         OrderEntity order = orderRepository.lockById(orderId);
         if (order == null) {
             return DeliveryCompletion.NOT_FOUND;
         }
         return switch (OrderStatus.normalize(order.status())) {
             case PREPARING -> {
-                applyTransition(order, OrderStatus.COMPLETED, null);
+                applyTransition(order, OrderStatus.COMPLETED, null, actor, DELIVERED_REASON);
                 yield DeliveryCompletion.COMPLETED;
             }
             case ACCEPTED -> {
-                OrderEntity preparing = applyTransition(order, OrderStatus.PREPARING, null).order();
-                applyTransition(preparing, OrderStatus.COMPLETED, null);
+                OrderEntity preparing = applyTransition(order, OrderStatus.PREPARING, null, actor, DELIVERED_REASON).order();
+                applyTransition(preparing, OrderStatus.COMPLETED, null, actor, DELIVERED_REASON);
                 yield DeliveryCompletion.COMPLETED;
             }
             case COMPLETED -> DeliveryCompletion.ALREADY_COMPLETED;
@@ -299,36 +394,54 @@ public class OrderService implements OrderLifecycleCommands {
 
 
     /**
-     * @param cancelReason stored on the order when {@code targetStatus} is CANCELLED; ignored otherwise
+     * @param cancelReason stored on the order (and as the history reason) when {@code targetStatus} is CANCELLED;
+     *                     ignored otherwise
      */
-    private OrderDto transitionLockedOrder(OrderEntity currentOrder, OrderStatus targetStatus, String cancelReason) {
+    private TransitionResult transitionLockedOrder(
+            OrderEntity currentOrder,
+            OrderStatus targetStatus,
+            String cancelReason,
+            OrderActor actor
+    ) {
         OrderStatus currentStatus = OrderStatus.normalize(currentOrder.status());
         currentStatus.validateTransitionTo(targetStatus);
         if (currentStatus == targetStatus) {
-            return getOrderDto(currentOrder);
+            return new TransitionResult(getOrderDto(currentOrder), currentStatus, false);
         }
 
-        AppliedTransition transition = applyTransition(currentOrder, targetStatus, cancelReason);
-        return new OrderDto(transition.order(), transition.items());
+        String historyReason = targetStatus == OrderStatus.CANCELLED ? cancelReason : null;
+        AppliedTransition transition = applyTransition(currentOrder, targetStatus, cancelReason, actor, historyReason);
+        return new TransitionResult(new OrderDto(transition.order(), transition.items()), currentStatus, true);
     }
 
 
     /**
-     * Saves the new status of a locked order and writes its order event to the outbox in the same transaction.
+     * Saves the new status (and updated_at) of a locked order, and writes its order_status_history row and its order
+     * event to the outbox, in the same transaction.
      */
-    private AppliedTransition applyTransition(OrderEntity currentOrder, OrderStatus targetStatus, String cancelReason) {
+    private AppliedTransition applyTransition(
+            OrderEntity currentOrder,
+            OrderStatus targetStatus,
+            String cancelReason,
+            OrderActor actor,
+            String historyReason
+    ) {
         OrderStatus currentStatus = OrderStatus.normalize(currentOrder.status());
         currentStatus.validateTransitionTo(targetStatus);
         LocalDateTime transitionedAt = LocalDateTime.now();
-        OrderEntity updatedOrder = orderRepository.save(new OrderEntity(
-                currentOrder.id(),
-                currentOrder.customerId(),
-                currentOrder.totalPrice(),
+        OrderEntity updatedOrder = orderRepository.save(currentOrder.withStatus(
                 targetStatus.name(),
-                currentOrder.createdAt(),
-                currentOrder.restaurantId(),
-                targetStatus == OrderStatus.CANCELLED ? cancelReason : currentOrder.cancelReason()
+                targetStatus == OrderStatus.CANCELLED ? cancelReason : currentOrder.cancelReason(),
+                transitionedAt
         ));
+        orderStatusHistoryService.record(
+                updatedOrder.id(),
+                currentStatus,
+                targetStatus,
+                actor,
+                historyReason,
+                transitionedAt
+        );
         List<OrderHistoryItemDto> items = getOrderItems(updatedOrder.id());
         orderEventOutboxService.enqueueOrderEvent(updatedOrder, items, null, transitionedAt);
         metricsService.recordOrderTransition(currentStatus.name(), targetStatus.name());
@@ -337,6 +450,14 @@ public class OrderService implements OrderLifecycleCommands {
 
 
     private record AppliedTransition(OrderEntity order, List<OrderHistoryItemDto> items) {
+    }
+
+
+    /**
+     * @param fromStatus the status the order was in before the command
+     * @param changed    false for a same-status no-op
+     */
+    private record TransitionResult(OrderDto order, OrderStatus fromStatus, boolean changed) {
     }
 
 

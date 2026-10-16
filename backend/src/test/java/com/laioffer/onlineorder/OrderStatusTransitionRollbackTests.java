@@ -92,8 +92,11 @@ class OrderStatusTransitionRollbackTests {
 
         OrderEntity unchangedOrder = orderRepository.findById(seededOrder.orderId()).orElseThrow();
         Assertions.assertEquals("PAID", unchangedOrder.status());
+        Assertions.assertEquals(unchangedOrder.createdAt(), unchangedOrder.updatedAt());
         Assertions.assertEquals(1, countOrderHistoryItemsForOrder(seededOrder.orderId()));
         Assertions.assertEquals(0, countOutboxEventsForOrder(seededOrder.orderId()));
+        // The history row is written before the outbox event and rolls back with it.
+        Assertions.assertEquals(0, countRows("order_status_history", "order_id", seededOrder.orderId()));
     }
 
     @Test
@@ -120,6 +123,7 @@ class OrderStatusTransitionRollbackTests {
         Assertions.assertEquals(1, countOrderHistoryItemsForOrder(seededOrder.orderId()));
         Assertions.assertEquals(0, countOutboxEventsForOrder(seededOrder.orderId()));
         Assertions.assertEquals(0, countIdempotencyRequests(seededOrder.customerId(), "status-rollback-key"));
+        Assertions.assertEquals(0, countRows("order_status_history", "order_id", seededOrder.orderId()));
     }
 
     private SeededOrder createOrderWithHistory(String status) {
@@ -171,6 +175,15 @@ class OrderStatusTransitionRollbackTests {
                 "SELECT COUNT(*) FROM outbox_events WHERE aggregate_type = 'ORDER' AND aggregate_id = ?",
                 Long.class,
                 orderId
+        );
+        return count == null ? 0 : count;
+    }
+
+    private long countRows(String table, String column, Long value) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM " + table + " WHERE " + column + " = ?",
+                Long.class,
+                value
         );
         return count == null ? 0 : count;
     }

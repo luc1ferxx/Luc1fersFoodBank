@@ -9,6 +9,9 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 
+/**
+ * @param updatedAt when the order last changed status (its creation time until the first change)
+ */
 public record OrderDto(
         Long id,
         BigDecimal totalPrice,
@@ -16,8 +19,22 @@ public record OrderDto(
         LocalDateTime createdAt,
         List<OrderHistoryItemDto> items,
         Long restaurantId,
-        String cancelReason
+        String cancelReason,
+        LocalDateTime updatedAt
 ) {
+
+    public OrderDto(
+            Long id,
+            BigDecimal totalPrice,
+            String status,
+            LocalDateTime createdAt,
+            List<OrderHistoryItemDto> items,
+            Long restaurantId,
+            String cancelReason
+    ) {
+        this(id, totalPrice, status, createdAt, items, restaurantId, cancelReason, createdAt);
+    }
+
 
     public OrderDto(Long id, BigDecimal totalPrice, String status, LocalDateTime createdAt, List<OrderHistoryItemDto> items) {
         this(id, totalPrice, status, createdAt, items, null, null);
@@ -32,7 +49,8 @@ public record OrderDto(
                 order.createdAt(),
                 items,
                 order.restaurantId(),
-                order.cancelReason()
+                order.cancelReason(),
+                order.updatedAt()
         );
     }
 }

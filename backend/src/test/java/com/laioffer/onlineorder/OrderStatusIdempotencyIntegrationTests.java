@@ -32,6 +32,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -109,6 +110,11 @@ class OrderStatusIdempotencyIntegrationTests {
         Assertions.assertEquals(1, countIdempotencyRequests(seededOrder.customerId(), STATUS_SCOPE_PREFIX + seededOrder.orderId(), "status-key-1"));
         Assertions.assertEquals(1, countOutboxEventsForOrder(seededOrder.orderId()));
         Assertions.assertEquals("SUCCEEDED", idempotencyStatus(seededOrder.customerId(), STATUS_SCOPE_PREFIX + seededOrder.orderId(), "status-key-1"));
+        // The retry adds no second history row.
+        Assertions.assertEquals(
+                List.of("PAID->ACCEPTED|ADMIN|" + seededOrder.customerId() + "|null"),
+                statusHistory(seededOrder.orderId())
+        );
     }
 
     @Test
@@ -148,6 +154,7 @@ class OrderStatusIdempotencyIntegrationTests {
             Assertions.assertEquals(1, countOutboxEventsForOrder(seededOrder.orderId()));
             Assertions.assertEquals(1, countOutboxEventsForOrderAndType(seededOrder.orderId(), "order.accepted"));
             Assertions.assertEquals("ACCEPTED", orderRepository.findById(seededOrder.orderId()).orElseThrow().status());
+            Assertions.assertEquals(1, statusHistory(seededOrder.orderId()).size());
         } finally {
             executorService.shutdownNow();
         }
@@ -165,6 +172,10 @@ class OrderStatusIdempotencyIntegrationTests {
         Assertions.assertEquals(seededOrder.orderId(), retry.id());
         Assertions.assertEquals(1, countIdempotencyRequests(seededOrder.customerId(), CANCEL_SCOPE_PREFIX + seededOrder.orderId(), "cancel-key-1"));
         Assertions.assertEquals(1, countOutboxEventsForOrder(seededOrder.orderId()));
+        Assertions.assertEquals(
+                List.of("PAID->CANCELLED|CUSTOMER|" + seededOrder.customerId() + "|CUSTOMER_CANCELLED"),
+                statusHistory(seededOrder.orderId())
+        );
     }
 
     @Test
@@ -180,6 +191,7 @@ class OrderStatusIdempotencyIntegrationTests {
         OrderEntity order = orderRepository.findById(seededOrder.orderId()).orElseThrow();
         Assertions.assertEquals("ACCEPTED", order.status());
         Assertions.assertEquals(1, countOutboxEventsForOrder(seededOrder.orderId()));
+        Assertions.assertEquals(1, statusHistory(seededOrder.orderId()).size());
     }
 
     @Test
@@ -228,6 +240,7 @@ class OrderStatusIdempotencyIntegrationTests {
         OrderEntity order = orderRepository.findById(seededOrder.orderId()).orElseThrow();
         Assertions.assertEquals("PAID", order.status());
         Assertions.assertEquals(0, countOutboxEventsForOrder(seededOrder.orderId()));
+        Assertions.assertEquals(List.of(), statusHistory(seededOrder.orderId()));
     }
 
     @Test
@@ -316,6 +329,21 @@ class OrderStatusIdempotencyIntegrationTests {
         readyLatch.countDown();
         Assertions.assertTrue(startLatch.await(5, TimeUnit.SECONDS));
         return orderService.idempotentTransitionOrderStatus(customerId, orderId, "ACCEPTED", idempotencyKey);
+    }
+
+    /**
+     * The order's history rows, oldest first, as "from->to|actor_type|actor_id|reason".
+     */
+    private List<String> statusHistory(Long orderId) {
+        return jdbcTemplate.query("""
+                SELECT from_status, to_status, actor_type, actor_id, reason
+                FROM order_status_history
+                WHERE order_id = ?
+                ORDER BY id
+                """, (row, index) -> row.getString("from_status") + "->" + row.getString("to_status")
+                + "|" + row.getString("actor_type")
+                + "|" + row.getObject("actor_id")
+                + "|" + row.getString("reason"), orderId);
     }
 
     private long countOutboxEventsForOrder(Long orderId) {
