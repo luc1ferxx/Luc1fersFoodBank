@@ -206,9 +206,16 @@ management:
       percentiles-histogram:
         http.server.requests: true
         hikaricp.connections.acquire: true
-      # Exact buckets at the thresholds that matter; 2s is the Hikari connection-timeout.
+      # Exact buckets at the thresholds that matter; 2s is the Hikari connection-timeout. The latency SLO alerts
+      # in deploy/observability/prometheus/alerts.yml read the 500ms bucket.
       slo:
         http.server.requests: 50ms,100ms,250ms,500ms,1s,2s
+      # Bounds for the percentiles histogram, so each uri/method/status series carries about half the default
+      # number of buckets (1ms-30s); slower requests still land in +Inf.
+      minimum-expected-value:
+        http.server.requests: 5ms
+      maximum-expected-value:
+        http.server.requests: 10s
   info:
     env:
       enabled: true
@@ -227,6 +234,9 @@ management:
       endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
       export:
         enabled: ${TRACING_EXPORT_ENABLED:false}
+  # The actuator moves to its own port when MANAGEMENT_SERVER_PORT is set (8081 in the container image and on
+  # Kubernetes): Prometheus scrapes and the kubelet probes it without a session, and it is never exposed publicly.
+  # Unset, the actuator stays on the application port with /actuator/** other than health and info for ROLE_ADMIN.
 
 info:
   app:

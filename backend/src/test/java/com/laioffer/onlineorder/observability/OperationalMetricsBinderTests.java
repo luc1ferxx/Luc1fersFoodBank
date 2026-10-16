@@ -3,10 +3,16 @@ package com.laioffer.onlineorder.observability;
 
 import com.laioffer.onlineorder.repository.DeadLetterEventRepository;
 import com.laioffer.onlineorder.repository.OutboxEventRepository;
+import io.micrometer.core.instrument.TimeGauge;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+
+
+import java.time.LocalDateTime;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 
 class OperationalMetricsBinderTests {
@@ -40,5 +46,28 @@ class OperationalMetricsBinderTests {
         Assertions.assertEquals(1.0, meterRegistry.get("onlineorder.dead_letter.events").tag("replay_status", "replaying").gauge().value());
         Assertions.assertEquals(1.0, meterRegistry.get("onlineorder.dead_letter.events").tag("replay_status", "replay_failed").gauge().value());
         Assertions.assertEquals(2.0, meterRegistry.get("onlineorder.dead_letter.events").tag("replay_status", "replayed").gauge().value());
+    }
+
+
+    @Test
+    void bindTo_shouldExposeAgeOfOldestUnpublishedOutboxEventInSeconds() {
+        OutboxEventRepository outboxEventRepository = Mockito.mock(OutboxEventRepository.class);
+        DeadLetterEventRepository deadLetterEventRepository = Mockito.mock(DeadLetterEventRepository.class);
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+        Mockito.when(outboxEventRepository.findOldestUnpublishedCreatedAt())
+                .thenReturn(Optional.of(LocalDateTime.now().minusSeconds(90)))
+                .thenReturn(Optional.empty())
+                .thenReturn(Optional.of(LocalDateTime.now().plusMinutes(5)));
+
+        new OperationalMetricsBinder(outboxEventRepository, deadLetterEventRepository).bindTo(meterRegistry);
+        TimeGauge age = meterRegistry.get("onlineorder.outbox.oldest_pending_age").timeGauge();
+
+        double oldestAgeSeconds = age.value(TimeUnit.SECONDS);
+        Assertions.assertTrue(
+                oldestAgeSeconds >= 90.0 && oldestAgeSeconds < 120.0,
+                () -> "Expected about 90s, got " + oldestAgeSeconds
+        );
+        Assertions.assertEquals(0.0, age.value(TimeUnit.SECONDS), "no unpublished events");
+        Assertions.assertEquals(0.0, age.value(TimeUnit.SECONDS), "clock skew never reports a negative age");
     }
 }

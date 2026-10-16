@@ -2,6 +2,7 @@ package com.laioffer.onlineorder;
 
 
 import com.laioffer.onlineorder.error.ApiErrorResponseWriter;
+import com.laioffer.onlineorder.security.ManagementServerRequestMatcher;
 import com.laioffer.onlineorder.security.RateLimitingFilter;
 import com.laioffer.onlineorder.service.CustomerService;
 import org.springframework.boot.autoconfigure.security.servlet.PathRequest;
@@ -88,6 +89,8 @@ public class AppConfig {
                         auth
                                 .requestMatchers(PathRequest.toStaticResources().atCommonLocations()).permitAll()
                                 .requestMatchers(EndpointRequest.to("health", "info")).permitAll()
+                                // Separate management port (in-cluster only): Prometheus scrapes and probes.
+                                .requestMatchers(new ManagementServerRequestMatcher()).permitAll()
                                 .requestMatchers(EndpointRequest.toAnyEndpoint()).hasRole("ADMIN")
                                 .requestMatchers("/h2-console/**").permitAll()
                                 .requestMatchers(HttpMethod.GET, "/v3/api-docs/**", "/swagger-ui.html", "/swagger-ui/**").permitAll()

@@ -9,6 +9,7 @@ import org.springframework.data.repository.ListCrudRepository;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 
 public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEntity, Long> {
@@ -37,6 +38,21 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
             WHERE status IN (:firstStatus, :secondStatus)
             """)
     long countByStatuses(String firstStatus, String secondStatus);
+
+
+    /**
+     * Creation time of the oldest event still waiting to be published. Ids grow with insertion, so the lowest
+     * unpublished id is the oldest event. The statuses are literals so that PostgreSQL can prove the partial index
+     * idx_outbox_events_unpublished_id (V3) applies and read a single index entry, however large the table is.
+     */
+    @Query("""
+            SELECT created_at
+            FROM outbox_events
+            WHERE status IN ('PENDING', 'PROCESSING')
+            ORDER BY id
+            LIMIT 1
+            """)
+    Optional<LocalDateTime> findOldestUnpublishedCreatedAt();
 
 
     @Query("""

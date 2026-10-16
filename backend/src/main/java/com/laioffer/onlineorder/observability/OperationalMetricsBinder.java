@@ -5,8 +5,14 @@ import com.laioffer.onlineorder.repository.DeadLetterEventRepository;
 import com.laioffer.onlineorder.repository.OutboxEventRepository;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.TimeGauge;
 import io.micrometer.core.instrument.binder.MeterBinder;
 import org.springframework.stereotype.Component;
+
+
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.concurrent.TimeUnit;
 
 
 @Component
@@ -48,6 +54,9 @@ public class OperationalMetricsBinder implements MeterBinder {
         Gauge.builder("onlineorder.outbox.failed", () -> countOutboxStatus(OUTBOX_STATUS_FAILED))
                 .description("Outbox events that reached FAILED and require operator action")
                 .register(registry);
+        TimeGauge.builder("onlineorder.outbox.oldest_pending_age", this::oldestPendingAgeSeconds, TimeUnit.SECONDS)
+                .description("Age of the oldest outbox event not yet published (PENDING or PROCESSING), 0 when none")
+                .register(registry);
 
         Gauge.builder("onlineorder.dead_letter.total", this::countDeadLetterTotal)
                 .description("Total persisted Kafka dead-letter events")
@@ -77,6 +86,17 @@ public class OperationalMetricsBinder implements MeterBinder {
 
     private long countOutboxStatus(String status) {
         return outboxEventRepository.countByStatus(status);
+    }
+
+
+    private double oldestPendingAgeSeconds() {
+        LocalDateTime createdAt = outboxEventRepository.findOldestUnpublishedCreatedAt().orElse(null);
+        if (createdAt == null) {
+            return 0.0;
+        }
+        // created_at is written with LocalDateTime.now() in this JVM's time zone.
+        long ageMillis = Duration.between(createdAt, LocalDateTime.now()).toMillis();
+        return Math.max(0L, ageMillis) / 1000.0;
     }
 
 
