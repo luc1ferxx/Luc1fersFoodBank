@@ -40,6 +40,12 @@ public final class TwoLevelCaches {
             CacheErrorHandler errorHandler
     ) {
         TtlJitter ttlJitter = new TtlJitter(settings.remoteTtlJitter());
+        // One breaker for all caches: they share one Redis, so one cache's failure means the others' calls
+        // would wait for the same timeout.
+        RemoteCacheCircuitBreaker circuitBreaker = new RemoteCacheCircuitBreaker(
+                settings.remoteCircuitOpenDuration(),
+                settings.remoteSlowCallThreshold()
+        );
         List<TwoLevelCache> caches = specs.stream()
                 .map(spec -> new TwoLevelCache(
                         spec.name(),
@@ -57,7 +63,8 @@ public final class TwoLevelCaches {
                                 ttlJitter
                         ),
                         invalidationPublisher,
-                        errorHandler
+                        errorHandler,
+                        circuitBreaker
                 ))
                 .toList();
         return new TwoLevelCacheManager(caches);

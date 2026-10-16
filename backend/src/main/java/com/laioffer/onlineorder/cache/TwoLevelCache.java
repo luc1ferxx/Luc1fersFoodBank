@@ -18,11 +18,15 @@ import java.util.concurrent.atomic.LongAdder;
  * <ul>
  *     <li>Reads check L1, then L2, then run the loader; an L2 hit or a loaded value is copied into L1.</li>
  *     <li>{@link #get(Object, Callable)} (used by {@code @Cacheable(sync = true)}) is single-flight per key
- *     and instance: concurrent misses for the same key wait for one L2 read / database load.</li>
+ *     and instance: concurrent misses for the same key wait for one L2 read / database load. A loaded value
+ *     is written back to L2 after that section, so the waiters are not held for the Redis write.</li>
  *     <li>Writes and evictions go to L2 first, then L1, then are broadcast so other instances drop their
  *     L1 copy.</li>
  *     <li>L2 or broadcast failures never fail the caller: they are reported to the {@link CacheErrorHandler}
  *     (logged and counted), a failed read is a miss, and L1 keeps working while Redis is down.</li>
+ *     <li>After an L2 failure the shared {@link RemoteCacheCircuitBreaker} makes reads and write-backs skip
+ *     L2 for a while, so a hung Redis costs one command timeout per open period instead of one or two per
+ *     L1 miss. Evictions, clears and explicit puts always go to L2.</li>
  * </ul>
  * Null values are not cached; callers that need negative caching must cache an explicit empty value.
  */
@@ -33,9 +37,14 @@ public class TwoLevelCache extends AbstractValueAdaptingCache {
     private final RemoteCacheStore remoteStore;
     private final CacheInvalidationPublisher invalidationPublisher;
     private final CacheErrorHandler errorHandler;
+    private final RemoteCacheCircuitBreaker circuitBreaker;
 
     private final LongAdder remoteHits = new LongAdder();
     private final LongAdder remoteMisses = new LongAdder();
+    private final LongAdder remoteErrors = new LongAdder();
+    private final LongAdder remoteSkips = new LongAdder();
+    private final LongAdder sourceLoads = new LongAdder();
+    private final LongAdder sourceLoadFailures = new LongAdder();
     private final LongAdder remotePuts = new LongAdder();
     private final LongAdder remoteEvictions = new LongAdder();
     private final LongAdder remoteInvalidationsReceived = new LongAdder();
@@ -48,6 +57,18 @@ public class TwoLevelCache extends AbstractValueAdaptingCache {
             CacheInvalidationPublisher invalidationPublisher,
             CacheErrorHandler errorHandler
     ) {
+        this(name, localCache, remoteStore, invalidationPublisher, errorHandler, RemoteCacheCircuitBreaker.disabled());
+    }
+
+
+    public TwoLevelCache(
+            String name,
+            Cache<String, Object> localCache,
+            RemoteCacheStore remoteStore,
+            CacheInvalidationPublisher invalidationPublisher,
+            CacheErrorHandler errorHandler,
+            RemoteCacheCircuitBreaker circuitBreaker
+    ) {
         super(false);
         Assert.hasText(name, "Cache name must not be empty");
         this.name = name;
@@ -55,6 +76,7 @@ public class TwoLevelCache extends AbstractValueAdaptingCache {
         this.remoteStore = remoteStore;
         this.invalidationPublisher = invalidationPublisher;
         this.errorHandler = errorHandler;
+        this.circuitBreaker = circuitBreaker;
     }
 
 
@@ -89,9 +111,25 @@ public class TwoLevelCache extends AbstractValueAdaptingCache {
     @SuppressWarnings("unchecked")
     public <T> T get(Object key, Callable<T> valueLoader) {
         String cacheKey = cacheKey(key);
+        Object[] loadedHere = new Object[1];
         // Caffeine runs the mapping function at most once per key at a time; other callers for the same key
         // block until it returns, so a burst of misses costs one Redis read and at most one database load.
-        Object value = localCache.get(cacheKey, ignored -> loadThroughRemote(key, cacheKey, valueLoader));
+        Object value = localCache.get(cacheKey, ignored -> {
+            Object remoteValue = getRemote(key, cacheKey);
+            if (remoteValue != null) {
+                return remoteValue;
+            }
+            loadedHere[0] = load(key, valueLoader);
+            return loadedHere[0];
+        });
+        Object loaded = loadedHere[0];
+        // The write-back happens after the single-flight section, so callers waiting for this key are not held
+        // for it. It is skipped when the entry was invalidated in the meantime (an eviction after a commit, or
+        // one from another instance): writing the value back would then put data the writer just deleted back
+        // into Redis.
+        if (loaded != null && localCache.asMap().get(cacheKey) == loaded) {
+            writeBack(key, cacheKey, loaded);
+        }
         return (T) fromStoreValue(value);
     }
 
@@ -121,15 +159,21 @@ public class TwoLevelCache extends AbstractValueAdaptingCache {
 
     @Override
     public void clear() {
+        long start = System.nanoTime();
         try {
             remoteStore.clear();
+            circuitBreaker.onSuccess(System.nanoTime() - start);
         } catch (RuntimeException ex) {
+            circuitBreaker.onError(ex, System.nanoTime() - start);
             errorHandler.handleCacheClearError(ex, this);
         }
         localCache.invalidateAll();
+        start = System.nanoTime();
         try {
             invalidationPublisher.publishClear(name);
+            circuitBreaker.onSuccess(System.nanoTime() - start);
         } catch (RuntimeException ex) {
+            circuitBreaker.onError(ex, System.nanoTime() - start);
             errorHandler.handleCacheClearError(ex, this);
         }
     }
@@ -166,6 +210,14 @@ public class TwoLevelCache extends AbstractValueAdaptingCache {
     }
 
 
+    /**
+     * The breaker shared by every cache on the same Redis.
+     */
+    public RemoteCacheCircuitBreaker getRemoteCircuitBreaker() {
+        return circuitBreaker;
+    }
+
+
     long remoteHitCount() {
         return remoteHits.sum();
     }
@@ -173,6 +225,26 @@ public class TwoLevelCache extends AbstractValueAdaptingCache {
 
     long remoteMissCount() {
         return remoteMisses.sum();
+    }
+
+
+    long remoteErrorCount() {
+        return remoteErrors.sum();
+    }
+
+
+    long remoteSkipCount() {
+        return remoteSkips.sum();
+    }
+
+
+    long sourceLoadCount() {
+        return sourceLoads.sum();
+    }
+
+
+    long sourceLoadFailureCount() {
+        return sourceLoadFailures.sum();
     }
 
 
@@ -209,33 +281,35 @@ public class TwoLevelCache extends AbstractValueAdaptingCache {
     }
 
 
-    private Object loadThroughRemote(Object key, String cacheKey, Callable<?> valueLoader) {
-        Object value = getRemote(key, cacheKey);
-        if (value != null) {
-            return value;
-        }
+    private Object load(Object key, Callable<?> valueLoader) {
         Object loaded;
         try {
             loaded = valueLoader.call();
         } catch (Exception ex) {
+            sourceLoadFailures.increment();
             throw new ValueRetrievalException(key, valueLoader, ex);
         }
-        if (loaded == null) {
-            return null;
-        }
-        putRemote(key, cacheKey, loaded);
+        sourceLoads.increment();
         return loaded;
     }
 
 
     private Object getRemote(Object key, String cacheKey) {
+        if (!circuitBreaker.allowRequest()) {
+            remoteSkips.increment();
+            return null;
+        }
+        long start = System.nanoTime();
         Object value;
         try {
             value = remoteStore.get(cacheKey);
         } catch (RuntimeException ex) {
+            circuitBreaker.onError(ex, System.nanoTime() - start);
+            remoteErrors.increment();
             errorHandler.handleCacheGetError(ex, this, key);
             return null;
         }
+        circuitBreaker.onSuccess(System.nanoTime() - start);
         if (value == null) {
             remoteMisses.increment();
         } else {
@@ -245,30 +319,50 @@ public class TwoLevelCache extends AbstractValueAdaptingCache {
     }
 
 
+    /**
+     * Fills L2 with a value just loaded from the source. Unlike {@link #putRemote}, this is only an
+     * optimization, so it is skipped while the circuit breaker is open.
+     */
+    private void writeBack(Object key, String cacheKey, Object value) {
+        if (circuitBreaker.allowRequest()) {
+            putRemote(key, cacheKey, value);
+        }
+    }
+
+
     private void putRemote(Object key, String cacheKey, Object value) {
+        long start = System.nanoTime();
         try {
             remoteStore.put(cacheKey, value);
+            circuitBreaker.onSuccess(System.nanoTime() - start);
             remotePuts.increment();
         } catch (RuntimeException ex) {
+            circuitBreaker.onError(ex, System.nanoTime() - start);
             errorHandler.handleCachePutError(ex, this, key, value);
         }
     }
 
 
     private void evictRemote(Object key, String cacheKey) {
+        long start = System.nanoTime();
         try {
             remoteStore.evict(cacheKey);
+            circuitBreaker.onSuccess(System.nanoTime() - start);
             remoteEvictions.increment();
         } catch (RuntimeException ex) {
+            circuitBreaker.onError(ex, System.nanoTime() - start);
             errorHandler.handleCacheEvictError(ex, this, key);
         }
     }
 
 
     private void publishEvict(Object key, String cacheKey) {
+        long start = System.nanoTime();
         try {
             invalidationPublisher.publishEvict(name, cacheKey);
+            circuitBreaker.onSuccess(System.nanoTime() - start);
         } catch (RuntimeException ex) {
+            circuitBreaker.onError(ex, System.nanoTime() - start);
             errorHandler.handleCacheEvictError(ex, this, key);
         }
     }

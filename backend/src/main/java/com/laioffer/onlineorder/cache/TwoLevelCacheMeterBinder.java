@@ -13,13 +13,17 @@ import org.springframework.boot.actuate.metrics.cache.CacheMeterBinderProvider;
 /**
  * Publishes both levels under Micrometer's standard cache meter names, told apart by a {@code level} tag:
  * <ul>
- *     <li>{@code cache.gets{level=l1,result=hit|miss}}, {@code cache.puts}, {@code cache.evictions},
- *     {@code cache.size} and Caffeine's load meters for L1 (from Caffeine's own stats);</li>
- *     <li>{@code cache.gets{level=l2,result=hit|miss}}, {@code cache.puts{level=l2}} and
- *     {@code cache.evictions{level=l2}} (explicit deletes) for Redis;</li>
+ *     <li>{@code cache.gets{level=l1,result=hit|miss}}, {@code cache.puts}, {@code cache.evictions} and
+ *     {@code cache.size} for L1 (from Caffeine's own stats; an L1 miss is filled from L2 or the database);</li>
+ *     <li>{@code cache.gets{level=l2,result=hit|miss|error|skipped}} for Redis reads: {@code error} is a read
+ *     that failed or timed out, {@code skipped} one not attempted because the circuit breaker is open;</li>
+ *     <li>{@code cache.load{level=l2,result=success|failure}}: values loaded from the database because
+ *     neither level had them. This, not the L2 miss count, is the database load: during a Redis outage
+ *     every L1 miss is an L2 error or skip followed by a load;</li>
+ *     <li>{@code cache.puts{level=l2}} and {@code cache.evictions{level=l2}} (explicit deletes) for Redis;</li>
  *     <li>{@code onlineorder.cache.invalidations.received} for L1 drops requested by other instances.</li>
  * </ul>
- * An L2 miss is a database load. Redis errors are counted separately by {@code onlineorder.cache.errors}.
+ * Redis errors of every operation are also counted by {@code onlineorder.cache.errors}.
  */
 public class TwoLevelCacheMeterBinder implements MeterBinder {
 
@@ -44,7 +48,23 @@ public class TwoLevelCacheMeterBinder implements MeterBinder {
                 .register(registry);
         FunctionCounter.builder("cache.gets", cache, TwoLevelCache::remoteMissCount)
                 .tags(remoteTags.and("result", "miss"))
-                .description("Redis (L2) reads that missed and fell through to the database")
+                .description("Redis (L2) reads that found no entry")
+                .register(registry);
+        FunctionCounter.builder("cache.gets", cache, TwoLevelCache::remoteErrorCount)
+                .tags(remoteTags.and("result", "error"))
+                .description("Redis (L2) reads that failed or timed out")
+                .register(registry);
+        FunctionCounter.builder("cache.gets", cache, TwoLevelCache::remoteSkipCount)
+                .tags(remoteTags.and("result", "skipped"))
+                .description("Redis (L2) reads skipped because the Redis circuit breaker was open")
+                .register(registry);
+        FunctionCounter.builder("cache.load", cache, TwoLevelCache::sourceLoadCount)
+                .tags(remoteTags.and("result", "success"))
+                .description("Values loaded from the database because neither cache level had them")
+                .register(registry);
+        FunctionCounter.builder("cache.load", cache, TwoLevelCache::sourceLoadFailureCount)
+                .tags(remoteTags.and("result", "failure"))
+                .description("Database loads for this cache that failed")
                 .register(registry);
         FunctionCounter.builder("cache.puts", cache, TwoLevelCache::remotePutCount)
                 .tags(remoteTags)

@@ -185,6 +185,13 @@ app:
     l2:
       # Each Redis write gets TTL * [1 - jitter, 1 + jitter] so entries loaded together do not expire together.
       ttl-jitter: ${CACHE_L2_TTL_JITTER:0.15}
+      # After a Redis error or timeout (or 3 consecutive calls slower than slow-call-threshold), cache reads
+      # and write-backs skip Redis for open-duration and go to L1 and the database; then one request probes
+      # Redis again. A hung Redis then costs one spring.data.redis.timeout per open period instead of one or
+      # two per L1 miss. Evictions always go to Redis. open-duration 0 disables the breaker.
+      circuit-breaker:
+        open-duration: ${CACHE_L2_CIRCUIT_OPEN_DURATION:5s}
+        slow-call-threshold: ${CACHE_L2_SLOW_CALL_THRESHOLD:200ms}
     # Second eviction after an admin catalog write, for a reader that cached the old row right after the
     # first after-commit eviction. 0 disables it.
     delayed-double-delete: ${CACHE_DELAYED_DOUBLE_DELETE:1s}

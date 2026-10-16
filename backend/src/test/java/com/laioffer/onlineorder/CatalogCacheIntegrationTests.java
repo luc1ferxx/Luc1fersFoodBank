@@ -354,6 +354,13 @@ class CatalogCacheIntegrationTests {
         Assertions.assertTrue(gets("menu", "l1", "hit") >= 1);
         Assertions.assertTrue(gets("menu", "l1", "miss") >= 1);
         Assertions.assertTrue(gets("menu", "l2", "miss") >= 1);
+        FunctionCounter databaseLoads = meterRegistry.find("cache.load")
+                .tags("cache", "menu", "level", "l2", "result", "success")
+                .functionCounter();
+        Assertions.assertNotNull(databaseLoads);
+        Assertions.assertTrue(databaseLoads.count() >= 1);
+        Assertions.assertNotNull(meterRegistry.find("cache.gets").tags("cache", "menu", "level", "l2", "result", "error").functionCounter());
+        Assertions.assertNotNull(meterRegistry.find("cache.gets").tags("cache", "menu", "level", "l2", "result", "skipped").functionCounter());
         Assertions.assertNotNull(meterRegistry.find("cache.gets").tags("cache", "menu", "level", "l2", "result", "hit").functionCounter());
         Assertions.assertNotNull(meterRegistry.find("cache.gets").tags("cache.manager", "cacheManager").functionCounter(),
                 "bound by Spring Boot's cache metrics registrar");

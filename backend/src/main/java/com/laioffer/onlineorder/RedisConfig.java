@@ -45,9 +45,18 @@ public class RedisConfig {
             @Value("${app.cache.key-namespace:onlineorder:cache}") String keyNamespace,
             @Value("${app.cache.l1.ttl:30s}") Duration localTtl,
             @Value("${spring.cache.redis.time-to-live:10m}") Duration remoteTtl,
-            @Value("${app.cache.l2.ttl-jitter:0.15}") double remoteTtlJitter
+            @Value("${app.cache.l2.ttl-jitter:0.15}") double remoteTtlJitter,
+            @Value("${app.cache.l2.circuit-breaker.open-duration:5s}") Duration remoteCircuitOpenDuration,
+            @Value("${app.cache.l2.circuit-breaker.slow-call-threshold:200ms}") Duration remoteSlowCallThreshold
     ) {
-        return new TwoLevelCacheSettings(keyNamespace, localTtl, remoteTtl, remoteTtlJitter);
+        return new TwoLevelCacheSettings(
+                keyNamespace,
+                localTtl,
+                remoteTtl,
+                remoteTtlJitter,
+                remoteCircuitOpenDuration,
+                remoteSlowCallThreshold
+        );
     }
 
 

@@ -30,8 +30,15 @@ import java.util.Map;
 
 
 /**
- * The whole application with the two-level cache enabled and Redis unreachable: startup succeeds, catalog
- * reads are served from the database (then L1), and an admin write still succeeds and is visible right away.
+ * The whole application with the two-level cache enabled and Redis refusing connections: startup succeeds,
+ * catalog reads are served from the database (then L1), and the cache layer does not fail an admin write.
+ * <p>
+ * Spring Session is excluded, so sessions live in the servlet container's memory and the admin can log in.
+ * In the deployed configuration sessions are stored in Redis, and during a real outage every authenticated
+ * request, admin writes included, fails in the session filter before it reaches a controller. This test only
+ * shows that the after-commit Redis delete and broadcast failing does not turn a committed write into an
+ * error, and that the local L1 copy is still evicted. A Redis that hangs instead of refusing connections is
+ * covered by {@link CatalogRedisHangIntegrationTests}.
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -67,7 +74,7 @@ class CatalogRedisOutageIntegrationTests {
 
 
     @Test
-    void catalogReadsAndAdminWrites_whenRedisIsDown_shouldBeServedFromTheDatabase() {
+    void catalogReadsAndTheCacheSideOfAnAdminWrite_whenRedisRefusesConnections_shouldFallBackToTheDatabase() {
         ResponseEntity<List<Map<String, Object>>> restaurants = getJsonList("/restaurants/menu");
         Assertions.assertEquals(HttpStatus.OK, restaurants.getStatusCode());
         Assertions.assertFalse(restaurants.getBody().isEmpty(), "demo restaurants are loaded from H2");
@@ -89,7 +96,8 @@ class CatalogRedisOutageIntegrationTests {
                 new HttpEntity<>(Map.of("price", newPrice), headers),
                 Map.class
         );
-        Assertions.assertEquals(HttpStatus.OK, update.getStatusCode(), "a Redis outage must not fail the write");
+        Assertions.assertEquals(HttpStatus.OK, update.getStatusCode(),
+                "with sessions held in memory, failing to evict Redis after the commit must not fail the write");
 
         // L1 was evicted locally even though the Redis delete and the broadcast failed.
         Map<String, Object> updated = getJsonList("/restaurant/" + restaurantId + "/menu").getBody().stream()

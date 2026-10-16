@@ -46,7 +46,8 @@ import java.util.List;
 
 /**
  * Wires the real two-level cache configuration ({@link RedisConfig}, including the pub/sub listener container)
- * against a Redis port with nothing listening, so every Redis call fails the way it does during an outage.
+ * against a Redis port with nothing listening, so every Redis call is refused at once. A Redis that hangs
+ * instead (every call waits for the command timeout) is covered by {@link CatalogRedisHangIntegrationTests}.
  */
 @SpringJUnitConfig(RestaurantCacheFallbackTests.CacheFallbackTestConfig.class)
 class RestaurantCacheFallbackTests {
@@ -71,6 +72,7 @@ class RestaurantCacheFallbackTests {
     void stubDatabase() {
         Mockito.reset(restaurantRepository, menuItemRepository);
         cacheManager.clearLocal();
+        cacheManager.getTwoLevelCache(CatalogCaches.MENU).getRemoteCircuitBreaker().reset();
         Mockito.when(restaurantRepository.findAllOrderById()).thenReturn(List.of(
                 new RestaurantEntity(1L, "Burger King", "773 N Mathilda Ave", "(408) 736-0101", "")
         ));
@@ -95,9 +97,11 @@ class RestaurantCacheFallbackTests {
         // Redis is down: the first call goes to the database, the second is served by the in-process L1.
         Mockito.verify(restaurantRepository, Mockito.times(1)).findAllOrderById();
         Mockito.verify(menuItemRepository, Mockito.times(1)).findByRestaurantIdOrderById(1L);
-        // One failed Redis read and one failed Redis write per cache, recorded by the existing error handler.
-        Assertions.assertEquals(2.0, cacheErrors(CatalogCaches.RESTAURANTS, "get") + cacheErrors(CatalogCaches.MENU, "get") - getErrorsBefore);
-        Assertions.assertEquals(2.0, cacheErrors(CatalogCaches.RESTAURANTS, "put") + cacheErrors(CatalogCaches.MENU, "put") - putErrorsBefore);
+        // Only the first Redis read fails (recorded by the existing error handler). It opens the shared circuit
+        // breaker, so the menu read and both write-backs skip Redis instead of failing one by one.
+        Assertions.assertEquals(1.0, cacheErrors(CatalogCaches.RESTAURANTS, "get") + cacheErrors(CatalogCaches.MENU, "get") - getErrorsBefore);
+        Assertions.assertEquals(0.0, cacheErrors(CatalogCaches.RESTAURANTS, "put") + cacheErrors(CatalogCaches.MENU, "put") - putErrorsBefore);
+        Assertions.assertTrue(cacheManager.getTwoLevelCache(CatalogCaches.RESTAURANTS).getRemoteCircuitBreaker().isOpen());
     }
 
 

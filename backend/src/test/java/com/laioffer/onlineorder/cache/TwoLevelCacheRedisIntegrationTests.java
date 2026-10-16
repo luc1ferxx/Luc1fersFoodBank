@@ -259,7 +259,9 @@ class TwoLevelCacheRedisIntegrationTests {
 
 
     private TwoLevelCacheManager manager(LettuceConnectionFactory factory, String instanceId) {
-        TwoLevelCacheSettings settings = new TwoLevelCacheSettings("onlineorder:cache", Duration.ofMinutes(1), REMOTE_TTL, 0.15);
+        TwoLevelCacheSettings settings = new TwoLevelCacheSettings(
+                "onlineorder:cache", Duration.ofMinutes(1), REMOTE_TTL, 0.15, Duration.ofSeconds(5), Duration.ofMillis(200)
+        );
         return TwoLevelCaches.redisBacked(
                 factory,
                 OBJECT_MAPPER,
