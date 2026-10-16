@@ -153,12 +153,13 @@ class ApiContractIntegrationTests {
                 .andExpect(status().isOk());
         mockMvc.perform(post("/cart")
                         .session(session)
-                        .header("X-Trace-Id", "trace-cart-conflict-123")
+                        .header("traceparent", traceParent("c0a1f3e2d4b5968778695a4b3c2d1e0f"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"menu_id\": %d}".formatted(otherRestaurantItemId)))
                 .andExpect(status().isConflict())
+                .andExpect(header().string("X-Trace-Id", "c0a1f3e2d4b5968778695a4b3c2d1e0f"))
                 .andExpect(jsonPath("$.code").value("CART_RESTAURANT_CONFLICT"))
-                .andExpect(jsonPath("$.trace_id").value("trace-cart-conflict-123"))
+                .andExpect(jsonPath("$.trace_id").value("c0a1f3e2d4b5968778695a4b3c2d1e0f"))
                 .andExpect(jsonPath("$.status").value(409))
                 .andExpect(jsonPath("$.path").value("/cart"));
     }
