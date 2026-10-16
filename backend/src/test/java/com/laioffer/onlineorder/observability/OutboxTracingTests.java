@@ -146,16 +146,24 @@ class OutboxTracingTests {
 
 
     @Test
-    void startRelay_withoutStoredContext_shouldStartNewTrace() {
-        Observation relay = OutboxTracing.startRelay(registry, event(null));
-        relay.stop();
-        Observation malformed = OutboxTracing.startRelay(registry, event(null).withTraceParent("garbage"));
-        malformed.stop();
+    void startRelay_withoutStoredContext_shouldStartNewTraceInsteadOfJoiningTheSchedulerRun() {
+        Span schedulerRun = tracer.nextSpan().name("scheduler run").start();
+        try (Tracer.SpanInScope ignored = tracer.withSpan(schedulerRun)) {
+            OutboxTracing.startRelay(registry, event(null)).stop();
+            OutboxTracing.startRelay(registry, event(null).withTraceParent("garbage")).stop();
+        } finally {
+            schedulerRun.end();
+        }
 
-        List<SpanData> spans = exporter.getFinishedSpanItems();
-        Assertions.assertEquals(2, spans.size());
-        spans.forEach(span -> Assertions.assertFalse(span.getParentSpanContext().isValid()));
-        Assertions.assertNotEquals(spans.get(0).getTraceId(), spans.get(1).getTraceId());
+        List<SpanData> relays = exporter.getFinishedSpanItems().stream()
+                .filter(span -> span.getName().equals("order-events outbox relay"))
+                .toList();
+        Assertions.assertEquals(2, relays.size());
+        relays.forEach(span -> {
+            Assertions.assertFalse(span.getParentSpanContext().isValid(), "relay should be a root span");
+            Assertions.assertNotEquals(schedulerRun.context().traceId(), span.getTraceId());
+        });
+        Assertions.assertNotEquals(relays.get(0).getTraceId(), relays.get(1).getTraceId());
     }
 
 

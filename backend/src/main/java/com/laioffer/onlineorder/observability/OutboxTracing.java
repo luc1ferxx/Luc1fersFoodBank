@@ -8,6 +8,8 @@ import io.micrometer.observation.transport.Kind;
 import io.micrometer.observation.transport.ReceiverContext;
 import io.micrometer.tracing.TraceContext;
 import io.micrometer.tracing.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 
 
 import java.util.Map;
@@ -85,14 +87,18 @@ public final class OutboxTracing {
         context.setRemoteServiceName("outbox");
 
         String topic = valueOrUnknown(event.topic());
-        return Observation.createNotStarted(RELAY_OBSERVATION, () -> context, registry)
+        Observation relay = Observation.createNotStarted(RELAY_OBSERVATION, () -> context, registry)
                 .contextualName(topic + " outbox relay")
                 .lowCardinalityKeyValue("messaging.destination.name", topic)
                 .lowCardinalityKeyValue("outbox.event_type", valueOrUnknown(event.eventType()))
                 .highCardinalityKeyValue("outbox.event_id", valueOrUnknown(event.eventId()))
                 .highCardinalityKeyValue("outbox.aggregate_type", valueOrUnknown(event.aggregateType()))
-                .highCardinalityKeyValue("outbox.aggregate_id", String.valueOf(event.aggregateId()))
-                .start();
+                .highCardinalityKeyValue("outbox.aggregate_id", String.valueOf(event.aggregateId()));
+        // Extraction falls back to the context in scope, the scheduler run that relays the event, when the row
+        // carries no traceparent. Starting from the root context gives such an event a trace of its own instead.
+        try (Scope ignored = Context.root().makeCurrent()) {
+            return relay.start();
+        }
     }
 
 
