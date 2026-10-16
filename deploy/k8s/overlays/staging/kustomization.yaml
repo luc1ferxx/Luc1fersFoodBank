@@ -1,0 +1,55 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: onlineorder-staging
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+labels:
+  - pairs:
+      app.kubernetes.io/instance: onlineorder-staging
+    includeSelectors: false
+
+# The release workflow pins the pushed image by digest: kustomize edit set image onlineorder=ghcr.io/...@sha256:...
+images:
+  - name: onlineorder
+    newName: ghcr.io/your-github-owner/onlineorder
+    newTag: latest
+
+configMapGenerator:
+  - name: onlineorder-config
+    behavior: merge
+    literals:
+      - APP_ENV=staging
+      - DATABASE_URL=jdbc:postgresql://postgres.staging.example.internal:5432/onlineorder?sslmode=require
+      - REDIS_HOST=redis.staging.example.internal
+      - KAFKA_BOOTSTRAP_SERVERS=kafka.staging.example.internal:9092
+      # Every trace is kept in staging.
+      - TRACING_SAMPLING_PROBABILITY=1.0
+
+patches:
+  - target:
+      kind: Ingress
+      name: onlineorder
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: staging.onlineorder.example.com
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: staging.onlineorder.example.com
+      - op: replace
+        path: /spec/tls/0/secretName
+        value: onlineorder-staging-tls
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: onlineorder
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+      - op: replace
+        path: /spec/maxReplicas
+        value: 2

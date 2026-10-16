@@ -1,0 +1,26 @@
+# The application port is open to the cluster (the Ingress controller); the management port only to the monitoring
+# namespace, where Prometheus runs. Kubelet probes come from the node and are not subject to this policy on common
+# CNIs. Adjust the namespace label to match your Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: onlineorder
+  labels:
+    app.kubernetes.io/name: onlineorder
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: onlineorder
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 8080
+          protocol: TCP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8081
+          protocol: TCP

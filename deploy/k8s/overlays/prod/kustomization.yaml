@@ -1,0 +1,56 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: onlineorder-prod
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+labels:
+  - pairs:
+      app.kubernetes.io/instance: onlineorder-prod
+    includeSelectors: false
+
+# Promoted by the release workflow's production job with the digest that passed staging.
+images:
+  - name: onlineorder
+    newName: ghcr.io/your-github-owner/onlineorder
+    newTag: latest
+
+configMapGenerator:
+  - name: onlineorder-config
+    behavior: merge
+    literals:
+      - APP_ENV=prod
+      - DATABASE_URL=jdbc:postgresql://postgres.prod.example.internal:5432/onlineorder?sslmode=require
+      - REDIS_HOST=redis.prod.example.internal
+      - KAFKA_BOOTSTRAP_SERVERS=kafka.prod.example.internal:9092
+      - TRACING_SAMPLING_PROBABILITY=0.1
+      # 6 replicas x 20 connections = 120; keep below the database's max_connections.
+      - DATABASE_POOL_MAX_SIZE=20
+
+patches:
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: onlineorder
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 6
+  - target:
+      kind: Deployment
+      name: onlineorder
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests:
+            cpu: "1"
+            memory: 1536Mi
+          limits:
+            cpu: "2"
+            memory: 2Gi
