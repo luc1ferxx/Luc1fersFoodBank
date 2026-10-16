@@ -27,10 +27,15 @@ repositories {
 
 
 // Security patches above the versions Spring Boot 4.1.1 manages, for fixable HIGH/CRITICAL findings of the release
-// image scan (Trivy). Remove an entry once Spring Boot manages that version or a later one; left in place it would
-// pin the older version.
-// Jackson 2 is no longer the application's JSON library (Spring Boot 4 uses Jackson 3), but springdoc's swagger-core
-// still brings jackson-databind 2.x onto the runtime classpath; Spring Boot 4.1.1 manages 2.21.5.
+// image scan (Trivy, 2026-10-16). Remove an entry once Spring Boot manages that version or a later one; left in place
+// it would pin the older version.
+// Tomcat 11.0.24: CVE-2026-65182, CVE-2026-65905, CVE-2026-68525 (CRITICAL), fixed in 11.0.25.
+ext['tomcat.version'] = '11.0.27'
+// Jackson 3.1.5: CVE-2026-89407, CVE-2026-89425 (jackson-core), CVE-2026-68497, CVE-2026-91776, CVE-2026-91777
+// (jackson-databind), fixed in 3.1.7.
+ext['jackson-bom.version'] = '3.1.7'
+// The same CVEs in Jackson 2 (fixed in 2.21.7; Spring Boot 4.1.1 manages 2.21.5). Jackson 2 is no longer the
+// application's JSON library, but springdoc's swagger-core still brings it onto the runtime classpath.
 ext['jackson-2-bom.version'] = '2.21.7'
 
 // Not a security patch: H2 2.4.240 (managed by Spring Boot 4.1.1) loses CHECK (... IN (...)) constraints once the
