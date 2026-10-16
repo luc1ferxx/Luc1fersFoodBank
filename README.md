@@ -278,6 +278,134 @@ Status changes and their outbox events commit together. Invalid transitions fail
 
 ---
 
+## Order Fulfilment (event-driven)
+
+After payment, the order lifecycle is driven by Kafka. Separate modules inside the same Spring Boot app (a modular
+monolith under `com.laioffer.onlineorder.fulfilment`) consume the events, each with its own consumer group and its
+own tables:
+
+| Module | Package | Owns | Reacts to |
+| --- | --- | --- | --- |
+| Order | `fulfilment.order` (+ `service.OrderService`) | `orders`, the order state machine | `delivery.delivered` |
+| Merchant | `fulfilment.merchant` | `merchant_accounts`, `merchant_orders` (inbox) | `order.paid` and later order events |
+| Timeout | `fulfilment.timeout` | `order_deadlines` | `order.created`, `order.paid`, later order events |
+| Dispatch | `fulfilment.dispatch` | `riders`, `deliveries` | `order.accepted`, `order.cancelled` |
+| Notifications | `service.OrderNotificationService`, `fulfilment.notification` | `order_notifications` | order events, delivery events |
+
+Every order now belongs to one restaurant: a cart only holds items of one restaurant (adding another restaurant's item
+returns `409 CART_RESTAURANT_CONFLICT`) and checkout records `orders.restaurant_id`. Orders placed before this change
+have no restaurant and stay on the admin-driven flow (`PATCH /orders/{id}/status`); the fulfilment modules ignore
+their events.
+
+### Event flow
+
+```text
+POST /payments/checkout            order PAID ---------------------- order.paid
+                                                                        |-> merchant: inbox row (PAID)
+                                                                        |-> timeout: ACCEPT deadline = paid_at + accept-timeout
+                                                                        `-> notifications: "Payment confirmed"
+POST /merchant/orders/{id}/accept  order ACCEPTED ------------------ order.accepted
+                                                                        |-> dispatch: least-loaded rider, delivery ASSIGNED
+                                                                        |      `-> delivery.assigned -> notifications: "Rider assigned"
+                                                                        |-> timeout: deadline dropped
+                                                                        `-> merchant inbox, notifications
+POST /merchant/orders/{id}/preparing  order PREPARING -------------- order.preparing
+POST /admin/deliveries/{id}/picked-up delivery PICKED_UP ----------- delivery.picked_up -> notifications: "Order on the way"
+POST /admin/deliveries/{id}/delivered delivery DELIVERED ----------- delivery.delivered
+                                                                        |-> order: PREPARING -> COMPLETED ---- order.completed
+                                                                        `-> notifications: "Order delivered"
+
+no accept within accept-timeout   deadline poller: PAID -> CANCELLED (MERCHANT_TIMEOUT) -- order.cancelled
+POST /merchant/orders/{id}/reject PAID -> CANCELLED (MERCHANT_REJECTED: <reason>) ------- order.cancelled
+unpaid PLACED order               order.created -> PAYMENT deadline -> CANCELLED (PAYMENT_TIMEOUT)
+customer cancels an ACCEPTED order order.cancelled -> dispatch cancels the delivery and releases the rider
+```
+
+Modules never read or write each other's tables or call each other's services; facts travel as events. The one
+synchronous seam is the order module's command API, `OrderLifecycleCommands`: merchant commands and timeouts call it
+so that the order row lock, the guarded transition and the outbox write happen in the caller's transaction. A merchant
+accept and a timeout cancel therefore race on the same row lock and exactly one wins (the timeout only cancels an order
+that is still `PAID`; a late accept gets `409 ORDER_STATUS_CONFLICT`).
+
+If the merchant never marked the order `PREPARING`, `delivery.delivered` moves it `ACCEPTED -> PREPARING -> COMPLETED`
+in one transaction, emitting both events: delivered food was prepared, and both steps are guarded transitions. A
+delivery event for a cancelled order is logged and ignored.
+
+### Topics and consumer groups
+
+| Topic | Published by | Consumer groups |
+| --- | --- | --- |
+| `order-events` (key: order id) | order module, via the outbox | `onlineorder` (notifications), `onlineorder-merchant`, `onlineorder-timeout`, `onlineorder-dispatch` |
+| `delivery-events` (key: order id) | dispatch, via the outbox | `onlineorder-order-delivery`, `onlineorder-notification-delivery` |
+| `order-events.dlt` | the listener error handler | `onlineorder-dlt` |
+
+All events go through the transactional outbox (`OrderEventOutboxService.enqueueEvent` stores any aggregate type and
+topic). Every new consumer uses the shared `orderEventKafkaListenerContainerFactory` (retries, then the DLT; a replay
+goes back to the source topic and reaches every group there, which is safe because every consumer is idempotent:
+a `processed_events` mark in the same transaction as its writes, plus unique keys such as `merchant_orders.order_id`,
+`order_deadlines (order_id, deadline_type)` and `deliveries.order_id`). New consumer groups start from the earliest
+offset, like the existing one.
+
+### Fulfilment APIs
+
+| Method | Path | Role | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/merchant/orders?status=PAID&limit=50` | `MERCHANT` | The merchant's inbox (own restaurant only) |
+| `POST` | `/merchant/orders/{orderId}/accept` | `MERCHANT` | `PAID -> ACCEPTED` |
+| `POST` | `/merchant/orders/{orderId}/reject` | `MERCHANT` | `PAID -> CANCELLED`, body `{"reason": "..."}` (required) |
+| `POST` | `/merchant/orders/{orderId}/preparing` | `MERCHANT` | `ACCEPTED -> PREPARING` |
+| `GET` | `/admin/deliveries?order_id=` | `ADMIN` | Deliveries (one order, or the 50 most recent) |
+| `POST` | `/admin/deliveries/{deliveryId}/picked-up` | `ADMIN` | Simulated rider: `ASSIGNED -> PICKED_UP` |
+| `POST` | `/admin/deliveries/{deliveryId}/delivered` | `ADMIN` | Simulated rider: `PICKED_UP -> DELIVERED` |
+
+Merchant commands are scoped to the merchant's restaurant (another restaurant's order is a `404`) and are idempotent:
+repeating a command whose transition already happened returns the order unchanged. Customers and admins get `403` on
+`/merchant/**`. Order responses (`GET /orders`) now also carry `restaurant_id` and `cancel_reason`.
+
+Demo merchants (seeded only with `classpath:db/demo`, password `merchant123`): `merchant.burgerking@laifood.com`,
+`merchant.sgdtofu@laifood.com`, `merchant.fashionwok@laifood.com`. The demo seed also adds three simulated riders.
+
+### Configuration
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `app.fulfilment.accept-timeout` (`FULFILMENT_ACCEPT_TIMEOUT`) | `10m` | Cancel a `PAID` order not accepted in time (`MERCHANT_TIMEOUT`) |
+| `app.fulfilment.payment-timeout` (`FULFILMENT_PAYMENT_TIMEOUT`) | `15m` | Cancel a `PLACED` order not paid in time (`PAYMENT_TIMEOUT`) |
+| `app.fulfilment.deadline-poller.enabled` | follows `app.kafka.enabled` | Run the deadline poller |
+| `app.fulfilment.deadline-poller.interval` | `1s` | Poll interval (timeout precision) |
+| `app.fulfilment.deadline-poller.batch-size` | `100` | Deadlines fired per run, one transaction each |
+| `app.fulfilment.deadline-poller.retry-backoff` | `30s` | Delay before retrying a deadline whose firing failed |
+| `app.fulfilment.delivery-topic` (`KAFKA_DELIVERY_TOPIC`) | `delivery-events` | Delivery event topic |
+| `app.fulfilment.*-group` | see the table above | Consumer group per module |
+
+Metrics: `onlineorder.fulfilment.merchant.decisions{decision=accepted|rejected|timeout}`,
+`onlineorder.fulfilment.timeouts{type=accept|payment,result=cancelled|skipped}`,
+`onlineorder.fulfilment.dispatch.assignments{result=assigned|duplicate|no_rider}`.
+
+### Timeouts: why a deadline table instead of a Kafka delay
+
+Kafka has no delayed delivery: a consumer can only sleep or pause a partition, which blocks every later record behind
+it and is bounded by `max.poll.interval.ms`. The usual alternatives each move the deadline out of the transaction that
+decides it:
+
+- **Delay topics** (for example one topic per delay tier, each consumer pausing until its head record is due) work for a
+  few fixed delays, but need a topic and consumer per tier and still re-check the order on expiry.
+- **Redis ZSET** (score = due time, claimed with `ZRANGEBYSCORE` plus an atomic Lua pop) is fast, but the `ZADD` is not
+  in the database transaction, so a crash between commit and `ZADD` silently loses a deadline unless reconciled.
+- **RocketMQ delay levels / timer messages** are native, but mean running a second broker for one feature.
+
+Here the timeout consumer writes the deadline row in the same transaction as its `processed_events` mark, and the
+poller claims due rows with `FOR UPDATE SKIP LOCKED` (several instances never fire the same deadline), cancels through
+the guarded transition only if the order still waits, and deletes the row, all in one transaction with the
+`order.cancelled` outbox event. The table only holds pending deadlines and is polled through its `due_at` index. The
+poller runs on its own thread instead of the shared scheduler (4 threads), so a burst of due deadlines cannot delay
+the outbox publisher.
+
+Follow-ups: a merchant UI and a rider app (the frontend is unchanged; merchant and rider actions are API-only), real
+rider location and ETA, refunds for cancelled paid orders.
+
+---
+
 ## Testing and Verification
 
 Run the normal backend verification path:
@@ -307,6 +435,9 @@ The test suite covers:
 - dead-letter replay behavior
 - authentication, login lockout, session handling, and rate limiting
 - API contract and operational metrics behavior
+- order fulfilment: merchant scoping and authz, accept-versus-timeout races, concurrent deadline pollers and rider
+  assignment, duplicate event deliveries, and an end-to-end pay -> accept -> deliver -> complete flow plus the timeout
+  path on PostgreSQL, Redis and Kafka (`FulfilmentFlowContainerTests`)
 
 Some integration tests use Testcontainers and require Docker. Tests annotated with `@Testcontainers(disabledWithoutDocker = true)` may skip when Docker is unavailable.
 
