@@ -100,6 +100,7 @@ public class AppConfig {
                                 .requestMatchers(HttpMethod.POST, "/dead-letters/*/replay").hasRole("ADMIN")
                                 // Fulfilment: merchant endpoints are scoped to the merchant's restaurant in the service.
                                 .requestMatchers("/merchant/**").hasRole("MERCHANT")
+                                .requestMatchers("/admin/deliveries/**", "/admin/deliveries").hasRole("ADMIN")
                                 .anyRequest().authenticated()
                 )
                 .exceptionHandling(exception -> exception

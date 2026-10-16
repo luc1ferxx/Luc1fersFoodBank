@@ -3,16 +3,21 @@ package com.laioffer.onlineorder.fulfilment;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.exception.ConflictException;
+import com.laioffer.onlineorder.fulfilment.dispatch.DispatchService;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantInboxService;
+import com.laioffer.onlineorder.fulfilment.notification.DeliveryNotificationService;
+import com.laioffer.onlineorder.fulfilment.order.DeliveryCompletionService;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantOrderService;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineProcessor;
 import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineService;
+import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.CustomerService;
+import com.laioffer.onlineorder.service.OrderService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -114,6 +119,18 @@ class FulfilmentPostgresIntegrationTests {
 
     @Autowired
     private OrderDeadlineProcessor orderDeadlineProcessor;
+
+    @Autowired
+    private DispatchService dispatchService;
+
+    @Autowired
+    private OrderService orderService;
+
+    @Autowired
+    private DeliveryCompletionService deliveryCompletionService;
+
+    @Autowired
+    private DeliveryNotificationService deliveryNotificationService;
 
 
     @Test
@@ -394,7 +411,193 @@ class FulfilmentPostgresIntegrationTests {
     }
 
 
+    @Test
+    void acceptedOrder_shouldBeDispatchedPickedUpDeliveredAndCompleted() throws Exception {
+        PaidOrder order = paidOrderAt("Burger King");
+        deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+        merchantOrderService.accept(BURGER_KING_MERCHANT, order.orderId());
+        OrderEventEnvelope accepted = latestOrderEvent(order.orderId(), "order.accepted");
+        int totalLoadBefore = totalRiderLoad();
+
+        dispatchService.handle(accepted);
+        dispatchService.handle(accepted);
+
+        Assertions.assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM deliveries WHERE order_id = ?", Integer.class, order.orderId()));
+        Assertions.assertEquals(totalLoadBefore + 1, totalRiderLoad());
+        Long deliveryId = jdbcTemplate.queryForObject(
+                "SELECT id FROM deliveries WHERE order_id = ?", Long.class, order.orderId());
+        Assertions.assertEquals(List.of("delivery.assigned"), deliveryEventTypes(deliveryId));
+        Assertions.assertEquals(List.of("delivery-events|" + order.orderId()), jdbcTemplate.queryForList(
+                "SELECT DISTINCT topic || '|' || event_key FROM outbox_events WHERE aggregate_type = 'DELIVERY' AND aggregate_id = ?",
+                String.class,
+                deliveryId
+        ));
+
+        MockHttpSession admin = login("demo@laifood.com", "demo123");
+        MockHttpSession customer = login(order.customerEmail(), "demo123");
+        mockMvc.perform(post("/admin/deliveries/{id}/picked-up", deliveryId).session(customer))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/admin/deliveries").param("order_id", order.orderId().toString()).session(customer))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/admin/deliveries").param("order_id", order.orderId().toString()).session(admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value(deliveryId))
+                .andExpect(jsonPath("$[0].status").value("ASSIGNED"))
+                .andExpect(jsonPath("$[0].rider_name").exists());
+        mockMvc.perform(post("/admin/deliveries/{id}/delivered", deliveryId).session(admin))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DELIVERY_STATUS_CONFLICT"));
+        mockMvc.perform(post("/admin/deliveries/{id}/picked-up", deliveryId).session(admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("PICKED_UP"));
+        mockMvc.perform(post("/admin/deliveries/{id}/delivered", deliveryId).session(admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DELIVERED"));
+        mockMvc.perform(post("/admin/deliveries/{id}/delivered", deliveryId).session(admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DELIVERED"));
+        Assertions.assertEquals(totalLoadBefore, totalRiderLoad());
+        Assertions.assertEquals(
+                List.of("delivery.assigned", "delivery.picked_up", "delivery.delivered"),
+                deliveryEventTypes(deliveryId)
+        );
+
+        // The merchant never marked the order PREPARING: completion passes through it in one transaction.
+        DeliveryEventEnvelope delivered = latestDeliveryEvent(deliveryId, "delivery.delivered");
+        deliveryCompletionService.handle(delivered);
+        deliveryCompletionService.handle(delivered);
+        Assertions.assertEquals("COMPLETED", orderStatus(order.orderId()));
+        Assertions.assertEquals(
+                List.of("order.paid", "order.accepted", "order.preparing", "order.completed"),
+                orderEventTypes(order.orderId())
+        );
+
+        for (String eventType : List.of("delivery.assigned", "delivery.picked_up", "delivery.delivered")) {
+            DeliveryEventEnvelope event = latestDeliveryEvent(deliveryId, eventType);
+            deliveryNotificationService.handle(event);
+            deliveryNotificationService.handle(event);
+        }
+        Assertions.assertEquals(
+                List.of("delivery.assigned", "delivery.delivered", "delivery.picked_up"),
+                jdbcTemplate.queryForList(
+                        "SELECT event_type FROM order_notifications WHERE order_id = ? ORDER BY event_type",
+                        String.class,
+                        order.orderId()
+                )
+        );
+    }
+
+
+    @Test
+    void customerCancellingAnAcceptedOrder_shouldCancelTheDeliveryAndReleaseTheRider() {
+        PaidOrder order = paidOrderAt("Fashion Wok");
+        orderLifecycleCommands.transitionRestaurantOrder(
+                order.orderId(), order.restaurantId(), OrderStatus.PAID, OrderStatus.ACCEPTED, null);
+        int totalLoadBefore = totalRiderLoad();
+        deliverOrderEvent(order.orderId(), "order.accepted", dispatchService::handle);
+        Assertions.assertEquals(totalLoadBefore + 1, totalRiderLoad());
+
+        orderService.cancelOrder(order.customerId(), order.orderId());
+        deliverOrderEvent(order.orderId(), "order.cancelled", dispatchService::handle);
+
+        Assertions.assertEquals("CANCELLED", jdbcTemplate.queryForObject(
+                "SELECT status FROM deliveries WHERE order_id = ?", String.class, order.orderId()));
+        Assertions.assertEquals(totalLoadBefore, totalRiderLoad());
+        Long deliveryId = jdbcTemplate.queryForObject(
+                "SELECT id FROM deliveries WHERE order_id = ?", Long.class, order.orderId());
+        Assertions.assertEquals(List.of("delivery.assigned", "delivery.cancelled"), deliveryEventTypes(deliveryId));
+        Assertions.assertEquals(OrderLifecycleCommands.CUSTOMER_CANCELLED,
+                latestOrderEvent(order.orderId(), "order.cancelled").data().reason());
+    }
+
+
+    @Test
+    void concurrentAndDuplicateAssignments_shouldGiveEveryOrderExactlyOneRider() throws Exception {
+        List<OrderEventEnvelope> acceptedEvents = new java.util.ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            PaidOrder order = paidOrderAt(i % 2 == 0 ? "SGD Tofu House" : "Burger King");
+            orderLifecycleCommands.transitionRestaurantOrder(
+                    order.orderId(), order.restaurantId(), OrderStatus.PAID, OrderStatus.ACCEPTED, null);
+            acceptedEvents.add(latestOrderEvent(order.orderId(), "order.accepted"));
+        }
+        int totalLoadBefore = totalRiderLoad();
+        ExecutorService dispatchers = Executors.newFixedThreadPool(6);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            List<Future<Object>> runs = new java.util.ArrayList<>();
+            for (OrderEventEnvelope event : acceptedEvents) {
+                // Every event is delivered twice at the same time, as after a consumer rebalance.
+                for (int copy = 0; copy < 2; copy++) {
+                    runs.add(dispatchers.submit(awaiting(start, () -> {
+                        dispatchService.handle(event);
+                        return null;
+                    })));
+                }
+            }
+            start.countDown();
+            for (Future<Object> run : runs) {
+                run.get(30, TimeUnit.SECONDS);
+            }
+        } finally {
+            dispatchers.shutdownNow();
+        }
+
+        for (OrderEventEnvelope event : acceptedEvents) {
+            Assertions.assertEquals(1, jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM deliveries WHERE order_id = ?", Integer.class, event.aggregateId()));
+            Long deliveryId = jdbcTemplate.queryForObject(
+                    "SELECT id FROM deliveries WHERE order_id = ?", Long.class, event.aggregateId());
+            Assertions.assertEquals(List.of("delivery.assigned"), deliveryEventTypes(deliveryId));
+        }
+        Assertions.assertEquals(totalLoadBefore + acceptedEvents.size(), totalRiderLoad());
+        Assertions.assertEquals(0, jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM riders
+                WHERE active_deliveries <> (
+                    SELECT COUNT(*) FROM deliveries
+                    WHERE deliveries.rider_id = riders.id AND deliveries.status IN ('ASSIGNED', 'PICKED_UP')
+                )
+                """, Integer.class), "Every rider's load matches their open deliveries");
+    }
+
+
     // ---- helpers shared by the fulfilment tests ----
+
+    int totalRiderLoad() {
+        return jdbcTemplate.queryForObject("SELECT COALESCE(SUM(active_deliveries), 0) FROM riders", Integer.class);
+    }
+
+
+    List<String> deliveryEventTypes(Long deliveryId) {
+        return jdbcTemplate.queryForList("""
+                SELECT event_type
+                FROM outbox_events
+                WHERE aggregate_type = 'DELIVERY'
+                  AND aggregate_id = ?
+                ORDER BY id
+                """, String.class, deliveryId);
+    }
+
+
+    DeliveryEventEnvelope latestDeliveryEvent(Long deliveryId, String eventType) {
+        String payload = jdbcTemplate.queryForObject("""
+                SELECT payload
+                FROM outbox_events
+                WHERE aggregate_type = 'DELIVERY'
+                  AND aggregate_id = ?
+                  AND event_type = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """, String.class, deliveryId, eventType);
+        try {
+            return objectMapper.readValue(payload, DeliveryEventEnvelope.class);
+        } catch (Exception ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+
+
 
     Long menuItemAt(String restaurantName) {
         return jdbcTemplate.queryForObject("""

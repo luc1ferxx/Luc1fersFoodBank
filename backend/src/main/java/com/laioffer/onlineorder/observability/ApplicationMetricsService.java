@@ -73,6 +73,17 @@ public class ApplicationMetricsService {
     }
 
 
+    /**
+     * @param result assigned, duplicate (the order already had a rider) or no_rider (no active rider; retried)
+     */
+    public void recordDispatchAssignment(String result) {
+        meterRegistry.counter(
+                "onlineorder.fulfilment.dispatch.assignments",
+                "result", normalize(result)
+        ).increment();
+    }
+
+
     public void recordOutboxPublishResult(String topic, boolean success) {
         meterRegistry.counter(
                 "onlineorder.outbox.publish",

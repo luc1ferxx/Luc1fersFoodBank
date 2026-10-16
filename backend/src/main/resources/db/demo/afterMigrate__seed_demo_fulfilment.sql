@@ -7,6 +7,7 @@
 --   merchant.burgerking@laifood.com -> Burger King
 --   merchant.sgdtofu@laifood.com    -> SGD Tofu House
 --   merchant.fashionwok@laifood.com -> Fashion Wok
+-- and three simulated riders for the dispatch module (at the end of this file).
 
 
 INSERT INTO customers (email, enabled, password, first_name, last_name)
@@ -71,3 +72,20 @@ WHERE LOWER(customers.email) = LOWER('merchant.fashionwok@laifood.com')
   AND NOT EXISTS (
     SELECT 1 FROM merchant_accounts WHERE merchant_accounts.customer_id = customers.id
 );
+
+
+-- Simulated riders for the dispatch module. The demo flow moves them with the ADMIN endpoints
+-- POST /admin/deliveries/{id}/picked-up and /delivered.
+INSERT INTO riders (name, phone, active, active_deliveries)
+SELECT 'Demo Rider Alice', '(408) 555-0101', TRUE, 0
+WHERE NOT EXISTS (SELECT 1 FROM riders WHERE name = 'Demo Rider Alice');
+
+
+INSERT INTO riders (name, phone, active, active_deliveries)
+SELECT 'Demo Rider Bob', '(408) 555-0102', TRUE, 0
+WHERE NOT EXISTS (SELECT 1 FROM riders WHERE name = 'Demo Rider Bob');
+
+
+INSERT INTO riders (name, phone, active, active_deliveries)
+SELECT 'Demo Rider Carol', '(408) 555-0103', TRUE, 0
+WHERE NOT EXISTS (SELECT 1 FROM riders WHERE name = 'Demo Rider Carol');

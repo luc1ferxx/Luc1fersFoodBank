@@ -6,6 +6,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.entity.CustomerEntity;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.fulfilment.AfterCommit;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
@@ -122,7 +123,7 @@ public class MerchantOrderService {
 
         boolean transitioned = requiredStatus.name().equals(inboxOrder.status());
         if (transitioned && decision != null) {
-            metricsService.recordMerchantDecision(decision);
+            AfterCommit.run(() -> metricsService.recordMerchantDecision(decision));
         }
         LOGGER.info(
                 "Merchant order command: restaurant_id={}, order_id={}, from={}, to={}, status={}",

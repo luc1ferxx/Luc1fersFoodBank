@@ -1,6 +1,8 @@
 package com.laioffer.onlineorder;
 
 
+import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
+import com.laioffer.onlineorder.messaging.DeliveryEventPayload;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
@@ -87,6 +89,88 @@ class OrderNotificationServiceTests {
         )).thenThrow(new DataIntegrityViolationException("foreign key violation"));
 
         Assertions.assertThrows(DataIntegrityViolationException.class, () -> service.recordOrderEvent(payload));
+    }
+
+
+    @Test
+    void recordOrderEvent_whenTheMerchantTimedOut_shouldSaySoToTheCustomer() {
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository);
+
+        service.recordOrderEvent(cancelledEvent("MERCHANT_TIMEOUT"));
+
+        Mockito.verify(orderNotificationRepository).insertIfAbsent(
+                Mockito.eq(9L),
+                Mockito.eq(4L),
+                Mockito.eq("order.cancelled"),
+                Mockito.eq("Order cancelled: the restaurant did not respond"),
+                Mockito.contains("did not accept it in time"),
+                Mockito.any(LocalDateTime.class)
+        );
+    }
+
+
+    @Test
+    void recordOrderEvent_whenTheMerchantRejected_shouldPassOnTheirReason() {
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository);
+
+        service.recordOrderEvent(cancelledEvent("MERCHANT_REJECTED: Out of buns"));
+
+        Mockito.verify(orderNotificationRepository).insertIfAbsent(
+                Mockito.eq(9L),
+                Mockito.eq(4L),
+                Mockito.eq("order.cancelled"),
+                Mockito.eq("Order rejected by the restaurant"),
+                Mockito.eq("The restaurant could not take order #9: Out of buns. You will be refunded."),
+                Mockito.any(LocalDateTime.class)
+        );
+    }
+
+
+    @Test
+    void recordOrderEvent_whenCancelledWithoutReason_shouldKeepTheGenericMessage() {
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository);
+
+        service.recordOrderEvent(buildEvent("evt-c", "order.cancelled", 9L, 4L, "CANCELLED"));
+
+        Mockito.verify(orderNotificationRepository).insertIfAbsent(
+                Mockito.eq(9L), Mockito.eq(4L), Mockito.eq("order.cancelled"), Mockito.eq("Order cancelled"),
+                Mockito.eq("Order #9 was cancelled."), Mockito.any(LocalDateTime.class));
+    }
+
+
+    @Test
+    void recordDeliveryEvent_shouldTellTheCustomerAboutTheRiderAndTheDelivery() {
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository);
+
+        service.recordDeliveryEvent(deliveryEvent("delivery.assigned"));
+        service.recordDeliveryEvent(deliveryEvent("delivery.delivered"));
+        service.recordDeliveryEvent(deliveryEvent("delivery.cancelled"));
+
+        Mockito.verify(orderNotificationRepository).insertIfAbsent(
+                Mockito.eq(9L), Mockito.eq(4L), Mockito.eq("delivery.assigned"), Mockito.eq("Rider assigned"),
+                Mockito.eq("Demo Rider Alice will deliver order #9."), Mockito.any(LocalDateTime.class));
+        Mockito.verify(orderNotificationRepository).insertIfAbsent(
+                Mockito.eq(9L), Mockito.eq(4L), Mockito.eq("delivery.delivered"), Mockito.eq("Order delivered"),
+                Mockito.contains("was delivered"), Mockito.any(LocalDateTime.class));
+        Mockito.verifyNoMoreInteractions(orderNotificationRepository);
+    }
+
+
+    private DeliveryEventEnvelope deliveryEvent(String eventType) {
+        return new DeliveryEventEnvelope(
+                "evt-" + eventType, 1, eventType, "DELIVERY", 7L, LocalDateTime.of(2026, 4, 4, 12, 30),
+                "corr", null, new DeliveryEventPayload(9L, 4L, 2L, 3L, "Demo Rider Alice", "ASSIGNED"));
+    }
+
+
+    private OrderEventEnvelope cancelledEvent(String reason) {
+        OrderEventEnvelope event = buildEvent("evt-x", "order.cancelled", 9L, 4L, "CANCELLED");
+        OrderEventPayload data = event.data();
+        return new OrderEventEnvelope(
+                event.eventId(), event.eventVersion(), event.eventType(), event.aggregateType(), event.aggregateId(),
+                event.occurredAt(), event.correlationId(), event.idempotencyKey(),
+                new OrderEventPayload(data.customerId(), data.status(), data.totalPrice(), data.createdAt(), data.items(),
+                        2L, reason));
     }
 
 

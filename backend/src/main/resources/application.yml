@@ -166,8 +166,13 @@ app:
   # Event-driven order fulfilment (merchant, timeout, dispatch modules); see README "Order fulfilment".
   # Each module consumes with its own consumer group, so each sees every event once.
   fulfilment:
+    # Delivery events published by the dispatch module (same partition count as the order topic).
+    delivery-topic: ${KAFKA_DELIVERY_TOPIC:delivery-events}
     merchant-group: ${FULFILMENT_MERCHANT_GROUP:onlineorder-merchant}
     timeout-group: ${FULFILMENT_TIMEOUT_GROUP:onlineorder-timeout}
+    dispatch-group: ${FULFILMENT_DISPATCH_GROUP:onlineorder-dispatch}
+    order-delivery-group: ${FULFILMENT_ORDER_DELIVERY_GROUP:onlineorder-order-delivery}
+    notification-delivery-group: ${FULFILMENT_NOTIFICATION_DELIVERY_GROUP:onlineorder-notification-delivery}
     # A PAID order the merchant has not accepted within accept-timeout of payment is cancelled (MERCHANT_TIMEOUT);
     # a PLACED order not paid within payment-timeout is cancelled (PAYMENT_TIMEOUT). Measured from the event time;
     # a changed value applies to orders paid or placed after the change.
