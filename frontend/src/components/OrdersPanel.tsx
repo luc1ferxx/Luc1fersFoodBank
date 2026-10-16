@@ -1,7 +1,9 @@
+import { useId, useState } from "react";
 import type { Order } from "../api/dto";
 import { CANCELLABLE_STATUSES, type OrdersState } from "../hooks/useOrders";
 import { formatCurrency, formatDateTime } from "../lib/format";
 import { Alert } from "./Alert";
+import { OrderHistory } from "./OrderHistory";
 
 function OrderCard({
   order,
@@ -13,6 +15,8 @@ function OrderCard({
   onCancel: (order: Order) => Promise<void>;
 }) {
   const cancellable = CANCELLABLE_STATUSES.has(order.status);
+  const [showHistory, setShowHistory] = useState(false);
+  const historyId = useId();
 
   return (
     <article className="order-card">
@@ -31,14 +35,29 @@ function OrderCard({
           </li>
         ))}
       </ul>
-      <button
-        className="ghost-button"
-        type="button"
-        disabled={!cancellable || canceling}
-        onClick={() => onCancel(order)}
-      >
-        {canceling ? "Cancelling..." : cancellable ? "Cancel order" : "Cancel unavailable"}
-      </button>
+      {order.cancel_reason ? <p>Cancelled: {order.cancel_reason}</p> : null}
+      <div className="order-card__actions">
+        <button
+          className="ghost-button"
+          type="button"
+          disabled={!cancellable || canceling}
+          onClick={() => onCancel(order)}
+        >
+          {canceling ? "Cancelling..." : cancellable ? "Cancel order" : "Cancel unavailable"}
+        </button>
+        <button
+          className="ghost-button"
+          type="button"
+          aria-expanded={showHistory}
+          aria-controls={showHistory ? historyId : undefined}
+          onClick={() => setShowHistory((shown) => !shown)}
+        >
+          {showHistory ? "Hide status history" : "Status history"}
+        </button>
+      </div>
+      {showHistory ? (
+        <OrderHistory id={historyId} orderId={order.id} status={order.status} />
+      ) : null}
     </article>
   );
 }

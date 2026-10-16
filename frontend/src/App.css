@@ -694,6 +694,65 @@ button:disabled {
   gap: 8px;
 }
 
+.order-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.order-card__actions button,
+.order-history__heading button {
+  padding: 0 12px;
+}
+
+.order-history {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #e3e7dd;
+}
+
+.order-history__heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.order-history__heading h4 {
+  margin: 0;
+  color: #33402e;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.history-list {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-list li {
+  display: grid;
+  gap: 2px;
+  padding: 0 0 0 12px;
+  border-left: 3px solid #d7ddcf;
+  color: #4e554b;
+  font-size: 13px;
+}
+
+.history-list strong {
+  color: #20221d;
+}
+
+.history-list time {
+  color: #6b7566;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .cart-actions {
   display: flex;
   justify-content: flex-end;

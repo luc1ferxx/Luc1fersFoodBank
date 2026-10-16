@@ -9,6 +9,7 @@ import {
   type Order,
   type OrderNotification,
   type OrderStatus,
+  type OrderStatusChange,
   type PaymentDetails,
   type Restaurant,
   type SignupRequest,
@@ -18,6 +19,7 @@ import {
   decodeMenuItem,
   decodeNotification,
   decodeOrder,
+  decodeOrderStatusChange,
   decodeRestaurant,
 } from "./dto";
 
@@ -174,6 +176,19 @@ export const cancelOrder = async (
       fallbackMessage: "Fail to cancel the order",
     }),
     "order",
+  );
+
+/** The order's status changes, oldest first (the order's owner or an admin; others get 404). */
+export const getOrderHistory = async (
+  orderId: number,
+  { signal }: RequestControl = {},
+): Promise<OrderStatusChange[]> =>
+  decodeArray(decodeOrderStatusChange)(
+    await request(`/orders/${orderId}/history`, {
+      signal,
+      fallbackMessage: "Fail to load the order's status history",
+    }),
+    "history",
   );
 
 export const getNotifications = async ({ limit = 50, signal }: ListControl = {}): Promise<

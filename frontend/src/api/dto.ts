@@ -205,6 +205,32 @@ export const decodeOrder: Decoder<Order> = (value, path) => {
   };
 };
 
+export const ACTOR_TYPES = ["CUSTOMER", "ADMIN", "MERCHANT", "RIDER", "SYSTEM"] as const;
+/** Who moved an order: the customer, an admin, the restaurant, a rider, or a timeout/consumer. */
+export type ActorType = (typeof ACTOR_TYPES)[number];
+
+/** GET /orders/{id}/history, oldest first. `from_status` is null for the order's creation. */
+export interface OrderStatusChange {
+  from_status: OrderStatus | null;
+  to_status: OrderStatus;
+  actor_type: ActorType;
+  actor_id: number | null;
+  reason: string | null;
+  occurred_at: string;
+}
+
+export const decodeOrderStatusChange: Decoder<OrderStatusChange> = (value, path) => {
+  const f = fieldsOf(value, path);
+  return {
+    from_status: f.optionalOneOf("from_status", ORDER_STATUSES),
+    to_status: f.oneOf("to_status", ORDER_STATUSES),
+    actor_type: f.oneOf("actor_type", ACTOR_TYPES),
+    actor_id: f.optionalNumber("actor_id"),
+    reason: f.optionalString("reason"),
+    occurred_at: f.string("occurred_at"),
+  };
+};
+
 /** GET /notifications (OrderNotificationDto). */
 export interface OrderNotification {
   id: number;

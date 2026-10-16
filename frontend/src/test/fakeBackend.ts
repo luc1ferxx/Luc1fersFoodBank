@@ -5,8 +5,11 @@ import type {
   CartItem,
   CurrentUser,
   MenuItem,
+  ActorType,
   Order,
   OrderNotification,
+  OrderStatus,
+  OrderStatusChange,
   Restaurant,
 } from "../api/dto";
 import { parseOrderStatus } from "../api/dto";
@@ -140,6 +143,8 @@ export interface FakeState {
   user: CurrentUser | null;
   cart: Cart;
   orders: Order[];
+  /** Status changes per order id, oldest first. */
+  orderHistory: Map<number, OrderStatusChange[]>;
   notifications: OrderNotification[];
   nextOrderItemId: number;
   nextOrderId: number;
@@ -167,6 +172,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
     user,
     cart: { order_items: cartItems.map((item) => ({ ...item })), total_price: 0 },
     orders: [],
+    orderHistory: new Map(),
     notifications: [],
     nextOrderItemId: 500,
     nextOrderId: 100,
@@ -177,6 +183,24 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
   const calls: FakeRequest[] = [];
 
   const unauthorized = () => apiError(401, "Authentication required");
+  const recordStatusChange = (
+    orderId: number,
+    fromStatus: OrderStatus | null,
+    toStatus: OrderStatus,
+    actorType: ActorType,
+    reason: string | null = null,
+  ) => {
+    const history = state.orderHistory.get(orderId) ?? [];
+    history.push({
+      from_status: fromStatus,
+      to_status: toStatus,
+      actor_type: actorType,
+      actor_id: actorType === "SYSTEM" ? null : (state.user?.id ?? null),
+      reason,
+      occurred_at: `2026-10-16T12:0${history.length}:00Z`,
+    });
+    state.orderHistory.set(orderId, history);
+  };
   const protectedRoute =
     (handler: FakeHandler): FakeHandler =>
     (request, match) =>
@@ -302,6 +326,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
           })),
         };
         state.orders.unshift(order);
+        recordStatusChange(order.id, null, "PAID", "CUSTOMER");
         state.notifications.unshift({
           id: order.id,
           order_id: order.id,
@@ -324,6 +349,9 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
         if (!order) {
           return apiError(404, "Order not found");
         }
+        if (order.status !== "CANCELLED") {
+          recordStatusChange(order.id, order.status, "CANCELLED", "CUSTOMER");
+        }
         order.status = "CANCELLED";
         return json({ ...order });
       }),
@@ -337,8 +365,22 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
         if (!order || !status) {
           return apiError(404, "Order not found");
         }
+        if (order.status !== status) {
+          recordStatusChange(order.id, order.status, status, "ADMIN");
+        }
         order.status = status;
         return json({ ...order });
+      }),
+    ],
+    [
+      "GET",
+      /^\/orders\/(\d+)\/history$/,
+      protectedRoute((_request, match) => {
+        const orderId = idParam(match);
+        if (!state.orders.some((order) => order.id === orderId)) {
+          return apiError(404, "Order not found");
+        }
+        return json(state.orderHistory.get(orderId) ?? []);
       }),
     ],
     ["GET", /^\/notifications$/, protectedRoute(() => json(state.notifications))],
