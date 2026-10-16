@@ -151,7 +151,7 @@ class DeadLetterRedeliveryH2IntegrationTests {
 
         // The replay's own success mark is fenced on its claim and must not undo that.
         int marked = deadLetterEventRepository.markReplayed(
-                stored.id(), "REPLAYED", "REPLAYING", stored.updatedAt().plusSeconds(1),
+                stored.id(), "REPLAYED", "REPLAYING", failedAgain.replayAttempts(),
                 failedAgain.updatedAt(), failedAgain.updatedAt()
         );
         Assertions.assertEquals(0, marked);

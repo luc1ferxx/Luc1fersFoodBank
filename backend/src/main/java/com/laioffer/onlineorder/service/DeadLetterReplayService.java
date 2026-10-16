@@ -148,8 +148,7 @@ public class DeadLetterReplayService {
             throw new BadRequestException("Dead-letter event does not have a source topic");
         }
 
-        // Millisecond precision survives the round trip through every supported database, so the stored
-        // updated_at compares equal to this value in the guarded mark queries.
+        // updated_at only decides staleness; the claim is fenced on the replay_attempts value it increments.
         LocalDateTime claimedAt = LocalDateTime.now().truncatedTo(ChronoUnit.MILLIS);
         int claimed = deadLetterEventRepository.claimForReplay(
                 deadLetterEventId,
@@ -172,11 +171,11 @@ public class DeadLetterReplayService {
                     "Dead-letter event cannot be replayed from replay status " + current.replayStatus()
             );
         }
-        return Claim.claimed(
-                deadLetterEventRepository.findById(deadLetterEventId)
-                        .orElseThrow(() -> new ResourceNotFoundException("Dead-letter event not found after claim")),
-                claimedAt
-        );
+        DeadLetterEventEntity claimedEvent = deadLetterEventRepository.findById(deadLetterEventId)
+                .orElseThrow(() -> new ResourceNotFoundException("Dead-letter event not found after claim"));
+        // Read inside the claim transaction, which still holds the row lock taken by the UPDATE, so this is the
+        // attempt number this claim wrote.
+        return Claim.claimed(claimedEvent, claimedEvent.replayAttempts());
     }
 
 
@@ -204,7 +203,7 @@ public class DeadLetterReplayService {
                 deadLetterEventId,
                 REPLAY_STATUS_REPLAYED,
                 REPLAY_STATUS_REPLAYING,
-                claim.claimedAt(),
+                claim.attempt(),
                 now,
                 now
         );
@@ -225,7 +224,7 @@ public class DeadLetterReplayService {
                 deadLetterEventId,
                 REPLAY_STATUS_REPLAY_FAILED,
                 REPLAY_STATUS_REPLAYING,
-                claim.claimedAt(),
+                claim.attempt(),
                 LocalDateTime.now(),
                 abbreviate(errorMessage)
         );
@@ -268,15 +267,15 @@ public class DeadLetterReplayService {
     }
 
 
-    private record Claim(boolean claimed, DeadLetterEventEntity event, LocalDateTime claimedAt) {
+    private record Claim(boolean claimed, DeadLetterEventEntity event, int attempt) {
 
-        static Claim claimed(DeadLetterEventEntity event, LocalDateTime claimedAt) {
-            return new Claim(true, event, claimedAt);
+        static Claim claimed(DeadLetterEventEntity event, int attempt) {
+            return new Claim(true, event, attempt);
         }
 
 
         static Claim alreadyReplayed(DeadLetterEventEntity event) {
-            return new Claim(false, event, null);
+            return new Claim(false, event, 0);
         }
     }
 }

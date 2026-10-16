@@ -82,8 +82,10 @@ public interface DeadLetterEventRepository extends ListCrudRepository<DeadLetter
      * {@code staleBefore} was never resolved (the replay crashed or could not reach the database after its send)
      * and may be claimed again.
      *
-     * <p>{@code claimedAt} becomes the row's {@code updated_at} and identifies this claim: the mark queries below
-     * only touch the row while it still carries it.
+     * <p>{@code claimedAt} becomes the row's {@code updated_at}, which only decides when the claim goes stale. The
+     * claim itself is identified by the incremented {@code replay_attempts}: the mark queries below only touch the row
+     * while it still carries that value. A timestamp cannot be the fencing token because two claims can land in the
+     * same millisecond.
      */
     @Modifying
     @Query("""
@@ -106,7 +108,7 @@ public interface DeadLetterEventRepository extends ListCrudRepository<DeadLetter
 
 
     /**
-     * Records a successful replay for the claim identified by {@code claimedStatus} and {@code claimedAt}. Returns
+     * Records a successful replay for the claim identified by {@code claimedStatus} and {@code claimAttempt}. Returns
      * 0 when the row no longer belongs to that claim (it was dead-lettered again, or claimed by a later replay after
      * the claim went stale); the row is then left as it is.
      */
@@ -119,20 +121,20 @@ public interface DeadLetterEventRepository extends ListCrudRepository<DeadLetter
                 last_replay_error = NULL
             WHERE id = :id
               AND replay_status = :claimedStatus
-              AND updated_at = :claimedAt
+              AND replay_attempts = :claimAttempt
             """)
     int markReplayed(
             Long id,
             String replayStatus,
             String claimedStatus,
-            LocalDateTime claimedAt,
+            int claimAttempt,
             LocalDateTime replayedAt,
             LocalDateTime updatedAt
     );
 
 
     /**
-     * Records a failed replay for the claim identified by {@code claimedStatus} and {@code claimedAt}. Returns 0
+     * Records a failed replay for the claim identified by {@code claimedStatus} and {@code claimAttempt}. Returns 0
      * when the row no longer belongs to that claim, so a late failure can never overwrite a later replay's result.
      */
     @Modifying
@@ -143,13 +145,13 @@ public interface DeadLetterEventRepository extends ListCrudRepository<DeadLetter
                 last_replay_error = :lastReplayError
             WHERE id = :id
               AND replay_status = :claimedStatus
-              AND updated_at = :claimedAt
+              AND replay_attempts = :claimAttempt
             """)
     int markReplayFailed(
             Long id,
             String replayStatus,
             String claimedStatus,
-            LocalDateTime claimedAt,
+            int claimAttempt,
             LocalDateTime updatedAt,
             String lastReplayError
     );
