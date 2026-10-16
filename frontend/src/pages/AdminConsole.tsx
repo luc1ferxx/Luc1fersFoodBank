@@ -21,7 +21,7 @@ export function AdminConsole({ menu }: { menu: MenuBrowser }) {
   return (
     <main className="console">
       <section className="primary-workspace console__panel" aria-label="Admin console">
-        <div className="panel-tabs admin-tabs" role="tablist" aria-label="Admin sections">
+        <div className="panel-tabs admin-tabs" role="group" aria-label="Admin sections">
           {SECTIONS.map(([key, label]) => (
             <button
               key={key}
