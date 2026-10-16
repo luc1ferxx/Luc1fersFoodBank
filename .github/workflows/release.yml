@@ -1,5 +1,6 @@
 name: Release
 
+# v* tag or manual run: CI -> image build -> Trivy gate -> SBOM -> push to GHCR -> staging -> production.
 on:
   push:
     tags:
@@ -8,31 +9,213 @@ on:
 
 permissions:
   contents: read
-  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
   publish-image:
+    needs: ci
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Image name
+        id: image
+        env:
+          OWNER: ${{ github.repository_owner }}
+        # GHCR repository names must be lowercase.
+        run: echo "name=ghcr.io/${OWNER,,}/onlineorder" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@v3
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build image for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: ${{ steps.image.outputs.name }}:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Fails the release on HIGH or CRITICAL vulnerabilities that have a fix available. Accepted exceptions go in
+      # .trivyignore with a reason and an expiry date.
+      - name: Scan image (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.75.0
+          image-ref: ${{ steps.image.outputs.name }}:scan
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          format: table
+          exit-code: "1"
+
+      - name: Scan report for code scanning
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.75.0
+          image-ref: ${{ steps.image.outputs.name }}:scan
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: "0"
+          skip-setup-trivy: true
+
+      # Code scanning needs a public repository or GitHub Advanced Security; the release does not depend on it.
+      - name: Upload scan report
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image
+
+      - name: SBOM (SPDX)
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ${{ steps.image.outputs.name }}:scan
+          format: spdx-json
+          output-file: onlineorder-sbom.spdx.json
+          artifact-name: onlineorder-sbom.spdx.json
+
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/onlineorder
-          tags: |
-            type=ref,event=tag
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-      - uses: docker/build-push-action@v6
+
+      # Same Dockerfile and build cache as the scanned image, so every layer comes from the cache.
+      - name: Push image
+        id: push
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          sbom: true
+          provenance: mode=max
+
+      - name: Summary
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: echo "Pushed \`${IMAGE}@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-staging:
+    needs: publish-image
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.onlineorder.example.com
+    outputs:
+      deployed: ${{ steps.kube.outputs.configured }}
+    steps:
+      # The job only deploys when a KUBE_CONFIG secret (base64-encoded kubeconfig) exists for this environment or
+      # repository; otherwise it records a notice and succeeds.
+      - name: Check cluster credentials
+        id: kube
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          if [ -n "$KUBE_CONFIG" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Staging deployment skipped::No KUBE_CONFIG secret is configured for the staging environment."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.kube.outputs.configured == 'true'
+
+      - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+        if: steps.kube.outputs.configured == 'true'
+        with:
+          version: v1.33.4
+
+      - name: Deploy to staging
+        if: steps.kube.outputs.configured == 'true'
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+          IMAGE: ${{ needs.publish-image.outputs.image }}
+          DIGEST: ${{ needs.publish-image.outputs.digest }}
+        run: |
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          printf '%s' "$KUBE_CONFIG" | base64 --decode > "$KUBECONFIG"
+          chmod 600 "$KUBECONFIG"
+          cd deploy/k8s/overlays/staging
+          kustomize edit set image "onlineorder=${IMAGE}@${DIGEST}"
+          kubectl apply -k .
+          kubectl -n onlineorder-staging rollout status deployment/onlineorder --timeout=10m
+
+  # Protect the production environment (Settings > Environments > production: required reviewers, tag-only
+  # deployment branches) so this job waits for an approval.
+  deploy-production:
+    needs: [publish-image, deploy-staging]
+    if: needs.deploy-staging.outputs.deployed == 'true' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://onlineorder.example.com
+    steps:
+      - name: Check cluster credentials
+        id: kube
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          if [ -z "$KUBE_CONFIG" ]; then
+            echo "::error title=Production deployment::No KUBE_CONFIG secret is configured for the production environment."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+        with:
+          version: v1.33.4
+
+      - name: Deploy to production
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+          IMAGE: ${{ needs.publish-image.outputs.image }}
+          DIGEST: ${{ needs.publish-image.outputs.digest }}
+        run: |
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          printf '%s' "$KUBE_CONFIG" | base64 --decode > "$KUBECONFIG"
+          chmod 600 "$KUBECONFIG"
+          cd deploy/k8s/overlays/prod
+          kustomize edit set image "onlineorder=${IMAGE}@${DIGEST}"
+          kubectl apply -k .
+          kubectl -n onlineorder-prod rollout status deployment/onlineorder --timeout=10m
