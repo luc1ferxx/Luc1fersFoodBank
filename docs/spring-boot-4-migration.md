@@ -14,6 +14,10 @@ To find what still needs porting after a merge, run from the repository root (no
 git grep -nE 'com\.fasterxml\.jackson\.(databind|core)|JsonProcessingException|findAndRegisterModules|Jackson2JsonRedisSerializer|boot\.test\.web\.client|boot\.test\.autoconfigure\.(web|actuate)|@MockBean|boot\.test\.mock\.mockito|boot\.autoconfigure\.(security|jdbc|flyway|kafka|session)\.|actuate\.autoconfigure\.security|boot\.actuate\.metrics\.cache|boot\.web\.context\.|containers\.PostgreSQLContainer|PostgreSQLContainer<|management\.otlp|tracing\.opentelemetry\.export|session\.redis\.namespace|" receive"' -- backend
 ```
 
+The grep cannot find two runtime changes; review them by hand in the merged code: every `getAuthorities()` that
+lists roles or falls back to "the first authority" (Spring Security 7 adds `FACTOR_PASSWORD`, see below), and every
+JSON input record with a primitive component (Jackson 3, `JsonInputTypesTests` finds those it can see).
+
 Then run the CI gate (`./gradlew test jacocoTestReport jacocoTestCoverageVerification spotbugsMain -x buildFrontend
 -x syncFrontendBuild --no-daemon`) with Docker running: a test class that uses `TestRestTemplate` without
 `@AutoConfigureTestRestTemplate`, or asserts trace ids without `@AutoConfigureTracing`, fails there, not at compile
@@ -74,7 +78,8 @@ empty ignore list): 0 findings for the ubuntu 24.04 base and 0 for the jars.
 | --- | --- | --- |
 | `MapperFeature.SORT_PROPERTIES_ALPHABETICALLY` on | record components keep their declaration order anyway (every DTO and entity here is a record); fields of any other class would come out alphabetically | switched off for both mappers (`spring.jackson.mapper.sort-properties-alphabetically: false`, `.disable(...)` in `TwoLevelCaches.objectMapper()`), so a non-record type added later keeps Jackson 2's order too. Field order of API bodies, error bodies, outbox payloads, catalog ETags and Redis entries is unchanged (`ApiContractIntegrationTests`, `CatalogCacheSerializationTests`) |
 | `FAIL_ON_UNKNOWN_PROPERTIES` off | the cache mapper would read an entry of another shape as a half-empty DTO | switched on in `TwoLevelCaches.objectMapper()` (an unreadable entry stays a miss). Spring Boot's mapper had it off before and still has |
-| `FAIL_ON_NULL_FOR_PRIMITIVES`, `FAIL_ON_TRAILING_TOKENS` on | stricter request parsing: an explicit `null` for a primitive or trailing content after the JSON body is now `400 BAD_REQUEST` | accepted. No request body has primitive fields; the outbox writes no nulls (`non_null`) |
+| `FAIL_ON_NULL_FOR_PRIMITIVES` on | a primitive record component (`int`, `long`, `boolean`, ...) whose value is **missing** from the JSON, or `null`, no longer binds to `0`/`false`: a request body is `400 BAD_REQUEST`, and a Kafka event written before such a field existed fails to read and is dead-lettered | accepted, with boxed types (`Long`, `Integer`, `Boolean`) in every JSON input record; `@NotNull` where a value is required. `JsonInputTypesTests` fails on a primitive component in any `@RequestBody` type or consumed event envelope, nested records included |
+| `FAIL_ON_TRAILING_TOKENS` on | trailing content after the JSON body (`{...} trailing`) is now `400 BAD_REQUEST` | accepted |
 | `READ/WRITE_ENUMS_USING_TO_STRING` on | none: no enum overrides `toString()` | accepted; keep it that way or annotate the enum |
 | java.time built in, dates as ISO strings | none for Spring Boot's mapper (it already wrote ISO strings) | accepted |
 
@@ -122,6 +127,20 @@ silently.
 propagation off, so a test that asserts trace ids (`X-Trace-Id`, `trace_id`, outbox `trace_parent`, Kafka spans)
 needs `@AutoConfigureTracing`. OTLP export still stays off there (`management.tracing.export.otlp.enabled`).
 
+### Spring Security 7
+
+- `SecurityFilterChain`, `JdbcUserDetailsManager`, form login, the session-fixation and logout configuration and
+  `hasRole(...)` compiled and behave unchanged.
+- **Runtime** - every password login now carries an extra authority: Spring Security 7.1's
+  `AbstractUserDetailsAuthenticationProvider` adds `FactorGrantedAuthority` `FACTOR_PASSWORD` (multi-factor
+  support). For `demo@laifood.com`, `Authentication.getAuthorities()` is `FACTOR_PASSWORD`, `ROLE_ADMIN`,
+  `ROLE_USER` (Spring Boot 3.5: the two roles). `hasRole`/`hasAnyRole` checks are unaffected. Code that turns the
+  authorities into a list of roles (a `roles` field in `/me`, the actor of an audit entry, any "first authority"
+  fallback) must keep only the `ROLE_` ones, for example
+  `.map(GrantedAuthority::getAuthority).filter(authority -> authority.startsWith("ROLE_"))`, so API responses keep
+  their `ROLE_*` contract. `RedisSessionFormatTests` asserts the authorities of a stored login.
+- **Runtime** - the stored session changes with it, see "Sessions across releases" in section 4.
+
 ### Spring Kafka 4
 
 - **Runtime** - the listener (consumer) span is named `<topic> process` (Spring Kafka 3: `<topic> receive`). The
@@ -134,7 +153,7 @@ needs `@AutoConfigureTracing`. OTLP export still stays off there (`management.tr
 
 | Spring Boot 3 | Spring Boot 4 |
 | --- | --- |
-| `spring.session.redis.namespace` | `spring.session.data.redis.namespace` |
+| `spring.session.redis.namespace` | `spring.session.data.redis.namespace`, value now `${REDIS_SESSION_NAMESPACE:onlineorder:session}:v2` (see "Sessions across releases") |
 | `management.otlp.tracing.endpoint` | `management.opentelemetry.tracing.export.otlp.endpoint` |
 | `management.otlp.tracing.export.enabled` | `management.tracing.export.otlp.enabled` |
 | `management.tracing.opentelemetry.export.schedule-delay` (and the other `...opentelemetry.export.*`) | `management.opentelemetry.tracing.export.schedule-delay` |
@@ -142,7 +161,8 @@ needs `@AutoConfigureTracing`. OTLP export still stays off there (`management.tr
 | - | `spring.jackson.mapper.sort-properties-alphabetically: false` (new, see Jackson 3) |
 
 The environment variables in front of them (`REDIS_SESSION_NAMESPACE`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`,
-`TRACING_EXPORT_ENABLED`, `TRACING_SAMPLING_PROBABILITY`) are unchanged, so `deploy/` needed no change. The
+`TRACING_EXPORT_ENABLED`, `TRACING_SAMPLING_PROBABILITY`) are unchanged, so `deploy/` needed no change.
+`REDIS_SESSION_NAMESPACE` now sets only the prefix: the `:v2` format version is always appended. The
 deployment's own Spring variables (`MANAGEMENT_SERVER_PORT`, `SPRING_DATA_REDIS_PASSWORD`,
 `SPRING_KAFKA_PROPERTIES_*`, `SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE`) still bind.
 
@@ -154,6 +174,35 @@ nothing; it is left as it was.
 Both jars (base `bf824ba` and this branch) ran the `h2` profile with a throwaway Redis, the management port split
 and, in a second run, Kafka on; the same requests went to each and the normalized responses were diffed.
 
+### Sessions across releases
+
+Spring Session stores the `SecurityContext` JDK-serialized in Redis, and pods of two releases share that store
+during a rolling update (`deploy/k8s/base`: `RollingUpdate`, `maxSurge: 1`, no session affinity) and after a
+rollback. A Spring Boot 4 login session contains `FactorGrantedAuthority` (and a `java.time.Instant` for its issue
+time); Spring Security 6.5 has no such class. Measured with both jars against one Redis, before the fix: a Spring
+Boot 3.5 pod that received a Spring Boot 4 session cookie threw `SerializationException` (`ClassNotFoundException`)
+in `SessionRepositoryFilter` and answered every request with Tomcat's HTML 500 page, public catalog reads and
+`POST /logout` included, until the session's 30-minute timeout. The other direction worked (the class
+`serialVersionUID`s match).
+
+Fix: the session namespace carries a format version, like the catalog cache keys. Spring Boot 3.5 used
+`onlineorder:session`; this release uses `onlineorder:session:v2`
+(`spring.session.data.redis.namespace: ${REDIS_SESSION_NAMESPACE:onlineorder:session}:v2`). Old and new pods never
+read each other's sessions: a cookie of the other release is an unknown session, so protected requests get the JSON
+`401 UNAUTHORIZED` and public ones work. Measured again with both jars: Spring Boot 4 cookie on the 3.5 pod ->
+`/me` and `/cart` 401 JSON, `/restaurants/menu` 200, `/logout` 200, no `SerializationException`; 3.5 cookie on the
+Spring Boot 4 pod -> 401 JSON.
+
+Cost: everyone signs in once after the upgrade (and again after a rollback); during the rollout itself a user whose
+requests alternate between old and new pods is signed out each time they switch. Old `onlineorder:session:*` keys
+expire on their own; nothing needs flushing.
+
+`RedisSessionFormatTests` pins every class (with its `serialVersionUID`) in a stored login session. When a
+dependency upgrade changes that set, the test fails: bump the suffix (`:v3`) in `application.yml` and the test, then
+update the set.
+
+### Other differences
+
 Unchanged: status, headers and body of the catalog reads (including `ETag` and the `304` answer), 401 and 404 error
 bodies, signup validation errors, login success and failure, `/me`, cart, orders, notifications, a full
 login -> cart -> checkout -> PAID flow through the outbox and Kafka, the OpenAPI paths, health groups on the
@@ -162,7 +211,7 @@ session cookie flags (`HttpOnly`, `SameSite=Lax`), and the catalog cache in Redi
 against the Redis the Spring Boot 3.5 instance had filled and logged no cache read error). Every Prometheus metric that
 `deploy/observability` dashboards and alerts read is still published under the same name.
 
-Differences, none of which a dashboard, alert, client or test depends on:
+Differences (none breaks a dashboard or an alert; clients only sign in again once, see above):
 
 | Where | Spring Boot 3.5 | Spring Boot 4.1 |
 | --- | --- | --- |
@@ -174,6 +223,8 @@ Differences, none of which a dashboard, alert, client or test depends on:
 | Kafka client metrics | `kafka_{consumer,producer}_io{,_wait}time_total`, `kafka_producer_bufferpool_wait_time_total` | removed in kafka-clients 4 (`kafka_producer_txn_prepare_time_ns_total` is new) |
 | JVM metrics | - | `jvm_classes_loaded_count_classes_total` added |
 | listener span name | `<topic> receive` | `<topic> process` |
+| Redis command spans | none (Lettuce commands were only timed) | every Lettuce command is a `CLIENT` span (`db.system=redis`) under the current span: an authenticated `GET /cart` has 9 spans instead of 5 (`exists`, `hgetall`, `hmset`, `pexpireat` for the session); a catalog read that misses the local L1 adds the Redis cache read, a rate-limited request the token-bucket script (`evalsha`). Kept: they show each request's Redis latency in Tempo. `docs/operations.md` has the volume and the switch (`OutboxKafkaTraceContinuityTests`) |
+| session namespace | `onlineorder:session` | `onlineorder:session:v2` (see "Sessions across releases") |
 
 ## 5. Things checked that did not change
 

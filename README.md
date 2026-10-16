@@ -326,7 +326,7 @@ With the breaker, a cold request pays one 500ms command timeout per open period 
 
 ### Security and Abuse Controls
 
-- Authentication uses server-side sessions backed by Redis.
+- Authentication uses server-side sessions backed by Redis, under a namespace that carries the session format version (`onlineorder:session:v2`), so pods of two releases never read each other's sessions during a rolling update or rollback.
 - Customer accounts track status, failed login count, lockout time, last login, and audit timestamps.
 - Login lookup is case-insensitive.
 - Anonymous routes are rate-limited by remote IP.
@@ -561,7 +561,7 @@ The test suite covers:
 
 Some integration tests use Testcontainers and require Docker. Tests annotated with `@Testcontainers(disabledWithoutDocker = true)` may skip when Docker is unavailable.
 
-The backend runs on Spring Boot 4.1; [docs/spring-boot-4-migration.md](docs/spring-boot-4-migration.md) lists what changed from Spring Boot 3 (packages, Jackson 3, test annotations, configuration properties, the H2 pin) for porting older code.
+The backend runs on Spring Boot 4.1; [docs/spring-boot-4-migration.md](docs/spring-boot-4-migration.md) lists what changed from Spring Boot 3 (packages, Jackson 3, Spring Security 7, test annotations, configuration properties, the versioned session namespace, the H2 pin) for porting older code.
 
 ---
 

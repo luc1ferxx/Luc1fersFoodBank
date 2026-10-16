@@ -46,6 +46,12 @@ outgoing Kafka records.
   `tasks.scheduled.execution` timer is kept.
 - Relay spans carry `outbox.event_id`, `outbox.aggregate_type` and `outbox.aggregate_id`, so Tempo can find the trace
   of an order: `{ span.outbox.aggregate_id = "42" }`.
+- Redis: every Lettuce command is a `CLIENT` span (`db.system=redis`) of the request that issued it (new in Spring
+  Boot 4). An authenticated `GET /cart` exports 9 spans instead of 5: `exists`, `hgetall`, `hmset` and `pexpireat`
+  for the session; a catalog read that misses the local L1 adds the Redis cache read, a rate-limited request the
+  token-bucket script. Plan Tempo storage for that (staging samples everything, prod 10%). To drop them, set
+  `MANAGEMENT_OBSERVATIONS_ENABLE_LETTUCE=false`; that also removes the `lettuce_seconds` and
+  `lettuce_active_seconds` timers, which no dashboard or alert reads.
 
 Sampling (`TRACING_SAMPLING_PROBABILITY`, default 0.1) decides which new traces are recorded; downstream spans
 follow the caller's decision. Trace ids exist for unsampled requests too. Spans are exported over OTLP/HTTP only when
@@ -129,8 +135,9 @@ Prometheus scrapes the app's management port through file service discovery: `pr
 `ONLINEORDER_SCRAPE_TARGETS`. Tempo's metrics generator remote-writes span metrics to Prometheus, and latency
 histograms carry exemplars that link to traces.
 
-Verified on 2026-10-16 with the app profile: a checkout produced one trace in Tempo with the server span, security
-spans, `order-events outbox relay`, `order-events send` and `order-events receive`; Prometheus had all four targets up,
+Verified on 2026-10-16 with the app profile (Spring Boot 3.5): a checkout produced one trace in Tempo with the server
+span, security spans, `order-events outbox relay`, `order-events send` and `order-events receive` (`order-events
+process` since Spring Boot 4, which also adds the Redis command spans); Prometheus had all four targets up,
 the onlineorder metrics above, no rule errors and no firing alerts; every dashboard query evaluated.
 
 ### Dashboard
@@ -245,6 +252,7 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
 | `DATABASE_URL`, `DATABASE_USERNAME`, `DATABASE_PASSWORD` | local PostgreSQL on 5433 | ConfigMap / Secret |
 | `DATABASE_POOL_MAX_SIZE` | 30 | ConfigMap (prod 20) |
 | `REDIS_HOST`, `REDIS_PORT`, `SPRING_DATA_REDIS_PASSWORD` | localhost:6379 | ConfigMap / Secret |
+| `REDIS_SESSION_NAMESPACE` | `onlineorder:session` (the session format version `:v2` is always appended) | - |
 | `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_ORDER_TOPIC_REPLICAS` | localhost:9092, 1 | ConfigMap (3 replicas) |
 | `MANAGEMENT_SERVER_PORT` | unset (actuator on 8080) | ConfigMap and observability compose: 8081 |
 | `TRACING_EXPORT_ENABLED` | false | ConfigMap: true |
@@ -299,6 +307,16 @@ Code scanning results (CodeQL, the release's Trivy SARIF) need a public reposito
 4. `deploy-production` (environment `production`, `v*` tags only, after a staging deployment): the same for
    `overlays/prod`. Configure the `production` environment with required reviewers so the job waits for an approval,
    and give it its own `KUBE_CONFIG`.
+
+Sessions across a rollout or rollback: pods of the old and the new release run side by side and share Redis.
+Sessions are JDK-serialized under a versioned namespace (`onlineorder:session:v2` since Spring Boot 4; Spring Boot
+3.5 used `onlineorder:session`), so releases with different session formats ignore each other's sessions instead of
+failing to deserialize them (which made Spring Boot 3.5 pods answer every request with an HTML 500). Deploying the
+Spring Boot 4 release, or rolling back from it, signs every user out once (JSON `401`, the UI shows the login); during
+the rollout a user whose requests alternate between old and new pods is signed out each time. Nothing needs flushing:
+the other namespace's keys expire after `SESSION_TIMEOUT` (30m). `RedisSessionFormatTests` fails when an upgrade
+changes the classes in a stored session; bump the namespace version then (details in
+`docs/spring-boot-4-migration.md`, "Sessions across releases").
 
 State on 2026-10-16: the image scan found 45 fixable HIGH/CRITICAL findings with Spring Boot 3.5.6, pgjdbc 42.7.7
 and the `17.0.20_8` base image; Spring Boot 3.5.16 and patch overrides brought that down to two accepted
