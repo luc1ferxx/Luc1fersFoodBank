@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.fulfilment.dispatch;
 
 
+import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,6 +28,8 @@ import java.util.Optional;
 @Service
 public class RiderService {
 
+    static final String RIDER_INACTIVE = "RIDER_INACTIVE";
+
     private static final Logger LOGGER = LoggerFactory.getLogger(RiderService.class);
 
     private final RiderRepository riderRepository;
@@ -46,7 +49,8 @@ public class RiderService {
 
 
     /**
-     * Binds the login to a new rider: active, off duty (the rider goes on duty themselves) and without deliveries.
+     * Binds the login to a new rider: active, off duty (the rider, or an admin, puts them on duty) and without
+     * deliveries.
      */
     @Transactional
     public RiderEntity create(Long customerId, String name, String phone) {
@@ -59,25 +63,52 @@ public class RiderService {
 
 
     /**
-     * Deactivating also takes the rider off duty. Deliveries the rider already holds stay assigned to them; an operator
-     * moves them with the admin delivery endpoints (or reactivates the rider).
+     * Admin change of a rider's flags (PATCH /admin/riders/{riderId}); a null flag keeps its value. Deactivating takes
+     * the rider off duty unless the same change says otherwise, and an inactive rider can never be on duty (409
+     * RIDER_INACTIVE). An admin putting a rider on duty is the operator's lever when no rider is on duty (README "No
+     * rider on duty"); otherwise riders set it themselves.
+     *
+     * <p>The rider row is locked first, so the change cannot interleave with the rider's own availability change or a
+     * dispatch assignment of this rider. Deliveries the rider already holds stay assigned to them; an operator moves
+     * them to another rider with {@link DispatchService#reassign}.
      *
      * @throws ResourceNotFoundException when there is no such rider
+     * @throws ConflictException         RIDER_INACTIVE when the change would leave an inactive rider on duty
      */
     @Transactional
-    public RiderEntity setActive(Long riderId, boolean active) {
-        if (riderRepository.updateActive(riderId, active, LocalDateTime.now()) == 0) {
+    public RiderEntity update(Long riderId, Boolean active, Boolean onDuty) {
+        RiderEntity rider = riderRepository.lockById(riderId);
+        if (rider == null) {
             throw new ResourceNotFoundException("Rider not found");
         }
-        RiderEntity rider = riderRepository.findById(riderId)
-                .orElseThrow(() -> new ResourceNotFoundException("Rider not found"));
+        boolean newActive = active == null ? rider.active() : active;
+        boolean newOnDuty = onDuty == null ? newActive && rider.onDuty() : onDuty;
+        if (newOnDuty && !newActive) {
+            throw new ConflictException(RIDER_INACTIVE, "An inactive rider cannot be on duty");
+        }
+        if (newActive == rider.active() && newOnDuty == rider.onDuty()) {
+            return rider;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        riderRepository.updateStatus(riderId, newActive, newOnDuty, now);
         LOGGER.info(
-                "Rider {}: rider_id={}, open_deliveries={}",
-                active ? "activated" : "deactivated",
+                "Rider updated by an admin: rider_id={}, active={}, on_duty={}, open_deliveries={}",
                 riderId,
+                newActive,
+                newOnDuty,
                 rider.activeDeliveries()
         );
-        return rider;
+        return new RiderEntity(
+                rider.id(),
+                rider.customerId(),
+                rider.name(),
+                rider.phone(),
+                newActive,
+                newOnDuty,
+                rider.activeDeliveries(),
+                rider.createdAt(),
+                now
+        );
     }
 
 
@@ -105,7 +136,11 @@ public class RiderService {
 
 
     /**
-     * Going off duty only stops new assignments: deliveries the rider holds stay theirs to finish.
+     * Going off duty only stops new assignments: deliveries the rider holds stay theirs to finish. The write only
+     * applies while the rider is active, so a deactivation that lands between the check and the write cannot leave an
+     * inactive rider on duty (that rider would become dispatchable the moment an admin reactivates them).
+     *
+     * @throws AccessDeniedException (403) when the rider is deactivated, also when that happened concurrently
      */
     @Transactional
     public RiderEntity setOnDuty(Long customerId, boolean onDuty) {
@@ -113,7 +148,9 @@ public class RiderService {
         if (rider.onDuty() == onDuty) {
             return rider;
         }
-        riderRepository.updateOnDuty(rider.id(), onDuty, LocalDateTime.now());
+        if (riderRepository.updateOnDutyIfActive(rider.id(), onDuty, LocalDateTime.now()) == 0) {
+            throw new AccessDeniedException("Rider is deactivated");
+        }
         LOGGER.info("Rider {} duty: rider_id={}", onDuty ? "on" : "off", rider.id());
         return riderRepository.findById(rider.id()).orElseThrow(() -> new ResourceNotFoundException("Rider not found"));
     }

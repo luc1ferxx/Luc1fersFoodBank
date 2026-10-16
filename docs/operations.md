@@ -177,9 +177,14 @@ docker run --rm --entrypoint /bin/promtool -v "$PWD:/etc/prometheus:ro" -w /etc/
 Fulfilment staffing (README "Provisioning merchants and riders"):
 
 - A dead-lettered `order.accepted` with `onlineorder_fulfilment_dispatch_assignments_total{result="no_rider_attempt"}`
-  rising means no rider was active and on duty. Get one on duty (the rider uses `PUT /rider/me/availability`; an admin
-  provisions one with `POST /admin/riders` or reactivates one with `PATCH /admin/riders/{id}`), then replay the dead
-  letter.
+  rising means no rider was active and on duty. Get one on duty first: the rider uses `PUT /rider/me/availability`, or
+  an admin sets `PATCH /admin/riders/{id}` `{"on_duty": true}` (with `"active": true` for a deactivated rider; new and
+  reactivated riders are off duty). Confirm with `GET /admin/riders`, then replay the dead letter; a replay before that
+  fails again.
+- Deactivating a rider leaves their open deliveries with them (`active_deliveries` in the response). List them with
+  `GET /admin/deliveries?rider_id={id}` and move each with `POST /admin/deliveries/{id}/reassign` `{"rider_id": n}` to
+  an active, on-duty rider, or reactivate the rider (an order still `ACCEPTED` can also be cancelled). Never clear them
+  with the admin `delivered` endpoint: it completes the order.
 - `onlineorder_fulfilment_merchant_orders_received_total{staffing="unstaffed"}` counts paid orders of restaurants with
   no active merchant account. They get no accept deadline and wait as `PAID` until a merchant is provisioned
   (`POST /admin/merchants`; the order is already in that restaurant's inbox) or an admin moves them.

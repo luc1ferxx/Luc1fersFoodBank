@@ -18,7 +18,9 @@ import java.util.List;
 /**
  * Admin provisioning of merchant and rider logins (ROLE_ADMIN only, see AppConfig; the POSTs and PATCHes are
  * rate-limited per admin like other admin writes). An email that any login already uses is 409
- * EMAIL_ALREADY_REGISTERED; an unknown restaurant, merchant or rider is 404.
+ * EMAIL_ALREADY_REGISTERED; an unknown restaurant, merchant or rider is 404. PATCH /admin/riders/{riderId} also takes
+ * an optional on_duty, the operator's lever when no rider is on duty (an extension of the shared contract, whose
+ * {"active": boolean} body keeps working).
  */
 @RestController
 public class StaffAdminController {
@@ -64,7 +66,7 @@ public class StaffAdminController {
 
 
     @PatchMapping("/admin/riders/{riderId}")
-    public AdminRiderDto updateRider(@PathVariable Long riderId, @Valid @RequestBody UpdateStaffStatusBody body) {
-        return staffProvisioningService.setRiderActive(riderId, body.active());
+    public AdminRiderDto updateRider(@PathVariable Long riderId, @Valid @RequestBody UpdateRiderStatusBody body) {
+        return staffProvisioningService.updateRider(riderId, body.active(), body.onDuty());
     }
 }

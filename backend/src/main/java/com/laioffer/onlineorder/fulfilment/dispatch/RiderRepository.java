@@ -72,27 +72,39 @@ public interface RiderRepository extends ListCrudRepository<RiderEntity, Long> {
     List<RiderEntity> findAllOrderById();
 
 
+    /**
+     * The rider's own availability change. Only an active rider's flag changes: a deactivation that committed after
+     * the caller read the rider leaves 0 rows updated instead of an inactive rider on duty. On PostgreSQL a concurrent
+     * deactivation that has not committed yet holds the row lock; this waits for it and re-checks the condition.
+     *
+     * @return 1 when the flag was written, 0 when the rider is (now) inactive
+     */
     @Modifying
     @Query("""
             UPDATE riders
             SET on_duty = :onDuty,
                 updated_at = :updatedAt
             WHERE id = :id
+              AND active = TRUE
             """)
-    int updateOnDuty(Long id, boolean onDuty, LocalDateTime updatedAt);
+    int updateOnDutyIfActive(Long id, boolean onDuty, LocalDateTime updatedAt);
+
+
+    @Query("SELECT * FROM riders WHERE id = :id FOR UPDATE")
+    RiderEntity lockById(Long id);
 
 
     /**
-     * Activates or deactivates a rider. Deactivating also takes the rider off duty, so a reactivated rider only gets
-     * deliveries again once they go back on duty themselves.
+     * Writes both flags of a rider the caller has locked ({@link #lockById}); the caller keeps on_duty FALSE for an
+     * inactive rider.
      */
     @Modifying
     @Query("""
             UPDATE riders
             SET active = :active,
-                on_duty = CASE WHEN :active THEN on_duty ELSE FALSE END,
+                on_duty = :onDuty,
                 updated_at = :updatedAt
             WHERE id = :id
             """)
-    int updateActive(Long id, boolean active, LocalDateTime updatedAt);
+    int updateStatus(Long id, boolean active, boolean onDuty, LocalDateTime updatedAt);
 }

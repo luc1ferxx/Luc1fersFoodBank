@@ -459,9 +459,10 @@ reaches a group out of order, so each module also stays correct when the order o
 | `GET` | `/rider/deliveries?status=ASSIGNED,PICKED_UP` | `RIDER` | The rider's own deliveries (default: the open ones, `ASSIGNED` and `PICKED_UP`) with `restaurant_name` |
 | `POST` | `/rider/deliveries/{deliveryId}/picked-up` | `RIDER` | `ASSIGNED -> PICKED_UP` (own deliveries only) |
 | `POST` | `/rider/deliveries/{deliveryId}/delivered` | `RIDER` | `PICKED_UP -> DELIVERED` (own deliveries only) |
-| `GET` | `/admin/deliveries?order_id=` | `ADMIN` | Deliveries (one order, or the 50 most recent) |
+| `GET` | `/admin/deliveries?order_id=&rider_id=` | `ADMIN` | Deliveries: one order's, one rider's open ones (`ASSIGNED`, `PICKED_UP`), or the 50 most recent |
 | `POST` | `/admin/deliveries/{deliveryId}/picked-up` | `ADMIN` | Ops and tests: any delivery `ASSIGNED -> PICKED_UP` |
-| `POST` | `/admin/deliveries/{deliveryId}/delivered` | `ADMIN` | Ops and tests: any delivery `PICKED_UP -> DELIVERED` |
+| `POST` | `/admin/deliveries/{deliveryId}/delivered` | `ADMIN` | Ops and tests: any delivery `PICKED_UP -> DELIVERED` (completes the order) |
+| `POST` | `/admin/deliveries/{deliveryId}/reassign` | `ADMIN` | Move an open delivery to another rider, body `{"rider_id": 7}` (see below) |
 
 Merchant commands are scoped to the merchant's restaurant (another restaurant's order is a `404`) and are idempotent:
 repeating a command whose transition already happened returns the order unchanged. A reject of an order that was
@@ -473,6 +474,13 @@ Rider actions go through the same delivery state machine and outbox events as th
 the same way; a delivery that cannot make the move is `409 DELIVERY_STATUS_CONFLICT`. A rider only reaches their own
 deliveries: another rider's delivery is `404` (and absent from their list). Everyone but a rider gets `403` on
 `/rider/**`.
+
+Reassigning moves an open delivery (`ASSIGNED` or `PICKED_UP`; it keeps its status) to a rider who is active and on
+duty, under the delivery row lock with both riders' rows locked in id order. The load moves with it and
+`delivery.reassigned` is published (the order and notification consumers ignore it; the next delivery notification
+names the new rider). Repeating it with the same `rider_id` returns the delivery unchanged; a finished delivery is
+`409 DELIVERY_STATUS_CONFLICT`, an inactive or off-duty rider `409 RIDER_NOT_DISPATCHABLE`, an unknown delivery or rider
+`404`. The previous rider no longer sees the delivery (`404` on it).
 
 ### Provisioning merchants and riders
 
@@ -488,13 +496,21 @@ password validation as `POST /signup`; an email any login already uses (in any l
 | `PATCH` | `/admin/merchants/{merchantId}` | `{"active": false}` | the merchant |
 | `POST` | `/admin/riders` | `email`, `password`, `first_name`, `last_name`, `phone` | `201` rider: a `ROLE_RIDER` login, active and off duty |
 | `GET` | `/admin/riders` | | `rider_id`, `customer_id`, `email`, `first_name`, `last_name`, `name`, `phone`, `active`, `on_duty`, `active_deliveries`, `created_at` |
-| `PATCH` | `/admin/riders/{riderId}` | `{"active": false}` | the rider (deactivating also takes them off duty) |
+| `PATCH` | `/admin/riders/{riderId}` | `{"active": false}` and/or `{"on_duty": true}` | the rider: a left-out flag keeps its value, deactivating also takes them off duty, and an inactive rider cannot be put on duty (`409 RIDER_INACTIVE`) |
 
 Accounts are deactivated, never deleted. Deactivation takes effect on the account's next request without touching its
 session: the merchant and dispatch modules look the account up on every merchant or rider request and answer `403`
 for an inactive one, while `GET /me` still lists the role and shows `"active": false`. A deactivated merchant no
-longer makes its restaurant staffed (see the accept timeout above); a deactivated rider is never assigned. Deliveries a
-rider already holds stay assigned to them: move them with the admin delivery endpoints or reactivate the rider.
+longer makes its restaurant staffed (see the accept timeout above); a deactivated rider is never assigned, and a
+rider's own availability change cannot put them back on duty even when it races the deactivation.
+
+Deliveries a deactivated rider already holds stay assigned to them, and that rider can no longer move them (`403`).
+The `active_deliveries` in the PATCH response shows how many there are. List them with
+`GET /admin/deliveries?rider_id={riderId}`, then reassign each one to an on-duty rider
+(`POST /admin/deliveries/{id}/reassign`) or reactivate the rider. An order that is still `ACCEPTED` can also be
+cancelled (`PATCH /orders/{id}/status`, which cancels the delivery and releases the rider); a `PREPARING` one cannot.
+Do not clear them with `POST /admin/deliveries/{id}/delivered`: that completes the customer's order and sends "Order
+delivered" for food nobody delivered.
 
 The orchestration lives in `com.laioffer.onlineorder.staff` (admin web layer): in one transaction it creates the login
 through `CustomerService` and binds it through the merchant module's `MerchantAccountService` or the dispatch
@@ -507,9 +523,12 @@ Rider Alice, Bob and Carol, which start on duty).
 
 **No rider on duty.** Dispatch only assigns riders that are active and on duty (least-loaded first, `SKIP LOCKED` as
 before). With none, `order.accepted` is retried and then dead-lettered (`OnlineOrderDeadLettersGrowing` fires, and
-`onlineorder.fulfilment.dispatch.assignments{result="no_rider_attempt"}` grows). The operator gets a rider on duty (the
-rider calls `PUT /rider/me/availability`, or an admin provisions or reactivates one), then replays the dead letter with
-`POST /dead-letters/{id}/replay`. A replay after the customer cancelled assigns no rider.
+`onlineorder.fulfilment.dispatch.assignments{result="no_rider_attempt"}` grows). The operator first gets a rider on
+duty: a rider does it with `PUT /rider/me/availability`, or an admin who knows the rider is working sets
+`PATCH /admin/riders/{id}` `{"on_duty": true}` (add `"active": true` for a deactivated rider; a newly provisioned rider
+starts off duty, and reactivating alone leaves a rider off duty). Check `GET /admin/riders` for `"active": true,
+"on_duty": true`, then replay the dead letter with `POST /dead-letters/{id}/replay`. A replay before that fails again
+and goes back to the dead-letter topic; a replay after the customer cancelled assigns no rider.
 
 ### Configuration
 
@@ -559,8 +578,8 @@ the guarded transition only if the order still waits, and deletes the row, all i
 poller runs on its own thread instead of the shared scheduler (4 threads), so a burst of due deadlines cannot delay
 the outbox publisher.
 
-Follow-ups: real rider location and ETA, reassigning the open deliveries of a deactivated rider, refunds for cancelled
-paid orders, and a k6 run with the fulfilment consumers on.
+Follow-ups: real rider location and ETA, refunds for cancelled paid orders, and a k6 run with the fulfilment consumers
+on.
 
 ---
 

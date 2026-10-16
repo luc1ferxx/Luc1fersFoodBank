@@ -120,9 +120,14 @@ public class StaffProvisioningService {
     }
 
 
+    /**
+     * @param active null keeps the flag
+     * @param onDuty null keeps the flag (deactivating takes the rider off duty)
+     * @throws com.laioffer.onlineorder.exception.ConflictException RIDER_INACTIVE for an inactive rider on duty
+     */
     @Transactional
-    public AdminRiderDto setRiderActive(Long riderId, boolean active) {
-        RiderEntity rider = riderService.setActive(riderId, active);
+    public AdminRiderDto updateRider(Long riderId, Boolean active, Boolean onDuty) {
+        RiderEntity rider = riderService.update(riderId, active, onDuty);
         return toRiderDto(rider, loginsById(Stream.of(rider.customerId())));
     }
 

@@ -4,6 +4,7 @@ package com.laioffer.onlineorder.staff;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.fulfilment.dispatch.DispatchService;
+import com.laioffer.onlineorder.fulfilment.dispatch.RiderService;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.model.OrderDto;
@@ -19,11 +20,14 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpSession;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -33,6 +37,12 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 
 import static org.hamcrest.Matchers.hasKey;
@@ -108,6 +118,12 @@ class StaffAccountsPostgresIntegrationTests {
 
     @Autowired
     private DispatchService dispatchService;
+
+    @Autowired
+    private RiderService riderService;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
 
     @Test
@@ -450,6 +466,202 @@ class StaffAccountsPostgresIntegrationTests {
 
 
     @Test
+    void noRiderOnDuty_shouldRecoverOnceAnAdminPutsARiderOnDuty() throws Exception {
+        MockHttpSession admin = login(ADMIN, DEMO_PASSWORD);
+        String email = "standby-" + System.nanoTime() + "@example.com";
+        Map<Long, Boolean> otherRidersOnDuty = takeOtherRidersOffDuty(List.of());
+        try {
+            OrderEventEnvelope accepted = acceptedOrderAt("SGD Tofu House");
+            Assertions.assertThrows(IllegalStateException.class, () -> dispatchService.handle(accepted));
+
+            // Provisioning alone does not help: a new rider starts off duty, so a replay would fail again.
+            long riderId = provisionRider(admin, email);
+            Assertions.assertThrows(IllegalStateException.class, () -> dispatchService.handle(accepted));
+
+            // Deactivated riders cannot be put on duty, neither alone nor in the same change.
+            mockMvc.perform(patch("/admin/riders/{id}", riderId).session(admin)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"active\": false}"))
+                    .andExpect(status().isOk());
+            for (String body : List.of("{\"on_duty\": true}", "{\"active\": false, \"on_duty\": true}")) {
+                mockMvc.perform(patch("/admin/riders/{id}", riderId).session(admin)
+                                .contentType(MediaType.APPLICATION_JSON).content(body))
+                        .andExpect(status().isConflict())
+                        .andExpect(jsonPath("$.code").value("RIDER_INACTIVE"));
+            }
+            // Reactivating alone leaves the rider off duty.
+            mockMvc.perform(patch("/admin/riders/{id}", riderId).session(admin)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"active\": true}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.active").value(true))
+                    .andExpect(jsonPath("$.on_duty").value(false));
+            Assertions.assertThrows(IllegalStateException.class, () -> dispatchService.handle(accepted));
+
+            // The operator's lever: the admin puts the rider on duty, then the replay assigns them.
+            mockMvc.perform(patch("/admin/riders/{id}", riderId).session(admin)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"on_duty\": true}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.rider_id").value(riderId))
+                    .andExpect(jsonPath("$.active").value(true))
+                    .andExpect(jsonPath("$.on_duty").value(true))
+                    .andExpect(jsonPath("$.email").value(email));
+            dispatchService.handle(accepted);
+            Assertions.assertEquals(riderId, jdbcTemplate.queryForObject(
+                    "SELECT rider_id FROM deliveries WHERE order_id = ?", Long.class, accepted.aggregateId()));
+
+            // The rider sees it on their own login; an admin can also take them off duty again.
+            mockMvc.perform(get("/rider/deliveries").session(login(email, "ride-on")))
+                    .andExpect(jsonPath("$[0].order_id").value(accepted.aggregateId()));
+            mockMvc.perform(patch("/admin/riders/{id}", riderId).session(admin)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"on_duty\": false}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.on_duty").value(false))
+                    .andExpect(jsonPath("$.active_deliveries").value(1));
+        } finally {
+            otherRidersOnDuty.forEach((riderId, onDuty) ->
+                    jdbcTemplate.update("UPDATE riders SET on_duty = ? WHERE id = ?", onDuty, riderId));
+        }
+    }
+
+
+    @Test
+    void deactivatedRidersOpenDelivery_shouldBeReassignedToAnOnDutyRiderWithoutCompletingTheOrder() throws Exception {
+        MockHttpSession admin = login(ADMIN, DEMO_PASSWORD);
+        String emailA = "leaving-" + System.nanoTime() + "@example.com";
+        String emailB = "covering-" + System.nanoTime() + "@example.com";
+        long riderA = provisionRider(admin, emailA);
+        long riderB = provisionRider(admin, emailB);
+        MockHttpSession sessionA = login(emailA, "ride-on");
+        MockHttpSession sessionB = login(emailB, "ride-on");
+        Map<Long, Boolean> otherRidersOnDuty = takeOtherRidersOffDuty(List.of(riderA, riderB));
+        try {
+            mockMvc.perform(put("/rider/me/availability").session(sessionA)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"on_duty\": true}"))
+                    .andExpect(status().isOk());
+            OrderEventEnvelope accepted = acceptedOrderAt("Burger King");
+            dispatchService.handle(accepted);
+            Long deliveryId = jdbcTemplate.queryForObject(
+                    "SELECT id FROM deliveries WHERE order_id = ? AND rider_id = ?", Long.class,
+                    accepted.aggregateId(), riderA);
+            mockMvc.perform(post("/rider/deliveries/{id}/picked-up", deliveryId).session(sessionA))
+                    .andExpect(status().isOk());
+
+            // Deactivated mid-delivery: the response shows the open delivery, which rider A can no longer move.
+            mockMvc.perform(patch("/admin/riders/{id}", riderA).session(admin)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"active\": false}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.active_deliveries").value(1));
+            mockMvc.perform(post("/rider/deliveries/{id}/delivered", deliveryId).session(sessionA))
+                    .andExpect(status().isForbidden());
+            mockMvc.perform(get("/admin/deliveries").param("rider_id", String.valueOf(riderA)).session(admin))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.length()").value(1))
+                    .andExpect(jsonPath("$[0].id").value(deliveryId))
+                    .andExpect(jsonPath("$[0].status").value("PICKED_UP"));
+
+            // Only an active, on-duty rider can take it over.
+            mockMvc.perform(post("/admin/deliveries/{id}/reassign", deliveryId).session(admin)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"rider_id\": %d}".formatted(riderB)))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.code").value("RIDER_NOT_DISPATCHABLE"));
+            mockMvc.perform(post("/admin/deliveries/{id}/reassign", deliveryId).session(admin)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"rider_id\": 987654}"))
+                    .andExpect(status().isNotFound());
+            mockMvc.perform(post("/admin/deliveries/{id}/reassign", deliveryId).session(admin)
+                            .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+            mockMvc.perform(put("/rider/me/availability").session(sessionB)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"on_duty\": true}"))
+                    .andExpect(status().isOk());
+            for (int attempt = 0; attempt < 2; attempt++) {
+                mockMvc.perform(post("/admin/deliveries/{id}/reassign", deliveryId).session(admin)
+                                .contentType(MediaType.APPLICATION_JSON).content("{\"rider_id\": %d}".formatted(riderB)))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.id").value(deliveryId))
+                        .andExpect(jsonPath("$.rider_id").value(riderB))
+                        .andExpect(jsonPath("$.rider_name").value("Dana Rider"))
+                        .andExpect(jsonPath("$.status").value("PICKED_UP"));
+            }
+            Assertions.assertEquals(0, riderLoad(riderA));
+            Assertions.assertEquals(1, riderLoad(riderB));
+            Assertions.assertEquals(
+                    List.of("delivery.assigned", "delivery.picked_up", "delivery.reassigned"),
+                    deliveryEventTypes(deliveryId),
+                    "one reassignment event, also when the admin retried"
+            );
+            Assertions.assertEquals("ACCEPTED", orderStatus(accepted.aggregateId()), "nothing completed the order");
+
+            // Rider B finishes it; rider A, even reactivated, no longer reaches it.
+            mockMvc.perform(get("/rider/deliveries").session(sessionB))
+                    .andExpect(jsonPath("$[0].delivery_id").value(deliveryId))
+                    .andExpect(jsonPath("$[0].status").value("PICKED_UP"));
+            mockMvc.perform(post("/rider/deliveries/{id}/delivered", deliveryId).session(sessionB))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("DELIVERED"));
+            mockMvc.perform(patch("/admin/riders/{id}", riderA).session(admin)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"active\": true}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.active_deliveries").value(0));
+            mockMvc.perform(post("/rider/deliveries/{id}/delivered", deliveryId).session(sessionA))
+                    .andExpect(status().isNotFound());
+            Assertions.assertEquals(0, riderLoad(riderB));
+
+            // A finished delivery cannot be reassigned.
+            mockMvc.perform(post("/admin/deliveries/{id}/reassign", deliveryId).session(admin)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"rider_id\": %d}".formatted(riderA)))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.code").value("DELIVERY_STATUS_CONFLICT"));
+        } finally {
+            otherRidersOnDuty.forEach((riderId, onDuty) ->
+                    jdbcTemplate.update("UPDATE riders SET on_duty = ? WHERE id = ?", onDuty, riderId));
+        }
+    }
+
+
+    @Test
+    void riderGoingOnDuty_whileAnAdminDeactivatesThem_shouldNotLeaveAnInactiveRiderOnDuty() throws Exception {
+        MockHttpSession admin = login(ADMIN, DEMO_PASSWORD);
+        String email = "racing-" + System.nanoTime() + "@example.com";
+        long riderId = provisionRider(admin, email);
+        Long customerId = jdbcTemplate.queryForObject("SELECT customer_id FROM riders WHERE id = ?", Long.class, riderId);
+        CountDownLatch deactivated = new CountDownLatch(1);
+        CountDownLatch commit = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            // The admin's deactivation holds the rider row, uncommitted ...
+            Future<?> deactivation = executor.submit(() -> new TransactionTemplate(transactionManager).executeWithoutResult(
+                    status -> {
+                        jdbcTemplate.update(
+                                "UPDATE riders SET active = FALSE, on_duty = FALSE WHERE id = ?", riderId);
+                        deactivated.countDown();
+                        try {
+                            Assertions.assertTrue(commit.await(30, TimeUnit.SECONDS));
+                        } catch (InterruptedException ex) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(ex);
+                        }
+                    }));
+            Assertions.assertTrue(deactivated.await(30, TimeUnit.SECONDS));
+
+            // ... while the rider's own request still reads them as active and then waits for the row.
+            Future<?> goOnDuty = executor.submit(() -> riderService.setOnDuty(customerId, true));
+            awaitLockWaiter();
+            commit.countDown();
+            deactivation.get(30, TimeUnit.SECONDS);
+
+            ExecutionException failure = Assertions.assertThrows(
+                    ExecutionException.class, () -> goOnDuty.get(30, TimeUnit.SECONDS));
+            Assertions.assertInstanceOf(AccessDeniedException.class, failure.getCause());
+            Assertions.assertEquals(Map.of("active", false, "on_duty", false), jdbcTemplate.queryForMap(
+                    "SELECT active, on_duty FROM riders WHERE id = ?", riderId));
+        } finally {
+            commit.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+
+    @Test
     void roleMatrix_shouldLetEachRoleReachOnlyItsOwnEndpoints() throws Exception {
         MockHttpSession admin = login(ADMIN, DEMO_PASSWORD);
         MockHttpSession merchant = login(BURGER_KING_MERCHANT, "merchant123");
@@ -483,8 +695,12 @@ class StaffAccountsPostgresIntegrationTests {
                 row(HttpMethod.POST, "/admin/riders", "{}", 401, 403, 403, 403, 400),
                 row(HttpMethod.PATCH, "/admin/merchants/" + demoMerchantId, "{\"active\": true}", 401, 403, 403, 403, 200),
                 row(HttpMethod.PATCH, "/admin/riders/" + demoRiderId, "{\"active\": true}", 401, 403, 403, 403, 200),
+                row(HttpMethod.PATCH, "/admin/riders/" + demoRiderId, "{\"on_duty\": true}", 401, 403, 403, 403, 200),
                 row(HttpMethod.GET, "/merchant/orders", null, 401, 403, 200, 403, 403),
-                row(HttpMethod.GET, "/admin/deliveries", null, 401, 403, 403, 403, 200)
+                row(HttpMethod.GET, "/admin/deliveries", null, 401, 403, 403, 403, 200),
+                row(HttpMethod.GET, "/admin/deliveries?rider_id=" + demoRiderId, null, 401, 403, 403, 403, 200),
+                row(HttpMethod.POST, "/admin/deliveries/987654/reassign", "{\"rider_id\": " + demoRiderId + "}",
+                        401, 403, 403, 403, 404)
         );
         List<String> mismatches = new ArrayList<>();
         for (Object[] entry : matrix) {
@@ -585,6 +801,37 @@ class StaffAccountsPostgresIntegrationTests {
                   AND event_type = 'order.accepted'
                 """, String.class, order.id());
         return objectMapper.readValue(payload, OrderEventEnvelope.class);
+    }
+
+
+    /**
+     * Waits until some backend of this database is blocked on a lock (the rider's UPDATE behind the admin's).
+     */
+    private void awaitLockWaiter() throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        while (System.nanoTime() < deadline) {
+            Integer waiting = jdbcTemplate.queryForObject("""
+                    SELECT COUNT(*)
+                    FROM pg_stat_activity
+                    WHERE datname = current_database()
+                      AND wait_event_type = 'Lock'
+                    """, Integer.class);
+            if (waiting != null && waiting > 0) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        Assertions.fail("The rider's update never waited for the deactivation's row lock");
+    }
+
+
+    private int riderLoad(long riderId) {
+        return jdbcTemplate.queryForObject("SELECT active_deliveries FROM riders WHERE id = ?", Integer.class, riderId);
+    }
+
+
+    private String orderStatus(Long orderId) {
+        return jdbcTemplate.queryForObject("SELECT status FROM orders WHERE id = ?", String.class, orderId);
     }
 
 

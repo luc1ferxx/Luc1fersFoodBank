@@ -45,12 +45,16 @@ import java.util.UUID;
  * lock that writes its delivery event to the outbox in the same transaction. Repeating an action that already happened
  * returns the delivery unchanged. The rider API ({@link RiderService}) only reaches the rider's own deliveries; the
  * admin endpoints (ops and tests) reach any delivery.
+ *
+ * <p>Reassignment (admin): an open delivery moves to another active, on-duty rider, for example when its rider was
+ * deactivated. The delivery keeps its status, the load moves with it, and delivery.reassigned is published.
  */
 @Service
 public class DispatchService {
 
     static final String DISPATCH_CONSUMER = "dispatch-consumer";
     static final String DELIVERY_STATUS_CONFLICT = "DELIVERY_STATUS_CONFLICT";
+    static final String RIDER_NOT_DISPATCHABLE = "RIDER_NOT_DISPATCHABLE";
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DispatchService.class);
 
@@ -132,13 +136,89 @@ public class DispatchService {
     }
 
 
-    public List<DeliveryDto> getDeliveries(Long orderId, int limit) {
+    /**
+     * Moves an open delivery (ASSIGNED or PICKED_UP, status unchanged) to {@code riderId}, which must be active and on
+     * duty. Under the delivery row lock, both riders' rows are locked in id order (two opposite reassignments cannot
+     * deadlock), the load moves from the previous rider to the new one, and delivery.reassigned is written to the
+     * outbox, all in one transaction. Retrying with the same rider returns the delivery unchanged. The previous rider
+     * no longer sees the delivery and gets 404 on it; the new rider finishes it through the rider API.
+     *
+     * @throws ResourceNotFoundException for an unknown delivery or rider
+     * @throws ConflictException         DELIVERY_STATUS_CONFLICT when the delivery is DELIVERED or CANCELLED;
+     *                                   RIDER_NOT_DISPATCHABLE when the rider is inactive or off duty
+     */
+    @Transactional
+    public DeliveryDto reassign(Long deliveryId, Long riderId) {
+        DeliveryEntity delivery = deliveryRepository.lockById(deliveryId);
+        if (delivery == null) {
+            throw new ResourceNotFoundException("Delivery not found");
+        }
+        if (riderId.equals(delivery.riderId())) {
+            return new DeliveryDto(delivery, riderName(riderId));
+        }
+        DeliveryStatus status = DeliveryStatus.valueOf(delivery.status());
+        if (!status.holdsRider()) {
+            throw new ConflictException(
+                    DELIVERY_STATUS_CONFLICT,
+                    "Delivery is " + status + "; only an open delivery can be reassigned"
+            );
+        }
+        Long previousRiderId = delivery.riderId();
+        RiderEntity rider = lockRidersInIdOrder(previousRiderId, riderId);
+        if (rider == null) {
+            throw new ResourceNotFoundException("Rider not found");
+        }
+        if (!rider.active() || !rider.onDuty()) {
+            throw new ConflictException(RIDER_NOT_DISPATCHABLE, "Rider " + riderId + " is not active and on duty");
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        deliveryRepository.updateRider(delivery.id(), riderId, now);
+        riderRepository.decrementLoad(previousRiderId, now);
+        riderRepository.incrementLoad(riderId, now);
+        DeliveryEntity reassigned = new DeliveryEntity(
+                delivery.id(),
+                delivery.orderId(),
+                delivery.customerId(),
+                delivery.restaurantId(),
+                riderId,
+                delivery.status(),
+                delivery.assignedAt(),
+                delivery.pickedUpAt(),
+                delivery.deliveredAt(),
+                delivery.cancelledAt(),
+                now
+        );
+        enqueueDeliveryEvent(reassigned, FulfilmentEvents.DELIVERY_REASSIGNED, rider.name(), now);
+        LOGGER.info(
+                "Delivery reassigned: delivery_id={}, order_id={}, status={}, from_rider_id={}, to_rider_id={}",
+                delivery.id(),
+                delivery.orderId(),
+                delivery.status(),
+                previousRiderId,
+                riderId
+        );
+        return new DeliveryDto(reassigned, rider.name());
+    }
+
+
+    /**
+     * @param riderId a rider's open deliveries (ASSIGNED and PICKED_UP), when no order id is given
+     */
+    public List<DeliveryDto> getDeliveries(Long orderId, Long riderId, int limit) {
         List<DeliveryEntity> deliveries;
+        int boundedLimit = Math.max(1, Math.min(limit, 100));
         if (orderId != null) {
             DeliveryEntity delivery = deliveryRepository.findByOrderId(orderId);
             deliveries = delivery == null ? List.of() : List.of(delivery);
+        } else if (riderId != null) {
+            deliveries = deliveryRepository.findByRiderIdAndStatuses(
+                    riderId,
+                    List.of(DeliveryStatus.ASSIGNED.name(), DeliveryStatus.PICKED_UP.name()),
+                    boundedLimit
+            );
         } else {
-            deliveries = deliveryRepository.findRecent(Math.max(1, Math.min(limit, 100)));
+            deliveries = deliveryRepository.findRecent(boundedLimit);
         }
         return deliveries.stream()
                 .map(delivery -> new DeliveryDto(delivery, riderName(delivery.riderId())))
@@ -284,9 +364,34 @@ public class DispatchService {
     }
 
 
+    /**
+     * Locks both riders' rows in ascending id order and returns {@code riderId}'s, or null when it does not exist.
+     */
+    private RiderEntity lockRidersInIdOrder(Long previousRiderId, Long riderId) {
+        if (previousRiderId != null && previousRiderId < riderId) {
+            riderRepository.lockById(previousRiderId);
+            return riderRepository.lockById(riderId);
+        }
+        RiderEntity rider = riderRepository.lockById(riderId);
+        if (previousRiderId != null) {
+            riderRepository.lockById(previousRiderId);
+        }
+        return rider;
+    }
+
+
     private void enqueueDeliveryEvent(DeliveryEntity delivery, String riderName, LocalDateTime occurredAt) {
+        enqueueDeliveryEvent(delivery, DeliveryStatus.valueOf(delivery.status()).eventType(), riderName, occurredAt);
+    }
+
+
+    private void enqueueDeliveryEvent(
+            DeliveryEntity delivery,
+            String eventType,
+            String riderName,
+            LocalDateTime occurredAt
+    ) {
         String eventId = UUID.randomUUID().toString();
-        String eventType = DeliveryStatus.valueOf(delivery.status()).eventType();
         DeliveryEventEnvelope envelope = new DeliveryEventEnvelope(
                 eventId,
                 1,

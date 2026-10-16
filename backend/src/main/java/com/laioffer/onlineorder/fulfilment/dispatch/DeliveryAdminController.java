@@ -1,9 +1,11 @@
 package com.laioffer.onlineorder.fulfilment.dispatch;
 
 
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -12,8 +14,10 @@ import java.util.List;
 
 
 /**
- * Rider actions on any delivery, for ops and tests (ROLE_ADMIN only, see AppConfig). Riders themselves use
- * {@link RiderController}.
+ * Rider actions on any delivery, for ops and tests, and reassigning an open delivery to another rider (ROLE_ADMIN only,
+ * see AppConfig). Riders themselves use {@link RiderController}. Marking a delivery picked up or delivered here is a
+ * simulation: delivered completes the customer's order, so it is not a way to clear a deactivated rider's deliveries;
+ * reassign them instead.
  */
 @RestController
 public class DeliveryAdminController {
@@ -26,12 +30,17 @@ public class DeliveryAdminController {
     }
 
 
+    /**
+     * @param orderId one order's delivery
+     * @param riderId a rider's open deliveries (ASSIGNED and PICKED_UP), for example before or after deactivating them
+     */
     @GetMapping("/admin/deliveries")
     public List<DeliveryDto> getDeliveries(
             @RequestParam(name = "order_id", required = false) Long orderId,
+            @RequestParam(name = "rider_id", required = false) Long riderId,
             @RequestParam(defaultValue = "50") int limit
     ) {
-        return dispatchService.getDeliveries(orderId, limit);
+        return dispatchService.getDeliveries(orderId, riderId, limit);
     }
 
 
@@ -44,5 +53,14 @@ public class DeliveryAdminController {
     @PostMapping("/admin/deliveries/{deliveryId}/delivered")
     public DeliveryDto markDelivered(@PathVariable Long deliveryId) {
         return dispatchService.markDelivered(deliveryId);
+    }
+
+
+    /**
+     * Moves an open delivery to another active, on-duty rider (body {"rider_id": n}); idempotent for the same rider.
+     */
+    @PostMapping("/admin/deliveries/{deliveryId}/reassign")
+    public DeliveryDto reassign(@PathVariable Long deliveryId, @Valid @RequestBody ReassignDeliveryBody body) {
+        return dispatchService.reassign(deliveryId, body.riderId());
     }
 }

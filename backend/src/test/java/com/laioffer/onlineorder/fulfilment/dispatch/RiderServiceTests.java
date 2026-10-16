@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.fulfilment.dispatch;
 
 
+import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -75,12 +76,15 @@ class RiderServiceTests {
     @Test
     void setOnDuty_shouldOnlyWriteAChange() {
         Mockito.when(riderRepository.findByCustomerId(CUSTOMER_ID)).thenReturn(rider(true, false), rider(true, true));
+        Mockito.when(riderRepository.updateOnDutyIfActive(Mockito.eq(RIDER_ID), Mockito.eq(true), Mockito.any()))
+                .thenReturn(1);
         Mockito.when(riderRepository.findById(RIDER_ID)).thenReturn(Optional.of(rider(true, true)));
 
         Assertions.assertTrue(service.setOnDuty(CUSTOMER_ID, true).onDuty());
         Assertions.assertTrue(service.setOnDuty(CUSTOMER_ID, true).onDuty());
 
-        Mockito.verify(riderRepository, Mockito.times(1)).updateOnDuty(Mockito.eq(RIDER_ID), Mockito.eq(true), Mockito.any());
+        Mockito.verify(riderRepository, Mockito.times(1))
+                .updateOnDutyIfActive(Mockito.eq(RIDER_ID), Mockito.eq(true), Mockito.any());
     }
 
 
@@ -90,15 +94,95 @@ class RiderServiceTests {
 
         Assertions.assertThrows(AccessDeniedException.class, () -> service.setOnDuty(CUSTOMER_ID, true));
 
-        Mockito.verify(riderRepository, Mockito.never()).updateOnDuty(Mockito.anyLong(), Mockito.anyBoolean(), Mockito.any());
+        Mockito.verify(riderRepository, Mockito.never())
+                .updateOnDutyIfActive(Mockito.anyLong(), Mockito.anyBoolean(), Mockito.any());
     }
 
 
     @Test
-    void setActive_shouldReportAnUnknownRider() {
-        Mockito.when(riderRepository.updateActive(Mockito.eq(99L), Mockito.eq(false), Mockito.any())).thenReturn(0);
+    void setOnDuty_whenDeactivatedAfterTheCheck_shouldBeForbiddenInsteadOfLeavingAnInactiveRiderOnDuty() {
+        // The rider read as active, but the guarded write finds the row deactivated in between.
+        Mockito.when(riderRepository.findByCustomerId(CUSTOMER_ID)).thenReturn(rider(true, false));
+        Mockito.when(riderRepository.updateOnDutyIfActive(Mockito.eq(RIDER_ID), Mockito.eq(true), Mockito.any()))
+                .thenReturn(0);
 
-        Assertions.assertThrows(ResourceNotFoundException.class, () -> service.setActive(99L, false));
+        Assertions.assertThrows(AccessDeniedException.class, () -> service.setOnDuty(CUSTOMER_ID, true));
+
+        Mockito.verify(riderRepository, Mockito.never()).findById(Mockito.anyLong());
+    }
+
+
+    @Test
+    void update_shouldReportAnUnknownRider() {
+        Assertions.assertThrows(ResourceNotFoundException.class, () -> service.update(99L, false, null));
+
+        Mockito.verify(riderRepository, Mockito.never())
+                .updateStatus(Mockito.anyLong(), Mockito.anyBoolean(), Mockito.anyBoolean(), Mockito.any());
+    }
+
+
+    @Test
+    void update_deactivating_shouldAlsoTakeTheRiderOffDuty() {
+        Mockito.when(riderRepository.lockById(RIDER_ID)).thenReturn(rider(true, true));
+
+        RiderEntity updated = service.update(RIDER_ID, false, null);
+
+        Assertions.assertFalse(updated.active());
+        Assertions.assertFalse(updated.onDuty());
+        Mockito.verify(riderRepository).updateStatus(Mockito.eq(RIDER_ID), Mockito.eq(false), Mockito.eq(false), Mockito.any());
+    }
+
+
+    @Test
+    void update_reactivatingAlone_shouldLeaveTheRiderOffDuty() {
+        Mockito.when(riderRepository.lockById(RIDER_ID)).thenReturn(rider(false, false));
+
+        RiderEntity updated = service.update(RIDER_ID, true, null);
+
+        Assertions.assertTrue(updated.active());
+        Assertions.assertFalse(updated.onDuty());
+        Mockito.verify(riderRepository).updateStatus(Mockito.eq(RIDER_ID), Mockito.eq(true), Mockito.eq(false), Mockito.any());
+    }
+
+
+    @Test
+    void update_onDuty_shouldPutAnActiveRiderOnDutyAndReactivateWithBothFlags() {
+        Mockito.when(riderRepository.lockById(RIDER_ID)).thenReturn(rider(true, false), rider(false, false));
+
+        Assertions.assertTrue(service.update(RIDER_ID, null, true).onDuty());
+        RiderEntity reactivated = service.update(RIDER_ID, true, true);
+
+        Assertions.assertTrue(reactivated.active());
+        Assertions.assertTrue(reactivated.onDuty());
+        Mockito.verify(riderRepository, Mockito.times(2))
+                .updateStatus(Mockito.eq(RIDER_ID), Mockito.eq(true), Mockito.eq(true), Mockito.any());
+    }
+
+
+    @Test
+    void update_shouldNeverLeaveAnInactiveRiderOnDuty() {
+        Mockito.when(riderRepository.lockById(RIDER_ID)).thenReturn(rider(false, false), rider(true, true));
+
+        ConflictException inactive = Assertions.assertThrows(
+                ConflictException.class, () -> service.update(RIDER_ID, null, true));
+        ConflictException contradictory = Assertions.assertThrows(
+                ConflictException.class, () -> service.update(RIDER_ID, false, true));
+
+        Assertions.assertEquals("RIDER_INACTIVE", inactive.getCode());
+        Assertions.assertEquals("RIDER_INACTIVE", contradictory.getCode());
+        Mockito.verify(riderRepository, Mockito.never())
+                .updateStatus(Mockito.anyLong(), Mockito.anyBoolean(), Mockito.anyBoolean(), Mockito.any());
+    }
+
+
+    @Test
+    void update_withoutAChange_shouldNotWrite() {
+        Mockito.when(riderRepository.lockById(RIDER_ID)).thenReturn(rider(true, true));
+
+        Assertions.assertTrue(service.update(RIDER_ID, true, true).onDuty());
+
+        Mockito.verify(riderRepository, Mockito.never())
+                .updateStatus(Mockito.anyLong(), Mockito.anyBoolean(), Mockito.anyBoolean(), Mockito.any());
     }
 
 

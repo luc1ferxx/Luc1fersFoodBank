@@ -320,6 +320,133 @@ class DispatchServiceTests {
     }
 
 
+    @Test
+    void reassign_shouldMoveTheOpenDeliveryAndItsLoadToTheNewRiderAndPublishDeliveryReassigned() {
+        Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "PICKED_UP"));
+        Mockito.when(riderRepository.lockById(3L)).thenReturn(rider(3L, "Alice"));
+        Mockito.when(riderRepository.lockById(4L)).thenReturn(rider(4L, "Bob"));
+
+        DeliveryDto reassigned = service.reassign(7L, 4L);
+
+        Assertions.assertEquals(4L, reassigned.riderId());
+        Assertions.assertEquals("Bob", reassigned.riderName());
+        Assertions.assertEquals("PICKED_UP", reassigned.status(), "the delivery keeps its status");
+        Assertions.assertNotNull(reassigned.pickedUpAt());
+        // The delivery first, then both riders in id order.
+        org.mockito.InOrder lockOrder = Mockito.inOrder(deliveryRepository, riderRepository);
+        lockOrder.verify(deliveryRepository).lockById(7L);
+        lockOrder.verify(riderRepository).lockById(3L);
+        lockOrder.verify(riderRepository).lockById(4L);
+        Mockito.verify(deliveryRepository).updateRider(Mockito.eq(7L), Mockito.eq(4L), Mockito.any());
+        Mockito.verify(riderRepository).decrementLoad(Mockito.eq(3L), Mockito.any());
+        Mockito.verify(riderRepository).incrementLoad(Mockito.eq(4L), Mockito.any());
+        Mockito.verify(deliveryRepository, Mockito.never())
+                .updateStatus(Mockito.anyLong(), Mockito.anyString(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+        ArgumentCaptor<Object> envelope = ArgumentCaptor.forClass(Object.class);
+        Mockito.verify(outboxService).enqueueEvent(
+                Mockito.eq("DELIVERY"),
+                Mockito.eq(7L),
+                Mockito.eq("delivery-events"),
+                Mockito.eq(String.valueOf(ORDER_ID)),
+                Mockito.eq("delivery.reassigned"),
+                Mockito.anyString(),
+                envelope.capture()
+        );
+        DeliveryEventEnvelope event = (DeliveryEventEnvelope) envelope.getValue();
+        Assertions.assertEquals(4L, event.data().riderId());
+        Assertions.assertEquals("Bob", event.data().riderName());
+        Assertions.assertEquals("PICKED_UP", event.data().status());
+    }
+
+
+    @Test
+    void reassign_toALowerRiderId_shouldStillLockTheRidersInIdOrder() {
+        Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "ASSIGNED"));
+        Mockito.when(riderRepository.lockById(2L)).thenReturn(rider(2L, "Carol"));
+
+        Assertions.assertEquals(2L, service.reassign(7L, 2L).riderId());
+
+        org.mockito.InOrder lockOrder = Mockito.inOrder(riderRepository);
+        lockOrder.verify(riderRepository).lockById(2L);
+        lockOrder.verify(riderRepository).lockById(3L);
+        Mockito.verify(riderRepository).decrementLoad(Mockito.eq(3L), Mockito.any());
+        Mockito.verify(riderRepository).incrementLoad(Mockito.eq(2L), Mockito.any());
+    }
+
+
+    @Test
+    void reassign_toTheCurrentRider_shouldReturnTheDeliveryUnchanged() {
+        Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "ASSIGNED"));
+        Mockito.when(riderRepository.findById(3L)).thenReturn(Optional.of(rider(3L, "Alice")));
+
+        DeliveryDto unchanged = service.reassign(7L, 3L);
+
+        Assertions.assertEquals(3L, unchanged.riderId());
+        Mockito.verify(deliveryRepository, Mockito.never()).updateRider(Mockito.anyLong(), Mockito.anyLong(), Mockito.any());
+        Mockito.verify(riderRepository, Mockito.never()).lockById(Mockito.anyLong());
+        Mockito.verifyNoInteractions(outboxService);
+    }
+
+
+    @Test
+    void reassign_ofAFinishedDelivery_shouldConflict() {
+        Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "DELIVERED"), delivery(7L, "CANCELLED"));
+
+        for (int attempt = 0; attempt < 2; attempt++) {
+            ConflictException conflict = Assertions.assertThrows(ConflictException.class, () -> service.reassign(7L, 4L));
+            Assertions.assertEquals("DELIVERY_STATUS_CONFLICT", conflict.getCode());
+        }
+
+        Mockito.verifyNoInteractions(riderRepository, outboxService);
+    }
+
+
+    @Test
+    void reassign_toAnInactiveOffDutyOrUnknownRider_shouldChangeNothing() {
+        LocalDateTime now = LocalDateTime.now();
+        Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "ASSIGNED"));
+        Mockito.when(riderRepository.lockById(3L)).thenReturn(rider(3L, "Alice"));
+        Mockito.when(riderRepository.lockById(4L)).thenReturn(
+                new RiderEntity(4L, null, "Bob", null, true, false, 0, now, now),
+                new RiderEntity(4L, null, "Bob", null, false, false, 0, now, now),
+                null
+        );
+
+        for (int attempt = 0; attempt < 2; attempt++) {
+            ConflictException conflict = Assertions.assertThrows(ConflictException.class, () -> service.reassign(7L, 4L));
+            Assertions.assertEquals("RIDER_NOT_DISPATCHABLE", conflict.getCode());
+        }
+        Assertions.assertThrows(ResourceNotFoundException.class, () -> service.reassign(7L, 4L));
+
+        Mockito.verify(deliveryRepository, Mockito.never()).updateRider(Mockito.anyLong(), Mockito.anyLong(), Mockito.any());
+        Mockito.verify(riderRepository, Mockito.never()).decrementLoad(Mockito.anyLong(), Mockito.any());
+        Mockito.verify(riderRepository, Mockito.never()).incrementLoad(Mockito.anyLong(), Mockito.any());
+        Mockito.verifyNoInteractions(outboxService);
+    }
+
+
+    @Test
+    void reassign_ofAnUnknownDelivery_shouldReturnNotFound() {
+        Assertions.assertThrows(ResourceNotFoundException.class, () -> service.reassign(99L, 4L));
+
+        Mockito.verifyNoInteractions(riderRepository, outboxService);
+    }
+
+
+    @Test
+    void getDeliveries_forARider_shouldListTheirOpenDeliveries() {
+        Mockito.when(deliveryRepository.findByRiderIdAndStatuses(3L, java.util.List.of("ASSIGNED", "PICKED_UP"), 50))
+                .thenReturn(java.util.List.of(delivery(7L, "ASSIGNED")));
+        Mockito.when(riderRepository.findById(3L)).thenReturn(Optional.of(rider(3L, "Alice")));
+
+        java.util.List<DeliveryDto> deliveries = service.getDeliveries(null, 3L, 50);
+
+        Assertions.assertEquals(1, deliveries.size());
+        Assertions.assertEquals("Alice", deliveries.get(0).riderName());
+        Mockito.verify(deliveryRepository, Mockito.never()).findRecent(Mockito.anyInt());
+    }
+
+
     private void openDispatchOrder() {
         LocalDateTime createdAt = LocalDateTime.of(2026, 4, 4, 12, 0);
         Mockito.when(dispatchOrderRepository.lockByOrderId(ORDER_ID))

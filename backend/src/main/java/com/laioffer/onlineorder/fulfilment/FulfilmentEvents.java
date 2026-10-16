@@ -19,6 +19,11 @@ public final class FulfilmentEvents {
     public static final String DELIVERY_PICKED_UP = "delivery.picked_up";
     public static final String DELIVERY_DELIVERED = "delivery.delivered";
     public static final String DELIVERY_CANCELLED = "delivery.cancelled";
+    /**
+     * An admin moved an open delivery to another rider (POST /admin/deliveries/{id}/reassign); the status is unchanged.
+     * The order and notification consumers ignore it.
+     */
+    public static final String DELIVERY_REASSIGNED = "delivery.reassigned";
 
     /**
      * A paid order reached the inbox of a restaurant with at least one active merchant account, so a merchant is

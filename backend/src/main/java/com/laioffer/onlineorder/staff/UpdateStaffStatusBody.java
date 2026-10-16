@@ -5,7 +5,7 @@ import jakarta.validation.constraints.NotNull;
 
 
 /**
- * PATCH /admin/merchants/{merchantId} and PATCH /admin/riders/{riderId}.
+ * PATCH /admin/merchants/{merchantId}. Riders take {@link UpdateRiderStatusBody}.
  */
 public record UpdateStaffStatusBody(
         @NotNull

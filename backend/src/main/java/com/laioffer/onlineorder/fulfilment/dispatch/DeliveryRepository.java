@@ -87,6 +87,16 @@ public interface DeliveryRepository extends ListCrudRepository<DeliveryEntity, L
     @Modifying
     @Query("""
             UPDATE deliveries
+            SET rider_id = :riderId,
+                updated_at = :updatedAt
+            WHERE id = :id
+            """)
+    int updateRider(Long id, Long riderId, LocalDateTime updatedAt);
+
+
+    @Modifying
+    @Query("""
+            UPDATE deliveries
             SET status = :status,
                 picked_up_at = :pickedUpAt,
                 delivered_at = :deliveredAt,
