@@ -40,6 +40,8 @@ public class OrderDeadlinePoller implements SmartLifecycle {
     private final OrderDeadlineProcessor orderDeadlineProcessor;
     private final Duration interval;
     private ScheduledExecutorService executor;
+    // Only touched by the single poller thread.
+    private int consecutiveFailures;
 
 
     public OrderDeadlinePoller(
@@ -67,13 +69,23 @@ public class OrderDeadlinePoller implements SmartLifecycle {
 
 
     /**
-     * Never throws: an exception would cancel all later runs of a ScheduledExecutorService task.
+     * Never throws: an exception would cancel all later runs of a ScheduledExecutorService task. During an outage
+     * only the first failure of a streak is logged with its stack trace.
      */
     void poll() {
         try {
             orderDeadlineProcessor.fireDueDeadlines();
+            if (consecutiveFailures > 0) {
+                LOGGER.info("Order deadline poller resumed after {} failed poll(s)", consecutiveFailures);
+                consecutiveFailures = 0;
+            }
         } catch (Throwable ex) {
-            LOGGER.warn("Order deadline poll failed; retrying in {}", interval, ex);
+            consecutiveFailures++;
+            if (consecutiveFailures == 1) {
+                LOGGER.warn("Order deadline poll failed; retrying every {}", interval, ex);
+            } else {
+                LOGGER.warn("Order deadline poll failed {} times in a row: {}", consecutiveFailures, ex.toString());
+            }
         }
     }
 
