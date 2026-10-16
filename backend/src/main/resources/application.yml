@@ -205,6 +205,35 @@ app:
     dead-letter-retention: ${CLEANUP_DEAD_LETTER_RETENTION:30d}
     # Rows per DELETE statement; each statement must finish well within the pool's statement_timeout.
     batch-size: ${CLEANUP_BATCH_SIZE:5000}
+  # Two-level catalog cache (spring.cache.type=redis): Caffeine L1 per instance in front of Redis L2, with
+  # Redis pub/sub dropping other instances' L1 copies on writes. The L2 base TTL is
+  # spring.cache.redis.time-to-live. Redis keys: <key-namespace>:<version>:<cache>::<key>.
+  cache:
+    key-namespace: ${CACHE_KEY_NAMESPACE:onlineorder:cache}
+    l1:
+      # Upper bound for serving an entry whose invalidation message this instance missed.
+      ttl: ${CACHE_L1_TTL:30s}
+      menu-maximum-size: ${CACHE_L1_MENU_MAXIMUM_SIZE:10000}
+    l2:
+      # Each Redis write gets TTL * [1 - jitter, 1 + jitter] so entries loaded together do not expire together.
+      ttl-jitter: ${CACHE_L2_TTL_JITTER:0.15}
+      # After a Redis error or timeout (or 3 consecutive calls slower than slow-call-threshold), cache reads
+      # and write-backs skip Redis for open-duration and go to L1 and the database; then one request probes
+      # Redis again. A hung Redis then costs one spring.data.redis.timeout per open period instead of one or
+      # two per L1 miss. Evictions always go to Redis. open-duration 0 disables the breaker.
+      circuit-breaker:
+        open-duration: ${CACHE_L2_CIRCUIT_OPEN_DURATION:5s}
+        slow-call-threshold: ${CACHE_L2_SLOW_CALL_THRESHOLD:200ms}
+    # Second eviction after an admin catalog write, for a reader that cached the old row right after the
+    # first after-commit eviction. 0 disables it.
+    delayed-double-delete: ${CACHE_DELAYED_DOUBLE_DELETE:1s}
+  catalog:
+    # Cache-Control max-age for GET /restaurants/menu and GET /restaurant/{id}/menu (both also send an ETag).
+    http-max-age: ${CATALOG_HTTP_MAX_AGE:30s}
+    # A restaurant id missing from the cached restaurant list is looked up in the database at most once per
+    # interval per instance before the 404, so a restaurant created outside the admin API is served at once
+    # while random ids still cannot hammer the database. 0 checks every unknown id.
+    unknown-restaurant-recheck-interval: ${CATALOG_UNKNOWN_RESTAURANT_RECHECK_INTERVAL:1s}
   security:
     rate-limit:
       enabled: ${SECURITY_RATE_LIMIT_ENABLED:true}

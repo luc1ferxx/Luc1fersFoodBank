@@ -110,11 +110,14 @@ k6 run load-tests/order-flow.js
 
 Optional environment variables include `BASE_URL`, `VUS`, `DURATION`, `USER_COUNT`, `USER_PASSWORD`, and `USER_PREFIX`.
 
+`load-tests/catalog-read.js` is an anonymous read-only benchmark for the cached catalog endpoints (`BASE_URL`, `VUS`, `DURATION`; `CONDITIONAL=true` sends `If-None-Match`). Run it against the isolated compose project in `load-tests/catalog-bench.compose.yml` (ports 45433/46379; usage in the file header) and remove that project afterwards with `docker compose -f load-tests/catalog-bench.compose.yml down`.
+
 ## Edit Guidelines
 
 - Do not hand-edit generated frontend build output under `frontend/build/` or copied backend static output under `backend/src/main/resources/public/`; regenerate it through the frontend build/deploy commands when intentionally updating embedded assets.
 - Keep schema changes in versioned Flyway migrations under `backend/src/main/resources/db/migration`. Put non-destructive local/demo seed changes in `backend/src/main/resources/db/demo` when they are not required production schema.
 - DDL that H2 cannot run (partial indexes, `CREATE INDEX CONCURRENTLY`) goes in a versioned Java migration under `backend/src/main/java/db/migration` that only records its version on other databases; `V3__Add_outbox_unpublished_index` is the pattern. The `h2` profile runs the same migration list.
+- Catalog caching (`backend/src/main/java/com/laioffer/onlineorder/cache`, see README "Catalog Caching"): cached values are the `Catalog*Dto` records; bump the key version in `CatalogCaches` when one changes shape. Catalog writes must evict through `CatalogCacheInvalidator` (after commit), never by writing into the cache. New caches need a `TwoLevelCacheSpec`; unknown cache names are rejected. Redis outages are tested both refused (`CatalogRedisOutageIntegrationTests`) and hung (`CatalogRedisHangIntegrationTests`, which pauses its own Redis container); keep the hung case within its latency budget when changing the read path.
 - Treat checkout, cart mutation, order status changes, outbox publishing, idempotency, and DLT replay as correctness-sensitive paths; update focused tests when changing them.
 - In the frontend, a retry of the same checkout, cancel, or status change must reuse its `Idempotency-Key` (see `useCheckout`, `useOrders`, `useAdminTools`), and responses for superseded requests must be dropped through `useLatestRequest`; `src/App.test.jsx` covers both.
 

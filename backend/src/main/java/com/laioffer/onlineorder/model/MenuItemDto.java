@@ -19,4 +19,9 @@ public record MenuItemDto(
     public MenuItemDto(MenuItemEntity entity) {
         this(entity.id(), entity.name(), entity.description(), entity.price(), entity.imageUrl());
     }
+
+
+    public MenuItemDto(CatalogMenuItemDto item) {
+        this(item.id(), item.name(), item.description(), item.price(), item.imageUrl());
+    }
 }
