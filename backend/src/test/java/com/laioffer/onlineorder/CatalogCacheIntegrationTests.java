@@ -13,8 +13,9 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.resttestclient.TestRestTemplate;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -31,9 +32,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 
@@ -52,7 +53,8 @@ import java.util.function.BooleanSupplier;
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
-                "spring.autoconfigure.exclude=org.springframework.boot.autoconfigure.session.SessionAutoConfiguration",
+                "spring.autoconfigure.exclude=org.springframework.boot.session.autoconfigure.SessionAutoConfiguration," +
+                        "org.springframework.boot.session.data.redis.autoconfigure.SessionDataRedisAutoConfiguration",
                 "app.cache.delayed-double-delete=300ms",
                 "app.catalog.http-max-age=30s",
                 // Every unknown id is rechecked, so the 404 test cannot use up the interval of the next test.
@@ -60,10 +62,11 @@ import java.util.function.BooleanSupplier;
         }
 )
 @Testcontainers(disabledWithoutDocker = true)
+@AutoConfigureTestRestTemplate
 class CatalogCacheIntegrationTests {
 
     @Container
-    static PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
+    static PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine")
             .withDatabaseName("onlineorder")
             .withUsername("postgres")
             .withPassword("secret");

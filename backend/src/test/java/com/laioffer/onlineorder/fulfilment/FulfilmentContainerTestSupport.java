@@ -4,7 +4,8 @@ package com.laioffer.onlineorder.fulfilment;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.resttestclient.TestRestTemplate;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -20,8 +21,8 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.kafka.KafkaContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 
@@ -42,14 +43,15 @@ import java.util.function.Supplier;
  * next class's broker, those stale consumers join the new broker's consumer groups and take partitions away from the
  * next class's listeners.
  */
+@AutoConfigureTestRestTemplate
 @DirtiesContext
 abstract class FulfilmentContainerTestSupport {
 
     static final Duration EVENT_WAIT = Duration.ofSeconds(30);
 
 
-    static PostgreSQLContainer<?> postgres() {
-        return new PostgreSQLContainer<>("postgres:16-alpine")
+    static PostgreSQLContainer postgres() {
+        return new PostgreSQLContainer("postgres:16-alpine")
                 .withDatabaseName("onlineorder")
                 .withUsername("postgres")
                 .withPassword("secret");
@@ -68,7 +70,7 @@ abstract class FulfilmentContainerTestSupport {
 
     static void registerInfrastructure(
             DynamicPropertyRegistry registry,
-            PostgreSQLContainer<?> postgres,
+            PostgreSQLContainer postgres,
             GenericContainer<?> redis,
             KafkaContainer kafka
     ) {

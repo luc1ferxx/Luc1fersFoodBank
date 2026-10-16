@@ -1,14 +1,14 @@
 package com.laioffer.onlineorder.cache;
 
 
-import com.fasterxml.jackson.databind.JavaType;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ScanOptions;
-import org.springframework.data.redis.serializer.Jackson2JsonRedisSerializer;
+import org.springframework.data.redis.serializer.JacksonJsonRedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
+import tools.jackson.databind.JavaType;
+import tools.jackson.databind.ObjectMapper;
 
 
 import java.time.Duration;
@@ -44,7 +44,7 @@ public class RedisCacheStore implements RemoteCacheStore {
         template.setConnectionFactory(connectionFactory);
         template.setEnableDefaultSerializer(false);
         template.setKeySerializer(StringRedisSerializer.UTF_8);
-        template.setValueSerializer(new Jackson2JsonRedisSerializer<>(objectMapper, valueType));
+        template.setValueSerializer(new JacksonJsonRedisSerializer<>(objectMapper, valueType));
         template.afterPropertiesSet();
         this.redisTemplate = template;
         this.keyPrefix = keyPrefix;

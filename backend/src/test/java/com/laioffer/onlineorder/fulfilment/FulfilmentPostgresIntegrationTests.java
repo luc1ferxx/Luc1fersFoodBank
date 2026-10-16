@@ -1,7 +1,6 @@
 package com.laioffer.onlineorder.fulfilment;
 
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.fulfilment.dispatch.DispatchService;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantInboxService;
@@ -26,7 +25,7 @@ import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -34,9 +33,10 @@ import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import tools.jackson.databind.ObjectMapper;
 
 
 import java.time.LocalDateTime;
@@ -63,8 +63,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(properties = {
         // Sessions live in the MockMvc session instead of Redis.
         "spring.autoconfigure.exclude=" +
-                "org.springframework.boot.autoconfigure.session.SessionAutoConfiguration," +
-                "org.springframework.boot.autoconfigure.session.RedisSessionAutoConfiguration"
+                "org.springframework.boot.session.autoconfigure.SessionAutoConfiguration," +
+                "org.springframework.boot.session.data.redis.autoconfigure.SessionDataRedisAutoConfiguration"
 })
 @AutoConfigureMockMvc
 @Testcontainers(disabledWithoutDocker = true)
@@ -75,7 +75,7 @@ class FulfilmentPostgresIntegrationTests {
     static final String MERCHANT_PASSWORD = "merchant123";
 
     @Container
-    static PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
+    static PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine")
             .withDatabaseName("onlineorder")
             .withUsername("postgres")
             .withPassword("secret");

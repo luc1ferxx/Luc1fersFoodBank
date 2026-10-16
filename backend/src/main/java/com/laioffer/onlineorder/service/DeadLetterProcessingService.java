@@ -1,10 +1,10 @@
 package com.laioffer.onlineorder.service;
 
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.ObjectMapper;
 
 
 import java.nio.charset.StandardCharsets;

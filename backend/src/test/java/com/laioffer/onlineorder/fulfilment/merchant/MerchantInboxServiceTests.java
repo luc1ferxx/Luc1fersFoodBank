@@ -1,7 +1,6 @@
 package com.laioffer.onlineorder.fulfilment.merchant;
 
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.messaging.MerchantEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
@@ -14,6 +13,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
+import tools.jackson.databind.json.JsonMapper;
 
 
 import java.math.BigDecimal;
@@ -54,7 +54,7 @@ class MerchantInboxServiceTests {
                 merchantAccountRepository,
                 outboxService,
                 metricsService,
-                new ObjectMapper().findAndRegisterModules(),
+                JsonMapper.builder().build(),
                 processedEventService,
                 "merchant-events"
         );

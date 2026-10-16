@@ -7,7 +7,7 @@ import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.binder.MeterBinder;
 import io.micrometer.core.instrument.binder.cache.CaffeineCacheMetrics;
-import org.springframework.boot.actuate.metrics.cache.CacheMeterBinderProvider;
+import org.springframework.boot.cache.metrics.CacheMeterBinderProvider;
 
 
 /**

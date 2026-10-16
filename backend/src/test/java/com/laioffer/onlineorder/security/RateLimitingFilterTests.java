@@ -1,6 +1,5 @@
 package com.laioffer.onlineorder.security;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.error.ApiErrorResponseFactory;
 import com.laioffer.onlineorder.error.ApiErrorResponseWriter;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
@@ -16,6 +15,7 @@ import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.security.Principal;
 import java.time.Duration;
@@ -388,6 +388,6 @@ class RateLimitingFilterTests {
     }
 
     private ApiErrorResponseWriter errorResponseWriter() {
-        return new ApiErrorResponseWriter(new ApiErrorResponseFactory(), new ObjectMapper().findAndRegisterModules());
+        return new ApiErrorResponseWriter(new ApiErrorResponseFactory(), JsonMapper.builder().build());
     }
 }

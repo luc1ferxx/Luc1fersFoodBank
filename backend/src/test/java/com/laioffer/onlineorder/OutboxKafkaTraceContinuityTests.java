@@ -9,14 +9,16 @@ import io.opentelemetry.sdk.trace.data.SpanData;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
+import org.springframework.boot.micrometer.tracing.test.autoconfigure.AutoConfigureTracing;
+import org.springframework.boot.resttestclient.TestRestTemplate;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -27,15 +29,16 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -46,25 +49,28 @@ import java.util.concurrent.ThreadLocalRandom;
 /**
  * One trace from the checkout request to the Kafka consumer, across the outbox table: the HTTP request's trace
  * context is stored with the outbox row, the publisher's relay span continues it, the KafkaTemplate send span is
- * its child and puts the traceparent on the record, and the listener's consumer span continues that.
+ * its child and puts the traceparent on the record, and the listener's consumer span continues that. Also checks
+ * that a request's Redis commands are exported as its child spans.
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "management.tracing.sampling.probability=1.0",
-                "management.tracing.opentelemetry.export.schedule-delay=100ms"
+                "management.opentelemetry.tracing.export.schedule-delay=100ms"
         }
 )
-// Spring Boot tests switch tracing propagation off unless asked for. OTLP export stays off
-// (management.otlp.tracing.export.enabled defaults to false); spans go to the in-memory exporter below.
-@AutoConfigureObservability(metrics = false)
+// Spring Boot tests set management.tracing.export.enabled=false unless asked for, which also switches W3C propagation
+// off. OTLP export stays off (management.tracing.export.otlp.enabled follows TRACING_EXPORT_ENABLED, false by
+// default); spans go to the in-memory exporter below.
+@AutoConfigureTracing
 @Testcontainers(disabledWithoutDocker = true)
+@AutoConfigureTestRestTemplate
 // Closed after the class, so its Kafka consumers cannot join the groups of a later class's broker on a reused port.
 @DirtiesContext
 class OutboxKafkaTraceContinuityTests {
 
     @Container
-    static PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
+    static PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine")
             .withDatabaseName("onlineorder")
             .withUsername("postgres")
             .withPassword("secret");
@@ -162,7 +168,8 @@ class OutboxKafkaTraceContinuityTests {
                         () -> "outbox row should carry the request trace, got " + traceParent
                 ));
 
-        SpanData consumerSpan = awaitSpan(Duration.ofSeconds(30), traceId, SpanKind.CONSUMER, ORDER_TOPIC + " receive");
+        // Spring Kafka 4 names the listener span "<topic> process" (OpenTelemetry messaging conventions; 3.x: "receive").
+        SpanData consumerSpan = awaitSpan(Duration.ofSeconds(30), traceId, SpanKind.CONSUMER, ORDER_TOPIC + " process");
         SpanData producerSpan = findSpan(traceId, SpanKind.PRODUCER, ORDER_TOPIC + " send")
                 .orElseThrow(() -> new AssertionError("No Kafka send span in trace " + traceId + ": " + spans(traceId)));
         SpanData relaySpan = findSpan(traceId, SpanKind.CONSUMER, ORDER_TOPIC + " outbox relay")
@@ -184,6 +191,57 @@ class OutboxKafkaTraceContinuityTests {
                         publisherClass.equals(span.getAttributes().get(AttributeKey.stringKey("code.namespace")))),
                 "scheduled outbox poller spans should not be exported"
         );
+    }
+
+
+    /**
+     * Spring Boot 4 observes every Lettuce command, so the Redis work of a sampled request (here the session read
+     * and write) is exported as client spans of the request's trace; Spring Boot 3.5 only timed the commands.
+     * docs/operations.md describes the extra span volume and how to switch them off.
+     */
+    @Test
+    void authenticatedRequest_shouldExportItsRedisCommandsAsChildSpans() {
+        String sessionCookie = login();
+        String traceId = HexFormat.of().formatHex(randomBytes(16));
+        HttpHeaders headers = jsonHeaders(sessionCookie);
+        headers.set("traceparent", "00-" + traceId + "-" + HexFormat.of().formatHex(randomBytes(8)) + "-01");
+
+        ResponseEntity<String> cartResponse = restTemplate.exchange(
+                url("/cart"),
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                String.class
+        );
+        Assertions.assertEquals(HttpStatus.OK, cartResponse.getStatusCode());
+
+        SpanData serverSpan = awaitSpan(Duration.ofSeconds(10), traceId, SpanKind.SERVER, "http get /cart");
+        SpanData sessionRead = awaitSpan(Duration.ofSeconds(10), traceId, SpanKind.CLIENT, "hgetall");
+        List<SpanData> redisSpans = spans(traceId).stream()
+                .filter(span -> "redis".equals(span.getAttributes().get(AttributeKey.stringKey("db.system"))))
+                .toList();
+
+        Assertions.assertTrue(redisSpans.contains(sessionRead), () -> "hgetall should be a Redis span: " + spans(traceId));
+        redisSpans.forEach(redisSpan -> {
+            Assertions.assertEquals(SpanKind.CLIENT, redisSpan.getKind(), redisSpan::toString);
+            Assertions.assertTrue(
+                    descendsFrom(redisSpan, serverSpan, spans(traceId)),
+                    () -> "Redis span " + redisSpan.getName() + " should belong to the request: " + spans(traceId)
+            );
+        });
+    }
+
+
+    private static boolean descendsFrom(SpanData span, SpanData ancestor, List<SpanData> trace) {
+        Map<String, SpanData> byId = new HashMap<>();
+        trace.forEach(candidate -> byId.put(candidate.getSpanId(), candidate));
+        SpanData current = span;
+        while (current != null) {
+            if (current.getParentSpanId().equals(ancestor.getSpanId())) {
+                return true;
+            }
+            current = byId.get(current.getParentSpanId());
+        }
+        return false;
     }
 
 

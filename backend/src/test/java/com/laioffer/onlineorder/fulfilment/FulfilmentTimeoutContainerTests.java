@@ -12,10 +12,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 
 
 import java.time.Duration;
@@ -35,7 +35,7 @@ class FulfilmentTimeoutContainerTests extends FulfilmentContainerTestSupport {
     private static final Duration TIMEOUT = Duration.ofSeconds(8);
 
     @Container
-    static PostgreSQLContainer<?> POSTGRES = postgres();
+    static PostgreSQLContainer POSTGRES = postgres();
 
     @Container
     static GenericContainer<?> REDIS = redis();

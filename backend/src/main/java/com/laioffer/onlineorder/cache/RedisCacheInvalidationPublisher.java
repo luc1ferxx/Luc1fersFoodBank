@@ -1,9 +1,9 @@
 package com.laioffer.onlineorder.cache;
 
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 
 
 /**
@@ -48,7 +48,7 @@ public class RedisCacheInvalidationPublisher implements CacheInvalidationPublish
         String payload;
         try {
             payload = objectMapper.writeValueAsString(message);
-        } catch (JsonProcessingException ex) {
+        } catch (JacksonException ex) {
             throw new IllegalStateException("Could not serialize cache invalidation message", ex);
         }
         redisTemplate.convertAndSend(channel, payload);

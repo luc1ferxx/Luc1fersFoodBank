@@ -1,11 +1,12 @@
 package com.laioffer.onlineorder;
 
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.micrometer.tracing.test.autoconfigure.AutoConfigureTracing;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpSession;
@@ -13,6 +14,12 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -24,13 +31,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest(properties = {
         "spring.autoconfigure.exclude=" +
-                "org.springframework.boot.autoconfigure.session.SessionAutoConfiguration," +
-                "org.springframework.boot.autoconfigure.session.RedisSessionAutoConfiguration"
+                "org.springframework.boot.session.autoconfigure.SessionAutoConfiguration," +
+                "org.springframework.boot.session.data.redis.autoconfigure.SessionDataRedisAutoConfiguration"
 })
 @AutoConfigureMockMvc
-// Spring Boot tests switch tracing propagation off unless asked for; the trace id contract needs W3C extraction.
-// Span export stays off (management.otlp.tracing.export.enabled defaults to false).
-@AutoConfigureObservability(metrics = false)
+// Spring Boot tests set management.tracing.export.enabled=false unless asked for, which also switches W3C propagation
+// off; the trace id contract needs W3C extraction. Span export stays off (management.tracing.export.otlp.enabled
+// follows TRACING_EXPORT_ENABLED, false by default).
+@AutoConfigureTracing
 @ActiveProfiles("h2")
 class ApiContractIntegrationTests {
 
@@ -176,5 +184,42 @@ class ApiContractIntegrationTests {
                 .andExpect(jsonPath("$.trace_id").value("a3ce929d0e0e47364bf92f3577b34da6"))
                 .andExpect(jsonPath("$.status").value(401))
                 .andExpect(jsonPath("$.path").value("/cart"));
+    }
+
+
+    /**
+     * The field order and formats of the API's JSON are those of Jackson 2 (declaration order, ISO-8601 instants):
+     * clients and the catalog ETag see the same bytes after the Jackson 3 switch.
+     */
+    @Test
+    void jsonBodies_shouldKeepTheFieldOrderOfTheirDeclaration() throws Exception {
+        String error = mockMvc.perform(get("/cart"))
+                .andExpect(status().isUnauthorized())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        Assertions.assertEquals(List.of("code", "message", "trace_id", "status", "path", "timestamp"), keys(error), error);
+        Assertions.assertTrue(
+                error.matches(".*\"timestamp\":\"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z\"}"),
+                () -> "ISO-8601 instant expected: " + error
+        );
+
+        String menu = mockMvc.perform(get("/restaurant/1/menu"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String firstItem = menu.substring(0, menu.indexOf('}') + 1);
+        Assertions.assertEquals(List.of("id", "restaurant_id", "name", "description", "price", "image_url"), keys(firstItem), firstItem);
+    }
+
+
+    private static List<String> keys(String json) {
+        Matcher matcher = Pattern.compile("\"([a-z_]+)\":").matcher(json);
+        List<String> keys = new ArrayList<>();
+        while (matcher.find()) {
+            keys.add(matcher.group(1));
+        }
+        return keys;
     }
 }

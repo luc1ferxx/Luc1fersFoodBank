@@ -7,8 +7,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.context.ActiveProfiles;
@@ -30,7 +30,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * no-Set-Cookie checks live in {@link AnonymousSessionStoreTests}, which runs the real Spring Session filter.
  */
 @SpringBootTest(properties = {
-        "spring.autoconfigure.exclude=org.springframework.boot.autoconfigure.session.SessionAutoConfiguration"
+        "spring.autoconfigure.exclude=org.springframework.boot.session.autoconfigure.SessionAutoConfiguration," +
+                "org.springframework.boot.session.data.redis.autoconfigure.SessionDataRedisAutoConfiguration"
 })
 @AutoConfigureMockMvc
 @ActiveProfiles("h2")

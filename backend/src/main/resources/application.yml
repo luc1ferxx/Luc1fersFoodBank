@@ -30,6 +30,10 @@ spring:
   jackson:
     default-property-inclusion: non_null
     property-naming-strategy: SNAKE_CASE
+    mapper:
+      # Jackson 3 sorts properties alphabetically by default (record components keep their order either way, and
+      # every DTO here is a record); declaration order keeps the JSON of any other type as Jackson 2 wrote it.
+      sort-properties-alphabetically: false
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
@@ -110,8 +114,14 @@ spring:
     user: ${spring.datasource.username}
   session:
     store-type: redis
-    redis:
-      namespace: ${REDIS_SESSION_NAMESPACE:onlineorder:session}
+    data:
+      redis:
+        # The suffix versions the stored session format (JDK-serialized SecurityContext), like the catalog cache
+        # keys: pods of two releases share Redis during a rolling update or a rollback, and a pod that reads a
+        # session holding a class it lacks answers every request carrying it with an HTML 500. v2 = Spring
+        # Security 7 (FactorGrantedAuthority, unknown to Spring Boot 3.5). Bump it when RedisSessionFormatTests
+        # reports a change. REDIS_SESSION_NAMESPACE replaces only the prefix.
+        namespace: ${REDIS_SESSION_NAMESPACE:onlineorder:session}:v2
   cache:
     type: redis
     redis:
@@ -294,11 +304,14 @@ management:
   tracing:
     sampling:
       probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
-  otlp:
-    tracing:
-      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
-      export:
+    export:
+      otlp:
         enabled: ${TRACING_EXPORT_ENABLED:false}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   # The actuator moves to its own port when MANAGEMENT_SERVER_PORT is set (8081 on Kubernetes and in
   # deploy/observability): Prometheus scrapes and the kubelet probes it without a session, and it is never
   # exposed publicly.
