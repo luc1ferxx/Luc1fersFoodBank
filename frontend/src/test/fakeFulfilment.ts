@@ -55,12 +55,21 @@ export const deliveryFixture = (
 
 const NOW = "2026-10-16T12:30:00Z";
 
+const forbidden = () => apiError(403, "Access denied", { code: "FORBIDDEN" });
+
 /**
  * /merchant/** (ROLE_MERCHANT): the inbox of the merchant's restaurant in
  * `state.merchantOrders`. Commands are idempotent by state like the backend's: a
  * repeat returns the order unchanged, a wrong state is 409 ORDER_STATUS_CONFLICT.
+ * Like the backend, every request re-checks the account: a login without an active
+ * `state.user.merchant` gets 403 (replace `state.user` to deactivate mid-session).
  */
 export function merchantRoutes({ state, requireRole, recordStatusChange }: FakeContext) {
+  const asActiveMerchant = (handler: FakeHandler): FakeHandler =>
+    requireRole(ROLES.merchant, (request, match) =>
+      state.user?.merchant?.active === true ? handler(request, match) : forbidden(),
+    );
+
   const decide = (
     orderId: number,
     required: OrderStatus,
@@ -93,7 +102,7 @@ export function merchantRoutes({ state, requireRole, recordStatusChange }: FakeC
     [
       "GET",
       /^\/merchant\/orders$/,
-      requireRole(ROLES.merchant, (request) => {
+      asActiveMerchant((request) => {
         const status = request.query.get("status");
         const limit = Number(request.query.get("limit") ?? "50");
         const orders = status
@@ -105,14 +114,12 @@ export function merchantRoutes({ state, requireRole, recordStatusChange }: FakeC
     [
       "POST",
       /^\/merchant\/orders\/(\d+)\/accept$/,
-      requireRole(ROLES.merchant, (_request, match) =>
-        decide(idParam(match), "PAID", "ACCEPTED", null),
-      ),
+      asActiveMerchant((_request, match) => decide(idParam(match), "PAID", "ACCEPTED", null)),
     ],
     [
       "POST",
       /^\/merchant\/orders\/(\d+)\/reject$/,
-      requireRole(ROLES.merchant, (request, match) => {
+      asActiveMerchant((request, match) => {
         const reason = fieldsOf(requestJson(request), "body").optionalString("reason")?.trim();
         if (!reason) {
           return apiError(400, "Request validation failed", { code: "VALIDATION_FAILED" });
@@ -123,9 +130,7 @@ export function merchantRoutes({ state, requireRole, recordStatusChange }: FakeC
     [
       "POST",
       /^\/merchant\/orders\/(\d+)\/preparing$/,
-      requireRole(ROLES.merchant, (_request, match) =>
-        decide(idParam(match), "ACCEPTED", "PREPARING", null),
-      ),
+      asActiveMerchant((_request, match) => decide(idParam(match), "ACCEPTED", "PREPARING", null)),
     ],
   ];
   return routes;
@@ -134,14 +139,13 @@ export function merchantRoutes({ state, requireRole, recordStatusChange }: FakeC
 /**
  * /rider/** (ROLE_RIDER): `state.riderProfile` and the rider's own deliveries in
  * `state.deliveries`; any other id is 404. Picked-up and delivered are idempotent
- * by state; a wrong state is 409 DELIVERY_STATUS_CONFLICT.
+ * by state; a wrong state is 409 DELIVERY_STATUS_CONFLICT. Like the backend, every
+ * request re-checks the rider: no profile, or `active: false`, is 403 on all of them.
  */
 export function riderRoutes({ state, requireRole }: FakeContext) {
   const withProfile = (handler: FakeHandler): FakeHandler =>
     requireRole(ROLES.rider, (request, match) =>
-      state.riderProfile
-        ? handler(request, match)
-        : apiError(403, "Access denied", { code: "FORBIDDEN" }),
+      state.riderProfile?.active === true ? handler(request, match) : forbidden(),
     );
 
   const move = (

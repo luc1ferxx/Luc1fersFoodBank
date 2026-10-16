@@ -24,12 +24,22 @@ const fetchProfile = (_key: "me", signal: AbortSignal) => getRiderProfile({ sign
 const fetchDeliveries = (filter: RiderDeliveryFilter, signal: AbortSignal) =>
   getRiderDeliveries({ status: filter === "ACTIVE" ? undefined : filter, signal });
 
+const FORBIDDEN = 403;
+
+const isForbidden = (error: unknown) => error instanceof ApiError && error.status === FORBIDDEN;
+
 /**
  * The rider console: the rider's profile with the on-duty switch, and their own
  * deliveries with picked-up / delivered. Both are polled every 15 seconds while the
  * tab is visible, since assignments arrive asynchronously from the dispatch module.
  * The delivery commands are idempotent on the server; a 404 (not this rider's
  * delivery) or 409 (wrong state) re-reads the list.
+ *
+ * The backend re-checks the rider's active flag on every /rider/** request and
+ * answers 403 for a deactivated rider (or a login bound to none). A 403 from either
+ * read sets `forbidden`: polling stops, the raw 403 gives way to the console's
+ * notice, and Refresh checks again, since an admin may reactivate the rider. A
+ * command or availability change that comes back 403 re-reads both to find out.
  */
 export function useRiderConsole() {
   const [filter, setFilter] = useState<RiderDeliveryFilter>("ACTIVE");
@@ -43,14 +53,15 @@ export function useRiderConsole() {
   const deliveries = useLiveResource(filter, fetchDeliveries, "Unable to load your deliveries.");
   const { reload: reloadProfile, applyAndReload: applyProfile } = profile;
   const { reload: reloadDeliveries, applyAndReload: applyDeliveries } = deliveries;
+  const forbidden = profile.errorStatus === FORBIDDEN || deliveries.errorStatus === FORBIDDEN;
 
-  usePolling(
-    () => {
-      reloadProfile();
-      reloadDeliveries();
-    },
-    { enabled: polling, intervalMs: RIDER_POLL_MS },
-  );
+  const reloadAll = useCallback(() => {
+    reloadProfile();
+    reloadDeliveries();
+  }, [reloadProfile, reloadDeliveries]);
+
+  // Polling a 403 would only repeat it; Refresh checks again.
+  usePolling(reloadAll, { enabled: polling && !forbidden, intervalMs: RIDER_POLL_MS });
 
   const setOnDuty = useCallback(
     (onDuty: boolean) => {
@@ -58,12 +69,16 @@ export function useRiderConsole() {
       setAvailabilityError("");
       return updateRiderAvailability(onDuty)
         .then((updated) => applyProfile(() => updated))
-        .catch((requestError: unknown) =>
-          setAvailabilityError(errorCopy(requestError, "Unable to change your availability.")),
-        )
+        .catch((requestError: unknown) => {
+          setAvailabilityError(errorCopy(requestError, "Unable to change your availability."));
+          if (isForbidden(requestError)) {
+            // Deactivated meanwhile? The profile read turns that into the console's notice.
+            reloadProfile();
+          }
+        })
         .finally(() => setAvailabilityPending(false));
     },
-    [applyProfile],
+    [applyProfile, reloadProfile],
   );
 
   const run = useCallback(
@@ -100,7 +115,9 @@ export function useRiderConsole() {
               errorCopy(requestError, `Unable to update delivery #${deliveryId}.`),
             ),
           );
-          if (
+          if (isForbidden(requestError)) {
+            reloadAll();
+          } else if (
             requestError instanceof ApiError &&
             (requestError.status === 404 || requestError.status === 409)
           ) {
@@ -112,7 +129,7 @@ export function useRiderConsole() {
           setPending((current) => withoutEntry(current, deliveryId));
         });
     },
-    [applyDeliveries, reloadDeliveries, reloadProfile],
+    [applyDeliveries, reloadAll, reloadDeliveries, reloadProfile],
   );
 
   const markPickedUp = useCallback((delivery: RiderDelivery) => run(delivery, "picked-up"), [run]);
@@ -120,7 +137,9 @@ export function useRiderConsole() {
 
   return {
     profile: profile.data,
-    profileError: profile.error,
+    /** A read came back 403: the rider is deactivated (or the login is not a rider). */
+    forbidden,
+    profileError: profile.errorStatus === FORBIDDEN ? "" : profile.error,
     availabilityPending,
     availabilityError,
     setOnDuty,
@@ -129,11 +148,8 @@ export function useRiderConsole() {
     deliveries: deliveries.data ?? [],
     deliveriesLoaded: deliveries.data !== null,
     deliveriesLoading: deliveries.loading,
-    deliveriesError: deliveries.error,
-    reload: () => {
-      reloadProfile();
-      reloadDeliveries();
-    },
+    deliveriesError: deliveries.errorStatus === FORBIDDEN ? "" : deliveries.error,
+    reload: reloadAll,
     polling,
     setPolling,
     pending,

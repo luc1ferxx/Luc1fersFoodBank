@@ -14,6 +14,8 @@ import { usePolling } from "./usePolling";
 
 export const MERCHANT_POLL_MS = 15000;
 
+const FORBIDDEN = 403;
+
 export type MerchantStatusFilter = "ALL" | OrderStatus;
 export type MerchantCommand = "accept" | "reject" | "preparing";
 
@@ -45,6 +47,11 @@ const sendCommand = (orderId: number, command: MerchantCommand, reason: string) 
  * so a retry needs no Idempotency-Key. A command's result replaces the order on
  * screen at once and drops any list read that started before it; a 404 or 409 (the
  * order moved on meanwhile, e.g. the customer cancelled) re-reads the list.
+ *
+ * The backend re-checks the merchant account on every /merchant/** request and
+ * answers 403 when it is deactivated (or not bound to a restaurant). A list read
+ * that comes back 403 sets `forbidden`: polling stops, the raw 403 gives way to the
+ * console's notice, and Refresh checks again. A command's 403 re-reads the list.
  */
 export function useMerchantOrders() {
   const [filter, setFilter] = useState<MerchantStatusFilter>("ALL");
@@ -54,8 +61,10 @@ export function useMerchantOrders() {
   const [notice, setNotice] = useState("");
   const orders = useLiveResource(filter, fetchMerchantOrders, "Unable to load the orders.");
   const { reload, applyAndReload } = orders;
+  const forbidden = orders.errorStatus === FORBIDDEN;
 
-  usePolling(reload, { enabled: polling, intervalMs: MERCHANT_POLL_MS });
+  // Polling a 403 would only repeat it; Refresh checks again.
+  usePolling(reload, { enabled: polling && !forbidden, intervalMs: MERCHANT_POLL_MS });
 
   const run = useCallback(
     (order: MerchantOrder, command: MerchantCommand, reason = ""): Promise<boolean> => {
@@ -85,7 +94,9 @@ export function useMerchantOrders() {
           );
           if (
             requestError instanceof ApiError &&
-            (requestError.status === 404 || requestError.status === 409)
+            (requestError.status === 404 ||
+              requestError.status === 409 ||
+              requestError.status === FORBIDDEN)
           ) {
             reload();
           }
@@ -111,7 +122,9 @@ export function useMerchantOrders() {
     orders: orders.data ?? [],
     loaded: orders.data !== null,
     loading: orders.loading,
-    error: orders.error,
+    /** The list read came back 403: the account is deactivated (or not bound). */
+    forbidden,
+    error: forbidden ? "" : orders.error,
     reload,
     polling,
     setPolling,

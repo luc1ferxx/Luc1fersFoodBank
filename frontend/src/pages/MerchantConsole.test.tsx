@@ -14,7 +14,15 @@ import {
 } from "../test/fakeBackend";
 import { flushPromises, renderApp, resetVisibility, setVisibility } from "../test/helpers";
 
+const DEACTIVATED = "This merchant account is deactivated. Ask an admin to reactivate it.";
+
 const card = (orderId: number) => screen.findByRole("article", { name: `Order #${orderId}` });
+
+/** The merchant login as GET /me shows it once an admin (de)activated the account. */
+const withMerchantActive = (active: boolean) => ({
+  ...merchantUser,
+  merchant: { merchant_id: 3, restaurant_id: 1, restaurant_name: "Burger Barn", active },
+});
 
 const merchantBackend = () => {
   const backend = installFakeBackend({ user: merchantUser });
@@ -289,24 +297,61 @@ describe("merchant console", () => {
     expect(ordersRequests(backend)).toHaveLength(1);
   });
 
-  it("explains a deactivated merchant account", async () => {
-    installFakeBackend({
-      user: {
-        ...merchantUser,
-        merchant: {
-          merchant_id: 3,
-          restaurant_id: 1,
-          restaurant_name: "Burger Barn",
-          active: false,
-        },
-      },
-    });
+  it("explains a deactivated merchant account instead of showing the 403", async () => {
+    const backend = installFakeBackend({ user: withMerchantActive(false) });
     renderApp();
 
-    expect(
-      await screen.findByText(
-        "This merchant account is deactivated. Ask an admin to reactivate it.",
-      ),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(DEACTIVATED)).toBeInTheDocument();
+    await waitFor(() => expect(ordersRequests(backend)).toHaveLength(1));
+    await flushPromises();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("Loading orders...")).toBeNull();
+  });
+
+  it("stops polling once the account is deactivated and recovers on Refresh", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const backend = merchantBackend();
+    const user = renderApp();
+
+    const paid = await card(7);
+    // An admin deactivates the merchant; the backend answers 403 from the next request.
+    backend.state.user = withMerchantActive(false);
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS);
+    });
+
+    expect(await screen.findByText(DEACTIVATED)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(within(paid).getByRole("button", { name: "Accept" })).toBeDisabled();
+    expect(within(paid).getByRole("button", { name: "Reject" })).toBeDisabled();
+
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS * 3);
+    });
+    await flushPromises();
+    expect(ordersRequests(backend)).toHaveLength(2);
+    expect(screen.getByLabelText("Refresh every 15 seconds")).toBeDisabled();
+
+    backend.state.user = withMerchantActive(true);
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.queryByText(DEACTIVATED)).toBeNull());
+    expect(within(await card(7)).getByRole("button", { name: "Accept" })).toBeEnabled();
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS);
+    });
+    await waitFor(() => expect(ordersRequests(backend)).toHaveLength(4));
+  });
+
+  it("re-reads the list when a command comes back 403", async () => {
+    const backend = merchantBackend();
+    const user = renderApp();
+
+    const paid = await card(7);
+    backend.state.user = withMerchantActive(false);
+    await user.click(within(paid).getByRole("button", { name: "Accept" }));
+
+    expect(await screen.findByText(DEACTIVATED)).toBeInTheDocument();
+    expect(within(paid).getByRole("alert")).toHaveTextContent("403: Access denied");
+    expect(backend.state.merchantOrders[0]?.status).toBe("PAID");
   });
 });

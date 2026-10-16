@@ -25,6 +25,8 @@ const pendingCopy: Readonly<Record<MerchantCommand, string>> = {
 interface MerchantOrderCardProps {
   order: MerchantOrder;
   pending: MerchantCommand | undefined;
+  /** The account cannot act (deactivated): the commands are shown but disabled. */
+  locked: boolean;
   error: string;
   onAccept: (order: MerchantOrder) => Promise<boolean>;
   onReject: (order: MerchantOrder, reason: string) => Promise<boolean>;
@@ -34,6 +36,7 @@ interface MerchantOrderCardProps {
 function MerchantOrderCard({
   order,
   pending,
+  locked,
   error,
   onAccept,
   onReject,
@@ -43,7 +46,7 @@ function MerchantOrderCard({
   const [reason, setReason] = useState("");
   const [reasonError, setReasonError] = useState("");
   const reasonId = useId();
-  const busy = pending !== undefined;
+  const busy = pending !== undefined || locked;
 
   const submitReject = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -156,6 +159,9 @@ export function MerchantConsole({ user }: { user: CurrentUser }) {
   const merchant = useMerchantOrders();
   const binding = user.merchant;
   const restaurantName = binding?.restaurant_name ?? "Your restaurant";
+  // GET /me describes the account at sign-in; a 403 from /merchant/orders is newer, and
+  // so is a list that loaded after an admin reactivated the account.
+  const locked = merchant.forbidden || (!merchant.loaded && binding?.active === false);
 
   return (
     <main className="console">
@@ -180,7 +186,7 @@ export function MerchantConsole({ user }: { user: CurrentUser }) {
             This login is not bound to a restaurant yet. Ask an admin to provision it.
           </Alert>
         ) : null}
-        {binding && !binding.active ? (
+        {binding && locked ? (
           <Alert tone="neutral">
             This merchant account is deactivated. Ask an admin to reactivate it.
           </Alert>
@@ -203,7 +209,8 @@ export function MerchantConsole({ user }: { user: CurrentUser }) {
           <label className="toggle-row">
             <input
               type="checkbox"
-              checked={merchant.polling}
+              checked={merchant.polling && !merchant.forbidden}
+              disabled={merchant.forbidden}
               onChange={(event) => merchant.setPolling(event.target.checked)}
             />
             Refresh every 15 seconds
@@ -214,7 +221,7 @@ export function MerchantConsole({ user }: { user: CurrentUser }) {
         <Alert tone="success">{merchant.notice}</Alert>
 
         {!merchant.loaded ? (
-          merchant.error ? null : (
+          merchant.error || merchant.forbidden || locked ? null : (
             <div className="loading-row">Loading orders...</div>
           )
         ) : merchant.orders.length === 0 ? (
@@ -230,6 +237,7 @@ export function MerchantConsole({ user }: { user: CurrentUser }) {
                 key={order.order_id}
                 order={order}
                 pending={merchant.pending.get(order.order_id)}
+                locked={locked}
                 error={merchant.commandErrors.get(order.order_id) ?? ""}
                 onAccept={merchant.accept}
                 onReject={merchant.reject}

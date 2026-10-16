@@ -1,4 +1,4 @@
-import type { RiderDelivery } from "../api/dto";
+import type { CurrentUser, RiderDelivery } from "../api/dto";
 import { Alert } from "../components/Alert";
 import {
   type RiderCommand,
@@ -21,13 +21,22 @@ const parseFilter = (value: string): RiderDeliveryFilter =>
 interface DeliveryCardProps {
   delivery: RiderDelivery;
   pending: RiderCommand | undefined;
+  /** The account cannot act (deactivated): the commands are shown but disabled. */
+  locked: boolean;
   error: string;
   onPickedUp: (delivery: RiderDelivery) => Promise<boolean>;
   onDelivered: (delivery: RiderDelivery) => Promise<boolean>;
 }
 
-function DeliveryCard({ delivery, pending, error, onPickedUp, onDelivered }: DeliveryCardProps) {
-  const busy = pending !== undefined;
+function DeliveryCard({
+  delivery,
+  pending,
+  locked,
+  error,
+  onPickedUp,
+  onDelivered,
+}: DeliveryCardProps) {
+  const busy = pending !== undefined || locked;
 
   return (
     <article className="order-card console-card" aria-label={`Delivery #${delivery.delivery_id}`}>
@@ -75,48 +84,58 @@ function DeliveryCard({ delivery, pending, error, onPickedUp, onDelivered }: Del
   );
 }
 
+const NOT_BOUND_COPY = "This login is not bound to a rider yet. Ask an admin to provision it.";
+const DEACTIVATED_COPY = "This rider account is deactivated. Ask an admin to reactivate it.";
+
 /** ROLE_RIDER: the on-duty switch and the rider's own deliveries. */
-export function RiderConsole() {
+export function RiderConsole({ user }: { user: CurrentUser }) {
   const rider = useRiderConsole();
   const { profile } = rider;
+  const binding = user.rider;
+  // GET /me describes the account at sign-in; the console's own reads are newer. The
+  // backend answers 403 on /rider/** for a deactivated rider, so a 403 counts as one.
+  const locked = rider.forbidden || (profile ? !profile.active : binding?.active === false);
+  const onDuty = profile?.on_duty ?? binding?.on_duty ?? false;
 
   return (
     <main className="console console--split">
       <section className="auth-panel console__side" aria-label="Rider status">
         <div className="panel-heading panel-heading--compact">
           <p className="section-kicker">Rider console</p>
-          <h2>{profile?.name ?? "Your shift"}</h2>
+          <h2>{profile?.name ?? binding?.name ?? "Your shift"}</h2>
         </div>
         <Alert tone="danger">{rider.profileError}</Alert>
-        {profile ? (
+        {locked ? (
+          <Alert tone="neutral">{binding ? DEACTIVATED_COPY : NOT_BOUND_COPY}</Alert>
+        ) : null}
+        {profile || (locked && binding) ? (
           <>
-            {!profile.active ? (
-              <Alert tone="neutral">
-                This rider account is deactivated. Ask an admin to reactivate it.
-              </Alert>
-            ) : null}
             <label className="toggle-row duty-switch">
               <input
                 type="checkbox"
                 role="switch"
-                checked={profile.on_duty}
-                disabled={rider.availabilityPending || !profile.active}
+                checked={onDuty}
+                disabled={rider.availabilityPending || locked}
                 onChange={(event) => void rider.setOnDuty(event.target.checked)}
               />
               On duty
             </label>
             <p className="quiet-copy">
-              {profile.on_duty
-                ? "You can be assigned new deliveries."
-                : "Go on duty to receive deliveries."}
+              {locked
+                ? "You get no new deliveries while the account is deactivated."
+                : onDuty
+                  ? "You can be assigned new deliveries."
+                  : "Go on duty to receive deliveries."}
             </p>
             <Alert tone="danger">{rider.availabilityError}</Alert>
-            <div className="meta-row">
-              <span>{profile.phone ?? "No phone on file"}</span>
-              <span>{profile.active_deliveries} active deliveries</span>
-            </div>
+            {profile ? (
+              <div className="meta-row">
+                <span>{profile.phone ?? "No phone on file"}</span>
+                <span>{profile.active_deliveries} active deliveries</span>
+              </div>
+            ) : null}
           </>
-        ) : rider.profileError ? null : (
+        ) : rider.profileError || locked ? null : (
           <div className="loading-row">Loading your profile...</div>
         )}
       </section>
@@ -127,6 +146,7 @@ export function RiderConsole() {
             <p className="section-kicker">My deliveries</p>
             <h2>Pick up and deliver</h2>
           </div>
+          {/* Also the way to check again after a 403, since polling stops then. */}
           <button
             className="ghost-button"
             type="button"
@@ -154,7 +174,8 @@ export function RiderConsole() {
           <label className="toggle-row">
             <input
               type="checkbox"
-              checked={rider.polling}
+              checked={rider.polling && !rider.forbidden}
+              disabled={rider.forbidden}
               onChange={(event) => rider.setPolling(event.target.checked)}
             />
             Refresh every 15 seconds
@@ -165,7 +186,11 @@ export function RiderConsole() {
         <Alert tone="success">{rider.notice}</Alert>
 
         {!rider.deliveriesLoaded ? (
-          rider.deliveriesError ? null : (
+          locked ? (
+            <div className="empty-state">
+              Your deliveries show up here once the account is active.
+            </div>
+          ) : rider.deliveriesError ? null : (
             <div className="loading-row">Loading deliveries...</div>
           )
         ) : rider.deliveries.length === 0 ? (
@@ -181,6 +206,7 @@ export function RiderConsole() {
                 key={delivery.delivery_id}
                 delivery={delivery}
                 pending={rider.pending.get(delivery.delivery_id)}
+                locked={locked}
                 error={rider.commandErrors.get(delivery.delivery_id) ?? ""}
                 onPickedUp={rider.markPickedUp}
                 onDelivered={rider.markDelivered}

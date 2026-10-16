@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { isAbortError } from "../api/client";
+import { ApiError, isAbortError } from "../api/client";
 import { errorCopy } from "../lib/format";
 import { useLatestRequest } from "./useLatestRequest";
 
@@ -8,6 +8,8 @@ interface Snapshot<TKey extends string, TData> {
   token: number;
   data: TData | null;
   error: string;
+  /** The HTTP status of the failed read, null after a successful one or a network error. */
+  errorStatus: number | null;
 }
 
 /**
@@ -35,7 +37,7 @@ export function useLiveResource<TKey extends string, TData>(
     fetcher(key, signal)
       .then((data) => {
         if (!signal.aborted) {
-          setSnapshot({ key, token, data, error: "" });
+          setSnapshot({ key, token, data, error: "", errorStatus: null });
         }
       })
       .catch((requestError: unknown) => {
@@ -46,6 +48,7 @@ export function useLiveResource<TKey extends string, TData>(
             token,
             data: current?.key === key ? current.data : null,
             error: errorCopy(requestError, fallbackMessage),
+            errorStatus: requestError instanceof ApiError ? (requestError.status ?? null) : null,
           }));
         }
       });
@@ -70,6 +73,8 @@ export function useLiveResource<TKey extends string, TData>(
     /** The data read for the current key, or null before the first read for it answers. */
     data: current ? current.data : null,
     error: current ? current.error : "",
+    /** The HTTP status of the latest read for the current key when it failed (403, say). */
+    errorStatus: current ? current.errorStatus : null,
     /** A read for the current key and reload count has not answered yet. */
     loading: snapshot === null || snapshot.key !== key || snapshot.token !== token,
     reload,

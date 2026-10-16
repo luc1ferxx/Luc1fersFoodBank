@@ -11,8 +11,22 @@ import {
 } from "../test/fakeBackend";
 import { flushPromises, renderApp, resetVisibility, setVisibility } from "../test/helpers";
 
+const DEACTIVATED = "This rider account is deactivated. Ask an admin to reactivate it.";
+
 const deliveryCard = (deliveryId: number) =>
   screen.findByRole("article", { name: `Delivery #${deliveryId}` });
+
+/** What an admin's PATCH /admin/riders/{id} does to the signed-in rider. */
+const setRiderActive = (backend: ReturnType<typeof installFakeBackend>, active: boolean) => {
+  const profile = backend.state.riderProfile;
+  if (!profile) {
+    throw new Error("missing rider profile");
+  }
+  profile.active = active;
+  if (!active) {
+    profile.on_duty = false;
+  }
+};
 
 const riderBackend = () => {
   const backend = installFakeBackend({ user: riderUser });
@@ -172,16 +186,92 @@ describe("rider console", () => {
     expect(reads()).toBe(2);
   });
 
-  it("disables the switch for a deactivated rider", async () => {
+  it("explains a rider deactivated before sign-in instead of polling 403s", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    // Like the backend: /me shows "active": false and every /rider/** request is 403.
     const backend = riderBackend();
-    if (backend.state.riderProfile) {
-      backend.state.riderProfile.active = false;
-    }
+    setRiderActive(backend, false);
+    const user = renderApp();
+
+    expect(await screen.findByText(DEACTIVATED)).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "On duty" })).toBeDisabled();
+    await waitFor(() => expect(backend.callsTo("GET", "/rider/deliveries")).toHaveLength(1));
+    await flushPromises();
+    expect(
+      screen.getByText("Your deliveries show up here once the account is active."),
+    ).toBeInTheDocument();
+    // The notice replaces the raw 403s.
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(RIDER_POLL_MS * 3);
+    });
+    await flushPromises();
+    expect(backend.callsTo("GET", "/rider/me")).toHaveLength(1);
+    expect(backend.callsTo("GET", "/rider/deliveries")).toHaveLength(1);
+    expect(screen.getByLabelText("Refresh every 15 seconds")).toBeDisabled();
+
+    // An admin reactivates the rider; Refresh checks again and polling resumes.
+    setRiderActive(backend, true);
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await deliveryCard(5)).toBeInTheDocument();
+    expect(screen.queryByText(DEACTIVATED)).toBeNull();
+    expect(screen.getByRole("switch", { name: "On duty" })).toBeEnabled();
+    act(() => {
+      vi.advanceTimersByTime(RIDER_POLL_MS);
+    });
+    await waitFor(() => expect(backend.callsTo("GET", "/rider/deliveries")).toHaveLength(3));
+  });
+
+  it("locks the console when a poll finds the rider deactivated mid-shift", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const backend = riderBackend();
+    renderApp();
+
+    const delivery = await deliveryCard(5);
+    setRiderActive(backend, false);
+    act(() => {
+      vi.advanceTimersByTime(RIDER_POLL_MS);
+    });
+
+    expect(await screen.findByText(DEACTIVATED)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    // What was on screen stays, but nothing can be done with it.
+    expect(within(delivery).getByRole("button", { name: "Picked up" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "On duty" })).toBeDisabled();
+
+    act(() => {
+      vi.advanceTimersByTime(RIDER_POLL_MS * 3);
+    });
+    await flushPromises();
+    expect(backend.callsTo("GET", "/rider/deliveries")).toHaveLength(2);
+  });
+
+  it("re-reads after a command comes back 403 and shows the deactivated notice", async () => {
+    const backend = riderBackend();
+    const user = renderApp();
+
+    const delivery = await deliveryCard(5);
+    setRiderActive(backend, false);
+    await user.click(within(delivery).getByRole("button", { name: "Picked up" }));
+
+    expect(await screen.findByText(DEACTIVATED)).toBeInTheDocument();
+    expect(within(delivery).getByRole("alert")).toHaveTextContent("403: Access denied");
+    expect(within(delivery).getByRole("button", { name: "Picked up" })).toBeDisabled();
+    expect(backend.state.deliveries[0]?.status).toBe("ASSIGNED");
+  });
+
+  it("explains a rider role without a rider binding", async () => {
+    const backend = installFakeBackend({ user: { ...riderUser, rider: null } });
+    backend.state.riderProfile = null;
     renderApp();
 
     expect(
-      await screen.findByText("This rider account is deactivated. Ask an admin to reactivate it."),
+      await screen.findByText(
+        "This login is not bound to a rider yet. Ask an admin to provision it.",
+      ),
     ).toBeInTheDocument();
-    expect(screen.getByRole("switch", { name: "On duty" })).toBeDisabled();
+    expect(screen.queryByRole("switch", { name: "On duty" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

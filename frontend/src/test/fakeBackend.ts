@@ -84,7 +84,7 @@ export interface FakeState {
   notifications: OrderNotification[];
   /** The signed-in merchant's restaurant inbox. */
   merchantOrders: MerchantOrder[];
-  /** The signed-in rider; null makes /rider/** answer 403. */
+  /** The signed-in rider; null or `active: false` makes /rider/** answer 403. */
   riderProfile: RiderProfile | null;
   /** The signed-in rider's deliveries. */
   deliveries: RiderDelivery[];
@@ -161,8 +161,21 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
   };
   const { recordStatusChange } = context;
 
+  // GET /me reads the rider row on every call, like the backend: a deactivation shows.
+  const currentUser = (signedIn: CurrentUser): CurrentUser =>
+    signedIn.rider && state.riderProfile
+      ? {
+          ...signedIn,
+          rider: {
+            ...signedIn.rider,
+            active: state.riderProfile.active,
+            on_duty: state.riderProfile.on_duty,
+          },
+        }
+      : signedIn;
+
   const sessionRoutes: FakeRoute[] = [
-    ["GET", /^\/me$/, () => (state.user ? json(state.user) : unauthorized())],
+    ["GET", /^\/me$/, () => (state.user ? json(currentUser(state.user)) : unauthorized())],
     [
       "POST",
       /^\/login$/,
