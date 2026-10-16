@@ -7,6 +7,7 @@ import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 import com.laioffer.onlineorder.model.OrderStatus;
@@ -27,11 +28,12 @@ import java.util.HexFormat;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Supplier;
 
 
 @Service
-public class OrderService {
+public class OrderService implements OrderLifecycleCommands {
 
     private static final int IDEMPOTENCY_KEY_MAX_LENGTH = 255;
     private static final String IDEMPOTENCY_STATUS_PROCESSING = "PROCESSING";
@@ -97,7 +99,7 @@ public class OrderService {
         if (order == null) {
             throw new ResourceNotFoundException("Order not found");
         }
-        return transitionLockedOrder(order, OrderStatus.normalize(targetStatus));
+        return transitionLockedOrder(order, OrderStatus.normalize(targetStatus), OrderLifecycleCommands.ADMIN_CANCELLED);
     }
 
 
@@ -125,7 +127,7 @@ public class OrderService {
                     if (order == null) {
                         throw new ResourceNotFoundException("Order not found");
                     }
-                    return transitionLockedOrder(order, normalizedTargetStatus);
+                    return transitionLockedOrder(order, normalizedTargetStatus, OrderLifecycleCommands.ADMIN_CANCELLED);
                 }
         );
     }
@@ -137,7 +139,7 @@ public class OrderService {
         if (order == null) {
             throw new ResourceNotFoundException("Order not found");
         }
-        return transitionLockedOrder(order, OrderStatus.CANCELLED);
+        return transitionLockedOrder(order, OrderStatus.CANCELLED, OrderLifecycleCommands.CUSTOMER_CANCELLED);
     }
 
 
@@ -164,7 +166,7 @@ public class OrderService {
                     if (order == null) {
                         throw new ResourceNotFoundException("Order not found");
                     }
-                    return transitionLockedOrder(order, OrderStatus.CANCELLED);
+                    return transitionLockedOrder(order, OrderStatus.CANCELLED, OrderLifecycleCommands.CUSTOMER_CANCELLED);
                 }
         );
     }
@@ -216,13 +218,88 @@ public class OrderService {
     }
 
 
-    private OrderDto transitionLockedOrder(OrderEntity currentOrder, OrderStatus targetStatus) {
+    @Override
+    @Transactional
+    public OrderDto transitionRestaurantOrder(
+            Long orderId,
+            Long restaurantId,
+            OrderStatus requiredStatus,
+            OrderStatus targetStatus,
+            String cancelReason
+    ) {
+        OrderEntity order = orderRepository.lockById(orderId);
+        if (order == null || restaurantId == null || !restaurantId.equals(order.restaurantId())) {
+            throw new ResourceNotFoundException("Order not found");
+        }
+        OrderStatus currentStatus = OrderStatus.normalize(order.status());
+        if (currentStatus == targetStatus) {
+            return getOrderDto(order);
+        }
+        if (currentStatus != requiredStatus) {
+            throw new ConflictException(
+                    OrderLifecycleCommands.ORDER_STATUS_CONFLICT,
+                    "Order is " + currentStatus + "; only " + requiredStatus + " orders can move to " + targetStatus
+            );
+        }
+        return transitionLockedOrder(order, targetStatus, cancelReason);
+    }
+
+
+    @Override
+    @Transactional
+    public Optional<OrderDto> cancelIfStillIn(Long orderId, OrderStatus expectedStatus, String cancelReason) {
+        OrderEntity order = orderRepository.lockById(orderId);
+        if (order == null || OrderStatus.normalize(order.status()) != expectedStatus) {
+            return Optional.empty();
+        }
+        return Optional.of(transitionLockedOrder(order, OrderStatus.CANCELLED, cancelReason));
+    }
+
+
+    @Override
+    @Transactional
+    public DeliveryCompletion completeDeliveredOrder(Long orderId) {
+        OrderEntity order = orderRepository.lockById(orderId);
+        if (order == null) {
+            return DeliveryCompletion.NOT_FOUND;
+        }
+        return switch (OrderStatus.normalize(order.status())) {
+            case PREPARING -> {
+                applyTransition(order, OrderStatus.COMPLETED, null);
+                yield DeliveryCompletion.COMPLETED;
+            }
+            case ACCEPTED -> {
+                OrderEntity preparing = applyTransition(order, OrderStatus.PREPARING, null).order();
+                applyTransition(preparing, OrderStatus.COMPLETED, null);
+                yield DeliveryCompletion.COMPLETED;
+            }
+            case COMPLETED -> DeliveryCompletion.ALREADY_COMPLETED;
+            case PLACED, PAID, CANCELLED -> DeliveryCompletion.IGNORED;
+        };
+    }
+
+
+    /**
+     * @param cancelReason stored on the order when {@code targetStatus} is CANCELLED; ignored otherwise
+     */
+    private OrderDto transitionLockedOrder(OrderEntity currentOrder, OrderStatus targetStatus, String cancelReason) {
         OrderStatus currentStatus = OrderStatus.normalize(currentOrder.status());
         currentStatus.validateTransitionTo(targetStatus);
         if (currentStatus == targetStatus) {
             return getOrderDto(currentOrder);
         }
 
+        AppliedTransition transition = applyTransition(currentOrder, targetStatus, cancelReason);
+        return new OrderDto(transition.order(), transition.items());
+    }
+
+
+    /**
+     * Saves the new status of a locked order and writes its order event to the outbox in the same transaction.
+     */
+    private AppliedTransition applyTransition(OrderEntity currentOrder, OrderStatus targetStatus, String cancelReason) {
+        OrderStatus currentStatus = OrderStatus.normalize(currentOrder.status());
+        currentStatus.validateTransitionTo(targetStatus);
         LocalDateTime transitionedAt = LocalDateTime.now();
         OrderEntity updatedOrder = orderRepository.save(new OrderEntity(
                 currentOrder.id(),
@@ -231,12 +308,16 @@ public class OrderService {
                 targetStatus.name(),
                 currentOrder.createdAt(),
                 currentOrder.restaurantId(),
-                currentOrder.cancelReason()
+                targetStatus == OrderStatus.CANCELLED ? cancelReason : currentOrder.cancelReason()
         ));
         List<OrderHistoryItemDto> items = getOrderItems(updatedOrder.id());
         orderEventOutboxService.enqueueOrderEvent(updatedOrder, items, null, transitionedAt);
         metricsService.recordOrderTransition(currentStatus.name(), targetStatus.name());
-        return new OrderDto(updatedOrder, items);
+        return new AppliedTransition(updatedOrder, items);
+    }
+
+
+    private record AppliedTransition(OrderEntity order, List<OrderHistoryItemDto> items) {
     }
 
 

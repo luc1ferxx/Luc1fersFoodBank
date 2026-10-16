@@ -76,6 +76,27 @@ class OrderEventOutboxServiceTests {
 
 
     @Test
+    void enqueueEvent_shouldStoreAnEventOfAnyAggregateOnItsOwnTopic() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+
+        service.enqueueEvent("DELIVERY", 7L, "delivery-events", "10", "delivery.assigned", "evt-7",
+                java.util.Map.of("eventId", "evt-7", "eventType", "delivery.assigned"));
+
+        OutboxEventEntity event = savedOutboxEvent(repository);
+        Assertions.assertEquals("DELIVERY", event.aggregateType());
+        Assertions.assertEquals(7L, event.aggregateId());
+        Assertions.assertEquals("delivery-events", event.topic());
+        Assertions.assertEquals("10", event.eventKey());
+        Assertions.assertEquals("delivery.assigned", event.eventType());
+        Assertions.assertEquals("evt-7", event.eventId());
+        Assertions.assertEquals("PENDING", event.status());
+        Assertions.assertEquals(0, event.attempts());
+        Assertions.assertTrue(event.payload().contains("\"eventType\":\"delivery.assigned\""));
+    }
+
+
+    @Test
     void readEnvelope_whenPayloadPredatesRestaurantAndReason_shouldLeaveThemNull() {
         OrderEventOutboxService service = newService(Mockito.mock(OutboxEventRepository.class));
 

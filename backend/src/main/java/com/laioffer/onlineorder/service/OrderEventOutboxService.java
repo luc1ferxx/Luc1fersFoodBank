@@ -95,14 +95,35 @@ public class OrderEventOutboxService {
                         order.cancelReason()
                 )
         );
+        enqueueEvent("ORDER", order.id(), orderTopic, String.valueOf(order.id()), eventType, eventId, envelope);
+    }
+
+
+    /**
+     * Stores an event of any aggregate in the outbox, in the caller's transaction, for the publisher to relay to
+     * {@code topic}. Every outbox write, order events included, goes through this method.
+     *
+     * @param eventKey the Kafka record key: events with the same key keep their order. Use the order id, so that
+     *                 all events about one order land on the same partition of each topic.
+     * @param envelope the event envelope, serialized to JSON as the record value; its event id is {@code eventId}
+     */
+    public void enqueueEvent(
+            String aggregateType,
+            Long aggregateId,
+            String topic,
+            String eventKey,
+            String eventType,
+            String eventId,
+            Object envelope
+    ) {
         LocalDateTime now = LocalDateTime.now();
         outboxEventRepository.save(new OutboxEventEntity(
                 null,
-                "ORDER",
-                order.id(),
+                aggregateType,
+                aggregateId,
                 eventId,
-                orderTopic,
-                String.valueOf(order.id()),
+                topic,
+                eventKey,
                 eventType,
                 serializePayload(envelope),
                 OUTBOX_STATUS_PENDING,
@@ -269,7 +290,7 @@ public class OrderEventOutboxService {
     }
 
 
-    private String serializePayload(OrderEventEnvelope payload) {
+    private String serializePayload(Object payload) {
         try {
             return objectMapper.writeValueAsString(payload);
         } catch (JsonProcessingException ex) {
