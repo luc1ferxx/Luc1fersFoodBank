@@ -3,7 +3,7 @@
 ## Project Shape
 
 - Full-stack food ordering app: React frontend in `frontend/`, Spring Boot backend in `backend/`.
-- Backend uses Java 17, Gradle wrapper 8.14.3, PostgreSQL, Redis, Kafka, Spring Session, Actuator, Flyway, and Testcontainers.
+- Backend uses Java 17, Spring Boot 4.1 (Spring Framework 7, Spring Security 7, Spring Kafka 4), Gradle wrapper 8.14.3, PostgreSQL, Redis, Kafka, Spring Session, Actuator, Flyway, and Testcontainers 2. JSON is Jackson 3 (`tools.jackson.*`; the annotations stay `com.fasterxml.jackson.annotation`). `docs/spring-boot-4-migration.md` lists every package, test-annotation and property change from Spring Boot 3; apply it to code written against Spring Boot 3.
 - Frontend is React 19 built with Vite 8 (`@vitejs/plugin-react`), tested with Vitest + jsdom + React Testing Library, and linted with ESLint (flat config, react-hooks rules) + Prettier. No UI component library. CI and Docker use Node 20 (the locked Vite, Vitest, ESLint, and jsdom together need Node `^20.19.0 || ^22.13.0 || >=24`).
 
 ## Common Commands
@@ -134,7 +134,7 @@ Optional environment variables include `BASE_URL`, `VUS`, `DURATION`, `USER_COUN
 
 Details in `docs/operations.md`.
 
-- Tracing is Micrometer Tracing + OpenTelemetry with W3C `traceparent`. `X-Trace-Id` and error-body `trace_id` are the OpenTelemetry trace id. Spans are exported only with `TRACING_EXPORT_ENABLED=true`; tests never export, and Spring Boot tests turn propagation off unless the class has `@AutoConfigureObservability` (needed to assert trace ids).
+- Tracing is Micrometer Tracing + OpenTelemetry with W3C `traceparent`. `X-Trace-Id` and error-body `trace_id` are the OpenTelemetry trace id. Spans are exported only with `TRACING_EXPORT_ENABLED=true`; tests never export, and Spring Boot tests turn propagation off (`management.tracing.export.enabled=false`) unless the class has `@AutoConfigureTracing` (needed to assert trace ids). Metrics export (the Prometheus endpoint) in tests needs `@AutoConfigureMetrics`.
 - Insert outbox rows through `OutboxEventRepository.save(...)`: `OutboxTraceContextCallback` stores the current traceparent in `outbox_events.trace_parent` (V6) and the publisher continues that trace. A hand-written `INSERT` loses the trace. Kafka observation is enabled for every `KafkaTemplate` and listener container factory bean by `TracingConfig`, including new ones.
 - `MANAGEMENT_SERVER_PORT=8081` (Kubernetes ConfigMap, the `app` profile of `deploy/observability`; not baked into the image) serves the actuator on its own port without a session; unset, the actuator stays on 8080 behind `ROLE_ADMIN` (local runs, tests, plain `docker run`). Point k6 at a split management port with `MANAGEMENT_URL`.
 - CI's `backend-test` job runs `./gradlew test jacocoTestReport jacocoTestCoverageVerification spotbugsMain -x buildFrontend -x syncFrontendBuild --no-daemon` (coverage minimums in `backend/build.gradle`; SpotBugs baseline in `backend/config/spotbugs/exclude.xml`). Its `config-lint` job validates `deploy/` and the workflows. `release.yml` runs CI, a Trivy gate (dated exceptions in `.trivyignore`; security patch overrides at the top of `backend/build.gradle`), an SBOM, the GHCR push and kustomize deploys (staging only with a `KUBE_CONFIG` secret; production through the protected environment).

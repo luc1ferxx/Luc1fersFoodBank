@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Java-17-b07219?style=for-the-badge" alt="Java 17" />
-  <img src="https://img.shields.io/badge/Spring%20Boot-3.5-6db33f?style=for-the-badge" alt="Spring Boot 3.5" />
+  <img src="https://img.shields.io/badge/Spring%20Boot-4.1-6db33f?style=for-the-badge" alt="Spring Boot 4.1" />
   <img src="https://img.shields.io/badge/React-19-61dafb?style=for-the-badge" alt="React 19" />
   <img src="https://img.shields.io/badge/PostgreSQL-15-4169e1?style=for-the-badge" alt="PostgreSQL 15" />
   <img src="https://img.shields.io/badge/Redis-7-dc382d?style=for-the-badge" alt="Redis 7" />
@@ -96,13 +96,13 @@ sequenceDiagram
 | Layer | Stack |
 | --- | --- |
 | Frontend | React 19, Vite, Vitest + React Testing Library, ESLint + Prettier, browser session cookies |
-| Backend | Java 17, Spring Boot, Spring MVC, Spring Security, Spring Data JDBC, Gradle |
+| Backend | Java 17, Spring Boot 4.1 (Spring Framework 7), Spring MVC, Spring Security 7, Spring Data JDBC, Jackson 3, Gradle |
 | Data | PostgreSQL, Flyway migrations, H2 fallback profile |
 | Runtime state | Redis for Spring Session, cache, and distributed rate-limit counters |
 | Messaging | Kafka, transactional outbox table, consumer deduplication table, dead-letter replay |
 | Observability | Spring Boot Actuator, Micrometer, Micrometer Tracing + OpenTelemetry (OTLP), Prometheus, Tempo, Grafana, structured JSON logs |
 | Delivery | Multi-stage non-root Docker image, Kubernetes (kustomize), GitHub Actions with JaCoCo, SpotBugs, CodeQL, dependency review, Trivy and SBOM |
-| Verification | JUnit, Spring Boot tests, Testcontainers, GitHub Actions |
+| Verification | JUnit 6, Spring Boot tests, Testcontainers 2, GitHub Actions |
 
 ---
 
@@ -286,7 +286,7 @@ The public catalog reads (`GET /restaurants/menu`, `GET /restaurant/{restaurantI
 | L2 | Redis, typed JSON | `spring.cache.redis.time-to-live` (10m) +/- `app.cache.l2.ttl-jitter` (15%) | all instances |
 
 - **Granular keys.** `restaurants::all` holds the restaurant list (basic fields) and `menu::<restaurantId>` holds one menu. `GET /restaurants/menu` is composed from them, with the same JSON shape as before. Redis keys are `onlineorder:cache:<version>:<cache>::<key>`, for example `onlineorder:cache:v1:menu::3`.
-- **Typed serialization.** Each cache has its own Jackson serializer bound to `CatalogRestaurantDto` or `CatalogMenuItemDto`: no default typing and no `@class` in Redis. When a cached DTO changes shape, bump its version in `CatalogCaches`; old and new code then use different keys during a rolling deploy, and an entry that cannot be read is treated as a miss.
+- **Typed serialization.** Each cache has its own Jackson serializer bound to `CatalogRestaurantDto` or `CatalogMenuItemDto`: no default typing and no `@class` in Redis. When a cached DTO changes shape, bump its version in `CatalogCaches`; old and new code then use different keys during a rolling deploy, and an entry that cannot be read (including one with unknown fields) is treated as a miss. The cache mapper keeps declaration order and strict reads on Jackson 3, so its JSON is byte for byte what the Spring Boot 3 (Jackson 2) instances wrote (`CatalogCacheSerializationTests`).
 - **Stampede, avalanche, penetration.** Cached methods use `@Cacheable(sync = true)`, and the L1 loads each key once per instance while concurrent callers wait (single flight). Redis TTLs are jittered so entries loaded together do not expire together. A menu request is first checked against the cached restaurant list. An id the list does not know gets one primary-key lookup in the database, at most once per `app.catalog.unknown-restaurant-recheck-interval` (1s) per instance: a restaurant inserted outside the admin API (SQL, a seed run) is served right away and the stale list is evicted, while a flood of random ids costs one lookup per second. Every other unknown id gets `404` from the cache, and nothing is cached for it.
 - **Invalidation.** Admin writes update the database and delete the affected entries only after the transaction commits (`TransactionSynchronization#afterCommit`); a rollback deletes nothing. Deletion order is Redis, then the local L1, then a Redis pub/sub message (`onlineorder:cache:invalidation`) that makes the other instances drop their L1 copy. Instances clear their L1 whenever the subscription is (re)established, since messages sent while disconnected are lost; the L1 TTL bounds anything else that is missed.
 - **Why cache-aside with delete-after-commit, not write-through.** Writing the new value into the cache from the write path means rebuilding the cached view (a whole menu) in the transaction, and two concurrent writers can store their snapshots out of order so the older one wins until the TTL. Deleting lets the next read rebuild from committed data. Deleting before the commit would let a reader cache the old row again. The remaining race is a reader that loaded the old row just before the commit and stores it just after the delete; a delayed double delete (`app.cache.delayed-double-delete`, 1s, `0` disables) removes that entry.
@@ -560,6 +560,8 @@ The test suite covers:
   `PREPARING` (`FulfilmentFlowContainerTests`) and the accept and payment timeouts (`FulfilmentTimeoutContainerTests`)
 
 Some integration tests use Testcontainers and require Docker. Tests annotated with `@Testcontainers(disabledWithoutDocker = true)` may skip when Docker is unavailable.
+
+The backend runs on Spring Boot 4.1; [docs/spring-boot-4-migration.md](docs/spring-boot-4-migration.md) lists what changed from Spring Boot 3 (packages, Jackson 3, test annotations, configuration properties, the H2 pin) for porting older code.
 
 ---
 

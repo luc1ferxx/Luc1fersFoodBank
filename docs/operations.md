@@ -31,7 +31,7 @@ outgoing Kafka records.
   stored context, so one trace reads:
 
   ```text
-  http post /payments/checkout -> <topic> outbox relay -> <topic> send -> <topic> receive -> consumer work
+  http post /payments/checkout -> <topic> outbox relay -> <topic> send -> <topic> process -> consumer work
   ```
 
   Rows written before V6, or written outside a traced request, have no context and start a new trace. Rows inserted
@@ -50,7 +50,9 @@ outgoing Kafka records.
 Sampling (`TRACING_SAMPLING_PROBABILITY`, default 0.1) decides which new traces are recorded; downstream spans
 follow the caller's decision. Trace ids exist for unsampled requests too. Spans are exported over OTLP/HTTP only when
 `TRACING_EXPORT_ENABLED=true`; local runs and tests never export (`OutboxKafkaTraceContinuityTests` uses an in-memory
-exporter).
+exporter). In Spring Boot 4 terms that is `management.tracing.export.otlp.enabled`, with the endpoint in
+`management.opentelemetry.tracing.export.otlp.endpoint` (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`). Do not set
+`management.tracing.export.enabled=false` to stop exporting: it also switches W3C propagation off.
 
 ### Logs
 
@@ -299,10 +301,12 @@ Code scanning results (CodeQL, the release's Trivy SARIF) need a public reposito
    and give it its own `KUBE_CONFIG`.
 
 State on 2026-10-16: the image scan found 45 fixable HIGH/CRITICAL findings with Spring Boot 3.5.6, pgjdbc 42.7.7
-and the `17.0.20_8` base image. After Spring Boot 3.5.16, pgjdbc 42.7.14, the `17.0.20.1_1` base image and the
-patch overrides at the top of `backend/build.gradle` (Tomcat 10.1.61, Netty 4.1.139, Jackson 2.21.7, lz4-java
-1.11.4) it passes the gate with two accepted exceptions in `.trivyignore`: CVE-2026-47884 and CVE-2026-47890 in
-spring-webmvc 6.2.19, fixed only in Spring Framework 7 (the Spring Boot 4 migration) and not reachable here (no XSLT
-views, no Server-Sent Events with view fragments). They expire on 2027-01-31, when the gate fails again unless they
-are fixed or reviewed. The overrides pin versions above what Spring Boot manages: drop each once Spring Boot manages
-that version or a later one, or it holds the dependency back.
+and the `17.0.20_8` base image; Spring Boot 3.5.16 and patch overrides brought that down to two accepted
+spring-webmvc 6.2 exceptions (CVE-2026-47884, CVE-2026-47890), fixed only in Spring Framework 7. Since the Spring
+Boot 4.1.1 migration (Spring Framework 7.0.9, see `docs/spring-boot-4-migration.md`) those are fixed and
+`.trivyignore` lists nothing. Spring Boot 4.1.1 itself still manages Tomcat 11.0.24 (three CRITICAL, fixed in
+11.0.25) and Jackson 3.1.5 / 2.21.5 (five HIGH, fixed in 3.1.7 / 2.21.7), so the patch overrides at the top of
+`backend/build.gradle` hold Tomcat at 11.0.27, Jackson 3 at 3.1.7, Jackson 2 (swagger-core's) at 2.21.7 and
+lz4-java at 1.11.4; with them Trivy 0.75.0 reports 0 for the ubuntu 24.04 base and 0 for the jars. The overrides pin
+versions above what Spring Boot manages: drop each once Spring Boot manages that version or a later one, or it
+holds the dependency back. `h2.version` there is not a security patch (H2 2.4.240 regression, see the comment).
