@@ -1,6 +1,8 @@
 package com.laioffer.onlineorder;
 
 
+import com.laioffer.onlineorder.messaging.OutboxEventPublisher;
+import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
 import io.opentelemetry.sdk.trace.data.SpanData;
@@ -170,6 +172,14 @@ class OutboxKafkaTraceContinuityTests {
         Assertions.assertTrue(
                 spans(traceId).stream().anyMatch(span -> span.getSpanId().equals(relaySpan.getParentSpanId())),
                 () -> "The relay span's parent should be a span of the checkout request: " + spans(traceId)
+        );
+
+        // The publisher's scheduled runs (every 200ms here) are observed but their empty spans are not exported.
+        String publisherClass = OutboxEventPublisher.class.getName();
+        Assertions.assertTrue(
+                spanExporter.getFinishedSpanItems().stream().noneMatch(span ->
+                        publisherClass.equals(span.getAttributes().get(AttributeKey.stringKey("code.namespace")))),
+                "scheduled outbox poller spans should not be exported"
         );
     }
 
