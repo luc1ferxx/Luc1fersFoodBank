@@ -19,13 +19,17 @@ import java.util.Set;
  * Keeps the order deadlines in step with the order events (timeout consumer group):
  * <ul>
  *     <li>order.created: a PAYMENT deadline at the order time plus app.fulfilment.payment-timeout;</li>
- *     <li>order.paid: the PAYMENT deadline is dropped and an ACCEPT deadline is set at the payment time plus
- *     app.fulfilment.accept-timeout;</li>
+ *     <li>order.paid: the PAYMENT deadline is dropped and, when app.fulfilment.accept-timeout-enabled is on, an
+ *     ACCEPT deadline is set at the payment time plus app.fulfilment.accept-timeout;</li>
  *     <li>any later order event: the order no longer waits for anything, so its deadlines are dropped.</li>
  * </ul>
  * Deadlines are measured from the event's occurredAt, so a consumer that lags does not extend them. Dropping a
  * deadline early only saves the poller a no-op: the poller cancels an order only while it is still in the status the
  * deadline waits in. Each event is applied once per consumer (processed_events, same transaction).
+ *
+ * <p>The accept timeout is off by default: it cancels every paid order nobody accepts, which is only right where every
+ * restaurant has a merchant who accepts orders (merchant logins are not provisioned outside the demo seed, and the
+ * frontend has no merchant screen yet). See README "Order fulfilment".
  */
 @Service
 public class OrderDeadlineService {
@@ -46,18 +50,21 @@ public class OrderDeadlineService {
     private final ProcessedEventService processedEventService;
     private final Duration paymentTimeout;
     private final Duration acceptTimeout;
+    private final boolean acceptTimeoutEnabled;
 
 
     public OrderDeadlineService(
             OrderDeadlineRepository orderDeadlineRepository,
             ProcessedEventService processedEventService,
             @Value("${app.fulfilment.payment-timeout:15m}") Duration paymentTimeout,
-            @Value("${app.fulfilment.accept-timeout:10m}") Duration acceptTimeout
+            @Value("${app.fulfilment.accept-timeout:10m}") Duration acceptTimeout,
+            @Value("${app.fulfilment.accept-timeout-enabled:false}") boolean acceptTimeoutEnabled
     ) {
         this.orderDeadlineRepository = orderDeadlineRepository;
         this.processedEventService = processedEventService;
         this.paymentTimeout = paymentTimeout;
         this.acceptTimeout = acceptTimeout;
+        this.acceptTimeoutEnabled = acceptTimeoutEnabled;
     }
 
 
@@ -86,12 +93,14 @@ public class OrderDeadlineService {
             );
             case FulfilmentEvents.ORDER_PAID -> {
                 orderDeadlineRepository.deleteByOrderIdAndDeadlineTypes(orderId, List.of(DeadlineType.PAYMENT.name()));
-                orderDeadlineRepository.insertIfAbsent(
-                        orderId,
-                        DeadlineType.ACCEPT.name(),
-                        occurredAt.plus(acceptTimeout),
-                        now
-                );
+                if (acceptTimeoutEnabled) {
+                    orderDeadlineRepository.insertIfAbsent(
+                            orderId,
+                            DeadlineType.ACCEPT.name(),
+                            occurredAt.plus(acceptTimeout),
+                            now
+                    );
+                }
             }
             default -> orderDeadlineRepository.deleteByOrderIdAndDeadlineTypes(orderId, ALL_DEADLINES);
         }

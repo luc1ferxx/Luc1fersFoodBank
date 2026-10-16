@@ -89,6 +89,8 @@ class FulfilmentPostgresIntegrationTests {
         registry.add("app.outbox.publisher-enabled", () -> "false");
         registry.add("app.cleanup.enabled", () -> "false");
         registry.add("app.security.rate-limit.enabled", () -> "false");
+        // Off by default (README "Order fulfilment"); the timeout tests below need it.
+        registry.add("app.fulfilment.accept-timeout-enabled", () -> "true");
     }
 
 

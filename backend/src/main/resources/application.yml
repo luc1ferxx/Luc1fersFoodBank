@@ -178,6 +178,10 @@ app:
     # a changed value applies to orders paid or placed after the change.
     accept-timeout: ${FULFILMENT_ACCEPT_TIMEOUT:10m}
     payment-timeout: ${FULFILMENT_PAYMENT_TIMEOUT:15m}
+    # Off by default: the accept timeout cancels every paid order no merchant accepts. Only turn it on where every
+    # restaurant has a merchant login that accepts orders (merchants are only seeded by the demo seed, and the frontend
+    # has no merchant screen yet). Switching it off also drops pending ACCEPT deadlines without cancelling.
+    accept-timeout-enabled: ${FULFILMENT_ACCEPT_TIMEOUT_ENABLED:false}
     deadline-poller:
       # Runs on its own thread, not on the shared scheduler the outbox publisher uses. Off wherever Kafka is off
       # (nothing writes deadlines then).

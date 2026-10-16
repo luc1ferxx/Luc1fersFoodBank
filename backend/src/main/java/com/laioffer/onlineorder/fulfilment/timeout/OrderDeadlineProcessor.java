@@ -26,7 +26,10 @@ import java.util.concurrent.atomic.AtomicReference;
  *     paid or cancelled in the meantime is left alone;</li>
  *     <li>delete the deadline.</li>
  * </ol>
- * The cancel, its order.cancelled outbox event and the deadline delete commit together. When firing fails (for
+ * An ACCEPT deadline that is due while app.fulfilment.accept-timeout-enabled is off (it was switched off after the
+ * deadline was set) is dropped without cancelling the order.
+ *
+ * <p>The cancel, its order.cancelled outbox event and the deadline delete commit together. When firing fails (for
  * example a lock timeout on the order row), the deadline is moved app.fulfilment.deadline-poller.retry-backoff into
  * the future and retried then; the other due deadlines are still fired in the same run.
  */
@@ -41,6 +44,7 @@ public class OrderDeadlineProcessor {
     private final TransactionTemplate transactionTemplate;
     private final int batchSize;
     private final Duration retryBackoff;
+    private final boolean acceptTimeoutEnabled;
 
 
     public OrderDeadlineProcessor(
@@ -49,7 +53,8 @@ public class OrderDeadlineProcessor {
             ApplicationMetricsService metricsService,
             PlatformTransactionManager transactionManager,
             @Value("${app.fulfilment.deadline-poller.batch-size:100}") int batchSize,
-            @Value("${app.fulfilment.deadline-poller.retry-backoff:30s}") Duration retryBackoff
+            @Value("${app.fulfilment.deadline-poller.retry-backoff:30s}") Duration retryBackoff,
+            @Value("${app.fulfilment.accept-timeout-enabled:false}") boolean acceptTimeoutEnabled
     ) {
         this.orderDeadlineRepository = orderDeadlineRepository;
         this.orderLifecycleCommands = orderLifecycleCommands;
@@ -57,6 +62,7 @@ public class OrderDeadlineProcessor {
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.batchSize = Math.max(1, batchSize);
         this.retryBackoff = retryBackoff;
+        this.acceptTimeoutEnabled = acceptTimeoutEnabled;
     }
 
 
@@ -99,7 +105,8 @@ public class OrderDeadlineProcessor {
 
     private FiredDeadline fire(OrderDeadlineEntity deadline) {
         DeadlineType type = DeadlineType.valueOf(deadline.deadlineType());
-        boolean cancelled = orderLifecycleCommands.cancelIfStillIn(
+        boolean enabled = type != DeadlineType.ACCEPT || acceptTimeoutEnabled;
+        boolean cancelled = enabled && orderLifecycleCommands.cancelIfStillIn(
                 deadline.orderId(),
                 type.waitingStatus(),
                 type.cancelReason()

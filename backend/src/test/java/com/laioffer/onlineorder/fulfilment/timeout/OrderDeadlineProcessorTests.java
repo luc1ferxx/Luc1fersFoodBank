@@ -53,7 +53,8 @@ class OrderDeadlineProcessorTests {
                 metricsService,
                 transactionManager,
                 100,
-                Duration.ofSeconds(30)
+                Duration.ofSeconds(30),
+                true
         );
     }
 
@@ -108,6 +109,31 @@ class OrderDeadlineProcessorTests {
 
 
     @Test
+    void dueAcceptDeadline_whenTheAcceptTimeoutWasSwitchedOff_shouldBeDroppedWithoutCancelling() {
+        OrderDeadlineProcessor acceptTimeoutOff = new OrderDeadlineProcessor(
+                orderDeadlineRepository, orderLifecycleCommands, metricsService, transactionManager, 100,
+                Duration.ofSeconds(30), false);
+        Mockito.when(orderDeadlineRepository.claimNextDue(Mockito.any()))
+                .thenReturn(deadline(1L, 10L, "ACCEPT"))
+                .thenReturn(deadline(2L, 11L, "PAYMENT"))
+                .thenReturn(null);
+        Mockito.when(orderLifecycleCommands.cancelIfStillIn(11L, OrderStatus.PLACED, "PAYMENT_TIMEOUT"))
+                .thenReturn(Optional.of(cancelledOrder(11L, "PAYMENT_TIMEOUT")));
+
+        Assertions.assertEquals(2, acceptTimeoutOff.fireDueDeadlines());
+
+        Mockito.verify(orderLifecycleCommands, Mockito.never())
+                .cancelIfStillIn(Mockito.eq(10L), Mockito.any(), Mockito.anyString());
+        Mockito.verify(orderDeadlineRepository).deleteById(1L);
+        Mockito.verify(metricsService).recordFulfilmentTimeout("ACCEPT", "skipped");
+        Mockito.verify(metricsService, Mockito.never()).recordMerchantDecision(Mockito.anyString());
+        // The payment timeout does not depend on the flag.
+        Mockito.verify(orderDeadlineRepository).deleteById(2L);
+        Mockito.verify(metricsService).recordFulfilmentTimeout("PAYMENT", "cancelled");
+    }
+
+
+    @Test
     void failingDeadline_shouldBeRescheduledAndTheOthersStillFired() {
         Mockito.when(orderDeadlineRepository.claimNextDue(Mockito.any()))
                 .thenReturn(deadline(1L, 10L, "ACCEPT"))
@@ -137,7 +163,8 @@ class OrderDeadlineProcessorTests {
     @Test
     void run_shouldStopAtTheBatchSize() {
         OrderDeadlineProcessor smallBatches = new OrderDeadlineProcessor(
-                orderDeadlineRepository, orderLifecycleCommands, metricsService, transactionManager, 2, Duration.ofSeconds(30));
+                orderDeadlineRepository, orderLifecycleCommands, metricsService, transactionManager, 2, Duration.ofSeconds(30),
+                true);
         Mockito.when(orderDeadlineRepository.claimNextDue(Mockito.any()))
                 .thenReturn(deadline(1L, 10L, "ACCEPT"), deadline(2L, 11L, "ACCEPT"), deadline(3L, 12L, "ACCEPT"));
         Mockito.when(orderLifecycleCommands.cancelIfStillIn(Mockito.anyLong(), Mockito.any(), Mockito.anyString()))

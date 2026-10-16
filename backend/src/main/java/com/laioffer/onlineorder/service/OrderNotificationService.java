@@ -20,6 +20,8 @@ import java.util.List;
 @Service
 public class OrderNotificationService {
 
+    private static final String PAYMENT_SUPPORT_NOTE = "Please contact support about your payment.";
+
     private final OrderNotificationRepository orderNotificationRepository;
 
 
@@ -140,16 +142,20 @@ public class OrderNotificationService {
     }
 
 
+    /**
+     * Refunds are not automated yet (README "Order fulfilment", follow-ups), so a cancelled paid order points the
+     * customer to support instead of promising a refund.
+     */
     private String buildCancelledMessage(Long orderId, String reason) {
         if (reason != null && reason.startsWith(OrderLifecycleCommands.MERCHANT_REJECTED)) {
             String note = reason.substring(OrderLifecycleCommands.MERCHANT_REJECTED.length()).replaceFirst("^:\\s*", "");
             return "The restaurant could not take order #" + orderId
                     + (note.isBlank() ? "" : ": " + note)
-                    + ". You will be refunded.";
+                    + ". " + PAYMENT_SUPPORT_NOTE;
         }
         if (OrderLifecycleCommands.MERCHANT_TIMEOUT.equals(reason)) {
             return "Order #" + orderId + " was cancelled because the restaurant did not accept it in time. "
-                    + "You will be refunded.";
+                    + PAYMENT_SUPPORT_NOTE;
         }
         if (OrderLifecycleCommands.PAYMENT_TIMEOUT.equals(reason)) {
             return "Order #" + orderId + " was cancelled because it was not paid in time.";

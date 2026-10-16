@@ -120,7 +120,7 @@ class OrderNotificationServiceTests {
                 Mockito.eq(4L),
                 Mockito.eq("order.cancelled"),
                 Mockito.eq("Order rejected by the restaurant"),
-                Mockito.eq("The restaurant could not take order #9: Out of buns. You will be refunded."),
+                Mockito.eq("The restaurant could not take order #9: Out of buns. Please contact support about your payment."),
                 Mockito.any(LocalDateTime.class)
         );
     }

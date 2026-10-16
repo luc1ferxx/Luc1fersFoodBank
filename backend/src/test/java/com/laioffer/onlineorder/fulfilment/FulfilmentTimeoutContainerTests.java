@@ -86,6 +86,8 @@ class FulfilmentTimeoutContainerTests extends FulfilmentContainerTestSupport {
                     ? cancelled
                     : null;
         });
+        // Refunds are not automated: the notification must not promise one.
+        Assertions.assertFalse(String.valueOf(notification.get("message")).contains("refunded"));
         await("the merchant inbox to show the cancelled order", EVENT_WAIT, () ->
                 "CANCELLED".equals(inboxStatus(fashionWok, paidOrderId)));
         ResponseEntity<Map> lateAccept = post("/merchant/orders/" + paidOrderId + "/accept", fashionWok);

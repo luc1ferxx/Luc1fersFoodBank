@@ -40,7 +40,8 @@ class OrderDeadlineServiceTests {
                 orderDeadlineRepository,
                 processedEventService,
                 Duration.ofMinutes(15),
-                Duration.ofMinutes(10)
+                Duration.ofMinutes(10),
+                true
         );
     }
 
@@ -68,6 +69,35 @@ class OrderDeadlineServiceTests {
         inOrder.verify(orderDeadlineRepository).deleteByOrderIdAndDeadlineTypes(10L, List.of("PAYMENT"));
         inOrder.verify(orderDeadlineRepository).insertIfAbsent(
                 Mockito.eq(10L), Mockito.eq("ACCEPT"), Mockito.eq(OCCURRED_AT.plusMinutes(10)), Mockito.any());
+    }
+
+
+    @Test
+    void orderPaid_whenTheAcceptTimeoutIsOff_shouldOnlyDropThePaymentDeadline() {
+        OrderDeadlineService acceptTimeoutOff = new OrderDeadlineService(
+                orderDeadlineRepository, processedEventService, Duration.ofMinutes(15), Duration.ofMinutes(10), false);
+        OrderEventEnvelope paid = event("order.paid", "PAID");
+        Mockito.when(processedEventService.markIfUnseen("order-timeout-consumer", paid)).thenReturn(true);
+
+        acceptTimeoutOff.handle(paid);
+
+        Mockito.verify(orderDeadlineRepository).deleteByOrderIdAndDeadlineTypes(10L, List.of("PAYMENT"));
+        Mockito.verify(orderDeadlineRepository, Mockito.never())
+                .insertIfAbsent(Mockito.anyLong(), Mockito.anyString(), Mockito.any(), Mockito.any());
+    }
+
+
+    @Test
+    void orderCreated_whenTheAcceptTimeoutIsOff_shouldStillSetAPaymentDeadline() {
+        OrderDeadlineService acceptTimeoutOff = new OrderDeadlineService(
+                orderDeadlineRepository, processedEventService, Duration.ofMinutes(15), Duration.ofMinutes(10), false);
+        OrderEventEnvelope created = event("order.created", "PLACED");
+        Mockito.when(processedEventService.markIfUnseen("order-timeout-consumer", created)).thenReturn(true);
+
+        acceptTimeoutOff.handle(created);
+
+        Mockito.verify(orderDeadlineRepository).insertIfAbsent(
+                Mockito.eq(10L), Mockito.eq("PAYMENT"), Mockito.eq(OCCURRED_AT.plusMinutes(15)), Mockito.any());
     }
 
 
