@@ -11,6 +11,10 @@
 --   rider.alice@laifood.com -> Demo Rider Alice
 --   rider.bob@laifood.com   -> Demo Rider Bob
 --   rider.carol@laifood.com -> Demo Rider Carol
+--
+-- Roles and bindings only go to logins this seed created, recognised by their seeded {noop} password. On an existing
+-- database one of these emails may already belong to someone who signed up with it (POST /signup stores a BCrypt
+-- password): that account keeps its own role and is never made a merchant or rider.
 
 
 INSERT INTO customers (email, enabled, password, first_name, last_name)
@@ -42,6 +46,7 @@ WHERE LOWER(customers.email) IN (
         'merchant.sgdtofu@laifood.com',
         'merchant.fashionwok@laifood.com'
     )
+  AND customers.password = '{noop}merchant123'
   AND NOT EXISTS (
     SELECT 1 FROM authorities WHERE authorities.email = customers.email AND authority = 'ROLE_MERCHANT'
 );
@@ -51,6 +56,7 @@ INSERT INTO merchant_accounts (customer_id, restaurant_id, created_at)
 SELECT customers.id, restaurants.id, CURRENT_TIMESTAMP
 FROM customers, restaurants
 WHERE LOWER(customers.email) = LOWER('merchant.burgerking@laifood.com')
+  AND customers.password = '{noop}merchant123'
   AND restaurants.name = 'Burger King'
   AND NOT EXISTS (
     SELECT 1 FROM merchant_accounts WHERE merchant_accounts.customer_id = customers.id
@@ -61,6 +67,7 @@ INSERT INTO merchant_accounts (customer_id, restaurant_id, created_at)
 SELECT customers.id, restaurants.id, CURRENT_TIMESTAMP
 FROM customers, restaurants
 WHERE LOWER(customers.email) = LOWER('merchant.sgdtofu@laifood.com')
+  AND customers.password = '{noop}merchant123'
   AND restaurants.name = 'SGD Tofu House'
   AND NOT EXISTS (
     SELECT 1 FROM merchant_accounts WHERE merchant_accounts.customer_id = customers.id
@@ -71,6 +78,7 @@ INSERT INTO merchant_accounts (customer_id, restaurant_id, created_at)
 SELECT customers.id, restaurants.id, CURRENT_TIMESTAMP
 FROM customers, restaurants
 WHERE LOWER(customers.email) = LOWER('merchant.fashionwok@laifood.com')
+  AND customers.password = '{noop}merchant123'
   AND restaurants.name = 'Fashion Wok'
   AND NOT EXISTS (
     SELECT 1 FROM merchant_accounts WHERE merchant_accounts.customer_id = customers.id
@@ -124,17 +132,29 @@ WHERE LOWER(customers.email) IN (
         'rider.bob@laifood.com',
         'rider.carol@laifood.com'
     )
+  AND customers.password = '{noop}rider123'
   AND NOT EXISTS (
     SELECT 1 FROM authorities WHERE authorities.email = customers.email AND authority = 'ROLE_RIDER'
 );
 
 
--- Binds each demo rider to its login, once: a rider that already has a login, or a login already bound to another
--- rider, is left alone.
+-- Binds each demo rider to its seeded login, once: a rider that already has a login, a login already bound to another
+-- rider, or an account the seed did not create (see the top of this file) is left alone.
 UPDATE riders
-SET customer_id = (SELECT customers.id FROM customers WHERE LOWER(customers.email) = 'rider.alice@laifood.com')
+SET customer_id = (
+    SELECT customers.id
+    FROM customers
+    WHERE LOWER(customers.email) = 'rider.alice@laifood.com'
+      AND customers.password = '{noop}rider123'
+)
 WHERE name = 'Demo Rider Alice'
   AND customer_id IS NULL
+  AND EXISTS (
+    SELECT 1
+    FROM customers
+    WHERE LOWER(customers.email) = 'rider.alice@laifood.com'
+      AND customers.password = '{noop}rider123'
+)
   AND NOT EXISTS (
     SELECT 1
     FROM riders bound
@@ -144,9 +164,20 @@ WHERE name = 'Demo Rider Alice'
 
 
 UPDATE riders
-SET customer_id = (SELECT customers.id FROM customers WHERE LOWER(customers.email) = 'rider.bob@laifood.com')
+SET customer_id = (
+    SELECT customers.id
+    FROM customers
+    WHERE LOWER(customers.email) = 'rider.bob@laifood.com'
+      AND customers.password = '{noop}rider123'
+)
 WHERE name = 'Demo Rider Bob'
   AND customer_id IS NULL
+  AND EXISTS (
+    SELECT 1
+    FROM customers
+    WHERE LOWER(customers.email) = 'rider.bob@laifood.com'
+      AND customers.password = '{noop}rider123'
+)
   AND NOT EXISTS (
     SELECT 1
     FROM riders bound
@@ -156,9 +187,20 @@ WHERE name = 'Demo Rider Bob'
 
 
 UPDATE riders
-SET customer_id = (SELECT customers.id FROM customers WHERE LOWER(customers.email) = 'rider.carol@laifood.com')
+SET customer_id = (
+    SELECT customers.id
+    FROM customers
+    WHERE LOWER(customers.email) = 'rider.carol@laifood.com'
+      AND customers.password = '{noop}rider123'
+)
 WHERE name = 'Demo Rider Carol'
   AND customer_id IS NULL
+  AND EXISTS (
+    SELECT 1
+    FROM customers
+    WHERE LOWER(customers.email) = 'rider.carol@laifood.com'
+      AND customers.password = '{noop}rider123'
+)
   AND NOT EXISTS (
     SELECT 1
     FROM riders bound

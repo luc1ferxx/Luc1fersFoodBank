@@ -519,7 +519,9 @@ module's `RiderService`; the modules still only touch their own tables.
 Demo staff (seeded only with `classpath:db/demo`): merchants `merchant.burgerking@laifood.com`,
 `merchant.sgdtofu@laifood.com`, `merchant.fashionwok@laifood.com` (password `merchant123`), and riders
 `rider.alice@laifood.com`, `rider.bob@laifood.com`, `rider.carol@laifood.com` (password `rider123`, bound to Demo
-Rider Alice, Bob and Carol, which start on duty).
+Rider Alice, Bob and Carol, which start on duty). The seed only grants the role and binding to logins it created itself
+(their seeded `{noop}` password): an account someone registered with one of these emails through `POST /signup` stays
+a plain customer.
 
 **No rider on duty.** Dispatch only assigns riders that are active and on duty (least-loaded first, `SKIP LOCKED` as
 before). With none, `order.accepted` is retried and then dead-lettered (`OnlineOrderDeadLettersGrowing` fires, and
