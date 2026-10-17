@@ -32,6 +32,8 @@ Most demo food apps stop at CRUD. This one goes deeper into the failure modes th
 - **Redis-backed sessions, cache, and rate limiting**
 - **OpenTelemetry tracing from the HTTP request through the outbox to the Kafka consumer**, Prometheus metrics, structured logs, Grafana dashboards and alert rules
 - **Kubernetes manifests and a gated release pipeline** (coverage, SpotBugs, CodeQL, Trivy, SBOM, staged deploys); see [docs/operations.md](docs/operations.md)
+- **A data tier ready to grow**: monthly-partitioned append-only tables with whole-month retention, Snowflake order
+  numbers from leased worker ids, and a reviewed plan for sharding orders by customer ([Data Tier](#data-tier))
 - **Focused tests** for checkout rollback, duplicate requests, order state transitions, outbox behavior, and security controls
 
 The theme of the project is simple:
@@ -212,7 +214,7 @@ The `h2` profile runs Flyway migrations and includes the demo seed callback by d
 | `DELETE` | `/cart` | Empty the cart (`204`, also when it is already empty or the account has no cart), for example after `409 CART_RESTAURANT_CONFLICT` |
 | `POST` | `/cart/checkout` | Checkout cart with idempotency key |
 | `POST` | `/payments/checkout` | Payment-style checkout with idempotency key |
-| `GET` | `/orders` | List current user's orders |
+| `GET` | `/orders` | List current user's orders; each carries `id` (the key the order paths take) and `order_no` (the public order number, a JSON string) |
 | `POST` | `/orders/{orderId}/cancel` | Cancel an eligible order |
 | `GET` | `/orders/{orderId}/history` | The order's status changes, oldest first (owner or admin; `404` for anyone else) |
 | `GET` | `/notifications` | List order notifications |
@@ -333,7 +335,9 @@ migrations, which must not run next to pods of an older version.
 - After publishing a head the publisher claims again in the same run when its aggregate has a next event waiting, so a
   backlog of k events of one order goes out in one run rather than one per publish interval.
 - Consumers use `processed_events` to deduplicate at-least-once Kafka delivery, and the consumers that keep
-  per-aggregate state skip events older than the last one they applied ("Out-of-order events").
+  per-aggregate state skip events older than the last one they applied ("Out-of-order events"). On PostgreSQL the
+  table is partitioned by month, so no unique constraint spans it; the mark is serialized per key with an advisory
+  lock and checked across all partitions (see [Data Tier](#data-tier)).
 - Notification creation also has a database uniqueness safety net.
 
 ### Event contracts
@@ -718,6 +722,35 @@ on.
 
 ---
 
+## Data Tier
+
+One PostgreSQL primary carries the whole application, and the measured limit so far was the connection pool
+(~1,000 orders/s on one machine), not the database. Three changes keep it that way for longer, and a plan exists for
+when it is not enough:
+
+- **Monthly partitions (V10).** `audit_log`, `order_status_history` and `processed_events` are range-partitioned by
+  month on PostgreSQL. `PartitionMaintenanceService` keeps three months ahead, drops whole months past their
+  retention instead of deleting rows (14 days for `processed_events`; the two audit trails are kept unless a retention
+  is set), and runs on one instance at a time through an advisory lock. Because a unique constraint of a partitioned
+  table must contain the partition column, `processed_events` deduplication is serialized per key with a
+  transaction-scoped advisory lock and an insert that checks every partition, plus a unique index per partition. H2
+  keeps plain tables. Gauges and alerts watch the months ahead and the default partitions.
+- **Public order numbers (V10_1).** `orders.order_no` is a 64-bit Snowflake id (timestamp, worker id, sequence)
+  assigned at checkout, returned by the order APIs (as a string) and used in notifications; the customer UI names
+  orders by it, while the internal `id` stays the key of every table and API path.
+  Existing orders were numbered from their creation time with a reserved worker id.
+- **Worker ids (V10_2).** Each instance needs its own worker id: configured (`APP_IDS_WORKER_ID`) for single
+  instances and StatefulSets, or leased from `snowflake_worker_leases` on Kubernetes, where a timestamp fence keeps a
+  stalled pod and its successor apart. Clock steps back are waited out (up to 50 ms) or refused with `503`.
+- **Sharding, deferred.** [docs/adr/0001-order-sharding.md](docs/adr/0001-order-sharding.md) plans the split of the
+  order domain across databases by `customer_id` (co-located tables, application-level routing, per-shard outbox
+  relays, a bucket-by-bucket migration with rollback) and says why it is not done yet.
+
+Operations (retention settings, alerts, manual partition commands, worker-id setup) are in
+[docs/operations.md](docs/operations.md) section 9.
+
+---
+
 ## Testing and Verification
 
 Run the normal backend verification path:
@@ -769,6 +802,13 @@ The test suite covers:
   and history repair runbook (`SchemaRolloutPostgresTests`), order status history and its actors
   (`OrderLifecycleCommandsTests`, `FulfilmentPostgresIntegrationTests`), the audit log of admin and staff actions
   (`AuditLogIntegrationTests`, `StaffAuditIntegrationTests`), and `DELETE /cart` (`CartClearIntegrationTests`)
+- the data tier: upgrading a populated V8 database to monthly partitions and numbered orders on PostgreSQL and H2
+  (`ScaleMigration*Tests`), partition creation, row moves out of the default partition (also with a writer racing the
+  move), the lock order against a status change, retention drops, the maintenance lock and metrics
+  (`PartitionMaintenancePostgresIntegrationTests`), deduplication across partitions under concurrency, including two
+  marks of one key racing into different months (`ProcessedEventDedupAcrossPartitionsPostgresTests`), the Snowflake generator's uniqueness, monotonicity,
+  clock steps and worker-id bounds (`SnowflakeIdGeneratorTests`), leased worker ids with takeovers and clock skew
+  (`WorkerIdLeasePostgresTests`), and order numbers through checkout and notifications (`OrderNumber*IntegrationTests`)
 
 Some integration tests use Testcontainers and require Docker. Tests annotated with `@Testcontainers(disabledWithoutDocker = true)` may skip when Docker is unavailable.
 
@@ -791,7 +831,8 @@ The backend runs on Spring Boot 4.1; [docs/spring-boot-4-migration.md](docs/spri
 |-- load-tests/                        k6 order-flow load test
 |-- deploy/observability/              OTel Collector, Tempo, Prometheus (alerts), Grafana (dashboards)
 |-- deploy/k8s/                        kustomize base + staging/prod overlays
-|-- docs/operations.md                 observability, deployment, CI/CD gates
+|-- docs/operations.md                 observability, deployment, CI/CD gates, data tier
+|-- docs/adr/                          architecture decision records (0001: order sharding)
 |-- Dockerfile                         full source build image
 `-- README.md
 ```
@@ -834,6 +875,7 @@ This project is intentionally strong on backend correctness patterns, but it is 
 - H2 is a lightweight local fallback, not the production-shaped runtime.
 - Catalog edits are limited to admin updates of existing restaurants and menu items. There is no create or delete API, so rows changed directly in the database show up once the cached entries expire. One exception: `GET /restaurant/{id}/menu` serves a directly inserted restaurant at once and evicts the stale list, because an id missing from the cached list is checked in the database (rate-limited) before the `404`. The demo seed matches rows by name, so renaming a demo restaurant or item makes the next startup with `db/demo` insert the original again.
 - The architecture is a deliberate monolith. Service decomposition is deferred until the core transaction is correct and observable.
+- The order data lives in one PostgreSQL database; sharding is planned ([ADR 0001](docs/adr/0001-order-sharding.md)), not built. Customers see only the public `order_no` (order history, checkout confirmation, notifications; the admin order tool shows both), but the merchant and rider consoles still name orders by the internal `id`: the order events do not carry `order_no` yet, so the merchant and dispatch projections cannot show it.
 
 ---
 

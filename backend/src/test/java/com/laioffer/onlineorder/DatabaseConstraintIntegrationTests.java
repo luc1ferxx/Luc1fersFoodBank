@@ -104,8 +104,9 @@ class DatabaseConstraintIntegrationTests {
                             customer_id,
                             total_price,
                             status,
-                            created_at
-                        ) VALUES (?, 12.34, ?, CURRENT_TIMESTAMP)
+                            created_at,
+                            order_no
+                        ) VALUES (?, 12.34, ?, CURRENT_TIMESTAMP, (SELECT COALESCE(MAX(order_no), 0) + 1 FROM orders))
                         RETURNING id
                         """,
                 Long.class,

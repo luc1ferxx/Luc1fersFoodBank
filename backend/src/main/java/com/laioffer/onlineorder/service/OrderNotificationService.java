@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.service;
 
 
+import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderNotificationEntity;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
@@ -9,12 +10,15 @@ import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.model.OrderNotificationDto;
 import com.laioffer.onlineorder.repository.OrderNotificationRepository;
+import com.laioffer.onlineorder.repository.OrderRepository;
 import org.springframework.stereotype.Service;
 
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 
 @Service
@@ -23,13 +27,22 @@ public class OrderNotificationService {
     private static final String PAYMENT_SUPPORT_NOTE = "Please contact support about your payment.";
 
     private final OrderNotificationRepository orderNotificationRepository;
+    private final OrderRepository orderRepository;
 
 
-    public OrderNotificationService(OrderNotificationRepository orderNotificationRepository) {
+    public OrderNotificationService(
+            OrderNotificationRepository orderNotificationRepository,
+            OrderRepository orderRepository
+    ) {
         this.orderNotificationRepository = orderNotificationRepository;
+        this.orderRepository = orderRepository;
     }
 
 
+    /**
+     * Messages name the order by its public order number (orders.order_no), the number the customer sees; the
+     * notification row keeps the internal order id.
+     */
     public void recordOrderEvent(OrderEventEnvelope event) {
         validate(event);
         OrderEventPayload data = event.data();
@@ -38,7 +51,7 @@ public class OrderNotificationService {
                 data.customerId(),
                 event.eventType(),
                 buildTitle(event),
-                buildMessage(event),
+                buildMessage(event, orderNumber(event.aggregateId())),
                 LocalDateTime.now()
         );
     }
@@ -54,21 +67,22 @@ public class OrderNotificationService {
             throw new IllegalArgumentException("Delivery event payload is missing required identifiers");
         }
         DeliveryEventPayload data = event.data();
+        String orderNumber = orderNumber(data.orderId());
         String riderName = data.riderName() == null || data.riderName().isBlank() ? "Your rider" : data.riderName();
         String title;
         String message;
         switch (event.eventType() == null ? "" : event.eventType()) {
             case "delivery.assigned" -> {
                 title = "Rider assigned";
-                message = riderName + " will deliver order #" + data.orderId() + ".";
+                message = riderName + " will deliver order #" + orderNumber + ".";
             }
             case "delivery.picked_up" -> {
                 title = "Order on the way";
-                message = riderName + " picked up order #" + data.orderId() + " and is on the way.";
+                message = riderName + " picked up order #" + orderNumber + " and is on the way.";
             }
             case "delivery.delivered" -> {
                 title = "Order delivered";
-                message = "Order #" + data.orderId() + " was delivered. Enjoy your meal!";
+                message = "Order #" + orderNumber + " was delivered. Enjoy your meal!";
             }
             default -> {
                 return;
@@ -91,11 +105,28 @@ public class OrderNotificationService {
 
 
     public List<OrderNotificationDto> getNotificationsByCustomerId(Long customerId, int limit) {
+        List<OrderNotificationEntity> page =
+                orderNotificationRepository.findPageByCustomerIdOrderByCreatedAtDesc(customerId, normalizeLimit(limit));
+        Map<Long, Long> orderNumbers = new HashMap<>();
+        List<Long> orderIds = page.stream().map(OrderNotificationEntity::orderId).distinct().toList();
+        if (!orderIds.isEmpty()) {
+            for (OrderEntity order : orderRepository.findAllById(orderIds)) {
+                orderNumbers.put(order.id(), order.orderNo());
+            }
+        }
         List<OrderNotificationDto> results = new ArrayList<>();
-        for (OrderNotificationEntity entity : orderNotificationRepository.findPageByCustomerIdOrderByCreatedAtDesc(customerId, normalizeLimit(limit))) {
-            results.add(new OrderNotificationDto(entity));
+        for (OrderNotificationEntity entity : page) {
+            results.add(new OrderNotificationDto(entity, orderNumbers.get(entity.orderId())));
         }
         return results;
+    }
+
+
+    /**
+     * The order number to show for {@code orderId}, or its internal id when no order number is found.
+     */
+    private String orderNumber(Long orderId) {
+        return String.valueOf(orderRepository.findOrderNoById(orderId).orElse(orderId));
     }
 
 
@@ -146,7 +177,7 @@ public class OrderNotificationService {
      * Refunds are not automated yet (README "Order fulfilment", follow-ups), so a cancelled paid order points the
      * customer to support instead of promising a refund.
      */
-    private String buildCancelledMessage(Long orderId, String reason) {
+    private String buildCancelledMessage(String orderId, String reason) {
         if (reason != null && reason.startsWith(OrderLifecycleCommands.MERCHANT_REJECTED)) {
             String note = reason.substring(OrderLifecycleCommands.MERCHANT_REJECTED.length()).replaceFirst("^:\\s*", "");
             return "The restaurant could not take order #" + orderId
@@ -164,16 +195,16 @@ public class OrderNotificationService {
     }
 
 
-    private String buildMessage(OrderEventEnvelope event) {
+    private String buildMessage(OrderEventEnvelope event, String orderNumber) {
         int itemCount = event.data().items() == null ? 0 : event.data().items().size();
         return switch (event.eventType()) {
-            case "order.paid" -> "Order #" + event.aggregateId() + " was paid successfully with " + itemCount + " item(s).";
-            case "order.created" -> "Order #" + event.aggregateId() + " was placed and sent for processing.";
-            case "order.accepted" -> "Order #" + event.aggregateId() + " was accepted by the restaurant.";
-            case "order.preparing" -> "Order #" + event.aggregateId() + " is now being prepared.";
-            case "order.completed" -> "Order #" + event.aggregateId() + " is completed and ready.";
-            case "order.cancelled" -> buildCancelledMessage(event.aggregateId(), event.data().reason());
-            default -> "Order #" + event.aggregateId() + " has a new event: " + event.eventType() + ".";
+            case "order.paid" -> "Order #" + orderNumber + " was paid successfully with " + itemCount + " item(s).";
+            case "order.created" -> "Order #" + orderNumber + " was placed and sent for processing.";
+            case "order.accepted" -> "Order #" + orderNumber + " was accepted by the restaurant.";
+            case "order.preparing" -> "Order #" + orderNumber + " is now being prepared.";
+            case "order.completed" -> "Order #" + orderNumber + " is completed and ready.";
+            case "order.cancelled" -> buildCancelledMessage(orderNumber, event.data().reason());
+            default -> "Order #" + orderNumber + " has a new event: " + event.eventType() + ".";
         };
     }
 }

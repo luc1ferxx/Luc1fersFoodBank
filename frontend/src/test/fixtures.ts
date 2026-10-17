@@ -105,8 +105,15 @@ export const menusFixture: Readonly<Record<number, MenuItem[]>> = {
   3: [{ id: 30, restaurant_id: 3, name: "Fish Taco", description: "", price: 4.5, image_url: "" }],
 };
 
+/**
+ * The public order number the fake backend gives order `id`: 19 digits like a Snowflake
+ * id, past 2^53, so a test catches a number that went through a JS number.
+ */
+export const orderNoFor = (id: number): string => `73918235641${String(id).padStart(8, "0")}`;
+
 /** A placed order with defaults for the fields a test does not care about. */
 export const orderFixture = (overrides: Partial<Order> & Pick<Order, "id">): Order => ({
+  order_no: orderNoFor(overrides.id),
   status: "PAID",
   total_price: 9,
   created_at: null,

@@ -1,5 +1,6 @@
 import type { NotificationsState } from "../hooks/useNotifications";
 import { formatDateTime } from "../lib/format";
+import { orderLabel } from "../lib/labels";
 import { Alert } from "./Alert";
 
 export function NotificationsPanel({
@@ -51,7 +52,8 @@ export function NotificationsPanel({
                   <h3>{notification.title}</h3>
                   <p>{notification.message}</p>
                   <small>
-                    Order #{notification.order_id} · {formatDateTime(notification.created_at)}
+                    {orderLabel({ id: notification.order_id, order_no: notification.order_no })} ·{" "}
+                    {formatDateTime(notification.created_at)}
                   </small>
                 </article>
               ))}

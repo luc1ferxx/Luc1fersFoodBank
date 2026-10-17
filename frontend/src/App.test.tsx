@@ -14,6 +14,7 @@ import {
   json,
   menusFixture,
   orderFixture,
+  orderNoFor,
   requestJson,
 } from "./test/fakeBackend";
 import { flushPromises, formOf, renderApp, resetVisibility, setVisibility } from "./test/helpers";
@@ -157,7 +158,7 @@ describe("cart and checkout", () => {
     expect(screen.getByLabelText("Card number")).toHaveValue("4242 4242 4242 4242");
     await user.click(payButton);
 
-    expect(await screen.findByText("Order #100 · PAID")).toBeInTheDocument();
+    expect(await screen.findByText(`Order #${orderNoFor(100)} · PAID`)).toBeInTheDocument();
     expect(screen.getByText("Your cart is empty. Checkout is disabled.")).toBeInTheDocument();
     expect(screen.getByLabelText("Card number")).toHaveValue("");
 
@@ -174,6 +175,33 @@ describe("cart and checkout", () => {
       expect(backend.callsTo("GET", "/notifications")).toHaveLength(2);
     });
     expect(await screen.findByRole("button", { name: "Notifications (1)" })).toBeInTheDocument();
+  });
+
+  it("names the order by its public order number in the confirmation, orders, and notifications", async () => {
+    const backend = installFakeBackend({ user: demoUser, cartItems: [whopperLine] });
+    const user = renderApp();
+
+    await screen.findByRole("button", { name: "Pay $12.78" });
+    await fillPaymentForm(user);
+    await user.click(screen.getByRole("button", { name: "Pay $12.78" }));
+    const orderNo = orderNoFor(100);
+    expect(await screen.findByText(`Order #${orderNo} · PAID`)).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: "Notifications (1)" }));
+    const panel = await screen.findByRole("region", { name: "Order notifications" });
+    const card = await within(panel).findByRole("article");
+    expect(card).toHaveTextContent(`Order #${orderNo} was paid successfully.`);
+    expect(card).toHaveTextContent(`Order #${orderNo} ·`);
+
+    await user.click(screen.getByRole("button", { name: "Orders" }));
+    expect(await screen.findByText(`Order #${orderNo}`)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Status history" }));
+    expect(
+      await screen.findByRole("region", { name: `Status history of Order #${orderNo}` }),
+    ).toBeInTheDocument();
+    // The internal id stays in the API paths and never reaches the customer.
+    expect(screen.queryByText(/Order #100\b/)).toBeNull();
+    expect(backend.callsTo("GET", "/orders/100/history")).toHaveLength(1);
   });
 
   it("shows a checkout error and retries the same payment with the same Idempotency-Key", async () => {
@@ -202,7 +230,7 @@ describe("cart and checkout", () => {
     await user.clear(screen.getByLabelText("CVV"));
     await user.type(screen.getByLabelText("CVV"), "456");
     await user.click(screen.getByRole("button", { name: "Pay $12.78" }));
-    expect(await screen.findByText("Order #100 · PAID")).toBeInTheDocument();
+    expect(await screen.findByText(`Order #${orderNoFor(100)} · PAID`)).toBeInTheDocument();
 
     const keys = idempotencyKeys(backend.callsTo("POST", "/payments/checkout"));
     expect(keys).toHaveLength(3);
@@ -262,7 +290,9 @@ describe("admin console order tools", () => {
     // A different target status is a new transition, not a retry.
     await user.selectOptions(screen.getByLabelText("Target status"), "PREPARING");
     await user.click(screen.getByRole("button", { name: "Update status" }));
-    expect(await screen.findByText("Order #7 is PREPARING")).toBeInTheDocument();
+    expect(
+      await screen.findByText(`Order #${orderNoFor(7)} (id 7) is PREPARING`),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
     const calls = backend.callsTo("PATCH", "/orders/7/status");

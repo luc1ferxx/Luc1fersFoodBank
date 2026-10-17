@@ -80,8 +80,10 @@ abstract class AbstractKeyWideningMigrationTests {
                     ORDER BY h.order_id
                     """));
 
-            // V7: the next order gets an id past the INTEGER maximum, and the foreign keys still hold.
-            insertOrder(statement, "PAID");
+            // V7: the next order gets an id past the INTEGER maximum, and the foreign keys still hold. Since V10_1 every
+            // order needs an order number, which the backfill gave the existing ones (worker id 1023).
+            Assertions.assertEquals(List.of("0"), strings(statement, "SELECT COUNT(*) FROM orders WHERE order_no IS NULL"));
+            insertOrder(statement, "PAID", 42L);
             Assertions.assertEquals(INT_MAX + 1, maxOrderId(statement));
             Assertions.assertThrows(SQLException.class, () -> statement.execute("""
                     INSERT INTO order_history_items (order_id, menu_item_id, restaurant_id, price, quantity, menu_item_name)
@@ -141,6 +143,14 @@ abstract class AbstractKeyWideningMigrationTests {
                 INSERT INTO orders (customer_id, total_price, status, created_at)
                 SELECT id, 5, '%s', TIMESTAMP '2026-01-02 03:04:05' FROM customers
                 """.formatted(status));
+    }
+
+
+    private static void insertOrder(Statement statement, String status, long orderNo) throws SQLException {
+        statement.execute("""
+                INSERT INTO orders (customer_id, total_price, status, created_at, order_no)
+                SELECT id, 5, '%s', TIMESTAMP '2026-01-02 03:04:05', %d FROM customers
+                """.formatted(status, orderNo));
     }
 
 

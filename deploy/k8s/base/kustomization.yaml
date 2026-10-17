@@ -49,3 +49,6 @@ configMapGenerator:
       - SERVER_FORWARD_HEADERS_STRATEGY=native
       # Graceful shutdown budget; terminationGracePeriodSeconds (60) covers the preStop sleep (10s) plus this.
       - SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE=30s
+      # Snowflake worker ids (order numbers) for pods that come and go: each pod leases one from the database and
+      # releases it on shutdown (docs/operations.md section 8).
+      - APP_IDS_WORKER_ID_SOURCE=lease

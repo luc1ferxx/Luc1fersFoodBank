@@ -13,6 +13,7 @@ import {
   merchantOrderFixture,
   merchantUser,
   orderFixture,
+  orderNoFor,
   riderUser,
 } from "./test/fakeBackend";
 import { flushPromises, renderApp } from "./test/helpers";
@@ -206,7 +207,7 @@ describe("role-based workspaces", () => {
     expect(screen.getByLabelText("Cardholder name")).toHaveValue("Demo User");
     expect(screen.getByRole("alert")).toHaveTextContent("Trace trace-71.");
     await user.click(await screen.findByRole("button", { name: "Pay $12.78" }));
-    expect(await screen.findByText("Order #100 · PAID")).toBeInTheDocument();
+    expect(await screen.findByText(`Order #${orderNoFor(100)} · PAID`)).toBeInTheDocument();
 
     const keys = idempotencyKeys(backend.callsTo("POST", "/payments/checkout"));
     expect(keys).toHaveLength(2);
@@ -252,7 +253,9 @@ describe("role-based workspaces", () => {
     await openWorkspace(user, "Admin console");
     expect(screen.getByLabelText("Order ID")).toHaveValue("7");
     await user.click(screen.getByRole("button", { name: "Update status" }));
-    expect(await screen.findByText("Order #7 is ACCEPTED")).toBeInTheDocument();
+    expect(
+      await screen.findByText(`Order #${orderNoFor(7)} (id 7) is ACCEPTED`),
+    ).toBeInTheDocument();
 
     const keys = idempotencyKeys(backend.callsTo("PATCH", "/orders/7/status"));
     expect(keys).toHaveLength(2);

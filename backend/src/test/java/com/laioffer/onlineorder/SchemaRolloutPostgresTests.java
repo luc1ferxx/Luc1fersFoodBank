@@ -392,13 +392,23 @@ class SchemaRolloutPostgresTests {
     }
 
 
+    /**
+     * Gives the order an order number once V10_1 has added the column (the application's inserts always do).
+     */
     private static long insertOrder(Statement statement, String status) throws SQLException {
+        boolean numbered = !strings(statement, """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'orders' AND column_name = 'order_no'
+                """).isEmpty();
         try (ResultSet result = statement.executeQuery("""
-                INSERT INTO orders (customer_id, total_price, status, created_at, restaurant_id)
-                SELECT customers.id, 5, '%s', LOCALTIMESTAMP - INTERVAL '1 hour', restaurants.id
+                INSERT INTO orders (customer_id, total_price, status, created_at, restaurant_id%s)
+                SELECT customers.id, 5, '%s', LOCALTIMESTAMP - INTERVAL '1 hour', restaurants.id%s
                 FROM customers, restaurants
                 RETURNING id
-                """.formatted(status))) {
+                """.formatted(
+                numbered ? ", order_no" : "",
+                status,
+                numbered ? ", (SELECT COALESCE(MAX(order_no), 0) + 1 FROM orders)" : ""))) {
             result.next();
             return result.getLong(1);
         }

@@ -25,6 +25,16 @@ public interface OrderRepository extends ListCrudRepository<OrderEntity, Long> {
 
     Optional<OrderEntity> findByIdAndCustomerId(Long id, Long customerId);
 
+    /**
+     * @return the public order number of the order; empty when there is no such order
+     */
+    @Query("""
+            SELECT order_no
+            FROM orders
+            WHERE id = :id
+            """)
+    Optional<Long> findOrderNoById(Long id);
+
     @Query("""
             SELECT *
             FROM orders
