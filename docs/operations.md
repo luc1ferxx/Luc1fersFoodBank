@@ -8,6 +8,7 @@ How OnlineOrder is observed, packaged, deployed and gated. Paths are relative to
 | Local observability stack | `deploy/observability/` |
 | Dashboards and alert rules | `deploy/observability/grafana/dashboards/`, `deploy/observability/prometheus/alerts.yml` |
 | Kubernetes | `deploy/k8s/` (kustomize base + `staging` and `prod` overlays) |
+| Read replicas (read/write splitting) | `backend/src/main/java/com/laioffer/onlineorder/datasource/`, section 8 |
 | Image | `Dockerfile` |
 | CI and CD | `.github/workflows/`, `.github/dependabot.yml`, `.trivyignore` |
 
@@ -93,6 +94,7 @@ Application metrics on top of Spring Boot's (HTTP, Hikari, Tomcat, JVM, Kafka cl
 | `onlineorder_outbox_relay_seconds` | Time from relay start until the publisher has the Kafka acknowledgement or the failure |
 | `onlineorder_dead_letter_stored_total`, `onlineorder_dead_letter_events{replay_status}`, `onlineorder_dead_letter_replay_total` | Dead letters |
 | `onlineorder_checkout_requests_total{result}` | Checkout results |
+| `onlineorder_db_routing_reads_total{target,reason}`, `onlineorder_db_replica_lag_seconds{replica}`, `onlineorder_db_replica_routable{replica}` | Read replicas (only with `DATABASE_REPLICA_URLS`; section 8) |
 
 `http.server.requests` publishes a percentiles histogram bounded to 5ms-10s plus exact SLO buckets at 50ms, 100ms,
 250ms, 500ms, 1s and 2s. The latency objective reads the `le="0.5"` bucket.
@@ -170,6 +172,8 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 | `OnlineOrderHikariPendingSustained` | threads waiting for a connection for 5m | warning |
 | `OnlineOrderHikariConnectionTimeouts` | connection requests timed out (503) in the last 5m | warning |
 | `OnlineOrderKafkaConsumerLag` | a consumer client > 1000 records behind for 10m | warning |
+| `OnlineOrderDbReplicaLagging` | a read replica > 2s behind the primary for 5m (it gets no reads meanwhile; section 8) | warning |
+| `OnlineOrderDbReplicaUnavailable` | a read replica gets no reads for 5m (lagging, unreachable or not a standby) | warning |
 
 On Kubernetes, load the same file into Prometheus (or wrap it in a `PrometheusRule` for the Prometheus Operator) and
 make sure the scrape job is named `onlineorder` or adjust `OnlineOrderTargetDown`.
@@ -270,6 +274,8 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
 | --- | --- | --- |
 | `DATABASE_URL`, `DATABASE_USERNAME`, `DATABASE_PASSWORD` | local PostgreSQL on 5433 | ConfigMap / Secret |
 | `DATABASE_POOL_MAX_SIZE` | 30 | ConfigMap (prod 20) |
+| `DATABASE_REPLICA_URLS`, `DATABASE_REPLICA_POOL_MAX_SIZE` | empty (no replicas), 20 | overlays (staging 1 replica, prod 2 with 15 each); section 8 |
+| `DATABASE_REPLICA_USERNAME`, `DATABASE_REPLICA_PASSWORD` | the primary's login | Secret, only for a separate replica login |
 | `REDIS_HOST`, `REDIS_PORT`, `SPRING_DATA_REDIS_PASSWORD` | localhost:6379 | ConfigMap / Secret |
 | `REDIS_SESSION_NAMESPACE` | `onlineorder:session` (the session format version `:v2` is always appended) | - |
 | `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_ORDER_TOPIC_REPLICAS` | localhost:9092, 1 | ConfigMap (3 replicas) |
@@ -484,3 +490,125 @@ runs the procedure for `orders` (a key other tables reference) and `idempotency_
 4. `ALTER TABLE ... VALIDATE CONSTRAINT` each of those foreign keys (no write lock). Run the inventory again into
    `after.txt`: `diff before.txt after.txt` must print nothing, which also proves that the `ON CONFLICT` targets are
    back. Then drop the old columns.
+
+## 8. Read replicas
+
+Read/write splitting onto PostgreSQL streaming replicas (hot standbys), in
+`backend/src/main/java/com/laioffer/onlineorder/datasource/`. It is off unless `DATABASE_REPLICA_URLS` lists a
+replica: then nothing of it exists and every statement uses the single primary pool, as before. Local runs, tests and
+the base Kubernetes manifests leave it off; the staging and prod overlays turn it on.
+
+### What reads a replica
+
+The application's `DataSource` becomes `LazyConnectionDataSourceProxy -> ReadWriteRoutingDataSource -> primary pool |
+replica pools`. A transaction manager asks for its connection when the transaction begins, before Spring marks it
+read-only; the lazy proxy defers the physical connection to the first statement, when `ReplicaRouter` decides:
+
+- **Replica**: a read-only transaction declared by application code, `@Transactional(readOnly = true)` on a service
+  method or `ReadOnlyTransactions.read(...)`. These are deliberately chosen read paths: catalog loads behind the cache
+  (cache misses only; a hit opens no transaction), `GET /orders`, `GET /orders/{id}/history`, `GET /notifications`,
+  the merchant inbox (`GET /merchant/orders`), the rider's deliveries (`GET /rider/deliveries`) and the admin lists
+  (`/admin/audit-log`, `/admin/merchants`, `/admin/riders`, `/admin/deliveries`). The merchant's and rider's active
+  check runs before the read-only part, outside it, so a deactivation takes effect on the next request whatever the
+  lag.
+- **Primary**: everything else. Write transactions and everything in them: row locks (`FOR UPDATE`), idempotency
+  checks, outbox claims and publishing, consumers, the deadline poller, DLT replay. Statements outside a transaction:
+  login (`JdbcUserDetailsManager`), the customer lookup every controller does, the health check, the outbox metrics.
+  Spring Data's implicit read-only transactions around CRUD finders called outside a transaction (`findById`,
+  `existsById`, `findAll*`, `count`): the router recognises them by transaction name, so a stray finder in write-path
+  code never reads a lagging replica. Flyway migrates the primary over its own unpooled connections. Spring Session
+  lives in Redis and never touches the database. The outbox and dead-letter admin lists stay on the primary too: they
+  are the tools to repair exactly that state.
+
+Why locks, idempotency and claims never go to a replica: a standby cannot take row locks or write at all, and a
+decision taken on data up to `max-lag` old (is this idempotency key used? is this order still `PAID`? is this outbox
+event still `PENDING`?) would be wrong. Each of them runs inside the write transaction that acts on it, on the primary.
+A write or `SELECT ... FOR UPDATE` that slips into a read-only transaction fails loudly (PostgreSQL rejects it in a
+read-only transaction, on the primary as on a standby) instead of silently reading stale data.
+
+### Read-your-writes
+
+After a request commits a write transaction (`ReadYourWritesTracker`, a `TransactionExecutionListener`), the time is
+stored in the HTTP session and on the request. For `sticky-window` after that, the session's read-only transactions
+use the primary. The session lives in Redis, so the window holds on every pod. Writes outside an HTTP request
+(consumers, pollers) have no session; reads by other users are eventually consistent, at most about
+`max-lag + lag-check-interval` behind. Keep `sticky-window` at least that long; the application logs a warning at
+start-up when it is shorter.
+
+### Lag guard
+
+`ReplicaLagMonitor` checks every replica every `lag-check-interval`, on its own thread and its own connections (one to
+the primary, one per replica, with `lag-check-timeout` as connect and socket timeout; outside the pools, so a saturated
+primary pool or a hung replica cannot stall it). It samples the primary's `pg_current_wal_lsn()` and each replica's
+`pg_is_in_recovery()` and `pg_last_wal_replay_lsn()`; the lag is how long ago the primary first had WAL the replica has
+not replayed, on the application's clock. That needs no clock sync between the servers, and an idle primary's replica
+is not reported as minutes behind, as `now() - pg_last_xact_replay_timestamp()` would. A replica gets reads only while
+it is a standby, reachable and at most `max-lag` behind. State changes are logged ("Read replica replica-1 gets no
+reads, they go to the primary: LAGGING (lag 2.400s exceeds 2.000s)", "... is routable again").
+
+| Setting (`app.datasource.replica.*`) | Default | Variable |
+| --- | --- | --- |
+| `urls` | empty (off) | `DATABASE_REPLICA_URLS`, comma-separated (a URL with commas: `APP_DATASOURCE_REPLICA_URLS_0`, `_1`, ...) |
+| `username` / `password` | the primary's | `DATABASE_REPLICA_USERNAME` / `DATABASE_REPLICA_PASSWORD` (Secret) |
+| `pool.maximum-size` | 20 per replica and pod | `DATABASE_REPLICA_POOL_MAX_SIZE` |
+| `pool.connection-timeout` | 1s, then the read runs on the primary | `DATABASE_REPLICA_POOL_CONNECTION_TIMEOUT` |
+| `pool.socket-timeout` | 15s (above the 10s statement timeout) | `DATABASE_REPLICA_SOCKET_TIMEOUT` |
+| `sticky-window` | 5s | `DATABASE_REPLICA_STICKY_WINDOW` |
+| `max-lag` | 2s | `DATABASE_REPLICA_MAX_LAG` |
+| `lag-check-interval` | 1s | `DATABASE_REPLICA_LAG_CHECK_INTERVAL` |
+| `lag-check-timeout` | 1s | `DATABASE_REPLICA_LAG_CHECK_TIMEOUT` |
+
+Pools: the primary keeps `onlineorder-db` (`DATABASE_POOL_MAX_SIZE`) and its alerts; each replica gets
+`onlineorder-db-replica-N` with the primary's Hikari settings (statement and lock timeouts) plus read-only connections
+and an `application_name` naming the pool (visible in `pg_stat_activity`). Budget connections per database server:
+pods x pool size below its `max_connections` (prod: 6 x 20 on the primary, 6 x 15 on each replica). Catalog caching:
+a reader can reload an old row from a replica after an admin write, so with replicas on the delayed second eviction
+waits at least `max-lag + lag-check-interval` (`app.cache.delayed-double-delete`; 0 still disables it).
+
+### Failure modes
+
+| Replica state | What happens | Seen as |
+| --- | --- | --- |
+| Lagging beyond `max-lag` (long query, I/O, replay paused) | Its reads go to the primary until it catches up | lag > 2s, routable 0, `reason="no_replica"` reads |
+| Stopped, refusing connections | Out of rotation within one check; its pool is evicted then, and again before it takes reads after the outage | lag NaN, routable 0, `UNREACHABLE` in the logs |
+| Hung (accepts, never answers) | Out of rotation within `lag-check-timeout` plus one interval; a read already running on it fails after `socket-timeout` | as above |
+| Pool exhausted | That read waits `pool.connection-timeout`, then runs on the primary; the replica stays in rotation | `reason="replica_failed"` reads |
+| Promoted, or not a standby | Never gets reads (`NOT_STANDBY`): its data diverges from the primary's | routable 0 |
+| Primary unreachable | No lag can be measured, every replica leaves rotation (`PRIMARY_UNKNOWN`); reads fail with the primary, as without replicas | routable 0 |
+| Query cancelled by recovery | A long replica read can be cancelled when it conflicts with replayed WAL; `hot_standby_feedback=on` (the compose replica sets it) avoids most | 500 on that read |
+
+A read that is in the middle of its transaction on a replica when the replica dies fails like any query on a failing
+database; there is no transparent retry. New reads fall back to the primary.
+
+### Metrics and alerts
+
+`onlineorder_db_routing_reads_total{target, reason}` (read-only transactions per pool: `replica-N` with reason
+`replica`, or `primary` with `sticky`, `no_replica`, `replica_failed`), `onlineorder_db_replica_lag_seconds{replica}`,
+`onlineorder_db_replica_routable{replica}` and `hikaricp_connections_*{pool="onlineorder-db-replica-N"}`. Alerts:
+`OnlineOrderDbReplicaLagging` (lag > 2s for 5m; keep it equal to `max-lag`) and `OnlineOrderDbReplicaUnavailable`
+(no reads for 5m: lagging, unreachable or not a standby), with promtool tests in `alerts.test.yml`.
+
+### Running a replica
+
+Locally, `backend/docker-compose.yml` has an optional hot standby behind a profile:
+
+```sh
+cd backend
+docker compose --profile replica up -d
+DATABASE_REPLICA_URLS=jdbc:postgresql://localhost:5434/onlineorder \
+  FLYWAY_LOCATIONS=classpath:db/migration,classpath:db/demo ./gradlew bootRun
+```
+
+`db` runs with `postgres/pg_hba.conf` (the image's own rules plus password-authenticated replication) and
+`db-replica` clones it with `pg_basebackup -R` on an empty volume (`postgres/replica-entrypoint.sh`), then streams. No
+replication slot is created, so a replica left stopped for long while the primary writes may fall too far behind to
+resume: delete the `onlineorder-pg-replica-local` volume and start it again. Managed PostgreSQL offers read replicas
+of its own; point `DATABASE_REPLICA_URLS` at their endpoints, one URL per replica so the lag guard can drop each on
+its own (a load-balanced reader endpoint also works, as one replica). On Kubernetes the overlays set
+`DATABASE_REPLICA_URLS` in the ConfigMap; a separate replica login goes in the Secret.
+
+Tests: `ReadReplicaRoutingIntegrationTests` (a real primary and streaming replica on the official image, built by
+`PostgresReplicationContainers` from the same two files) proves which transactions read the replica, read-your-writes,
+and the lagging, stopped and hung cases; `FulfilmentReplicaRoutingContainerTests` runs the whole order flow with
+routing on; `ReplicaRouterTests`, `ReplicaLagMonitorTests`, `WalPositionHistoryTests`, `ReadYourWritesTrackerTests`
+and `ReadWriteRoutingConfigurationTests` cover the parts.

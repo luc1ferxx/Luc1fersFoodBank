@@ -60,6 +60,8 @@ flowchart LR
   API --> Session[(Redis sessions)]
   API --> Cache[(Redis cache and rate limits)]
   API --> DB[(PostgreSQL)]
+  API -. read-only transactions .-> Replica[(PostgreSQL read replicas, optional)]
+  DB -. streaming replication .-> Replica
   API --> Outbox[(outbox_events)]
   Outbox --> Publisher[Scheduled outbox publisher]
   Publisher --> Kafka[Kafka order-events]
@@ -372,6 +374,24 @@ Hung Redis, same setup with 40 extra restaurants (43 in all): `docker pause` on 
 
 With the breaker, a cold request pays one 500ms command timeout per open period (the first Redis read times out and opens the breaker), then loads from PostgreSQL. `master` paid none on the menu endpoint because that endpoint was uncached.
 
+### Read Replicas
+
+Optional read/write splitting onto PostgreSQL streaming replicas, off unless `DATABASE_REPLICA_URLS` is set (details,
+settings and failure modes: [docs/operations.md](docs/operations.md), section 8):
+
+- **Opt-in per service method.** Only read-only transactions declared by the application (`@Transactional(readOnly =
+  true)` or `ReadOnlyTransactions`) read a replica: catalog loads behind the cache, order and notification lists, the
+  merchant inbox, the rider's deliveries and the admin lists. Writes, locks, idempotency checks, outbox claims,
+  consumers, Flyway, login and Spring Data's implicit CRUD transactions stay on the primary. The routing decision waits
+  for the first statement (`LazyConnectionDataSourceProxy`), when Spring has marked the transaction read-only.
+- **Read-your-writes.** After a session commits a write, its reads use the primary for `sticky-window` (5s); the
+  timestamp lives in the Redis-backed HTTP session, so it holds on every instance.
+- **Lag guard.** A monitor compares each replica's replayed WAL position with the primary's every second and stops
+  routing to a replica more than `max-lag` (2s) behind, unreachable, hung or promoted; its reads fall back to the
+  primary until it recovers. Gauges and alerts for lag and routability, and a counter of reads per pool and reason.
+- **Merchant and rider authorization stays fresh.** Their active check reads the primary before the replica read, so a
+  deactivation still takes effect on the next request.
+
 ### Security and Abuse Controls
 
 - Authentication uses server-side sessions backed by Redis, under a namespace that carries the session format version (`onlineorder:session:v2`), so pods of two releases never read each other's sessions during a rolling update or rollback.
@@ -674,6 +694,10 @@ The test suite covers:
   unstaffed restaurant and the payment timeout (`FulfilmentTimeoutContainerTests`)
 - staff accounts: provisioning, `GET /me`, the role matrix, deactivation on the next request, dispatch to active
   on-duty riders only, and a rider never reaching another rider's delivery (`StaffAccountsPostgresIntegrationTests`)
+- read replicas, on a real primary and streaming replica (official image, `pg_basebackup`): which transactions read
+  the replica, read-your-writes after a session's own write, lagging, stopped and hung replicas falling back to the
+  primary (`ReadReplicaRoutingIntegrationTests`), and the whole order flow with routing on
+  (`FulfilmentReplicaRoutingContainerTests`)
 - 64-bit keys and the audit trails: an order with ids past 2^31 through checkout and fulfilment on PostgreSQL and H2
   (`LargeId*IntegrationTests`), upgrading a populated V6 database (`KeyWideningMigration*Tests`), the online key swap
   and history repair runbook (`SchemaRolloutPostgresTests`), order status history and its actors
@@ -739,6 +763,7 @@ This project is intentionally strong on backend correctness patterns, but it is 
 - Kafka delivery is treated as at-least-once with consumer-side idempotency, not end-to-end exactly-once delivery.
 - Failed outbox rows require explicit admin retry after the underlying cause is fixed.
 - H2 is a lightweight local fallback, not the production-shaped runtime.
+- With read replicas on, a user sees other users' changes (a merchant's accept, a notification) up to about 3s late (`max-lag` plus one check), and a read that is running on a replica when it dies fails instead of being retried on the primary.
 - Catalog edits are limited to admin updates of existing restaurants and menu items. There is no create or delete API, so rows changed directly in the database show up once the cached entries expire. One exception: `GET /restaurant/{id}/menu` serves a directly inserted restaurant at once and evicts the stale list, because an id missing from the cached list is checked in the database (rate-limited) before the `404`. The demo seed matches rows by name, so renaming a demo restaurant or item makes the next startup with `db/demo` insert the original again.
 - The architecture is a deliberate monolith. Service decomposition is deferred until the core transaction is correct and observable.
 

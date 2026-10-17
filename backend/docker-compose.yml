@@ -3,13 +3,36 @@ services:
 
   db:
     image: postgres:15.19-alpine
+    # The image's own client authentication rules plus streaming replication, for the optional replica below.
+    command: ["postgres", "-c", "hba_file=/etc/postgresql/pg_hba.conf"]
     environment:
       POSTGRES_DB: onlineorder
       POSTGRES_PASSWORD: secret
     volumes:
       - onlineorder-pg-local:/var/lib/postgresql/data
+      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     ports:
       - "5433:5432"
+
+
+  # Optional hot standby of db for read/write splitting (docs/operations.md "Read replicas"); not started by default.
+  #   docker compose --profile replica up -d
+  #   DATABASE_REPLICA_URLS=jdbc:postgresql://localhost:5434/onlineorder ./gradlew bootRun
+  db-replica:
+    image: postgres:15.19-alpine
+    profiles: ["replica"]
+    depends_on:
+      - db
+    user: postgres
+    entrypoint: ["/bin/sh", "/usr/local/bin/replica-entrypoint.sh"]
+    environment:
+      PRIMARY_HOST: db
+      PGPASSWORD: secret
+    volumes:
+      - onlineorder-pg-replica-local:/var/lib/postgresql/data
+      - ./postgres/replica-entrypoint.sh:/usr/local/bin/replica-entrypoint.sh:ro
+    ports:
+      - "5434:5432"
 
 
   redis:
@@ -48,5 +71,6 @@ services:
 
 volumes:
   onlineorder-pg-local:
+  onlineorder-pg-replica-local:
   onlineorder-redis-local:
   onlineorder-kafka-local:

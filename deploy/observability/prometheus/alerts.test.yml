@@ -199,3 +199,76 @@ tests:
             exp_annotations:
               summary: Order events are being dead-lettered
               description: Events were stored as dead letters in the last 15 minutes. Inspect them and replay with POST /dead-letters/{id}/replay once the consumer is fixed.
+
+  - name: read replica lagging for five minutes
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_db_replica_lag_seconds{application="OnlineOrder", instance="app:8081", replica="replica-1"}'
+        values: '0.1x4 12x10'
+      - series: 'onlineorder_db_replica_routable{application="OnlineOrder", instance="app:8081", replica="replica-1"}'
+        values: '1x4 0x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: OnlineOrderDbReplicaLagging
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: OnlineOrderDbReplicaLagging
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: app:8081
+              replica: replica-1
+            exp_annotations:
+              summary: Read replica replica-1 is behind the primary on app:8081
+              description: 'replica-1 has been more than 2s behind the primary for 5 minutes (12s now) and gets no reads. Check its replay (pg_stat_replication on the primary, long queries or I/O on the replica).'
+      - eval_time: 10m
+        alertname: OnlineOrderDbReplicaUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: app:8081
+              replica: replica-1
+            exp_annotations:
+              summary: Read replica replica-1 gets no reads on app:8081
+              description: For 5 minutes replica-1 has been lagging, unreachable or not a standby (the instance logs "Read replica ... gets no reads" with the reason). Its reads go to the primary.
+
+  # An unreachable replica cannot be measured: its lag is NaN, so only the routable alert fires.
+  - name: read replica unreachable
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_db_replica_lag_seconds{application="OnlineOrder", instance="app:8081", replica="replica-1"}'
+        values: 'NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN'
+      - series: 'onlineorder_db_replica_routable{application="OnlineOrder", instance="app:8081", replica="replica-1"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: OnlineOrderDbReplicaUnavailable
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: OnlineOrderDbReplicaLagging
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: OnlineOrderDbReplicaUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: app:8081
+              replica: replica-1
+            exp_annotations:
+              summary: Read replica replica-1 gets no reads on app:8081
+              description: For 5 minutes replica-1 has been lagging, unreachable or not a standby (the instance logs "Read replica ... gets no reads" with the reason). Its reads go to the primary.
+
+  - name: a healthy read replica raises nothing
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_db_replica_lag_seconds{application="OnlineOrder", instance="app:8081", replica="replica-1"}'
+        values: '0.05x20'
+      - series: 'onlineorder_db_replica_routable{application="OnlineOrder", instance="app:8081", replica="replica-1"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OnlineOrderDbReplicaLagging
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: OnlineOrderDbReplicaUnavailable
+        exp_alerts: []
