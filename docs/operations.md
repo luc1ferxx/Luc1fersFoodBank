@@ -484,3 +484,46 @@ runs the procedure for `orders` (a key other tables reference) and `idempotency_
 4. `ALTER TABLE ... VALIDATE CONSTRAINT` each of those foreign keys (no write lock). Run the inventory again into
    `after.txt`: `diff before.txt after.txt` must print nothing, which also proves that the `ON CONFLICT` targets are
    back. Then drop the old columns.
+
+## 8. Money with currency (V11)
+
+V11 (`backend/src/main/java/db/migration/V11__Money_with_currency.java`) gives every amount a currency and a fixed
+scale; README "Money and currency" has the model. It adds `currency CHAR(3) NOT NULL DEFAULT 'USD'` (checked to be
+three upper-case letters) to `restaurants`, `menu_items`, `carts`, `order_items`, `orders`, `order_history_items` and
+`merchant_orders`, turns every amount into `NUMERIC(12,2)` with a non-negative check, and adds the composite keys that
+tie a menu item to its restaurant's currency and a cart line to its menu item's and its cart's.
+
+**Data check.** V11 first checks the existing amounts and stops, before changing anything, when a unit price
+(`menu_items`, `order_items`, `order_history_items`) has more than two decimal places or any amount exceeds
+9,999,999,999.99; the error names each column. It never rounds a price: find the rows, decide the right value, fix
+them, and start the release again (on PostgreSQL the failed migration rolled back completely).
+
+```sql
+SELECT 'menu_items' AS source, id, price FROM menu_items WHERE price <> ROUND(price, 2) OR ABS(price) > 9999999999.99
+UNION ALL
+SELECT 'order_items', id, price FROM order_items WHERE price <> ROUND(price, 2) OR ABS(price) > 9999999999.99
+UNION ALL
+SELECT 'order_history_items', id, price FROM order_history_items
+WHERE price <> ROUND(price, 2) OR ABS(price) > 9999999999.99;
+```
+
+Totals (`carts`, `orders`, `merchant_orders`) were summed through `DOUBLE PRECISION` before this release and can
+end in binary noise (14.669999999999998); V11 rounds them to cents and logs how many rows it rounded.
+
+**Locks.** Changing `NUMERIC` to `NUMERIC(12,2)` rewrites the six tables with an amount under an `ACCESS EXCLUSIVE`
+lock, and the new checks and keys scan them again; Flyway holds every lock until V11 commits. Adding the currency
+columns themselves is catalog-only. That is quick for small databases; for large `orders` or `order_history_items`
+tables (`SELECT relname, pg_size_pretty(pg_total_relation_size(oid)) FROM pg_class WHERE relname IN ('orders',
+'order_history_items')`) plan a maintenance window.
+
+**Rollout.** Unlike V7, V11 may run next to pods of the previous release: they do not write the `currency` columns,
+whose default (USD) is right for every restaurant that exists until then, and they ignore the new `data.currency` of
+order events, while the new consumers read an event without one as USD. The catalog caches moved to key version
+`v2`, so old and new pods do not share entries. Add the first restaurant priced in another currency only once no pod
+of the previous release runs: an old pod would check out its carts as USD orders (an old pod's cart line in another
+currency is refused by the composite keys).
+
+**A restaurant in another currency.** There is no API to create restaurants: insert it with its `currency`, and its
+menu items with the same `currency` (the composite key refuses another). A restaurant's currency cannot change while
+it has menu items, and a cart's not while it has lines; repricing a restaurant into another currency means replacing
+its menu items, and carts that hold them must be emptied first.
