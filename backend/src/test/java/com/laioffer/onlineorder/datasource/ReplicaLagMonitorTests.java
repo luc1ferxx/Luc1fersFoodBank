@@ -12,6 +12,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import javax.sql.DataSource;
 import java.time.Duration;
 import java.util.List;
+import java.util.Properties;
 
 
 /**
@@ -111,6 +112,55 @@ class ReplicaLagMonitorTests {
                 ReplicaLagMonitor.ConnectionSettings.of("replica-1", REFUSED, null, null, Duration.ZERO);
         Assertions.assertNull(anonymous.properties().getProperty("user"));
         Assertions.assertEquals("1", anonymous.properties().getProperty("socketTimeout"));
+    }
+
+
+    @Test
+    void connectionSettingsStartFromThePoolsDriverProperties() {
+        // As spring.datasource.hikari.data-source-properties and the replica pool's own settings leave them.
+        Properties pool = new Properties();
+        pool.setProperty("sslmode", "verify-full");
+        pool.setProperty("sslrootcert", "/etc/ssl/certs/db-root.crt");
+        pool.put("tcpKeepAlive", Boolean.TRUE);
+        pool.setProperty("socketTimeout", "15");
+        pool.setProperty("ApplicationName", "onlineorder-db-replica-1");
+        pool.setProperty("user", "pool-user");
+
+        ReplicaLagMonitor.ConnectionSettings settings = ReplicaLagMonitor.ConnectionSettings.of(
+                "replica-1", REFUSED, "reader", "pw", Duration.ofSeconds(1), pool);
+
+        Assertions.assertEquals("verify-full", settings.properties().getProperty("sslmode"));
+        Assertions.assertEquals("/etc/ssl/certs/db-root.crt", settings.properties().getProperty("sslrootcert"));
+        Assertions.assertEquals("true", settings.properties().getProperty("tcpKeepAlive"));
+        Assertions.assertEquals("1", settings.properties().getProperty("socketTimeout"), "the monitor's own timeout");
+        Assertions.assertEquals(ReplicaLagMonitor.APPLICATION_NAME, settings.properties().getProperty("ApplicationName"));
+        Assertions.assertEquals("reader", settings.properties().getProperty("user"));
+        Assertions.assertEquals("15", pool.getProperty("socketTimeout"), "the pool's own properties are left alone");
+
+        ReplicaLagMonitor.ConnectionSettings withoutLogin = ReplicaLagMonitor.ConnectionSettings.of(
+                "replica-1", REFUSED, null, null, Duration.ofSeconds(1), pool);
+        Assertions.assertNull(withoutLogin.properties().getProperty("user"), "no login but the one given");
+    }
+
+
+    @Test
+    void aMonitorConnectionUsesThePoolsDriverProperties() {
+        // The pools would require TLS, which this server does not offer: the monitor's connection must fail the same
+        // way rather than reach the server without it (the same server is NOT_STANDBY over a plain connection).
+        Properties pool = new Properties();
+        pool.setProperty("sslmode", "require");
+        ReplicaTarget replica = target("replica-1");
+        ReplicaLagMonitor monitor = new ReplicaLagMonitor(
+                settings("primary", POSTGRES.getJdbcUrl()),
+                List.of(new ReplicaLagMonitor.MonitoredReplica(replica, ReplicaLagMonitor.ConnectionSettings.of(
+                        "replica-1", POSTGRES.getJdbcUrl(), "postgres", "secret", TIMEOUT, pool))),
+                Duration.ofHours(1)
+        );
+
+        monitor.checkNow();
+
+        Assertions.assertEquals(ReplicaTarget.State.UNREACHABLE, replica.state());
+        monitor.stop();
     }
 
 

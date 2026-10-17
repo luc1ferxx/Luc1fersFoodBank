@@ -35,8 +35,8 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>The monitor has its own connections (one to the primary, one per replica), outside the pools: a saturated primary
  * pool must not stop the measurement and push every read onto that same primary, and a hung replica must not hold a
- * pooled connection. Their connect and socket timeouts are {@code lag-check-timeout}, so a hung server fails the check
- * within that time. If the primary's position cannot
+ * pooled connection. They take the pools' driver properties (SSL settings and the like) with {@code lag-check-timeout}
+ * as connect and socket timeout, so a hung server fails the check within that time. If the primary's position cannot
  * be read, no lag can be measured and the replica is taken out of rotation until it can (reads then go to the primary,
  * which is down or unreachable from here as well).
  */
@@ -228,6 +228,17 @@ public class ReplicaLagMonitor implements SmartLifecycle {
 
 
     /**
+     * The settings of the monitor's connections, the primary's first.
+     */
+    List<ConnectionSettings> connectionSettings() {
+        List<ConnectionSettings> settings = new ArrayList<>();
+        settings.add(primary);
+        replicas.forEach(replica -> settings.add(replica.settings()));
+        return settings;
+    }
+
+
+    /**
      * A replica and the settings of the monitor's connection to it.
      */
     record MonitoredReplica(ReplicaTarget target, ConnectionSettings settings) {
@@ -235,15 +246,42 @@ public class ReplicaLagMonitor implements SmartLifecycle {
 
 
     /**
-     * A monitor connection: the JDBC URL and driver properties (login, timeouts, application_name).
+     * A monitor connection: the JDBC URL and driver properties (the pool's, then login, timeouts, application_name).
      *
      * @param key a name for logs and the connection cache, such as "primary" or "replica-1"
      */
     record ConnectionSettings(String key, String url, Properties properties) {
 
         static ConnectionSettings of(String key, String url, String username, String password, Duration timeout) {
+            return of(key, url, username, password, timeout, new Properties());
+        }
+
+
+        /**
+         * @param driverProperties the pool's driver properties ({@code spring.datasource.hikari.data-source-properties}
+         *                         and what the replica pools add), such as SSL settings configured outside the URL;
+         *                         the login, the timeouts and the application name replace theirs
+         */
+        static ConnectionSettings of(
+                String key,
+                String url,
+                String username,
+                String password,
+                Duration timeout,
+                Properties driverProperties
+        ) {
             String seconds = Long.toString(Math.max(1L, (timeout.toMillis() + 999L) / 1000L));
             Properties properties = new Properties();
+            if (driverProperties != null) {
+                // Hikari keeps them as objects (addDataSourceProperty); the driver reads strings.
+                driverProperties.forEach((name, value) -> {
+                    if (name != null && value != null) {
+                        properties.setProperty(name.toString(), value.toString());
+                    }
+                });
+            }
+            properties.remove("user");
+            properties.remove("password");
             if (username != null) {
                 properties.setProperty("user", username);
             }

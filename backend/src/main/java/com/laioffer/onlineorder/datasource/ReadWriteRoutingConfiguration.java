@@ -155,6 +155,10 @@ public class ReadWriteRoutingConfiguration {
     }
 
 
+    /**
+     * The lag monitor. Its connections take each pool's driver properties ({@code spring.datasource.hikari
+     * .data-source-properties}, such as SSL settings given outside the URL), so it reaches every server the pools reach.
+     */
     @Bean
     ReplicaLagMonitor replicaLagMonitor(ReplicaRoutingProperties replicaProperties, RoutingDataSources dataSources) {
         if (replicaProperties.maxLag().compareTo(replicaProperties.lagCheckInterval().multipliedBy(2)) <= 0) {
@@ -172,7 +176,8 @@ public class ReadWriteRoutingConfiguration {
                 primaryPool.getJdbcUrl(),
                 primaryPool.getUsername(),
                 primaryPool.getPassword(),
-                replicaProperties.lagCheckTimeout()
+                replicaProperties.lagCheckTimeout(),
+                primaryPool.getDataSourceProperties()
         );
         List<ReplicaLagMonitor.MonitoredReplica> replicas = new ArrayList<>();
         for (int i = 0; i < dataSources.replicas().size(); i++) {
@@ -183,7 +188,8 @@ public class ReadWriteRoutingConfiguration {
                     replica.url(),
                     replicaPool.getUsername(),
                     replicaPool.getPassword(),
-                    replicaProperties.lagCheckTimeout()
+                    replicaProperties.lagCheckTimeout(),
+                    replicaPool.getDataSourceProperties()
             )));
         }
         return new ReplicaLagMonitor(primary, replicas, replicaProperties.lagCheckInterval());

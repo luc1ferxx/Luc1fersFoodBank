@@ -205,6 +205,32 @@ class ReadWriteRoutingConfigurationTests {
     }
 
 
+    @Test
+    void theMonitorsConnectionsTakeThePoolsDriverProperties() {
+        contextRunner
+                .withPropertyValues(
+                        "DATABASE_REPLICA_URLS=" + UNREACHABLE + "replica1",
+                        "spring.datasource.hikari.data-source-properties.sslmode=verify-full",
+                        "spring.datasource.hikari.data-source-properties.sslrootcert=/etc/ssl/certs/db-root.crt"
+                )
+                .run(context -> {
+                    java.util.List<ReplicaLagMonitor.ConnectionSettings> settings =
+                            context.getBean(ReplicaLagMonitor.class).connectionSettings();
+                    Assertions.assertEquals(java.util.List.of("primary", "replica-1"),
+                            settings.stream().map(ReplicaLagMonitor.ConnectionSettings::key).toList());
+                    for (ReplicaLagMonitor.ConnectionSettings connection : settings) {
+                        Assertions.assertEquals("verify-full", connection.properties().getProperty("sslmode"));
+                        Assertions.assertEquals("/etc/ssl/certs/db-root.crt",
+                                connection.properties().getProperty("sslrootcert"));
+                        Assertions.assertEquals("1", connection.properties().getProperty("socketTimeout"));
+                        Assertions.assertEquals(ReplicaLagMonitor.APPLICATION_NAME,
+                                connection.properties().getProperty("ApplicationName"));
+                        Assertions.assertEquals("postgres", connection.properties().getProperty("user"));
+                    }
+                });
+    }
+
+
     private static void awaitState(ReplicaTarget replica, ReplicaTarget.State state) throws InterruptedException {
         long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
         while (replica.state() != state) {
