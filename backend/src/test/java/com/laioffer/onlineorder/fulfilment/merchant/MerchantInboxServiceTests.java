@@ -5,6 +5,7 @@ import com.laioffer.onlineorder.messaging.EventEnvelope;
 import com.laioffer.onlineorder.messaging.MerchantEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +46,9 @@ class MerchantInboxServiceTests {
     @Mock
     private ApplicationMetricsService metricsService;
 
+    @Mock
+    private EventSequenceTracker sequenceTracker;
+
     private MerchantInboxService service;
 
 
@@ -57,8 +61,11 @@ class MerchantInboxServiceTests {
                 metricsService,
                 JsonMapper.builder().build(),
                 processedEventService,
+                sequenceTracker,
                 "merchant-events"
         );
+        // Events built by FulfilmentTestEvents carry no sequence; the tracker applies them (EventSequenceTrackerTests).
+        Mockito.lenient().when(sequenceTracker.advance(Mockito.anyString(), Mockito.any())).thenReturn(true);
     }
 
 

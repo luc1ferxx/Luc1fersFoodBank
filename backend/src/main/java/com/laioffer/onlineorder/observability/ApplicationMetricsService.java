@@ -127,6 +127,19 @@ public class ApplicationMetricsService {
     }
 
 
+    /**
+     * A consumer skipped an event whose sequence was not above the last one it applied for the event's aggregate (a
+     * late or replayed event that later events already superseded).
+     */
+    public void recordStaleEventSkipped(String consumer, String eventType) {
+        meterRegistry.counter(
+                "onlineorder.events.stale_skipped",
+                "consumer", normalize(consumer),
+                "event_type", normalize(eventType)
+        ).increment();
+    }
+
+
     public void recordDeadLetterStored(String sourceTopic) {
         meterRegistry.counter(
                 "onlineorder.dead_letter.stored",

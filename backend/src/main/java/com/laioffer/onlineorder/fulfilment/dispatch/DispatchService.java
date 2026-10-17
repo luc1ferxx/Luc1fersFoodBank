@@ -10,6 +10,7 @@ import com.laioffer.onlineorder.messaging.DeliveryEventPayload;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.slf4j.Logger;
@@ -69,6 +70,7 @@ public class DispatchService {
     private final RiderRepository riderRepository;
     private final OrderEventOutboxService outboxService;
     private final ProcessedEventService processedEventService;
+    private final EventSequenceTracker sequenceTracker;
     private final ApplicationMetricsService metricsService;
     private final String deliveryTopic;
 
@@ -79,6 +81,7 @@ public class DispatchService {
             RiderRepository riderRepository,
             OrderEventOutboxService outboxService,
             ProcessedEventService processedEventService,
+            EventSequenceTracker sequenceTracker,
             ApplicationMetricsService metricsService,
             @Value("${app.fulfilment.delivery-topic:delivery-events}") String deliveryTopic
     ) {
@@ -87,11 +90,19 @@ public class DispatchService {
         this.riderRepository = riderRepository;
         this.outboxService = outboxService;
         this.processedEventService = processedEventService;
+        this.sequenceTracker = sequenceTracker;
         this.metricsService = metricsService;
         this.deliveryTopic = deliveryTopic;
     }
 
 
+    /**
+     * order.accepted and order.cancelled only. An event older (by sequence) than the last of the two this consumer
+     * applied for the order is stale and skipped: an order.accepted replayed after the order.cancelled that followed it
+     * assigns no rider (the tombstone below covers events without a sequence). The other order event types do not move
+     * that position, so an order.accepted dead-lettered for want of a rider and replayed after order.preparing still
+     * assigns one.
+     */
     @Transactional
     public void handle(OrderEventEnvelope event) {
         if (event == null || !(FulfilmentEvents.ORDER_ACCEPTED.equals(event.eventType())
@@ -103,6 +114,9 @@ public class DispatchService {
             return;
         }
         if (!processedEventService.markIfUnseen(DISPATCH_CONSUMER, event)) {
+            return;
+        }
+        if (!sequenceTracker.advance(DISPATCH_CONSUMER, event)) {
             return;
         }
 

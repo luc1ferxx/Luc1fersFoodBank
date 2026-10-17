@@ -4,6 +4,7 @@ package com.laioffer.onlineorder.fulfilment.timeout;
 import com.laioffer.onlineorder.messaging.MerchantEventEnvelope;
 import com.laioffer.onlineorder.messaging.MerchantEventPayload;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
+import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,14 +34,20 @@ class OrderDeadlineServiceTests {
     @Mock
     private ProcessedEventService processedEventService;
 
+    @Mock
+    private EventSequenceTracker sequenceTracker;
+
     private OrderDeadlineService service;
 
 
     @BeforeEach
     void setup() {
+        // Events built by FulfilmentTestEvents carry no sequence; the tracker applies them (EventSequenceTrackerTests).
+        Mockito.lenient().when(sequenceTracker.advance(Mockito.anyString(), Mockito.any())).thenReturn(true);
         service = new OrderDeadlineService(
                 orderDeadlineRepository,
                 processedEventService,
+                sequenceTracker,
                 Duration.ofMinutes(15),
                 Duration.ofMinutes(10),
                 true
@@ -141,8 +148,8 @@ class OrderDeadlineServiceTests {
 
     @Test
     void merchantOrderReceived_whenTheAcceptTimeoutIsOff_shouldSetNoDeadline() {
-        OrderDeadlineService acceptTimeoutOff = new OrderDeadlineService(
-                orderDeadlineRepository, processedEventService, Duration.ofMinutes(15), Duration.ofMinutes(10), false);
+        OrderDeadlineService acceptTimeoutOff = new OrderDeadlineService(orderDeadlineRepository, processedEventService,
+                sequenceTracker, Duration.ofMinutes(15), Duration.ofMinutes(10), false);
         Mockito.when(processedEventService.markIfUnseen(
                 Mockito.eq("order-timeout-merchant-consumer"), Mockito.anyString(), Mockito.anyString(),
                 Mockito.anyString(), Mockito.anyString(), Mockito.anyLong())).thenReturn(true);
@@ -183,8 +190,8 @@ class OrderDeadlineServiceTests {
 
     @Test
     void orderCreated_whenTheAcceptTimeoutIsOff_shouldStillSetAPaymentDeadline() {
-        OrderDeadlineService acceptTimeoutOff = new OrderDeadlineService(
-                orderDeadlineRepository, processedEventService, Duration.ofMinutes(15), Duration.ofMinutes(10), false);
+        OrderDeadlineService acceptTimeoutOff = new OrderDeadlineService(orderDeadlineRepository, processedEventService,
+                sequenceTracker, Duration.ofMinutes(15), Duration.ofMinutes(10), false);
         OrderEventEnvelope created = event("order.created", "PLACED");
         Mockito.when(processedEventService.markIfUnseen("order-timeout-consumer", created)).thenReturn(true);
 

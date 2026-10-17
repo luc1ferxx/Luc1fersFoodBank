@@ -8,6 +8,7 @@ import com.laioffer.onlineorder.messaging.MerchantEventPayload;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.slf4j.Logger;
@@ -81,6 +82,7 @@ public class MerchantInboxService {
     private final ApplicationMetricsService metricsService;
     private final ObjectMapper objectMapper;
     private final ProcessedEventService processedEventService;
+    private final EventSequenceTracker sequenceTracker;
     private final String merchantTopic;
 
 
@@ -91,6 +93,7 @@ public class MerchantInboxService {
             ApplicationMetricsService metricsService,
             ObjectMapper objectMapper,
             ProcessedEventService processedEventService,
+            EventSequenceTracker sequenceTracker,
             @Value("${app.fulfilment.merchant-topic:merchant-events}") String merchantTopic
     ) {
         this.merchantOrderRepository = merchantOrderRepository;
@@ -99,10 +102,16 @@ public class MerchantInboxService {
         this.metricsService = metricsService;
         this.objectMapper = objectMapper;
         this.processedEventService = processedEventService;
+        this.sequenceTracker = sequenceTracker;
         this.merchantTopic = merchantTopic;
     }
 
 
+    /**
+     * An event older (by sequence) than the last order event this consumer applied for the order is stale: the row
+     * already reflects a later state, so its status stays. A stale order.paid still records the payment time when the
+     * row has none (a later event created it first), exactly like an order.paid without a sequence that finds a row.
+     */
     @Transactional
     public void handle(OrderEventEnvelope event) {
         if (event == null || !HANDLED_EVENT_TYPES.contains(event.eventType())) {
@@ -118,6 +127,12 @@ public class MerchantInboxService {
 
         LocalDateTime now = LocalDateTime.now();
         Long orderId = event.aggregateId();
+        if (!sequenceTracker.advance(MERCHANT_INBOX_CONSUMER, event)) {
+            if (FulfilmentEvents.ORDER_PAID.equals(event.eventType())) {
+                merchantOrderRepository.recordPayment(orderId, event.occurredAt() == null ? now : event.occurredAt(), now);
+            }
+            return;
+        }
         switch (event.eventType()) {
             case FulfilmentEvents.ORDER_PAID -> {
                 LocalDateTime paidAt = event.occurredAt() == null ? now : event.occurredAt();

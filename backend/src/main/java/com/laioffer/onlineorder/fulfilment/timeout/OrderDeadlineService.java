@@ -5,6 +5,7 @@ import com.laioffer.onlineorder.fulfilment.FulfilmentEvents;
 import com.laioffer.onlineorder.messaging.MerchantEventEnvelope;
 import com.laioffer.onlineorder.messaging.MerchantEventPayload;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
+import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -56,6 +57,7 @@ public class OrderDeadlineService {
 
     private final OrderDeadlineRepository orderDeadlineRepository;
     private final ProcessedEventService processedEventService;
+    private final EventSequenceTracker sequenceTracker;
     private final Duration paymentTimeout;
     private final Duration acceptTimeout;
     private final boolean acceptTimeoutEnabled;
@@ -64,18 +66,25 @@ public class OrderDeadlineService {
     public OrderDeadlineService(
             OrderDeadlineRepository orderDeadlineRepository,
             ProcessedEventService processedEventService,
+            EventSequenceTracker sequenceTracker,
             @Value("${app.fulfilment.payment-timeout:15m}") Duration paymentTimeout,
             @Value("${app.fulfilment.accept-timeout:10m}") Duration acceptTimeout,
             @Value("${app.fulfilment.accept-timeout-enabled:true}") boolean acceptTimeoutEnabled
     ) {
         this.orderDeadlineRepository = orderDeadlineRepository;
         this.processedEventService = processedEventService;
+        this.sequenceTracker = sequenceTracker;
         this.paymentTimeout = paymentTimeout;
         this.acceptTimeout = acceptTimeout;
         this.acceptTimeoutEnabled = acceptTimeoutEnabled;
     }
 
 
+    /**
+     * An order event older (by sequence) than the last one this consumer applied for the order is stale and skipped:
+     * every later order event already dropped the deadlines it could add or drop, so a late order.created no longer
+     * writes a PAYMENT deadline for an order that was paid in the meantime.
+     */
     @Transactional
     public void handle(OrderEventEnvelope event) {
         if (event == null || !HANDLED_EVENT_TYPES.contains(event.eventType())) {
@@ -86,6 +95,9 @@ public class OrderDeadlineService {
             return;
         }
         if (!processedEventService.markIfUnseen(ORDER_TIMEOUT_CONSUMER, event)) {
+            return;
+        }
+        if (!sequenceTracker.advance(ORDER_TIMEOUT_CONSUMER, event)) {
             return;
         }
 

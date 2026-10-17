@@ -57,4 +57,19 @@ public final class FulfilmentTestEvents {
     public static OrderEventEnvelope orderEvent(String eventType, Long orderId, Long restaurantId, String status) {
         return orderEvent(eventType, orderId, 3L, restaurantId, status, null, LocalDateTime.of(2026, 4, 4, 12, 0));
     }
+
+
+    /**
+     * The event as the outbox stores it: the {@code sequence}-th event of the order (a fresh event id each call, as a
+     * copy of an event would have).
+     */
+    public static OrderEventEnvelope orderEvent(
+            String eventType,
+            Long orderId,
+            Long restaurantId,
+            String status,
+            long sequence
+    ) {
+        return orderEvent(eventType, orderId, restaurantId, status).withSequence(sequence);
+    }
 }

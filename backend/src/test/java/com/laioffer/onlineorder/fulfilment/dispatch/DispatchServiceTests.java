@@ -7,6 +7,7 @@ import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
 import com.laioffer.onlineorder.messaging.EventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.junit.jupiter.api.Assertions;
@@ -47,6 +48,9 @@ class DispatchServiceTests {
     private ProcessedEventService processedEventService;
 
     @Mock
+    private EventSequenceTracker sequenceTracker;
+
+    @Mock
     private ApplicationMetricsService metricsService;
 
     private DispatchService service;
@@ -60,9 +64,12 @@ class DispatchServiceTests {
                 riderRepository,
                 outboxService,
                 processedEventService,
+                sequenceTracker,
                 metricsService,
                 "delivery-events"
         );
+        // Events built by FulfilmentTestEvents carry no sequence; the tracker applies them (EventSequenceTrackerTests).
+        Mockito.lenient().when(sequenceTracker.advance(Mockito.anyString(), Mockito.any())).thenReturn(true);
     }
 
 
