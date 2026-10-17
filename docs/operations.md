@@ -10,6 +10,7 @@ How OnlineOrder is observed, packaged, deployed and gated. Paths are relative to
 | Kubernetes | `deploy/k8s/` (kustomize base + `staging` and `prod` overlays) |
 | Image | `Dockerfile` |
 | CI and CD | `.github/workflows/`, `.github/dependabot.yml`, `.trivyignore` |
+| Partitions, order numbers, worker ids | section 8; the sharding plan in `docs/adr/0001-order-sharding.md` |
 
 ## 1. Telemetry in the application
 
@@ -93,6 +94,9 @@ Application metrics on top of Spring Boot's (HTTP, Hikari, Tomcat, JVM, Kafka cl
 | `onlineorder_outbox_relay_seconds` | Time from relay start until the publisher has the Kafka acknowledgement or the failure |
 | `onlineorder_dead_letter_stored_total`, `onlineorder_dead_letter_events{replay_status}`, `onlineorder_dead_letter_replay_total` | Dead letters |
 | `onlineorder_checkout_requests_total{result}` | Checkout results |
+| `onlineorder_partitions_future{table}`, `onlineorder_partitions_count{table}`, `onlineorder_partitions_oldest_age_seconds{table}`, `onlineorder_partitions_default_rows{table}` | Monthly partitions (section 8): partitions past the current month, all range partitions, how far back the oldest starts, rows in the default partition (up to 10,001). Read from the catalog at most every 30 s; NaN on H2 |
+| `onlineorder_partitions_created_total{table}`, `onlineorder_partitions_dropped_total{table}`, `onlineorder_partitions_maintenance_failures_total{table}` | Partition maintenance job |
+| `onlineorder_ids_worker_id`, `onlineorder_ids_clock_backward_total{outcome}`, `onlineorder_ids_lease_lost_total` | Snowflake order numbers (section 8): the worker id in use (-1 without a lease), clock steps back waited out or refused, leases taken over |
 
 `http.server.requests` publishes a percentiles histogram bounded to 5ms-10s plus exact SLO buckets at 50ms, 100ms,
 250ms, 500ms, 1s and 2s. The latency objective reads the `le="0.5"` bucket.
@@ -170,6 +174,8 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 | `OnlineOrderHikariPendingSustained` | threads waiting for a connection for 5m | warning |
 | `OnlineOrderHikariConnectionTimeouts` | connection requests timed out (503) in the last 5m | warning |
 | `OnlineOrderKafkaConsumerLag` | a consumer client > 1000 records behind for 10m | warning |
+| `OnlineOrderPartitionsAheadLow` / `...Missing` | fewer than 2 monthly partitions past the current month for 1h / none for 10m (section 8) | warning / critical |
+| `OnlineOrderPartitionDefaultRows` | rows in a table's default partition for 1h (section 8) | warning |
 
 On Kubernetes, load the same file into Prometheus (or wrap it in a `PrometheusRule` for the Prometheus Operator) and
 make sure the scrape job is named `onlineorder` or adjust `OnlineOrderTargetDown`.
@@ -282,6 +288,9 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
 | `SERVER_FORWARD_HEADERS_STRATEGY` | unset (Boot picks native on Kubernetes) | ConfigMap: native, stated explicitly (client IP for rate limits from `X-Forwarded-For`) |
 | `SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE` | 30s | ConfigMap |
 | `JAVA_OPTS` | see the image | image |
+| `APP_IDS_WORKER_ID_SOURCE` | `static` (with `APP_IDS_WORKER_ID`, default 0) | ConfigMap: `lease` (section 8) |
+| `CLEANUP_AUDIT_LOG_RETENTION`, `CLEANUP_ORDER_STATUS_HISTORY_RETENTION` | `0d` (kept forever) | - |
+| `PARTITIONS_MONTHS_AHEAD`, `PARTITIONS_LOCK_TIMEOUT`, `PARTITIONS_MAINTENANCE_ENABLED` | 3, 5s, true | - |
 
 ## 5. CI gates
 
@@ -386,8 +395,8 @@ constraint and a foreign key to `customers(id)`, and replaces the riders dispatc
 merchant or rider, so the locks are short. The no-older-pods rule below covers it too: an older pod ignores
 `riders.on_duty` and would assign riders who are off duty.
 
-Neither `order_status_history` nor `audit_log` has a retention job (`MaintenanceCleanupService` leaves them alone):
-both are records to keep. They grow by one row per status change and per audited admin or staff action. Query them by order
+Neither `order_status_history` nor `audit_log` is deleted by default: both are records to keep. Since V10 a
+retention can be set for each (section 8). They grow by one row per status change and per audited admin or staff action. Query them by order
 (`idx_order_status_history_order_id_id`), by target or by actor (`idx_audit_log_target_id`, `idx_audit_log_actor_id`).
 Each row carries the OpenTelemetry trace id of the request or job that wrote it (`trace_id`, null when no span was
 in scope), the same id as the `X-Trace-Id` header and the logs.
@@ -484,3 +493,132 @@ runs the procedure for `orders` (a key other tables reference) and `idempotency_
 4. `ALTER TABLE ... VALIDATE CONSTRAINT` each of those foreign keys (no write lock). Run the inventory again into
    `after.txt`: `diff before.txt after.txt` must print nothing, which also proves that the `ON CONFLICT` targets are
    back. Then drop the old columns.
+
+## 8. Data tier: monthly partitions, order numbers and worker ids
+
+Migrations V10, V10_1 and V10_2 (Java migrations in `backend/src/main/java/db/migration`) prepare the database for
+growth without sharding it; the sharding plan, and why it waits, is
+[docs/adr/0001-order-sharding.md](adr/0001-order-sharding.md). They run on PostgreSQL and H2; only V10 differs.
+
+### Monthly partitions (V10)
+
+On PostgreSQL the append-only tables that grow with traffic are range-partitioned by month:
+
+| Table | Partition column | Retention | Default |
+| --- | --- | --- | --- |
+| `processed_events` | `processed_at` | `CLEANUP_PROCESSED_EVENT_RETENTION` | 14d |
+| `audit_log` | `occurred_at` | `CLEANUP_AUDIT_LOG_RETENTION` | 0d: kept forever |
+| `order_status_history` | `occurred_at` | `CLEANUP_ORDER_STATUS_HISTORY_RETENTION` | 0d: kept forever |
+
+Partitions are named `<table>_pYYYY_MM` and cover `[first of the month, first of the next month)` of the column, in
+the time the application writes (`LocalDateTime.now()` of the JVM, UTC in the image); `<table>_default` takes rows
+outside every partition. V10 copies each table into its partitioned replacement with its ids, keys, checks, the
+history's foreign key to `orders` and the indexes, and creates the months that have rows, the current month and the
+next three. H2 keeps plain tables (the `h2` profile deletes rows instead). `outbox_events` is not partitioned yet; it
+is the next candidate (partition by `created_at`, drop published months).
+
+What partitioning changes, because a primary key or unique constraint of a partitioned table must contain the
+partition column:
+
+- The primary keys are `(id, occurred_at)` / `(id, processed_at)`. Ids still come from one sequence per table and stay
+  unique; nothing references these tables by id.
+- `processed_events` no longer has `UNIQUE (consumer_name, dedup_key)` across the table: the same event processed
+  again in a later month (a dead letter replayed weeks later) would land in another partition. Every consumer's mark
+  goes through `ProcessedEventRepository.insertIfAbsent` (`ProcessedEventDedupImpl`), which takes
+  `pg_advisory_xact_lock` on the key in the consumer's transaction and inserts only if no partition has the key; a
+  second delivery waits for the first transaction and then sees its row, as with a unique index. Each partition also
+  has `UNIQUE (consumer_name, dedup_key)` (`<partition>_dedup_key`), which serves that lookup and rejects a duplicate
+  within a month at the database level. `ProcessedEventDedupAcrossPartitionsPostgresTests` covers replays across
+  months, concurrent deliveries, waiting and rollback.
+- Queries that do not filter on the partition column probe every partition. `GET /orders/{id}/history` filters on the
+  order's creation time (minus a day of clock skew), so it skips the months before the order.
+
+`PartitionMaintenanceService` runs hourly (`PARTITIONS_FIXED_DELAY_MS`, first run a minute after start) on every
+instance; each step takes `pg_try_advisory_xact_lock` for its table, so one instance does the work and the others
+skip. It keeps the current month and `PARTITIONS_MONTHS_AHEAD` (3, at least 2) months ahead, moving rows that already
+sit in the default partition into a new month's partition; gives every `processed_events` partition its dedup index;
+and, when `CLEANUP_ENABLED=true`, drops every partition whose upper bound is older than the table's retention and
+deletes expired rows from the default partition in batches. A row is kept for at least its retention and at most a
+month longer. Creating or dropping a partition locks the parent table for a moment (for `order_status_history` also
+`orders`, which its foreign key references); `PARTITIONS_LOCK_TIMEOUT` (5s) makes the step give up instead of
+queueing every insert behind a long-running query, and the next run retries.
+`MaintenanceCleanupService` skips the partitioned tables. Turning `PARTITIONS_MAINTENANCE_ENABLED` off also stops
+retention for them.
+
+Alerts and what to do:
+
+- `OnlineOrderPartitionsAheadLow` (fewer than 2 future partitions for 1h) / `OnlineOrderPartitionsAheadMissing` (none,
+  10m; next month's rows would land in the default partition): find "Partition maintenance of ... failed" in the logs
+  (`onlineorder_partitions_maintenance_failures_total`). A lock timeout passes with the next run; a permission error
+  means the database user does not own the table (creating and dropping partitions needs ownership). To bridge by hand:
+
+  ```sql
+  CREATE TABLE audit_log_p2027_02 PARTITION OF audit_log
+      FOR VALUES FROM ('2027-02-01 00:00:00') TO ('2027-03-01 00:00:00');
+  -- processed_events partitions also need their dedup index:
+  CREATE UNIQUE INDEX processed_events_p2027_02_dedup_key ON processed_events_p2027_02 (consumer_name, dedup_key);
+  ```
+
+- `OnlineOrderPartitionDefaultRows`: rows outside every partition, usually from a wrong clock (far past or future) or
+  a month the job missed. The job moves them when it creates their month; rows of a month it will not create (the
+  past) stay until the retention deletes them. To give a past month its partition by hand, do what the job does: in
+  one transaction `CREATE TABLE <partition> (LIKE <table> INCLUDING DEFAULTS INCLUDING CONSTRAINTS)`, copy the month's
+  rows from `<table>_default`, delete them there, then `ALTER TABLE <table> ATTACH PARTITION <partition> FOR VALUES
+  FROM (...) TO (...)`.
+
+Rollout and large tables: V10 copies the three tables inside Flyway's transaction and holds an ACCESS EXCLUSIVE lock
+on each until the migration commits, so checkouts, status changes and consumers wait for it. Measured on PostgreSQL 16
+in Docker on a laptop: 900k rows (200k history, 200k audit, 500k processed events) in 2.7 s. For a large table, partition it by hand ahead of the release; V10 skips tables that are already
+partitioned. The outline (not exercised by the test suite): add `CHECK (<column> < '<first of next month>') NOT VALID`
+and validate it, build `UNIQUE (id, <column>)` with `CREATE UNIQUE INDEX CONCURRENTLY`, then in one short
+transaction rename the table to `<table>_legacy`, create the partitioned table as V10 does (same columns, primary key
+`(id, <column>)`, the sequence moved over), attach `<table>_legacy` `FOR VALUES FROM (MINVALUE) TO ('<first of next
+month>')` (the validated check lets the attach skip its scan), and create the next months and the default
+partition. Retention later drops the legacy partition as a whole once its upper bound is past the retention. For
+`processed_events`, rename the legacy table's unique index to `processed_events_legacy_dedup_key`, so the job does not
+build a second one.
+
+### Order numbers (V10_1)
+
+`orders.order_no` (`BIGINT NOT NULL`, `uq_orders_order_no`) is the public order number: a 64-bit Snowflake id
+(`SnowflakeIdGenerator`: 41 bits of milliseconds since 2020-01-01, 10 bits of worker id, 12 bits of sequence starting
+at a random value below 2048 each millisecond). Checkout assigns it (`OrderNumberCallback`, on the insert of a new
+order); the order APIs return it as `order_no`, a JSON string because JavaScript numbers lose digits past 2^53;
+notifications name the order by it. The internal `id` stays the key of every table and API path. Order numbers do not
+reveal how many orders exist, but they are not secrets: every endpoint still checks who may read the order.
+
+V10_1 numbers the existing orders in id order from their `created_at`, with worker id 1023, which no running instance
+uses, so backfilled and live numbers cannot collide. It updates every order row in batches of 1,000 inside Flyway's
+transaction (200k orders in 4.5 s in the same setup, holding their row locks until the commit); on a very large
+`orders` table run the release in a quiet period. Like V7-V7_2 it must not run next to
+pods of an older version: those insert orders without a number, which `order_no NOT NULL` rejects (follow "Deploying
+the release with V7-V7_2" in section 7). An insert by hand must set `order_no` too.
+
+### Worker ids (V10_2)
+
+Every instance that issues order numbers at the same time needs its own worker id (0-1022); two instances with the
+same id can produce the same number, and checkout then fails on `uq_orders_order_no` instead of creating a duplicate.
+
+| `APP_IDS_WORKER_ID_SOURCE` | Worker id | Use |
+| --- | --- | --- |
+| `static` (default) | `APP_IDS_WORKER_ID` (default 0) | one local instance, tests, the `h2` profile; a StatefulSet that sets `APP_IDS_WORKER_ID` from its pod index (`fieldRef: metadata.labels['apps.kubernetes.io/pod-index']`, Kubernetes 1.28+) |
+| `lease` | leased from `snowflake_worker_leases` | the Kubernetes Deployment (ConfigMap): pods come and go with rollouts and the autoscaler and have no stable ordinal |
+
+Lease mode (`WorkerIdLeaseManager`, PostgreSQL only): on start the pod claims the lowest free row (`FOR UPDATE SKIP
+LOCKED`) and holds it for `APP_IDS_LEASE_TTL` (60s) of database time, renewed every `APP_IDS_LEASE_RENEW_INTERVAL`
+(15s) on a thread of its own; a graceful shutdown releases the row after the web server and the Kafka listeners have
+stopped, a crashed pod's row is free after the TTL. If no row is free the pod does not start. Each row also stores
+`issued_until_ms`, a bound on the timestamps of the ids issued under it: the holder never issues past it and raises it
+only after the database has stored the new value, and the next holder starts after it (waiting up to one TTL if its
+clock is behind). So a pod that stalls past its lease cannot collide with the pod that took its worker id over, and a
+pod that cannot renew (database unreachable) stops issuing about one TTL after its last renewal: checkout answers
+`503 SERVICE_UNAVAILABLE` until the database is back. A renewal that finds the row taken over leases another one
+(`onlineorder_ids_lease_lost_total`).
+
+Clock steps: the generator never reuses a timestamp. A step back of up to `APP_IDS_MAX_CLOCK_BACKWARD` (50ms) is waited
+out; a larger one makes checkout answer 503 until the clock has caught up
+(`onlineorder_ids_clock_backward_total{outcome="refused"}`). Keep the nodes on NTP with slewing.
+
+Inspect the leases with `SELECT worker_id, owner, lease_until, issued_until_ms FROM snowflake_worker_leases WHERE owner
+IS NOT NULL ORDER BY worker_id`. Several clusters sharing one database share the table as well; clusters with their
+own databases but one Kafka topology and shared order numbers would need disjoint static ranges instead.
