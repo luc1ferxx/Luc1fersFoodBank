@@ -531,20 +531,42 @@ read-only transaction, on the primary as on a standby) instead of silently readi
 After a request commits a write transaction (`ReadYourWritesTracker`, a `TransactionExecutionListener`), the time is
 stored in the HTTP session and on the request. For `sticky-window` after that, the session's read-only transactions
 use the primary. The session lives in Redis, so the window holds on every pod. Writes outside an HTTP request
-(consumers, pollers) have no session; reads by other users are eventually consistent, at most about
-`max-lag + lag-check-interval` behind. Keep `sticky-window` at least that long; the application logs a warning at
-start-up when it is shorter.
+(consumers, pollers) have no session; reads by other users are eventually consistent, at most `max-lag` behind (see
+the lag guard). Keep `sticky-window` above `max-lag`, with a margin for clock differences between pods (the window is
+measured on the wall clock of two pods); the application logs a warning at start-up when it is not. If the session
+cannot be read (Redis down or hung), the request's reads use the primary after that one failed lookup, and a write
+whose window cannot be stored still succeeds. During such an outage requests with a session cookie fail in Spring MVC
+anyway (it looks the session up for flash attributes on every request), with or without replicas; requests without
+one never touch Redis for routing.
+
+Reads do not go backwards within a request: its first replica-eligible read picks a replica and the request keeps
+it; if that replica drops out, or a read of the request had to use the primary, the rest of the request reads the
+primary, never another replica that could be further behind (the catalog's existence check and the menu load it
+guards, for example). A request with a session cookie picks its replica from the cookie, so a session's polls keep
+reading one replica while it stays routable. Across requests, reads can still go back by up to `max-lag` when a
+session's replica drops out and it moves to another (or that replica returns).
 
 ### Lag guard
 
-`ReplicaLagMonitor` checks every replica every `lag-check-interval`, on its own thread and its own connections (one to
-the primary, one per replica, with `lag-check-timeout` as connect and socket timeout; outside the pools, so a saturated
-primary pool or a hung replica cannot stall it). It samples the primary's `pg_current_wal_lsn()` and each replica's
-`pg_is_in_recovery()` and `pg_last_wal_replay_lsn()`; the lag is how long ago the primary first had WAL the replica has
-not replayed, on the application's clock. That needs no clock sync between the servers, and an idle primary's replica
-is not reported as minutes behind, as `now() - pg_last_xact_replay_timestamp()` would. A replica gets reads only while
-it is a standby, reachable and at most `max-lag` behind. State changes are logged ("Read replica replica-1 gets no
-reads, they go to the primary: LAGGING (lag 2.400s exceeds 2.000s)", "... is routable again").
+`ReplicaLagMonitor` checks each replica every `lag-check-interval` on a thread of its own, so a slow or hung replica
+delays only its own checks, over its own connections (one to the primary, shared, and one per replica, with the pools'
+driver properties and `lag-check-timeout` as connect and socket timeout; outside the pools, so a saturated primary pool
+or a hung replica cannot stall it). Each check samples the primary's `pg_current_wal_lsn()`, taking the time just
+before, then the replica's `pg_is_in_recovery()` and `pg_last_wal_replay_lsn()`. Every transaction committed before a
+sample's time is at or below its position, so a replica that has replayed up to a sample's position has everything
+committed before that sample was taken: its data is at most that old. This needs no clock sync between the servers,
+and an idle primary's replica is not reported as minutes behind, as `now() - pg_last_xact_replay_timestamp()` would.
+
+Routability is a deadline evaluated on every read, not a verdict kept until the next check: a replica gets reads only
+while the last check found it a reachable standby and its data is still less than `max-lag` old now. A replica whose
+replay stalls therefore drops out exactly `max-lag` after the last moment it was known to be current, however slow or
+stuck the monitor is, and every replica read sees everything committed `max-lag` before it started. The price is
+granularity: a replica is only known to be as current as the previous primary sample it has replayed, so under write
+load it stays routable while it replays less than `max-lag - 2 x lag-check-interval` behind (1s with the defaults; the
+application warns at start-up when `max-lag` is not above twice the interval). A new replica, or one back from an
+outage, under write load is routable from its second check. State changes found by a check are logged ("Read replica
+replica-1 gets no reads, they go to the primary: LAGGING (data up to 2.400s old, max-lag 2.000s)", "... is routable
+again"); a deadline passing between two checks is not.
 
 | Setting (`app.datasource.replica.*`) | Default | Variable |
 | --- | --- | --- |
@@ -553,25 +575,26 @@ reads, they go to the primary: LAGGING (lag 2.400s exceeds 2.000s)", "... is rou
 | `pool.maximum-size` | 20 per replica and pod | `DATABASE_REPLICA_POOL_MAX_SIZE` |
 | `pool.connection-timeout` | 1s, then the read runs on the primary | `DATABASE_REPLICA_POOL_CONNECTION_TIMEOUT` |
 | `pool.socket-timeout` | 15s (above the 10s statement timeout) | `DATABASE_REPLICA_SOCKET_TIMEOUT` |
-| `sticky-window` | 5s | `DATABASE_REPLICA_STICKY_WINDOW` |
-| `max-lag` | 2s | `DATABASE_REPLICA_MAX_LAG` |
-| `lag-check-interval` | 1s | `DATABASE_REPLICA_LAG_CHECK_INTERVAL` |
+| `sticky-window` | 5s; keep it above `max-lag` | `DATABASE_REPLICA_STICKY_WINDOW` |
+| `max-lag` | 2s, the most a replica read can lag | `DATABASE_REPLICA_MAX_LAG` |
+| `lag-check-interval` | 500ms per replica; keep it below `max-lag / 2` | `DATABASE_REPLICA_LAG_CHECK_INTERVAL` |
 | `lag-check-timeout` | 1s | `DATABASE_REPLICA_LAG_CHECK_TIMEOUT` |
 
 Pools: the primary keeps `onlineorder-db` (`DATABASE_POOL_MAX_SIZE`) and its alerts; each replica gets
 `onlineorder-db-replica-N` with the primary's Hikari settings (statement and lock timeouts) plus read-only connections
 and an `application_name` naming the pool (visible in `pg_stat_activity`). Budget connections per database server:
 pods x pool size below its `max_connections` (prod: 6 x 20 on the primary, 6 x 15 on each replica). Catalog caching:
-a reader can reload an old row from a replica after an admin write, so with replicas on the delayed second eviction
-waits at least `max-lag + lag-check-interval` (`app.cache.delayed-double-delete`; 0 still disables it).
+a reader can reload an old row from a replica after an admin write, but only by starting less than `max-lag` after the
+commit, so with replicas on the delayed second eviction waits `max-lag` plus `app.cache.delayed-double-delete` (3s with
+the defaults; 0 still disables it).
 
 ### Failure modes
 
 | Replica state | What happens | Seen as |
 | --- | --- | --- |
-| Lagging beyond `max-lag` (long query, I/O, replay paused) | Its reads go to the primary until it catches up | lag > 2s, routable 0, `reason="no_replica"` reads |
-| Stopped, refusing connections | Out of rotation within one check; its pool is evicted then, and again before it takes reads after the outage | lag NaN, routable 0, `UNREACHABLE` in the logs |
-| Hung (accepts, never answers) | Out of rotation within `lag-check-timeout` plus one interval; a read already running on it fails after `socket-timeout` | as above |
+| Lagging beyond `max-lag` (long query, I/O, replay paused) | Its reads go to the primary from the moment its data is `max-lag` old until a check finds it caught up | lag > 2s, routable 0, `reason="no_replica"` reads |
+| Stopped, refusing connections | Out of rotation at its next check (at the latest `max-lag` after its last good one); its pool is evicted then, and again before it takes reads after the outage | lag NaN, routable 0, `UNREACHABLE` in the logs |
+| Hung (accepts, never answers) | Out of rotation when its check times out (within `lag-check-interval` plus `lag-check-timeout`), at the latest `max-lag` after its last good check; a read already running on it fails after `socket-timeout`. Other replicas' checks are not delayed | as above |
 | Pool exhausted | That read waits `pool.connection-timeout`, then runs on the primary; the replica stays in rotation | `reason="replica_failed"` reads |
 | Promoted, or not a standby | Never gets reads (`NOT_STANDBY`): its data diverges from the primary's | routable 0 |
 | Primary unreachable | No lag can be measured, every replica leaves rotation (`PRIMARY_UNKNOWN`); reads fail with the primary, as without replicas | routable 0 |
@@ -583,8 +606,11 @@ database; there is no transparent retry. New reads fall back to the primary.
 ### Metrics and alerts
 
 `onlineorder_db_routing_reads_total{target, reason}` (read-only transactions per pool: `replica-N` with reason
-`replica`, or `primary` with `sticky`, `no_replica`, `replica_failed`), `onlineorder_db_replica_lag_seconds{replica}`,
-`onlineorder_db_replica_routable{replica}` and `hikaricp_connections_*{pool="onlineorder-db-replica-N"}`. Alerts:
+`replica`, or `primary` with `sticky` (read-your-writes window, or the session could not be read), `no_replica` (none
+routable, or the request's replica dropped out) and `replica_failed`), `onlineorder_db_replica_lag_seconds{replica}`
+(how old the replica's data may be now: an upper bound of its lag, which for a caught-up replica is the time since
+its last check, up to about 0.5s), `onlineorder_db_replica_routable{replica}` and
+`hikaricp_connections_*{pool="onlineorder-db-replica-N"}`. Alerts:
 `OnlineOrderDbReplicaLagging` (lag > 2s for 5m; keep it equal to `max-lag`) and `OnlineOrderDbReplicaUnavailable`
 (no reads for 5m: lagging, unreachable or not a standby), with promtool tests in `alerts.test.yml`.
 
@@ -603,12 +629,17 @@ DATABASE_REPLICA_URLS=jdbc:postgresql://localhost:5434/onlineorder \
 `db-replica` clones it with `pg_basebackup -R` on an empty volume (`postgres/replica-entrypoint.sh`), then streams. No
 replication slot is created, so a replica left stopped for long while the primary writes may fall too far behind to
 resume: delete the `onlineorder-pg-replica-local` volume and start it again. Managed PostgreSQL offers read replicas
-of its own; point `DATABASE_REPLICA_URLS` at their endpoints, one URL per replica so the lag guard can drop each on
-its own (a load-balanced reader endpoint also works, as one replica). On Kubernetes the overlays set
+of its own; point `DATABASE_REPLICA_URLS` at their endpoints, one URL per physical replica. Do not use a
+load-balanced reader endpoint: the monitor's single connection measures whichever server it landed on, while the pool's
+connections spread over all of them, so a lagging server behind it would keep serving reads with no lag guard and
+`max-lag` would not hold. On Kubernetes the overlays set
 `DATABASE_REPLICA_URLS` in the ConfigMap; a separate replica login goes in the Secret.
 
 Tests: `ReadReplicaRoutingIntegrationTests` (a real primary and streaming replica on the official image, built by
 `PostgresReplicationContainers` from the same two files) proves which transactions read the replica, read-your-writes,
-and the lagging, stopped and hung cases; `FulfilmentReplicaRoutingContainerTests` runs the whole order flow with
-routing on; `ReplicaRouterTests`, `ReplicaLagMonitorTests`, `WalPositionHistoryTests`, `ReadYourWritesTrackerTests`
-and `ReadWriteRoutingConfigurationTests` cover the parts.
+the lagging, stopped and hung cases, and that a replica whose replay stops right after a write gets no read once the
+write is `max-lag` old, next to a hung second replica; `ReadReplicaSessionStoreOutageTests` keeps catalog reads on the
+replica with Redis hung; `FulfilmentReplicaRoutingContainerTests` runs the whole order flow with routing on;
+`ReplicaTargetTests` (the deadline on a virtual clock, with check rounds up to 5s), `ReplicaRouterTests`,
+`ReplicaLagMonitorTests`, `WalPositionHistoryTests`, `ReadYourWritesTrackerTests` and
+`ReadWriteRoutingConfigurationTests` cover the parts.
