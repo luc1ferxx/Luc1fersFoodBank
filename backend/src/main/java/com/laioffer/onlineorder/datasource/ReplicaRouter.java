@@ -86,10 +86,12 @@ public class ReplicaRouter {
         if (!isReplicaEligibleTransaction()) {
             return Route.WRITE;
         }
+        HttpServletRequest request = ReadYourWritesTracker.currentRequest();
         if (readYourWrites.readsMustUsePrimary()) {
+            // Should the window end before the request does, its later reads still must not go back to a replica.
+            pinPrimary(request);
             return Route.STICKY;
         }
-        HttpServletRequest request = ReadYourWritesTracker.currentRequest();
         Object pinned = request == null ? null : request.getAttribute(PINNED_ATTRIBUTE);
         if (pinned instanceof ReplicaTarget replica) {
             if (replica.isRoutable()) {

@@ -299,6 +299,10 @@ class ReplicaRouterTests {
 
         Mockito.when(readYourWrites.readsMustUsePrimary()).thenReturn(true);
         Assertions.assertSame(ReplicaRouter.Route.STICKY, router.route());
+
+        // A request that read the primary inside the window stays there once the window ends.
+        Mockito.when(readYourWrites.readsMustUsePrimary()).thenReturn(false);
+        Assertions.assertSame(ReplicaRouter.Route.NO_REPLICA, router.route());
     }
 
 
