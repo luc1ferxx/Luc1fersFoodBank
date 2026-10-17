@@ -25,7 +25,7 @@ services:
 
 
   kafka:
-    image: apache/kafka-native:3.8.0
+    image: apache/kafka-native:3.9.2
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: controller,broker
