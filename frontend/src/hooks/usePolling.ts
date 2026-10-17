@@ -7,12 +7,21 @@ const pageIsHidden = () => typeof document !== "undefined" && document.visibilit
  * hidden and catches up with one immediate call when it becomes visible again. The
  * latest `onTick` is always used, so a callback that changes (a new filter, say)
  * does not restart the interval.
+ *
+ * A tick checks `enabled` as of the latest committed render, not only the effect that
+ * armed the interval: React clears the interval in an effect cleanup, which can run a
+ * task after the render that turned polling off (a 403, say) is already on screen,
+ * and an interval that fires in between must not poll.
  */
 export function usePolling(
   onTick: () => void,
   { enabled, intervalMs }: { enabled: boolean; intervalMs: number },
 ): void {
-  const tick = useEffectEvent(onTick);
+  const tick = useEffectEvent(() => {
+    if (enabled) {
+      onTick();
+    }
+  });
 
   useEffect(() => {
     if (!enabled) {

@@ -325,6 +325,8 @@ describe("merchant console", () => {
     expect(within(paid).getByRole("button", { name: "Accept" })).toBeDisabled();
     expect(within(paid).getByRole("button", { name: "Reject" })).toBeDisabled();
 
+    // The notice can be on screen before React ran the cleanup that clears the poll
+    // interval (the 403 rendered outside act()); a tick in that gap must not poll either.
     act(() => {
       vi.advanceTimersByTime(MERCHANT_POLL_MS * 3);
     });
