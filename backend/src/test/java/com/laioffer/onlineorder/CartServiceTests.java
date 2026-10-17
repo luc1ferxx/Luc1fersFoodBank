@@ -548,10 +548,35 @@ public class CartServiceTests {
 
 
     @Test
-    void addMenuItemToCart_whenTheCartHoldsLinesInAnotherCurrency_shouldRejectWithCartCurrencyConflict() {
+    void addMenuItemToCart_whenTheCartHoldsAnotherCurrencysRestaurant_shouldRejectWithTheRestaurantConflictFirst() {
         long customerId = 1L;
         long menuItemId = 2L;
         long cartId = 3L;
+        // The cart holds a USD line of restaurant 5; the croissant is EUR, of restaurant 8.
+        CartEntity usdCart = new CartEntity(cartId, customerId, amount("10.00"), "USD");
+        MenuItemEntity croissant = new MenuItemEntity(menuItemId, 8L, "Croissant", "", amount("3.50"), "", "EUR");
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(usdCart);
+        Mockito.when(menuItemRepository.findById(menuItemId)).thenReturn(Optional.of(croissant));
+        Mockito.when(orderItemRepository.findOtherRestaurantIdsInCart(cartId, 8L)).thenReturn(List.of(5L));
+
+        ConflictException conflict = Assertions.assertThrows(
+                ConflictException.class,
+                () -> cartService.addMenuItemToCart(customerId, menuItemId)
+        );
+
+        Assertions.assertEquals(CartService.CART_RESTAURANT_CONFLICT, conflict.getCode());
+        Mockito.verifyNoInteractions(cartItemQuantityUpdater);
+        Mockito.verify(cartRepository, Mockito.never()).updateTotal(Mockito.anyLong(), Mockito.any(), Mockito.any());
+    }
+
+
+    @Test
+    void addMenuItemToCart_whenACartOfThisRestaurantIsInAnotherCurrency_shouldFailAsABrokenInvariant() {
+        long customerId = 1L;
+        long menuItemId = 2L;
+        long cartId = 3L;
+        // Impossible with the database's composite keys: lines of restaurant 8 only, yet a USD cart and a EUR item.
         CartEntity usdCart = new CartEntity(cartId, customerId, amount("10.00"), "USD");
         MenuItemEntity croissant = new MenuItemEntity(menuItemId, 8L, "Croissant", "", amount("3.50"), "", "EUR");
 
@@ -559,14 +584,14 @@ public class CartServiceTests {
         Mockito.when(menuItemRepository.findById(menuItemId)).thenReturn(Optional.of(croissant));
         Mockito.when(orderItemRepository.findOtherRestaurantIdsInCart(cartId, 8L)).thenReturn(List.of());
         Mockito.when(orderItemRepository.getAllByCartId(cartId))
-                .thenReturn(List.of(new OrderItemEntity(6L, 5L, cartId, amount("10.00"), 1, "USD")));
+                .thenReturn(List.of(new OrderItemEntity(6L, menuItemId, cartId, amount("10.00"), 1, "USD")));
 
-        ConflictException conflict = Assertions.assertThrows(
-                ConflictException.class,
+        IllegalStateException failure = Assertions.assertThrows(
+                IllegalStateException.class,
                 () -> cartService.addMenuItemToCart(customerId, menuItemId)
         );
 
-        Assertions.assertEquals(CartService.CART_CURRENCY_CONFLICT, conflict.getCode());
+        Assertions.assertTrue(failure.getMessage().contains("Cart 3 holds lines in USD"), failure.getMessage());
         Mockito.verifyNoInteractions(cartItemQuantityUpdater);
         Mockito.verify(cartRepository, Mockito.never()).updateTotal(Mockito.anyLong(), Mockito.any(), Mockito.any());
     }
@@ -577,7 +602,7 @@ public class CartServiceTests {
         long customerId = 1L;
         long cartId = 2L;
         CartEntity eurCart = new CartEntity(cartId, customerId, amount("0.50"), "EUR");
-        // 3 x 0.10 + 0.20: 0.5000000000000001 in binary floating point, exactly 0.50 here.
+        // 3 x 0.10 + 0.20, summed exactly at scale 2.
         List<OrderItemEntity> cartItems = List.of(
                 new OrderItemEntity(5L, 3L, cartId, amount("0.10"), 3, "EUR"),
                 new OrderItemEntity(6L, 4L, cartId, amount("0.20"), 1, "EUR")

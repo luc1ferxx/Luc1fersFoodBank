@@ -55,7 +55,6 @@ public class CartService {
 
     public static final String CART_RESTAURANT_CONFLICT = "CART_RESTAURANT_CONFLICT";
     public static final String CART_HAS_MULTIPLE_RESTAURANTS = "CART_HAS_MULTIPLE_RESTAURANTS";
-    public static final String CART_CURRENCY_CONFLICT = "CART_CURRENCY_CONFLICT";
     public static final String CART_TOTAL_TOO_LARGE = "CART_TOTAL_TOO_LARGE";
 
     private final CartRepository cartRepository;
@@ -104,7 +103,8 @@ public class CartService {
      * first. The cart row lock serializes concurrent adds, so two requests cannot fill one cart from two restaurants.
      *
      * <p>For the same reason a cart is single-currency: it takes the currency of its restaurant when its first item is
-     * added, and the line keeps the item's price in that currency.
+     * added, and the line keeps the item's price in that currency. There is no separate currency conflict: the
+     * restaurant conflict comes first, and a cart whose lines are all of this restaurant is already in its currency.
      */
     @Transactional
     public void addMenuItemToCart(long customerId, long menuItemId) {
@@ -125,20 +125,20 @@ public class CartService {
 
 
     /**
-     * Moves an empty cart to {@code currency}. A cart with lines is already in it: its lines come from the item's
-     * restaurant, which prices in one currency (and the database refuses to change the currency of a cart with
-     * lines), so a mismatch there is reported as 409 CART_CURRENCY_CONFLICT instead.
+     * Moves an empty cart to {@code currency}. A cart with lines is already in it, so a mismatch there is a broken
+     * invariant, not a client error: the caller has ruled out lines of another restaurant, the lines of this one are in
+     * its menu items' currency, which is the restaurant's (composite keys), and a cart line has its cart's currency
+     * (another composite key).
+     *
+     * @throws IllegalStateException when a cart with lines is in another currency than its restaurant
      */
     private void switchCurrencyOfEmptyCart(CartEntity cart, String currency) {
         if (cart.currency().equals(currency)) {
             return;
         }
         if (!orderItemRepository.getAllByCartId(cart.id()).isEmpty()) {
-            throw new ConflictException(
-                    CART_CURRENCY_CONFLICT,
-                    "Your cart holds items priced in " + cart.currency() + ". Clear the cart or check it out before "
-                            + "adding items priced in " + currency + "."
-            );
+            throw new IllegalStateException("Cart " + cart.id() + " holds lines in " + cart.currency()
+                    + " and none of another restaurant, but the restaurant prices in " + currency);
         }
         Money emptyTotal = Money.zero(currency);
         cartRepository.updateTotal(cart.id(), emptyTotal.amount(), emptyTotal.currencyCode());
