@@ -14,8 +14,8 @@
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
     "skipLibCheck": true,
-    // The build scripts stay plain JavaScript (CI runs them with Node 20, which cannot
-    // execute TypeScript) and are type-checked through their JSDoc annotations.
+    // The build scripts stay plain JavaScript, run directly by Node without a build step, and
+    // are type-checked through their JSDoc annotations.
     "allowJs": true,
     "checkJs": true,
 

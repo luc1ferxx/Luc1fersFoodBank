@@ -111,7 +111,7 @@ sequenceDiagram
 ### Prerequisites
 
 - Java 17
-- Node 20.19+, 22.13+, or 24+
+- Node 24 LTS (22.22.2+ or 26+ also work)
 - Docker Desktop or another Docker-compatible runtime
 
 ### 1. Start local infrastructure

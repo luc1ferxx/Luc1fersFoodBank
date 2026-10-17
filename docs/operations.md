@@ -204,7 +204,7 @@ Fulfilment staffing (README "Provisioning merchants and riders"):
 
 ## 3. Container image
 
-The root `Dockerfile` builds the frontend in `node:20.20.2-bookworm-slim` (`npm ci`,
+The root `Dockerfile` builds the frontend in `node:24.22.0-bookworm-slim` (`npm ci`,
 `npm run build`), the jar in `gradle:8.14.3-jdk17-noble` (the npm-based `buildFrontend` task is skipped there and the
 stage's build output is embedded instead), extracts Spring Boot layers with `-Djarmode=tools`, and runs on
 `eclipse-temurin:17.0.20.1_1-jre-noble` as uid 10001 with `JAVA_OPTS="-XX:MaxRAMPercentage=75.0

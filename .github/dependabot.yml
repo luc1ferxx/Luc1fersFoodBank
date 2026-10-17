@@ -29,7 +29,7 @@ updates:
           - "@types/react"
           - "@types/react-dom"
     ignore:
-      # @types/node follows the Node major used by CI and the Dockerfile (Node 20); bump them together.
+      # @types/node follows the Node major used by CI and the Dockerfile (Node 24); bump them together.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
 
@@ -72,4 +72,8 @@ updates:
       - dependency-name: "redis"
         update-types: ["version-update:semver-major"]
       - dependency-name: "apache/kafka-native"
+        update-types: ["version-update:semver-major"]
+      # Tempo 3 changed its configuration schema (no ingester/compactor blocks); the config in
+      # deploy/observability/tempo/tempo.yaml must be migrated in the same change.
+      - dependency-name: "grafana/tempo"
         update-types: ["version-update:semver-major"]

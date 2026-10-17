@@ -4,7 +4,7 @@
 # Base images are pinned to exact versions; Dependabot (docker ecosystem) proposes updates.
 
 # --- 1. Frontend (official Node image) ---
-FROM node:20.20.2-bookworm-slim AS frontend
+FROM node:24.22.0-bookworm-slim AS frontend
 
 WORKDIR /workspace/frontend
 COPY frontend/package.json frontend/package-lock.json ./

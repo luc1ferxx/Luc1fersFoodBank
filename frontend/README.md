@@ -2,7 +2,7 @@
 
 React 19 single-page app in strict TypeScript, built with [Vite](https://vite.dev). The Spring Boot backend in `../backend` serves the production build and the JSON API.
 
-Requires Node `^20.19`, `^22.13`, or `>=24` (the range the locked Vite, Vitest, ESLint, and jsdom all support).
+Requires Node `^22.22.2 || ^24.15.0 || >=26.0.0` (the range the locked Vitest, jsdom, ESLint, and Vite all support); CI and the Docker build use Node 24 LTS.
 
 ## Scripts
 
