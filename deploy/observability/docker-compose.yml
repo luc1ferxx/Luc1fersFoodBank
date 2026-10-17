@@ -77,7 +77,7 @@ services:
 
   postgres:
     profiles: ["app"]
-    image: postgres:15.2-alpine
+    image: postgres:15.19-alpine
     environment:
       POSTGRES_DB: onlineorder
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
