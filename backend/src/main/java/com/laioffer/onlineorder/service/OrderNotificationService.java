@@ -10,6 +10,7 @@ import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.model.OrderNotificationDto;
 import com.laioffer.onlineorder.repository.OrderNotificationRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 
 import java.time.LocalDateTime;
@@ -85,11 +86,17 @@ public class OrderNotificationService {
     }
 
 
+    @Transactional(readOnly = true)
     public List<OrderNotificationDto> getNotificationsByCustomerId(Long customerId) {
         return getNotificationsByCustomerId(customerId, 50);
     }
 
 
+    /**
+     * The customer's newest notifications (GET /notifications). Read-only, so a replica read when replicas are
+     * configured: the consumers write notifications asynchronously anyway.
+     */
+    @Transactional(readOnly = true)
     public List<OrderNotificationDto> getNotificationsByCustomerId(Long customerId, int limit) {
         List<OrderNotificationDto> results = new ArrayList<>();
         for (OrderNotificationEntity entity : orderNotificationRepository.findPageByCustomerIdOrderByCreatedAtDesc(customerId, normalizeLimit(limit))) {

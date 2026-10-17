@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.fulfilment.merchant;
 
 
+import com.laioffer.onlineorder.datasource.ReadOnlyTransactions;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.fulfilment.AfterCommit;
 import com.laioffer.onlineorder.fulfilment.order.OrderActor;
@@ -47,6 +48,7 @@ public class MerchantOrderService {
     private final OrderLifecycleCommands orderLifecycleCommands;
     private final ApplicationMetricsService metricsService;
     private final ObjectMapper objectMapper;
+    private final ReadOnlyTransactions readOnlyTransactions;
 
 
     public MerchantOrderService(
@@ -54,26 +56,35 @@ public class MerchantOrderService {
             MerchantOrderRepository merchantOrderRepository,
             OrderLifecycleCommands orderLifecycleCommands,
             ApplicationMetricsService metricsService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            ReadOnlyTransactions readOnlyTransactions
     ) {
         this.merchantAccountRepository = merchantAccountRepository;
         this.merchantOrderRepository = merchantOrderRepository;
         this.orderLifecycleCommands = orderLifecycleCommands;
         this.metricsService = metricsService;
         this.objectMapper = objectMapper;
+        this.readOnlyTransactions = readOnlyTransactions;
     }
 
 
+    /**
+     * The merchant's inbox page. The account check runs first, outside any transaction, so it reads the primary and a
+     * deactivation takes effect on the next request whatever the replica lag; the page itself is a read-only
+     * transaction (a replica read when replicas are configured).
+     */
     public List<MerchantOrderDto> getOrders(Long merchantCustomerId, String status, int limit) {
         Long restaurantId = requireRestaurantId(merchantCustomerId);
         int normalizedLimit = Math.max(1, Math.min(limit, 100));
-        List<MerchantOrderEntity> orders = status == null || status.isBlank()
-                ? merchantOrderRepository.findPageByRestaurantId(restaurantId, normalizedLimit)
-                : merchantOrderRepository.findPageByRestaurantIdAndStatus(
-                        restaurantId,
-                        OrderStatus.normalize(status).name(),
-                        normalizedLimit
-                );
+        String normalizedStatus = status == null || status.isBlank() ? null : OrderStatus.normalize(status).name();
+        List<MerchantOrderEntity> orders = readOnlyTransactions.read("MerchantOrderService.getOrders", () ->
+                normalizedStatus == null
+                        ? merchantOrderRepository.findPageByRestaurantId(restaurantId, normalizedLimit)
+                        : merchantOrderRepository.findPageByRestaurantIdAndStatus(
+                                restaurantId,
+                                normalizedStatus,
+                                normalizedLimit
+                        ));
         return orders.stream().map(this::toDto).toList();
     }
 

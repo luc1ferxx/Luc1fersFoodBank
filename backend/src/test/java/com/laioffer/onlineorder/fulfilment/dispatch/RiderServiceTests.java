@@ -3,6 +3,7 @@ package com.laioffer.onlineorder.fulfilment.dispatch;
 
 import com.laioffer.onlineorder.audit.AuditActor;
 import com.laioffer.onlineorder.audit.AuditLogService;
+import com.laioffer.onlineorder.datasource.ReadOnlyTransactions;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import org.junit.jupiter.api.Assertions;
@@ -14,6 +15,7 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.transaction.PlatformTransactionManager;
 
 
 import java.time.LocalDateTime;
@@ -48,7 +50,13 @@ class RiderServiceTests {
 
     @BeforeEach
     void setup() {
-        service = new RiderService(riderRepository, deliveryRepository, dispatchService, auditLogService);
+        service = new RiderService(
+                riderRepository,
+                deliveryRepository,
+                dispatchService,
+                auditLogService,
+                new ReadOnlyTransactions(Mockito.mock(PlatformTransactionManager.class))
+        );
     }
 
 

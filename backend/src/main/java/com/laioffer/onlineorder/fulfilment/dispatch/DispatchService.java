@@ -203,8 +203,11 @@ public class DispatchService {
 
 
     /**
+     * The admin's delivery list (GET /admin/deliveries); read-only, a replica read when replicas are configured.
+     *
      * @param riderId a rider's open deliveries (ASSIGNED and PICKED_UP), when no order id is given
      */
+    @Transactional(readOnly = true)
     public List<DeliveryDto> getDeliveries(Long orderId, Long riderId, int limit) {
         List<DeliveryEntity> deliveries;
         int boundedLimit = Math.max(1, Math.min(limit, 100));

@@ -77,6 +77,14 @@ abstract class FulfilmentContainerTestSupport {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
+        registerRedisKafkaAndApp(registry, redis, kafka);
+    }
+
+
+    /**
+     * Everything {@link #registerInfrastructure} registers except the database, for a class that brings its own.
+     */
+    static void registerRedisKafkaAndApp(DynamicPropertyRegistry registry, GenericContainer<?> redis, KafkaContainer kafka) {
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", redis::getFirstMappedPort);
         registry.add("spring.kafka.bootstrap-servers", kafka::getBootstrapServers);

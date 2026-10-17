@@ -6,6 +6,7 @@ import com.laioffer.onlineorder.audit.AuditActor;
 import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.cache.CatalogCacheInvalidator;
 import com.laioffer.onlineorder.cache.CatalogCaches;
+import com.laioffer.onlineorder.datasource.ReadOnlyTransactions;
 import com.laioffer.onlineorder.entity.MenuItemEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
@@ -29,29 +30,34 @@ public class MenuItemService {
     private final MenuItemRepository menuItemRepository;
     private final CatalogCacheInvalidator cacheInvalidator;
     private final AuditLogService auditLogService;
+    private final ReadOnlyTransactions readOnlyTransactions;
 
 
     public MenuItemService(
             MenuItemRepository menuItemRepository,
             CatalogCacheInvalidator cacheInvalidator,
-            AuditLogService auditLogService
+            AuditLogService auditLogService,
+            ReadOnlyTransactions readOnlyTransactions
     ) {
         this.menuItemRepository = menuItemRepository;
         this.cacheInvalidator = cacheInvalidator;
         this.auditLogService = auditLogService;
+        this.readOnlyTransactions = readOnlyTransactions;
     }
 
 
     /**
      * One restaurant's menu, cached under {@code menu::<restaurantId>}. Callers must check that the restaurant
      * exists first (see {@link CatalogService#getMenu(long)}) so unknown ids never reach the database or the
-     * cache. The returned list is shared by every caller that hits the cache and must not be modified.
+     * cache. The returned list is shared by every caller that hits the cache and must not be modified. A cache miss
+     * loads it in a read-only transaction (a replica read with replicas configured); a hit opens none.
      */
     @Cacheable(cacheNames = CatalogCaches.MENU, key = "#restaurantId", sync = true)
     public List<CatalogMenuItemDto> getMenu(long restaurantId) {
-        return menuItemRepository.findByRestaurantIdOrderById(restaurantId).stream()
-                .map(CatalogMenuItemDto::new)
-                .toList();
+        return readOnlyTransactions.read("MenuItemService.getMenu", () ->
+                menuItemRepository.findByRestaurantIdOrderById(restaurantId).stream()
+                        .map(CatalogMenuItemDto::new)
+                        .toList());
     }
 
 
