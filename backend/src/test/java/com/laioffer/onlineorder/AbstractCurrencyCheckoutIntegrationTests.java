@@ -27,7 +27,8 @@ import java.util.List;
 /**
  * Checkout with currencies against a real database: a cart and its order are in the currency of their restaurant,
  * with totals summed exactly; the order event carries that currency; an empty cart moves to the currency of the next
- * restaurant; the database refuses a cart line in another currency. Subclasses pick the database.
+ * restaurant; the database refuses a cart line in another currency, an unsupported currency and a yen price with
+ * cents. Subclasses pick the database.
  */
 @SpringBootTest(properties = {
         "spring.session.store-type=none",
@@ -69,7 +70,7 @@ abstract class AbstractCurrencyCheckoutIntegrationTests {
         }
         cartService.addMenuItemToCart(customerId, sugar);
 
-        // 3 x 0.10 + 0.20 is 0.5000000000000001 in binary floating point.
+        // 3 x 0.10 + 0.20, summed exactly at scale 2.
         CartDto cart = cartService.getCart(customerId);
         Assertions.assertEquals(new BigDecimal("0.50"), cart.totalPrice());
         Assertions.assertEquals("EUR", cart.currency());
@@ -128,6 +129,29 @@ abstract class AbstractCurrencyCheckoutIntegrationTests {
         Assertions.assertEquals("USD", cart.currency());
         Assertions.assertEquals(new BigDecimal("4.50"), cart.totalPrice());
         Assertions.assertEquals("USD", cart.orderItems().get(0).currency());
+    }
+
+
+    @Test
+    void aYenRestaurant_shouldHaveOnlyWholePricesAndBeOrderedFromInYen() {
+        long customerId = signUp();
+        long restaurantId = insertRestaurant("JPY");
+        // The database refuses what Money would reject later, on the customer's add-to-cart or checkout.
+        Assertions.assertThrows(DataIntegrityViolationException.class,
+                () -> insertMenuItem(restaurantId, "Half Ramen", "950.50", "JPY"));
+        Assertions.assertThrows(DataIntegrityViolationException.class, () -> insertRestaurant("BHD"));
+        Assertions.assertThrows(DataIntegrityViolationException.class, () -> insertRestaurant("ABC"));
+        long ramen = insertMenuItem(restaurantId, "Ramen", "950", "JPY");
+
+        cartService.addMenuItemToCart(customerId, ramen);
+        cartService.addMenuItemToCart(customerId, ramen);
+
+        CartDto cart = cartService.getCart(customerId);
+        Assertions.assertEquals("JPY", cart.currency());
+        Assertions.assertEquals(new BigDecimal("1900.00"), cart.totalPrice());
+        OrderDto order = paymentService.payAndCheckout(customerId, "yen-" + System.nanoTime(), CARD);
+        Assertions.assertEquals("JPY", order.currency());
+        Assertions.assertEquals(new BigDecimal("1900.00"), order.totalPrice());
     }
 
 

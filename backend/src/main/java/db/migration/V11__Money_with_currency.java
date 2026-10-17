@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 
 
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -15,18 +16,23 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 
 /**
  * Gives every stored amount a currency and a fixed scale.
  *
  * <ul>
- *     <li>Every table with an amount gets {@code currency CHAR(3) NOT NULL}, an ISO 4217 code checked to be three
- *     upper-case letters: restaurants (a restaurant prices in one currency), menu_items, carts, order_items (cart
- *     lines), orders, order_history_items and merchant_orders. Existing rows become USD, the only currency the
- *     application had. The column default stays 'USD' so that pods of the previous release, which do not write the
- *     column, keep working during the rollout (every row they write is USD, as before); this release always writes
- *     the currency explicitly.</li>
+ *     <li>A {@code currencies} reference table lists the supported ISO 4217 currencies and their minor units
+ *     ({@link #SUPPORTED_CURRENCIES}): only currencies with 0 or 2 minor units, the ones the {@code Money} type
+ *     accepts. {@code restaurants.currency} references it, so a restaurant (inserted by SQL: there is no API for it)
+ *     cannot use a code that the application would reject, such as BHD (3 minor units), XXX (none) or an invented
+ *     one; and a menu item of a currency without minor units cannot have cents (a check on {@code menu_items}).</li>
+ *     <li>Every table with an amount gets {@code currency CHAR(3) NOT NULL}, checked to be three upper-case letters:
+ *     restaurants (a restaurant prices in one currency), menu_items, carts, order_items (cart lines), orders,
+ *     order_history_items and merchant_orders. Existing rows become USD, the only currency the application had. The
+ *     column default stays 'USD' for an INSERT that does not name the column (hand-written SQL); the application
+ *     always writes the currency explicitly.</li>
  *     <li>Every amount becomes {@code NUMERIC(12,2)}; the existing non-negative checks (V2) stay, and
  *     merchant_orders.total_price gets one.</li>
  *     <li>Composite keys make a cart single-currency in the database: a menu item has its restaurant's currency
@@ -36,41 +42,59 @@ import java.util.Map;
  *     copies the cart's currency onto them.</li>
  * </ul>
  *
- * <p>Existing data is checked before anything changes. Unit prices (menu_items, order_items, order_history_items)
- * must already have at most two decimal places and fit twelve digits: the migration fails, naming the column, rather
- * than round a price. Totals (carts, orders, merchant_orders) were summed through DOUBLE PRECISION before this
- * release and can carry binary noise such as 14.669999999999998; they are rounded to cents ({@code ROUND(x, 2)}).
+ * <p>Existing data is checked before anything changes: every amount (the unit prices of menu_items, order_items and
+ * order_history_items, and the totals of carts, orders and merchant_orders) must already have at most two decimal
+ * places and fit twelve digits. The migration never rounds an amount; it fails, naming each column and the ids of
+ * its first offending rows. (The previous releases summed totals exactly in NUMERIC, so a total with sub-cent digits
+ * means a hand-edited or otherwise inconsistent row, not rounding noise.)
  *
  * <p>This is a Java migration because the currency check differs (PostgreSQL's {@code ~} operator, H2's
- * {@code REGEXP_LIKE}) and the data checks must stop the migration with a message.
+ * {@code REGEXP_LIKE}), the data checks must stop the migration with a message, and the PostgreSQL locks are taken
+ * up front.
  *
- * <p>Production caveat: changing NUMERIC to NUMERIC(12,2) rewrites each of the six tables with an amount under an
- * ACCESS EXCLUSIVE lock (one ALTER TABLE per table on PostgreSQL), held until the migration commits; the currency
- * checks and the composite keys scan them once more. Adding the currency columns with a constant default does not
- * rewrite them. Fine for small databases; plan a maintenance window for large ones (docs/operations.md, "Money with
- * currency (V11)").
+ * <p>Production caveat: on PostgreSQL the migration first locks all seven tables {@code IN ACCESS EXCLUSIVE MODE}
+ * (one statement, before the data check, so no row can change between the check and the type change), and Flyway
+ * holds the locks until V11 commits. Changing NUMERIC to NUMERIC(12,2) rewrites each of the six tables with an
+ * amount; the new checks and keys scan them once more. It must not run next to pods of the previous release, which
+ * lock carts before menu_items and would deadlock with it (docs/operations.md, "Money with currency (V11)").
  */
 public class V11__Money_with_currency extends BaseJavaMigration {
 
     static final String MAX_AMOUNT = "9999999999.99";
 
     /**
-     * Prices of one unit, as table.column: they must already fit NUMERIC(12,2) exactly.
+     * Every amount, as table.column: it must already fit NUMERIC(12,2) exactly.
      */
-    static final List<String> UNIT_PRICE_COLUMNS = List.of(
+    static final List<String> AMOUNT_COLUMNS = List.of(
             "menu_items.price",
             "order_items.price",
-            "order_history_items.price"
-    );
-
-    /**
-     * Totals, as table.column: rounded to cents.
-     */
-    static final List<String> TOTAL_COLUMNS = List.of(
+            "order_history_items.price",
             "carts.total_price",
             "orders.total_price",
             "merchant_orders.total_price"
     );
+
+    /**
+     * The rows of the currencies table: ISO 4217 code to minor units, as {@link java.util.Currency} reports them
+     * ({@code MoneyCurrencyMigration*Tests} check each row against it and against {@code Money}). The database
+     * supports 0 and 2 minor units. A further currency is added by a later migration that inserts its row; one with
+     * 0 minor units also has to replace the two checks built from {@link #ZERO_MINOR_UNIT_CURRENCIES}
+     * ({@code chk_currency_minor_units} and {@code chk_menu_item_price_minor_units}).
+     */
+    static final Map<String, Integer> SUPPORTED_CURRENCIES = supportedCurrencies();
+
+    /**
+     * The supported currencies without minor units, whose prices must be whole numbers.
+     */
+    static final List<String> ZERO_MINOR_UNIT_CURRENCIES = SUPPORTED_CURRENCIES.entrySet().stream()
+            .filter(currency -> currency.getValue() == 0)
+            .map(Map.Entry::getKey)
+            .toList();
+
+    /**
+     * How many offending row ids the data check names per column.
+     */
+    static final int REPORTED_IDS = 10;
 
     /**
      * Every table that gets a currency, with its amount column (null for restaurants) and the name of its currency
@@ -82,6 +106,18 @@ public class V11__Money_with_currency extends BaseJavaMigration {
 
 
     record CurrencyTable(String amountColumn, String checkName) {
+    }
+
+
+    private static Map<String, Integer> supportedCurrencies() {
+        Map<String, Integer> currencies = new LinkedHashMap<>();
+        for (String code : List.of("USD", "EUR", "GBP", "CHF", "CAD", "AUD", "NZD", "SEK", "NOK", "DKK", "PLN", "CZK",
+                "HUF", "CNY", "HKD", "SGD", "TWD", "INR", "THB", "MXN", "BRL", "ZAR", "AED")) {
+            currencies.put(code, 2);
+        }
+        currencies.put("JPY", 0);
+        currencies.put("KRW", 0);
+        return currencies;
     }
 
 
@@ -103,10 +139,15 @@ public class V11__Money_with_currency extends BaseJavaMigration {
         Connection connection = context.getConnection();
         boolean postgres = "PostgreSQL".equalsIgnoreCase(connection.getMetaData().getDatabaseProductName());
 
-        requireAmountsFit(connection);
-        for (String column : TOTAL_COLUMNS) {
-            roundToCents(connection, column);
+        if (postgres) {
+            // Every lock this migration needs, in one statement and before the data check: no row changes between
+            // the check and the type change, and a lock that cannot be had (lock_timeout) fails the migration
+            // before it has changed anything.
+            execute(connection, "LOCK TABLE " + String.join(", ", CURRENCY_TABLES.keySet())
+                    + " IN ACCESS EXCLUSIVE MODE");
         }
+        requireAmountsFit(connection);
+        createCurrencies(connection, postgres);
 
         for (Map.Entry<String, CurrencyTable> table : CURRENCY_TABLES.entrySet()) {
             addCurrencyAndScale(connection, postgres, table.getKey(), table.getValue());
@@ -114,6 +155,11 @@ public class V11__Money_with_currency extends BaseJavaMigration {
         execute(connection, "ALTER TABLE merchant_orders ADD CONSTRAINT chk_merchant_order_total_price_non_negative "
                 + "CHECK (total_price >= 0)");
 
+        execute(connection, "ALTER TABLE restaurants ADD CONSTRAINT fk_restaurant_currency "
+                + "FOREIGN KEY (currency) REFERENCES currencies (code)");
+        execute(connection, "ALTER TABLE menu_items ADD CONSTRAINT chk_menu_item_price_minor_units "
+                + "CHECK (currency NOT IN (" + quotedList(ZERO_MINOR_UNIT_CURRENCIES) + ") "
+                + "OR price = ROUND(price, 0))");
         execute(connection, "ALTER TABLE restaurants ADD CONSTRAINT uq_restaurant_id_currency UNIQUE (id, currency)");
         execute(connection, "ALTER TABLE menu_items ADD CONSTRAINT uq_menu_item_id_currency UNIQUE (id, currency)");
         execute(connection, "ALTER TABLE carts ADD CONSTRAINT uq_cart_id_currency UNIQUE (id, currency)");
@@ -133,44 +179,51 @@ public class V11__Money_with_currency extends BaseJavaMigration {
 
 
     /**
-     * Fails the migration, before it changes anything, when a price has more than two decimal places or any amount
-     * exceeds twelve digits; the message names every such column.
+     * Fails the migration, before it changes anything, when an amount has more than two decimal places or exceeds
+     * twelve digits; the message names every such column with its row count and the ids of its first rows.
      */
     private static void requireAmountsFit(Connection connection) throws SQLException {
         List<String> problems = new ArrayList<>();
-        for (String column : UNIT_PRICE_COLUMNS) {
+        for (String column : AMOUNT_COLUMNS) {
+            String table = column.substring(0, column.indexOf('.'));
             String name = column.substring(column.indexOf('.') + 1);
-            long misfits = count(connection, column, name + " <> ROUND(" + name + ", 2) OR ABS(" + name + ") > "
-                    + MAX_AMOUNT);
+            String misfit = name + " <> ROUND(" + name + ", 2) OR ABS(" + name + ") > " + MAX_AMOUNT;
+            long misfits = count(connection, table, misfit);
             if (misfits > 0) {
+                List<Long> ids = firstIds(connection, table, misfit);
                 problems.add(misfits + " row(s) of " + column + " have more than two decimal places or exceed "
-                        + MAX_AMOUNT);
-            }
-        }
-        for (String column : TOTAL_COLUMNS) {
-            String name = column.substring(column.indexOf('.') + 1);
-            long misfits = count(connection, column, "ABS(ROUND(" + name + ", 2)) > " + MAX_AMOUNT);
-            if (misfits > 0) {
-                problems.add(misfits + " row(s) of " + column + " exceed " + MAX_AMOUNT);
+                        + MAX_AMOUNT + " (id " + ids.stream().map(String::valueOf).collect(Collectors.joining(", "))
+                        + (misfits > ids.size() ? ", ..." : "") + ")");
             }
         }
         if (!problems.isEmpty()) {
             throw new IllegalStateException(String.join("; ", problems) + ". NUMERIC(12,2) cannot store them without "
-                    + "rounding: correct those amounts, then run the migration again (docs/operations.md, "
-                    + "\"Money with currency (V11)\").");
+                    + "rounding, and V11 does not round money: correct those amounts, then run the migration again "
+                    + "(docs/operations.md, \"Money with currency (V11)\").");
         }
     }
 
 
-    private static void roundToCents(Connection connection, String column) throws SQLException {
-        String table = column.substring(0, column.indexOf('.'));
-        String name = column.substring(column.indexOf('.') + 1);
-        try (Statement statement = connection.createStatement()) {
-            int rounded = statement.executeUpdate("UPDATE " + table + " SET " + name + " = ROUND(" + name + ", 2) WHERE "
-                    + name + " <> ROUND(" + name + ", 2)");
-            if (rounded > 0) {
-                LOGGER.info("Rounded {} row(s) of {} to cents", rounded, column);
+    /**
+     * The currencies table, filled with {@link #SUPPORTED_CURRENCIES}. Its checks refuse a code that is not three
+     * upper-case letters, and minor units other than 2, or 0 for {@link #ZERO_MINOR_UNIT_CURRENCIES}, which are the
+     * currencies the menu_items check knows to have whole prices.
+     */
+    private static void createCurrencies(Connection connection, boolean postgres) throws SQLException {
+        execute(connection, "CREATE TABLE currencies ("
+                + "code CHAR(3) PRIMARY KEY NOT NULL, "
+                + "minor_units SMALLINT NOT NULL, "
+                + "CONSTRAINT chk_currency_code CHECK (" + upperCaseCodeCheck(postgres, "code") + "), "
+                + "CONSTRAINT chk_currency_minor_units CHECK (minor_units = CASE WHEN code IN ("
+                + quotedList(ZERO_MINOR_UNIT_CURRENCIES) + ") THEN 0 ELSE 2 END))");
+        try (PreparedStatement insert = connection.prepareStatement(
+                "INSERT INTO currencies (code, minor_units) VALUES (?, ?)")) {
+            for (Map.Entry<String, Integer> currency : SUPPORTED_CURRENCIES.entrySet()) {
+                insert.setString(1, currency.getKey());
+                insert.setInt(2, currency.getValue());
+                insert.addBatch();
             }
+            insert.executeBatch();
         }
     }
 
@@ -183,7 +236,7 @@ public class V11__Money_with_currency extends BaseJavaMigration {
     ) throws SQLException {
         String addColumn = "ADD COLUMN currency CHAR(3) DEFAULT 'USD' NOT NULL";
         String addCheck = "ADD CONSTRAINT " + currencyTable.checkName() + " CHECK ("
-                + (postgres ? "currency ~ '^[A-Z]{3}$'" : "REGEXP_LIKE(currency, '^[A-Z]{3}$')") + ")";
+                + upperCaseCodeCheck(postgres, "currency") + ")";
         String changeScale = currencyTable.amountColumn() == null
                 ? null
                 : "ALTER COLUMN " + currencyTable.amountColumn() + " SET DATA TYPE NUMERIC(12,2)";
@@ -205,15 +258,40 @@ public class V11__Money_with_currency extends BaseJavaMigration {
     }
 
 
+    private static String upperCaseCodeCheck(boolean postgres, String column) {
+        return postgres ? column + " ~ '^[A-Z]{3}$'" : "REGEXP_LIKE(" + column + ", '^[A-Z]{3}$')";
+    }
+
+
+    private static String quotedList(List<String> codes) {
+        return codes.stream().map(code -> "'" + code + "'").collect(Collectors.joining(", "));
+    }
+
+
     /**
-     * @return the rows of the table of {@code column} (table.column) that match {@code condition}
+     * @return the rows of {@code table} that match {@code condition}
      */
-    private static long count(Connection connection, String column, String condition) throws SQLException {
-        String sql = "SELECT COUNT(*) FROM " + column.substring(0, column.indexOf('.')) + " WHERE " + condition;
+    private static long count(Connection connection, String table, String condition) throws SQLException {
+        String sql = "SELECT COUNT(*) FROM " + table + " WHERE " + condition;
         try (Statement statement = connection.createStatement(); ResultSet result = statement.executeQuery(sql)) {
             result.next();
             return result.getLong(1);
         }
+    }
+
+
+    /**
+     * @return the smallest {@link #REPORTED_IDS} ids of the rows of {@code table} that match {@code condition}
+     */
+    private static List<Long> firstIds(Connection connection, String table, String condition) throws SQLException {
+        String sql = "SELECT id FROM " + table + " WHERE " + condition + " ORDER BY id LIMIT " + REPORTED_IDS;
+        List<Long> ids = new ArrayList<>();
+        try (Statement statement = connection.createStatement(); ResultSet result = statement.executeQuery(sql)) {
+            while (result.next()) {
+                ids.add(result.getLong(1));
+            }
+        }
+        return ids;
     }
 
 

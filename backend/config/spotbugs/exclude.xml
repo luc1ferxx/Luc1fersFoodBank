@@ -37,8 +37,8 @@
     </Match>
 
     <!--
-      V11 builds its checks, UPDATEs and ALTER TABLE statements from the migration's constant table, column and
-      constraint names; nothing comes from input.
+      V11 builds its LOCK TABLE, data checks, CREATE TABLE and ALTER TABLE statements from the migration's constant
+      table, column, constraint and currency names; nothing comes from input.
     -->
     <Match>
         <Class name="db.migration.V11__Money_with_currency"/>
