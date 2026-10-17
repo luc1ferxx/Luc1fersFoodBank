@@ -65,9 +65,15 @@ abstract class AbstractScaleMigrationTests {
                             SELECT to_status || '|' || CAST(occurred_at AS VARCHAR(19))
                             FROM order_status_history ORDER BY order_id
                             """));
-            Assertions.assertEquals(List.of("consumer-a|evt-1", "consumer-a|evt-2", "consumer-b|evt-1"), strings(statement, """
-                    SELECT consumer_name || '|' || dedup_key FROM processed_events ORDER BY consumer_name, dedup_key
+            Assertions.assertEquals(List.of("consumer-a|evt-1|order-events", "consumer-a|evt-2|order-events",
+                    "consumer-b|evt-1|order-events"), strings(statement, """
+                    SELECT consumer_name || '|' || dedup_key || '|' || source_topic
+                    FROM processed_events ORDER BY consumer_name, dedup_key
                     """));
+            Assertions.assertThrows(SQLException.class, () -> statement.execute("""
+                    INSERT INTO processed_events (consumer_name, dedup_key, event_type, processed_at, source_topic)
+                    VALUES ('consumer-c', 'evt-9', 'order.paid', CURRENT_TIMESTAMP, '')
+                    """), "the added column keeps its check");
 
             // The id sequences continue after the copied rows.
             statement.execute("""
@@ -155,6 +161,9 @@ abstract class AbstractScaleMigrationTests {
                 VALUES ('ROLE_ADMIN', 'admin.order', 'order', 'JANUARY', TIMESTAMP '2026-01-02 03:04:05'),
                        ('ROLE_ADMIN', 'admin.order', 'order', 'MARCH', TIMESTAMP '2026-03-15 12:00:00')
                 """);
+        // A column another migration added before V10 (with a default and a check) must survive the copy.
+        statement.execute("ALTER TABLE processed_events ADD COLUMN source_topic TEXT DEFAULT 'order-events' "
+                + "CONSTRAINT chk_processed_events_source_topic CHECK (source_topic <> '')");
         statement.execute("""
                 INSERT INTO processed_events (consumer_name, event_id, dedup_key, event_type, processed_at)
                 VALUES ('consumer-a', 'evt-1', 'evt-1', 'order.paid', TIMESTAMP '2026-01-02 03:04:05'),

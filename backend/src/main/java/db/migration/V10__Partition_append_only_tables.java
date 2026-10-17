@@ -26,10 +26,12 @@ import java.util.TreeSet;
  * batches, and the hot recent month stays small. {@code outbox_events} is the next candidate (docs/adr/0001).
  *
  * <p>Per table: the table is renamed, its keys and indexes are dropped (their names are reused), a partitioned table
- * with the original name is created on the same id sequence, with one partition per month that has rows, the current
- * month and the next three, plus a DEFAULT partition for rows outside every range; the rows are copied with their ids,
- * the indexes are created on the partitioned table (and with it on every partition), and the old table is dropped.
- * A table that is already partitioned is skipped.
+ * with the original name is created {@code LIKE} it (every column with its type, NOT NULL and default, so the same id
+ * sequence, and the CHECK constraints), with one partition per month that has rows, the current month and the next
+ * three, plus a DEFAULT partition for rows outside every range; the rows are copied with their ids, the foreign keys
+ * and indexes are created on the partitioned table (and with it on every partition), and the old table is dropped.
+ * Copying the columns from the table itself keeps any column an earlier migration added. A table that is already
+ * partitioned is skipped.
  *
  * <p>What partitioning changes:
  * <ul>
@@ -41,8 +43,8 @@ import java.util.TreeSet;
  *     <li>{@code processed_events} loses {@code UNIQUE (consumer_name, dedup_key)}: a unique constraint of a
  *     partitioned table must include the partition key, and {@code (consumer_name, dedup_key, processed_at)} would
  *     accept a redelivered event in a later month as new. Deduplication is serialized instead
- *     (ProcessedEventInserter: a transaction-scoped advisory lock on the key, then an insert only if no partition holds
- *     the key), and every partition carries its own {@code UNIQUE (consumer_name, dedup_key)} index, which serves that
+ *     (ProcessedEventDedupImpl: a transaction-scoped advisory lock on the key, then an insert only if no partition
+ *     holds the key), and every partition carries its own {@code UNIQUE (consumer_name, dedup_key)} index, which serves that
  *     lookup and still rejects a duplicate within one month at the database level. The maintenance job gives every
  *     new partition this index.</li>
  *     <li>A query that does not filter on the partition key reads every partition (an index probe each).</li>
@@ -67,20 +69,7 @@ public class V10__Partition_append_only_tables extends BaseJavaMigration {
             new TableSpec(
                     "audit_log",
                     "occurred_at",
-                    List.of("id", "actor_customer_id", "actor_role", "action", "target_type", "target_id", "details",
-                            "trace_id", "occurred_at"),
-                    """
-                            id                BIGINT    NOT NULL DEFAULT nextval('%s'),
-                            actor_customer_id BIGINT,
-                            actor_role        TEXT      NOT NULL,
-                            action            TEXT      NOT NULL,
-                            target_type       TEXT      NOT NULL,
-                            target_id         TEXT,
-                            details           TEXT,
-                            trace_id          TEXT,
-                            occurred_at       TIMESTAMP NOT NULL,
-                            CONSTRAINT audit_log_pkey PRIMARY KEY (id, occurred_at)
-                            """,
+                    List.of(),
                     List.of(
                             "CREATE INDEX idx_audit_log_target_id ON audit_log (target_type, target_id, id)",
                             "CREATE INDEX idx_audit_log_actor_id ON audit_log (actor_customer_id, id)"
@@ -90,29 +79,10 @@ public class V10__Partition_append_only_tables extends BaseJavaMigration {
             new TableSpec(
                     "order_status_history",
                     "occurred_at",
-                    List.of("id", "order_id", "from_status", "to_status", "actor_type", "actor_id", "reason",
-                            "trace_id", "occurred_at"),
-                    """
-                            id          BIGINT    NOT NULL DEFAULT nextval('%s'),
-                            order_id    BIGINT    NOT NULL,
-                            from_status TEXT,
-                            to_status   TEXT      NOT NULL,
-                            actor_type  TEXT      NOT NULL,
-                            actor_id    BIGINT,
-                            reason      TEXT,
-                            trace_id    TEXT,
-                            occurred_at TIMESTAMP NOT NULL,
-                            CONSTRAINT order_status_history_pkey PRIMARY KEY (id, occurred_at),
-                            CONSTRAINT fk_order_status_history_order FOREIGN KEY (order_id)
-                                REFERENCES orders (id) ON DELETE CASCADE,
-                            CONSTRAINT chk_order_status_history_from_status
-                                CHECK (from_status IS NULL OR from_status IN
-                                       ('PLACED', 'PAID', 'ACCEPTED', 'PREPARING', 'COMPLETED', 'CANCELLED')),
-                            CONSTRAINT chk_order_status_history_to_status
-                                CHECK (to_status IN ('PLACED', 'PAID', 'ACCEPTED', 'PREPARING', 'COMPLETED', 'CANCELLED')),
-                            CONSTRAINT chk_order_status_history_actor_type
-                                CHECK (actor_type IN ('CUSTOMER', 'ADMIN', 'MERCHANT', 'RIDER', 'SYSTEM'))
-                            """,
+                    List.of(
+                            "ALTER TABLE order_status_history ADD CONSTRAINT fk_order_status_history_order "
+                                    + "FOREIGN KEY (order_id) REFERENCES orders (id) ON DELETE CASCADE"
+                    ),
                     List.of(
                             "CREATE INDEX idx_order_status_history_order_id_id ON order_status_history (order_id, id)"
                     ),
@@ -121,19 +91,7 @@ public class V10__Partition_append_only_tables extends BaseJavaMigration {
             new TableSpec(
                     "processed_events",
                     "processed_at",
-                    List.of("id", "consumer_name", "event_id", "dedup_key", "event_type", "aggregate_type",
-                            "aggregate_id", "processed_at"),
-                    """
-                            id             BIGINT    NOT NULL DEFAULT nextval('%s'),
-                            consumer_name  TEXT      NOT NULL,
-                            event_id       TEXT,
-                            dedup_key      TEXT      NOT NULL,
-                            event_type     TEXT      NOT NULL,
-                            aggregate_type TEXT,
-                            aggregate_id   BIGINT,
-                            processed_at   TIMESTAMP NOT NULL,
-                            CONSTRAINT processed_events_pkey PRIMARY KEY (id, processed_at)
-                            """,
+                    List.of(),
                     List.of(),
                     true
             )
@@ -168,8 +126,10 @@ public class V10__Partition_append_only_tables extends BaseJavaMigration {
         String sequence = serialSequence(connection, legacy);
         execute(connection, "ALTER SEQUENCE " + sequence + " OWNED BY NONE");
 
-        execute(connection, "CREATE TABLE " + table.name() + " (" + table.columnsAndConstraints().formatted(sequence)
-                + ") PARTITION BY RANGE (" + table.partitionColumn() + ")");
+        execute(connection, "CREATE TABLE " + table.name() + " (LIKE " + legacy
+                + " INCLUDING DEFAULTS INCLUDING CONSTRAINTS, CONSTRAINT " + table.name()
+                + "_pkey PRIMARY KEY (id, " + table.partitionColumn() + ")) PARTITION BY RANGE ("
+                + table.partitionColumn() + ")");
         execute(connection, "ALTER SEQUENCE " + sequence + " OWNED BY " + table.name() + ".id");
 
         TreeSet<LocalDate> months = monthsWithRows(connection, legacy, table.partitionColumn());
@@ -187,8 +147,11 @@ public class V10__Partition_append_only_tables extends BaseJavaMigration {
         execute(connection, "CREATE TABLE " + defaultPartition + " PARTITION OF " + table.name() + " DEFAULT");
         partitions.add(defaultPartition);
 
-        String columns = String.join(", ", table.columns());
-        execute(connection, "INSERT INTO " + table.name() + " (" + columns + ") SELECT " + columns + " FROM " + legacy);
+        // LIKE gave the two tables the same columns in the same order.
+        execute(connection, "INSERT INTO " + table.name() + " SELECT * FROM " + legacy);
+        for (String foreignKey : table.foreignKeys()) {
+            execute(connection, foreignKey);
+        }
         for (String index : table.indexes()) {
             execute(connection, index);
         }
@@ -206,7 +169,8 @@ public class V10__Partition_append_only_tables extends BaseJavaMigration {
 
     /**
      * Drops the primary key, unique constraints and indexes of the renamed table, so the partitioned table can take
-     * their names. Its foreign keys and checks keep table-scoped names and go with the table.
+     * their names (and LIKE copies none of them). Its foreign keys and checks keep table-scoped names and go with the
+     * table.
      */
     private static void dropKeysAndIndexes(Connection connection, String legacy) throws SQLException {
         List<String> constraints = new ArrayList<>();
@@ -300,14 +264,15 @@ public class V10__Partition_append_only_tables extends BaseJavaMigration {
 
 
     /**
-     * @param columnsAndConstraints the column list of CREATE TABLE; {@code %s} is the id sequence
-     * @param dedupKeyPerPartition  give every partition UNIQUE (consumer_name, dedup_key) (processed_events)
+     * @param foreignKeys          ALTER TABLE statements that give the partitioned table the old table's foreign keys
+     *                             (LIKE copies CHECK constraints only)
+     * @param indexes              the old table's indexes other than its keys, created on the partitioned table
+     * @param dedupKeyPerPartition give every partition UNIQUE (consumer_name, dedup_key) (processed_events)
      */
     record TableSpec(
             String name,
             String partitionColumn,
-            List<String> columns,
-            String columnsAndConstraints,
+            List<String> foreignKeys,
             List<String> indexes,
             boolean dedupKeyPerPartition
     ) {
