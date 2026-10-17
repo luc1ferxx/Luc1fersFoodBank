@@ -37,6 +37,17 @@
     </Match>
 
     <!--
+      V10 builds CREATE TABLE ... PARTITION OF, ALTER SEQUENCE, DROP CONSTRAINT/INDEX and a DISTINCT month query for
+      each table it partitions. Identifiers cannot be bind parameters; the table and column names come from the
+      migration's constant table list, the partition names from dates, and the constraint, index and sequence names
+      from the PostgreSQL catalog, never from input.
+    -->
+    <Match>
+        <Class name="db.migration.V10__Partition_append_only_tables"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+
+    <!--
       Baseline at gate introduction: defensive checks for a null KafkaTemplate#send result and a missing producer
       factory. The unit tests exercise both with mocks.
     -->

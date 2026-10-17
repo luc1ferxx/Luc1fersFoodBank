@@ -222,8 +222,24 @@ app:
     processed-event-retention: ${CLEANUP_PROCESSED_EVENT_RETENTION:14d}
     idempotency-retention: ${CLEANUP_IDEMPOTENCY_RETENTION:3d}
     dead-letter-retention: ${CLEANUP_DEAD_LETTER_RETENTION:30d}
+    # Records to keep: 0d (default) keeps them forever. On PostgreSQL these two and processed_events are partitioned by
+    # month (V10) and expire a whole month at a time (app.partitions); on H2 rows are deleted.
+    audit-log-retention: ${CLEANUP_AUDIT_LOG_RETENTION:0d}
+    order-status-history-retention: ${CLEANUP_ORDER_STATUS_HISTORY_RETENTION:0d}
     # Rows per DELETE statement; each statement must finish well within the pool's statement_timeout.
     batch-size: ${CLEANUP_BATCH_SIZE:5000}
+  # Monthly partitions of audit_log, order_status_history and processed_events (PostgreSQL; docs/operations.md
+  # section 8). The job creates the current month and months-ahead more, drops months older than the retentions above
+  # when app.cleanup.enabled, and runs on one instance at a time (advisory lock).
+  partitions:
+    maintenance-enabled: ${PARTITIONS_MAINTENANCE_ENABLED:true}
+    # At least 2; the OnlineOrderPartitionsAhead* alerts fire below 2 and at 0.
+    months-ahead: ${PARTITIONS_MONTHS_AHEAD:3}
+    fixed-delay-ms: ${PARTITIONS_FIXED_DELAY_MS:3600000}
+    initial-delay-ms: ${PARTITIONS_INITIAL_DELAY_MS:60000}
+    # Creating or dropping a partition locks the parent table for a moment; give up after this instead of queueing
+    # inserts behind a long-running query.
+    lock-timeout: ${PARTITIONS_LOCK_TIMEOUT:5s}
   # Two-level catalog cache (spring.cache.type=redis): Caffeine L1 per instance in front of Redis L2, with
   # Redis pub/sub dropping other instances' L1 copies on writes. The L2 base TTL is
   # spring.cache.redis.time-to-live. Redis keys: <key-namespace>:<version>:<cache>::<key>.

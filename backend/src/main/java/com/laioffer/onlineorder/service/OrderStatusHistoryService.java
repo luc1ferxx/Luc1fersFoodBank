@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
@@ -28,6 +29,12 @@ import java.util.Objects;
  */
 @Service
 public class OrderStatusHistoryService {
+
+    /**
+     * How much earlier than the order's creation a status change may be stamped: changes are stamped with the clock of
+     * the instance that made them, and instance clocks differ by milliseconds, not days.
+     */
+    static final Duration CLOCK_SKEW_MARGIN = Duration.ofDays(1);
 
     private final OrderStatusHistoryRepository orderStatusHistoryRepository;
     private final ObjectProvider<Tracer> tracer;
@@ -74,9 +81,14 @@ public class OrderStatusHistoryService {
 
     /**
      * The order's status changes, oldest first. The caller checks that the order may be read.
+     *
+     * @param orderCreatedAt the order's creation time: on PostgreSQL order_status_history is partitioned by month
+     *                       (V10), and only the partitions from that month on are read
      */
-    public List<OrderStatusHistoryDto> getHistory(Long orderId) {
-        return orderStatusHistoryRepository.findAllByOrderIdOrderByIdAsc(orderId).stream()
+    public List<OrderStatusHistoryDto> getHistory(Long orderId, LocalDateTime orderCreatedAt) {
+        Objects.requireNonNull(orderCreatedAt, "orderCreatedAt");
+        return orderStatusHistoryRepository.findAllByOrderIdSince(orderId, orderCreatedAt.minus(CLOCK_SKEW_MARGIN))
+                .stream()
                 .map(OrderStatusHistoryDto::new)
                 .toList();
     }

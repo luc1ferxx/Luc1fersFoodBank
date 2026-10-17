@@ -199,3 +199,58 @@ tests:
             exp_annotations:
               summary: Order events are being dead-lettered
               description: Events were stored as dead letters in the last 15 minutes. Inspect them and replay with POST /dead-letters/{id}/replay once the consumer is fixed.
+
+  # The maintenance job stops: processed_events runs down from 3 future partitions to 1, then 0; audit_log is fine.
+  - name: monthly partitions run out
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_partitions_future{application="OnlineOrder", instance="app:8081", table="processed_events"}'
+        values: '3x29 1x99 0x30'
+      - series: 'onlineorder_partitions_future{application="OnlineOrder", instance="app:8081", table="audit_log"}'
+        values: '3x160'
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: OnlineOrderPartitionsAheadLow
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: OnlineOrderPartitionsAheadLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              table: processed_events
+            exp_annotations:
+              summary: Few future partitions of processed_events
+              description: Only 1 monthly partition(s) of processed_events exist past the current month (the job keeps 3). Check the partition maintenance logs and onlineorder_partitions_maintenance_failures_total (docs/operations.md section 8).
+      - eval_time: 135m
+        alertname: OnlineOrderPartitionsAheadMissing
+        exp_alerts: []
+      - eval_time: 145m
+        alertname: OnlineOrderPartitionsAheadMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              table: processed_events
+            exp_annotations:
+              summary: No partition of processed_events exists for next month
+              description: From the first of next month new processed_events rows land in processed_events_default. Fix the partition maintenance job or create the partitions by hand (docs/operations.md section 8).
+
+  - name: rows in a default partition
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_partitions_default_rows{application="OnlineOrder", instance="app:8081", table="audit_log"}'
+        values: '0x10 5x90'
+      - series: 'onlineorder_partitions_default_rows{application="OnlineOrder", instance="app:8081", table="processed_events"}'
+        values: '0x100'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: OnlineOrderPartitionDefaultRows
+        exp_alerts: []
+      - eval_time: 80m
+        alertname: OnlineOrderPartitionDefaultRows
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              table: audit_log
+            exp_annotations:
+              summary: Rows of audit_log fall outside every monthly partition
+              description: 5 row(s) sit in audit_log_default. The job moves them into their month when it creates that partition and deletes them once past the retention; rows far in the future or past point at a wrong clock.

@@ -31,6 +31,9 @@ class MaintenanceCleanupH2IntegrationTests {
         registry.add("app.cleanup.initial-delay-ms", () -> "3600000");
         // Smaller than every expired set below, so each table needs several DELETE statements.
         registry.add("app.cleanup.batch-size", () -> "3");
+        // Records are kept forever by default; with a retention, H2 (not partitioned) deletes their rows.
+        registry.add("app.cleanup.audit-log-retention", () -> "400d");
+        registry.add("app.cleanup.order-status-history-retention", () -> "400d");
     }
 
     @Autowired
@@ -46,6 +49,7 @@ class MaintenanceCleanupH2IntegrationTests {
         jdbcTemplate.update("DELETE FROM processed_events");
         jdbcTemplate.update("DELETE FROM idempotency_requests");
         jdbcTemplate.update("DELETE FROM dead_letter_events");
+        jdbcTemplate.update("DELETE FROM audit_log WHERE action = 'cleanup.test'");
     }
 
 
@@ -76,6 +80,16 @@ class MaintenanceCleanupH2IntegrationTests {
         insertDeadLetter("REPLAYED", now.minusDays(1));
         insertDeadLetter("PENDING", now.minusDays(40));
 
+        for (int i = 0; i < 4; i++) {
+            insertAuditEntry(now.minusDays(500));
+        }
+        insertAuditEntry(now.minusDays(10));
+        long orderId = insertOrder(customerId, now.minusDays(500));
+        for (int i = 0; i < 4; i++) {
+            insertHistory(orderId, now.minusDays(500));
+        }
+        insertHistory(orderId, now.minusDays(10));
+
         maintenanceCleanupService.cleanupExpiredRecords();
 
         Assertions.assertEquals(
@@ -90,6 +104,44 @@ class MaintenanceCleanupH2IntegrationTests {
         Assertions.assertEquals(1, count("SELECT COUNT(*) FROM idempotency_requests"));
         Assertions.assertEquals(2, count("SELECT COUNT(*) FROM dead_letter_events"));
         Assertions.assertEquals(1, count("SELECT COUNT(*) FROM dead_letter_events WHERE replay_status = 'PENDING'"));
+        Assertions.assertEquals(1, count("SELECT COUNT(*) FROM audit_log WHERE action = 'cleanup.test'"));
+        Assertions.assertEquals(1, count("SELECT COUNT(*) FROM order_status_history WHERE order_id = ?", orderId));
+    }
+
+
+    private void insertAuditEntry(LocalDateTime occurredAt) {
+        jdbcTemplate.update(
+                """
+                        INSERT INTO audit_log (actor_role, action, target_type, target_id, occurred_at)
+                        VALUES ('ROLE_ADMIN', 'cleanup.test', 'order', '1', ?)
+                        """,
+                Timestamp.valueOf(occurredAt)
+        );
+    }
+
+
+    private long insertOrder(long customerId, LocalDateTime createdAt) {
+        jdbcTemplate.update(
+                """
+                        INSERT INTO orders (customer_id, total_price, status, created_at)
+                        VALUES (?, 5, 'PLACED', ?)
+                        """,
+                customerId,
+                Timestamp.valueOf(createdAt)
+        );
+        return jdbcTemplate.queryForObject("SELECT MAX(id) FROM orders", Long.class);
+    }
+
+
+    private void insertHistory(long orderId, LocalDateTime occurredAt) {
+        jdbcTemplate.update(
+                """
+                        INSERT INTO order_status_history (order_id, to_status, actor_type, occurred_at)
+                        VALUES (?, 'PLACED', 'SYSTEM', ?)
+                        """,
+                orderId,
+                Timestamp.valueOf(occurredAt)
+        );
     }
 
 

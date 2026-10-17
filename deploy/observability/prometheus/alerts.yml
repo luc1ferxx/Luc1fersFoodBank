@@ -168,3 +168,34 @@ groups:
         annotations:
           summary: Kafka consumer {{ $labels.client_id }} is falling behind
           description: Consumer {{ $labels.client_id }} on {{ $labels.instance }} has been more than 1000 records behind for 10 minutes ({{ $value | humanize }} now).
+
+      # Monthly partitions of audit_log, order_status_history and processed_events (PostgreSQL, V10). The partition
+      # maintenance job keeps app.partitions.months-ahead (3) partitions past the current month, so a healthy table
+      # reports 2-3 here. Fewer means the job has missed a month boundary; at 0, rows of the next month land in the
+      # default partition, which retention never drops.
+      - alert: OnlineOrderPartitionsAheadLow
+        expr: min by (table) (onlineorder_partitions_future{application="OnlineOrder"}) < 2
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: Few future partitions of {{ $labels.table }}
+          description: Only {{ $value }} monthly partition(s) of {{ $labels.table }} exist past the current month (the job keeps 3). Check the partition maintenance logs and onlineorder_partitions_maintenance_failures_total (docs/operations.md section 8).
+
+      - alert: OnlineOrderPartitionsAheadMissing
+        expr: min by (table) (onlineorder_partitions_future{application="OnlineOrder"}) < 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: No partition of {{ $labels.table }} exists for next month
+          description: From the first of next month new {{ $labels.table }} rows land in {{ $labels.table }}_default. Fix the partition maintenance job or create the partitions by hand (docs/operations.md section 8).
+
+      - alert: OnlineOrderPartitionDefaultRows
+        expr: max by (table) (onlineorder_partitions_default_rows{application="OnlineOrder"}) > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: Rows of {{ $labels.table }} fall outside every monthly partition
+          description: '{{ $value }} row(s) sit in {{ $labels.table }}_default. The job moves them into their month when it creates that partition and deletes them once past the retention; rows far in the future or past point at a wrong clock.'

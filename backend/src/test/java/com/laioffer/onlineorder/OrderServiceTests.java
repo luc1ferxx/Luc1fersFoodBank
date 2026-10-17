@@ -215,15 +215,16 @@ class OrderServiceTests {
         OrderEntity order = new OrderEntity(5L, 1L, amount("19.0"), "PLACED", LocalDateTime.of(2026, 4, 4, 12, 0));
         Mockito.when(orderRepository.findByIdAndCustomerId(5L, 1L)).thenReturn(Optional.of(order));
         Mockito.when(orderRepository.findByIdAndCustomerId(5L, 2L)).thenReturn(Optional.empty());
-        Mockito.when(orderRepository.existsById(5L)).thenReturn(true);
-        Mockito.when(orderRepository.existsById(6L)).thenReturn(false);
-        Mockito.when(orderStatusHistoryService.getHistory(5L)).thenReturn(history);
+        Mockito.when(orderRepository.findById(5L)).thenReturn(Optional.of(order));
+        Mockito.when(orderRepository.findById(6L)).thenReturn(Optional.empty());
+        // The creation time lets the history query skip the monthly partitions before the order.
+        Mockito.when(orderStatusHistoryService.getHistory(5L, order.createdAt())).thenReturn(history);
 
         Assertions.assertEquals(history, orderService.getStatusHistory(5L, 1L, false));
         Assertions.assertEquals(history, orderService.getStatusHistory(5L, 3L, true));
         Assertions.assertThrows(ResourceNotFoundException.class, () -> orderService.getStatusHistory(5L, 2L, false));
         Assertions.assertThrows(ResourceNotFoundException.class, () -> orderService.getStatusHistory(6L, 3L, true));
-        Mockito.verify(orderStatusHistoryService, Mockito.times(2)).getHistory(5L);
+        Mockito.verify(orderStatusHistoryService, Mockito.times(2)).getHistory(5L, order.createdAt());
     }
 
 

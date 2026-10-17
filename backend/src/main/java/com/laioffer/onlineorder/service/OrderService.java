@@ -121,13 +121,11 @@ public class OrderService implements OrderLifecycleCommands {
      * an order that does not exist, so order ids cannot be probed.
      */
     public List<OrderStatusHistoryDto> getStatusHistory(Long orderId, Long readerCustomerId, boolean readerIsAdmin) {
-        boolean readable = readerIsAdmin
-                ? orderRepository.existsById(orderId)
-                : orderRepository.findByIdAndCustomerId(orderId, readerCustomerId).isPresent();
-        if (!readable) {
-            throw new ResourceNotFoundException("Order not found");
-        }
-        return orderStatusHistoryService.getHistory(orderId);
+        OrderEntity order = (readerIsAdmin
+                ? orderRepository.findById(orderId)
+                : orderRepository.findByIdAndCustomerId(orderId, readerCustomerId))
+                .orElseThrow(() -> new ResourceNotFoundException("Order not found"));
+        return orderStatusHistoryService.getHistory(orderId, order.createdAt());
     }
 
 
