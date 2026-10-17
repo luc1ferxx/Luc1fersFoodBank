@@ -12,6 +12,7 @@ import com.laioffer.onlineorder.messaging.contract.EventSchemaViolationException
 import com.laioffer.onlineorder.messaging.contract.EventTestSupport;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 import com.laioffer.onlineorder.model.OutboxEventDto;
+import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.repository.OutboxEventRepository;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import org.junit.jupiter.api.Assertions;
@@ -22,6 +23,7 @@ import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -40,7 +42,7 @@ class OrderEventOutboxServiceTests {
         OrderEventOutboxService service = newService(repository);
         LocalDateTime createdAt = LocalDateTime.of(2026, 4, 25, 12, 0);
         LocalDateTime transitionedAt = LocalDateTime.of(2026, 4, 25, 12, 45, 30);
-        OrderEntity acceptedOrder = new OrderEntity(10L, 3L, new BigDecimal("19.00"), "ACCEPTED", createdAt);
+        OrderEntity acceptedOrder = new OrderEntity(10L, 3L, Money.of("19.00", "USD"), "ACCEPTED", createdAt);
 
         service.enqueueOrderEvent(acceptedOrder, List.of(), null, transitionedAt);
 
@@ -56,7 +58,7 @@ class OrderEventOutboxServiceTests {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
         OrderEventOutboxService service = newService(repository);
         LocalDateTime createdAt = LocalDateTime.of(2026, 4, 25, 12, 0);
-        OrderEntity placedOrder = new OrderEntity(10L, 3L, new BigDecimal("19.00"), "PLACED", createdAt);
+        OrderEntity placedOrder = new OrderEntity(10L, 3L, Money.of("19.00", "USD"), "PLACED", createdAt);
 
         service.enqueueOrderEvent(placedOrder, List.of(), "checkout-key", createdAt);
 
@@ -73,7 +75,7 @@ class OrderEventOutboxServiceTests {
         OrderEventOutboxService service = newService(repository);
         LocalDateTime createdAt = LocalDateTime.of(2026, 4, 25, 12, 0);
         OrderEntity cancelledOrder = new OrderEntity(
-                10L, 3L, new BigDecimal("19.00"), "CANCELLED", createdAt, 2L, "MERCHANT_TIMEOUT");
+                10L, 3L, Money.of("19.00", "USD"), "CANCELLED", createdAt, 2L, "MERCHANT_TIMEOUT");
 
         service.enqueueOrderEvent(cancelledOrder, List.of(), null, createdAt.plusMinutes(10));
 
@@ -89,9 +91,9 @@ class OrderEventOutboxServiceTests {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
         OrderEventOutboxService service = newService(repository);
         LocalDateTime createdAt = LocalDateTime.of(2026, 4, 25, 12, 0);
-        OrderEntity paidOrder = new OrderEntity(10L, 3L, new BigDecimal("21.18"), "PAID", createdAt, 2L, null);
+        OrderEntity paidOrder = new OrderEntity(10L, 3L, Money.of("21.18", "USD"), "PAID", createdAt, 2L, null);
         OrderHistoryItemDto line = new OrderHistoryItemDto(
-                5L, 7L, 2L, new BigDecimal("10.59"), 2, "Whopper Meal", "Meal", "https://example.com/whopper.png");
+                5L, 7L, 2L, new BigDecimal("10.59"), "USD", 2, "Whopper Meal", "Meal", "https://example.com/whopper.png");
 
         service.enqueueOrderEvent(paidOrder, List.of(line), "checkout-key", createdAt);
 
@@ -106,10 +108,33 @@ class OrderEventOutboxServiceTests {
         Assertions.assertEquals("10.59", item.get("price").decimalValue().toPlainString());
         Assertions.assertEquals(2, item.get("quantity").asInt());
         Assertions.assertEquals("Whopper Meal", item.get("menu_item_name").asString());
-        // The currency is optional until the order carries one; an absent currency is omitted, not null.
+        // The lines carry no currency of their own (omitted, not null); the payload names the order's.
         Assertions.assertFalse(item.has("currency"));
-        Assertions.assertFalse(payload.get("data").has("currency"));
+        Assertions.assertEquals("USD", payload.get("data").get("currency").asString());
         Assertions.assertTrue(stored.payload().contains("\"total_price\":21.18"), stored.payload());
+    }
+
+
+    @Test
+    void enqueueOrderEvent_shouldCarryTheOrdersCurrencyOnceForTheTotalAndTheLines() throws Exception {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        LocalDateTime createdAt = LocalDateTime.of(2026, 4, 25, 12, 0);
+        OrderEntity paidOrder = new OrderEntity(10L, 3L, Money.of("0.50", "EUR"), "PAID", createdAt, 2L, null);
+        List<OrderHistoryItemDto> items = List.of(new OrderHistoryItemDto(
+                1L, 30L, 2L, new BigDecimal("0.10"), "EUR", 5, "Mint", null, null));
+
+        service.enqueueOrderEvent(paidOrder, items, null, createdAt);
+
+        String payload = savedOutboxEvent(repository).payload();
+        JsonNode data = EventTestSupport.mapper().readTree(payload).get("data");
+        Assertions.assertEquals("EUR", data.get("currency").asString());
+        Assertions.assertEquals(0, new BigDecimal("0.50").compareTo(data.get("total_price").decimalValue()));
+        Assertions.assertFalse(data.get("items").get(0).has("currency"), payload);
+        Assertions.assertFalse(data.has("currencyCode"), "only the record components are serialized: " + payload);
+        OrderEventEnvelope envelope = service.readEnvelope(payload);
+        Assertions.assertEquals("EUR", envelope.data().currencyCode());
+        Assertions.assertNull(envelope.data().items().get(0).currency());
     }
 
 
@@ -205,6 +230,9 @@ class OrderEventOutboxServiceTests {
         Assertions.assertEquals(3L, envelope.data().customerId());
         Assertions.assertNull(envelope.data().restaurantId());
         Assertions.assertNull(envelope.data().reason());
+        // Every order was USD before events carried a currency.
+        Assertions.assertNull(envelope.data().currency());
+        Assertions.assertEquals("USD", envelope.data().currencyCode());
     }
 
 

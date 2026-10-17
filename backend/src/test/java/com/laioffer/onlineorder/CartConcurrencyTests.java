@@ -250,10 +250,10 @@ class CartConcurrencyTests {
                 now,
                 now
         ));
-        CartEntity cart = cartRepository.save(new CartEntity(null, customer.id(), BigDecimal.ZERO));
+        CartEntity cart = cartRepository.save(new CartEntity(null, customer.id(), BigDecimal.ZERO, "USD"));
         MenuItemEntity menuItem = menuItemRepository.findById(1L).orElseThrow();
-        orderItemRepository.save(new OrderItemEntity(null, menuItem.id(), cart.id(), menuItem.price(), 1));
-        cartRepository.updateTotalPrice(cart.id(), menuItem.price());
+        orderItemRepository.save(new OrderItemEntity(null, menuItem.id(), cart.id(), menuItem.price(), 1, "USD"));
+        cartRepository.updateTotal(cart.id(), menuItem.price(), menuItem.currency());
         return new TestCustomer(customer.id(), cart.id());
     }
 

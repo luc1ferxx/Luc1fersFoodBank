@@ -10,6 +10,8 @@
  * Fields a DTO does not declare are ignored.
  */
 
+import { type CurrencyCode, LEGACY_CURRENCY, isCurrencyCode } from "./currency";
+
 export type JsonObject = Readonly<Record<string, unknown>>;
 
 export type Decoder<T> = (value: unknown, path: string) => T;
@@ -121,5 +123,13 @@ export function fieldsOf(value: unknown, path: string) {
       const field = object[key];
       return isMissing(field) ? null : decoder(field, at(key));
     },
+    /**
+     * The ISO 4217 currency of the amounts next to it. A response without one comes
+     * from a backend that predates currencies, when every amount was USD.
+     */
+    currency: (key: string): CurrencyCode =>
+      isMissing(object[key])
+        ? LEGACY_CURRENCY
+        : required(key, isCurrencyCode, "an ISO 4217 currency code"),
   };
 }

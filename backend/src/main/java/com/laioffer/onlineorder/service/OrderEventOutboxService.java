@@ -106,6 +106,7 @@ public class OrderEventOutboxService {
                         order.customerId(),
                         order.status(),
                         order.totalPrice(),
+                        order.currency(),
                         order.createdAt(),
                         eventItems(items),
                         order.restaurantId(),

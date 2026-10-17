@@ -3,6 +3,7 @@ package com.laioffer.onlineorder.model;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.laioffer.onlineorder.entity.OrderEntity;
+import com.laioffer.onlineorder.money.Money;
 
 
 import java.math.BigDecimal;
@@ -14,6 +15,7 @@ import java.util.List;
  * @param id        the internal key that the order endpoints take ({@code /orders/{orderId}/...})
  * @param orderNo   the public order number to show customers, written as a JSON string: Snowflake ids are larger
  *                  than 2^53, which JavaScript numbers cannot hold exactly
+ * @param currency  the ISO 4217 currency of {@code totalPrice} and of every item
  * @param updatedAt when the order last changed status (its creation time until the first change)
  */
 public record OrderDto(
@@ -21,6 +23,7 @@ public record OrderDto(
         @JsonFormat(shape = JsonFormat.Shape.STRING)
         Long orderNo,
         BigDecimal totalPrice,
+        String currency,
         String status,
         LocalDateTime createdAt,
         List<OrderHistoryItemDto> items,
@@ -31,19 +34,19 @@ public record OrderDto(
 
     public OrderDto(
             Long id,
-            BigDecimal totalPrice,
+            Money total,
             String status,
             LocalDateTime createdAt,
             List<OrderHistoryItemDto> items,
             Long restaurantId,
             String cancelReason
     ) {
-        this(id, null, totalPrice, status, createdAt, items, restaurantId, cancelReason, createdAt);
+        this(id, null, total.amount(), total.currencyCode(), status, createdAt, items, restaurantId, cancelReason, createdAt);
     }
 
 
-    public OrderDto(Long id, BigDecimal totalPrice, String status, LocalDateTime createdAt, List<OrderHistoryItemDto> items) {
-        this(id, totalPrice, status, createdAt, items, null, null);
+    public OrderDto(Long id, Money total, String status, LocalDateTime createdAt, List<OrderHistoryItemDto> items) {
+        this(id, total, status, createdAt, items, null, null);
     }
 
 
@@ -52,6 +55,7 @@ public record OrderDto(
                 order.id(),
                 order.orderNo(),
                 order.totalPrice(),
+                order.currency(),
                 order.status(),
                 order.createdAt(),
                 items,

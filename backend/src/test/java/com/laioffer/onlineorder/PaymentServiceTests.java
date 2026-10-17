@@ -4,6 +4,7 @@ package com.laioffer.onlineorder;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.PaymentCheckoutBody;
+import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.PaymentService;
@@ -49,7 +50,7 @@ public class PaymentServiceTests {
         );
         OrderDto paidOrder = new OrderDto(
                 5L,
-                amount("42.0"),
+                Money.of("42.0", "USD"),
                 "PAID",
                 LocalDateTime.of(2026, 4, 4, 12, 0),
                 List.of()

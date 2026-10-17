@@ -1,3 +1,4 @@
+import type { CurrencyCode } from "./currency";
 import { type Decoder, decodeString, fieldsOf } from "./decode";
 
 /*
@@ -5,6 +6,11 @@ import { type Decoder, decodeString, fieldsOf } from "./decode";
  * naming strategy), each response type next to its decoder. Field names follow the
  * backend records in backend/src/main/java/com/laioffer/onlineorder (model/*Dto and
  * fulfilment/**). Java fields that can be null are `T | null` here.
+ *
+ * Every amount is a JSON number with a sibling `currency` (ISO 4217): "price" +
+ * "currency", "total_price" + "currency". A restaurant prices in one currency, so a
+ * cart and an order have one too. Amounts are only formatted (`formatMoney`) and
+ * multiplied by quantities in integer hundredths (`lineTotal`), never summed here.
  */
 
 export const ORDER_STATUSES = [
@@ -126,6 +132,8 @@ export interface Restaurant {
   address: string | null;
   phone: string | null;
   image_url: string | null;
+  /** The currency the restaurant's menu is priced in. */
+  currency: CurrencyCode;
 }
 
 export const decodeRestaurant: Decoder<Restaurant> = (value, path) => {
@@ -136,6 +144,7 @@ export const decodeRestaurant: Decoder<Restaurant> = (value, path) => {
     address: f.optionalString("address"),
     phone: f.optionalString("phone"),
     image_url: f.optionalString("image_url"),
+    currency: f.currency("currency"),
   };
 };
 
@@ -146,6 +155,7 @@ export interface MenuItem {
   name: string;
   description: string | null;
   price: number;
+  currency: CurrencyCode;
   image_url: string | null;
 }
 
@@ -157,6 +167,7 @@ export const decodeMenuItem: Decoder<MenuItem> = (value, path) => {
     name: f.string("name"),
     description: f.optionalString("description"),
     price: f.number("price"),
+    currency: f.currency("currency"),
     image_url: f.optionalString("image_url"),
   };
 };
@@ -169,6 +180,7 @@ export interface CartItem {
   menu_item_id: number;
   restaurant_id: number | null;
   price: number;
+  currency: CurrencyCode;
   quantity: number;
   menu_item_name: string;
   menu_item_description: string | null;
@@ -182,6 +194,7 @@ export const decodeCartItem: Decoder<CartItem> = (value, path) => {
     menu_item_id: f.number("menu_item_id"),
     restaurant_id: f.optionalNumber("restaurant_id"),
     price: f.number("price"),
+    currency: f.currency("currency"),
     quantity: f.number("quantity"),
     menu_item_name: f.string("menu_item_name"),
     menu_item_description: f.optionalString("menu_item_description"),
@@ -189,9 +202,10 @@ export const decodeCartItem: Decoder<CartItem> = (value, path) => {
   };
 };
 
-/** GET /cart (CartDto). */
+/** GET /cart (CartDto). An empty cart keeps the currency it last had. */
 export interface Cart {
   total_price: number;
+  currency: CurrencyCode;
   order_items: CartItem[];
 }
 
@@ -199,6 +213,7 @@ export const decodeCart: Decoder<Cart> = (value, path) => {
   const f = fieldsOf(value, path);
   return {
     total_price: f.optionalNumber("total_price") ?? 0,
+    currency: f.currency("currency"),
     order_items: f.arrayOrEmpty("order_items", decodeCartItem),
   };
 };
@@ -219,6 +234,7 @@ export interface OrderItem {
   menu_item_id: number;
   restaurant_id: number | null;
   price: number;
+  currency: CurrencyCode;
   quantity: number;
   menu_item_name: string;
   menu_item_description: string | null;
@@ -232,6 +248,7 @@ export const decodeOrderItem: Decoder<OrderItem> = (value, path) => {
     menu_item_id: f.number("menu_item_id"),
     restaurant_id: f.optionalNumber("restaurant_id"),
     price: f.number("price"),
+    currency: f.currency("currency"),
     quantity: f.number("quantity"),
     menu_item_name: f.string("menu_item_name"),
     menu_item_description: f.optionalString("menu_item_description"),
@@ -248,6 +265,7 @@ export interface Order {
   id: number;
   order_no: string | null;
   total_price: number;
+  currency: CurrencyCode;
   status: OrderStatus;
   created_at: string | null;
   items: OrderItem[];
@@ -261,6 +279,7 @@ export const decodeOrder: Decoder<Order> = (value, path) => {
     id: f.number("id"),
     order_no: f.optionalString("order_no"),
     total_price: f.number("total_price"),
+    currency: f.currency("currency"),
     status: f.oneOf("status", ORDER_STATUSES),
     created_at: f.optionalString("created_at"),
     items: f.arrayOrEmpty("items", decodeOrderItem),
@@ -326,6 +345,7 @@ export interface MerchantOrderItem {
   menu_item_id: number;
   menu_item_name: string;
   price: number;
+  currency: CurrencyCode;
   quantity: number;
 }
 
@@ -335,6 +355,7 @@ export const decodeMerchantOrderItem: Decoder<MerchantOrderItem> = (value, path)
     menu_item_id: f.number("menu_item_id"),
     menu_item_name: f.string("menu_item_name"),
     price: f.number("price"),
+    currency: f.currency("currency"),
     quantity: f.number("quantity"),
   };
 };
@@ -346,6 +367,7 @@ export interface MerchantOrder {
   customer_id: number;
   status: OrderStatus;
   total_price: number;
+  currency: CurrencyCode;
   items: MerchantOrderItem[];
   cancel_reason: string | null;
   paid_at: string | null;
@@ -360,6 +382,7 @@ export const decodeMerchantOrder: Decoder<MerchantOrder> = (value, path) => {
     customer_id: f.number("customer_id"),
     status: f.oneOf("status", ORDER_STATUSES),
     total_price: f.number("total_price"),
+    currency: f.currency("currency"),
     items: f.arrayOrEmpty("items", decodeMerchantOrderItem),
     cancel_reason: f.optionalString("cancel_reason"),
     paid_at: f.optionalString("paid_at"),

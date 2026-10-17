@@ -44,11 +44,41 @@ public final class FulfilmentTestEvents {
                         customerId,
                         status,
                         new BigDecimal("10.59"),
+                        "USD",
                         occurredAt,
                         List.of(new OrderEventItem(
                                 1L, 2L, restaurantId, new BigDecimal("10.59"), null, 1, "Whopper Meal", "Meal", null)),
                         restaurantId,
                         reason
+                )
+        );
+    }
+
+
+    /**
+     * {@code event} as published in {@code currency}, or without a currency (null) like events published before
+     * orders carried one.
+     */
+    public static OrderEventEnvelope inCurrency(OrderEventEnvelope event, String currency) {
+        OrderEventPayload data = event.data();
+        return new OrderEventEnvelope(
+                event.eventId(),
+                event.eventVersion(),
+                event.eventType(),
+                event.aggregateType(),
+                event.aggregateId(),
+                event.occurredAt(),
+                event.correlationId(),
+                event.idempotencyKey(),
+                new OrderEventPayload(
+                        data.customerId(),
+                        data.status(),
+                        data.totalPrice(),
+                        currency,
+                        data.createdAt(),
+                        data.items(),
+                        data.restaurantId(),
+                        data.reason()
                 )
         );
     }

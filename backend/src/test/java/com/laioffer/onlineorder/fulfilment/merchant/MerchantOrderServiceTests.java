@@ -8,6 +8,7 @@ import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.RestaurantOrderTransition;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
+import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -73,6 +74,9 @@ class MerchantOrderServiceTests {
         Assertions.assertEquals("ACCEPTED", accepted.status());
         Assertions.assertEquals(1, accepted.items().size());
         Assertions.assertEquals("Whopper Meal", accepted.items().get(0).menuItemName());
+        // The stored lines carry no currency: they are priced in the inbox row's.
+        Assertions.assertEquals("USD", accepted.currency());
+        Assertions.assertEquals("USD", accepted.items().get(0).currency());
         Mockito.verify(merchantOrderRepository).updateStatus(
                 Mockito.eq(1L), Mockito.eq("ACCEPTED"), Mockito.isNull(), Mockito.any(LocalDateTime.class));
         Mockito.verify(metricsService).recordMerchantDecision("accepted");
@@ -260,7 +264,8 @@ class MerchantOrderServiceTests {
                 null,
                 paidAt,
                 paidAt,
-                paidAt
+                paidAt,
+                "USD"
         );
     }
 
@@ -276,7 +281,7 @@ class MerchantOrderServiceTests {
 
 
     private OrderDto order(String status, String cancelReason) {
-        return new OrderDto(ORDER_ID, new BigDecimal("10.59"), status, LocalDateTime.of(2026, 4, 4, 12, 0),
+        return new OrderDto(ORDER_ID, Money.of("10.59", "USD"), status, LocalDateTime.of(2026, 4, 4, 12, 0),
                 List.of(), RESTAURANT_ID, cancelReason);
     }
 }

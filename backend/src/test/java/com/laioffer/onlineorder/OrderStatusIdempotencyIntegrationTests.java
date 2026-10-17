@@ -288,9 +288,9 @@ class OrderStatusIdempotencyIntegrationTests {
     private SeededOrder createOrderWithHistory(String status) {
         LocalDateTime now = LocalDateTime.now();
         CustomerEntity customer = createCustomer("status-idem");
-        cartRepository.save(new CartEntity(null, customer.id(), BigDecimal.ZERO));
+        cartRepository.save(new CartEntity(null, customer.id(), BigDecimal.ZERO, "USD"));
         MenuItemEntity menuItem = menuItemRepository.findById(1L).orElseThrow();
-        OrderEntity order = orderRepository.save(new OrderEntity(null, customer.id(), menuItem.price(), status, now));
+        OrderEntity order = orderRepository.save(new OrderEntity(null, customer.id(), menuItem.unitPrice(), status, now));
         orderHistoryItemRepository.save(new OrderHistoryItemEntity(
                 null,
                 order.id(),
@@ -300,7 +300,8 @@ class OrderStatusIdempotencyIntegrationTests {
                 1,
                 menuItem.name(),
                 menuItem.description(),
-                menuItem.imageUrl()
+                menuItem.imageUrl(),
+                "USD"
         ));
         return new SeededOrder(customer.id(), order.id());
     }

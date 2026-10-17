@@ -277,6 +277,39 @@ API errors use a consistent JSON shape and include the OpenTelemetry trace id, w
 - Checkout locks the cart row, creates the order, snapshots order items, writes the outbox event, clears the cart, and stores the idempotency result in one database transaction.
 - If the transaction fails before commit, all checkout writes roll back together.
 
+### Money and currency
+
+- **One type for arithmetic.** Cart, checkout and payment code compute with `Money`
+  (`backend/src/main/java/.../money`): a `BigDecimal` amount at scale 2 plus an ISO 4217 `Currency`. Sums and
+  multiples by a quantity are exact; where rounding is needed (a rate) it is `HALF_EVEN` to the currency's minor unit,
+  so rounding many amounts has no upward bias. `Money.of` never rounds silently: 1.005 USD or 500.50 JPY is an error.
+  Adding amounts of two currencies throws `CurrencyMismatchException`. Nothing on the money path uses `double` or
+  `float` (the cart total used to be summed through `CAST(... AS DOUBLE PRECISION)`; it is now the `Money` sum of the
+  lines).
+- **Storage (V11).** Every amount is `NUMERIC(12,2)` with a non-negative check (largest 9,999,999,999.99) and has a
+  `currency CHAR(3)` next to it, checked to be three upper-case letters: `restaurants`, `menu_items`, `carts`,
+  `order_items`, `orders`, `order_history_items`, `merchant_orders`. The supported currencies are the rows of the
+  `currencies` table (code and ISO 4217 minor units: USD, EUR, GBP and 20 more with 2, JPY and KRW with 0; never BHD,
+  KWD or XXX, which `Money` rejects), and `restaurants.currency` references it; a JPY or KRW menu price must be whole.
+  So the database holds no amount or currency that `Money` would refuse. Existing rows became USD; V11 stops, naming
+  the rows, rather than round an existing amount with sub-cent digits (`docs/operations.md` section 10, which also has
+  the rollout: no pods of the previous release next to it).
+- **One currency per restaurant, cart and order.** A restaurant prices its menu in one currency, and composite keys
+  make the database enforce the rest: a menu item has its restaurant's currency, a cart line its menu item's and its
+  cart's. A cart is single-restaurant, so it is single-currency; an empty cart takes the currency of the next item
+  added (and keeps its last currency while empty). Checkout copies the cart's currency onto the order and its items.
+- **API.** Every amount keeps its name and JSON number and gets a sibling `currency`: `price` + `currency` on menu
+  items, cart lines and order items, `total_price` + `currency` on carts, orders and merchant orders, plus the
+  restaurant's `currency`. `PATCH /admin/menu-items/{id}` takes a `price` in the restaurant's currency only (an
+  optional `currency` must match it, `400 CURRENCY_MISMATCH`; a JPY price with cents is `400 INVALID_AMOUNT`). A cart
+  whose total would exceed the column is refused with `400 CART_TOTAL_TOO_LARGE`.
+- **Events.** Order events carry the order's currency once, as `data.currency`; their line items carry none. A
+  consumer reads an event without one (published before V11) as USD.
+- **Frontend.** The DTO decoders validate every `currency` (`fieldsOf().currency`, a branded `CurrencyCode`; a
+  response without one is USD), `formatMoney` in `src/lib/format.ts` is the only formatter (`Intl.NumberFormat`,
+  `en-US`, the currency's own decimals: $12.78, €0.50, ¥950), and `lineTotal` multiplies a price by a quantity in
+  integer hundredths.
+
 ### Order State
 
 Allowed transitions:
@@ -809,6 +842,11 @@ The test suite covers:
   marks of one key racing into different months (`ProcessedEventDedupAcrossPartitionsPostgresTests`), the Snowflake generator's uniqueness, monotonicity,
   clock steps and worker-id bounds (`SnowflakeIdGeneratorTests`), leased worker ids with takeovers and clock skew
   (`WorkerIdLeasePostgresTests`), and order numbers through checkout and notifications (`OrderNumber*IntegrationTests`)
+- money: `Money` arithmetic, HALF_EVEN rounding and currency rules (`MoneyTests`), upgrading a populated V8 database
+  to currencies and `NUMERIC(12,2)`, including a price that does not fit (`MoneyCurrencyMigration*Tests`), a euro
+  checkout with exact totals, its event and the database's single-currency carts on PostgreSQL and H2
+  (`CurrencyCheckout*IntegrationTests`), the `currency` fields of the API (`ApiContractIntegrationTests`), and the
+  frontend's decoding and formatting (`src/lib/format.test.ts`, `src/api/client.test.ts`, `src/App.test.tsx`)
 
 Some integration tests use Testcontainers and require Docker. Tests annotated with `@Testcontainers(disabledWithoutDocker = true)` may skip when Docker is unavailable.
 
@@ -866,6 +904,7 @@ This project is intentionally strong on backend correctness patterns, but it is 
 
 - Payment is simulated with local request validation. There is no real payment provider, authorization, capture, webhook, or settlement flow.
 - There is no inventory reservation or stock decrement model.
+- Amounts carry their currency, but there is no conversion: a restaurant prices in one currency and a cart or order stays in it. There are no taxes, discounts or tips, and no currencies with three minor digits.
 - The merchant and rider consoles poll every 15 seconds instead of receiving pushed updates, and the rider console has no map, location, or ETA.
 - Kafka delivery is treated as at-least-once with consumer-side idempotency, not end-to-end exactly-once delivery. The
   outbox keeps each aggregate's events in order on their way to Kafka, so one `FAILED` event stops its order until an

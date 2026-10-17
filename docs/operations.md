@@ -10,7 +10,7 @@ How OnlineOrder is observed, packaged, deployed and gated. Paths are relative to
 | Kubernetes | `deploy/k8s/` (kustomize base + `staging` and `prod` overlays) |
 | Image | `Dockerfile` |
 | CI and CD | `.github/workflows/`, `.github/dependabot.yml`, `.trivyignore` |
-| Partitions, order numbers, worker ids | section 8; the sharding plan in `docs/adr/0001-order-sharding.md` |
+| Partitions, order numbers, worker ids | section 9; the sharding plan in `docs/adr/0001-order-sharding.md` |
 
 ## 1. Telemetry in the application
 
@@ -97,7 +97,7 @@ Application metrics on top of Spring Boot's (HTTP, Hikari, Tomcat, JVM, Kafka cl
 | `onlineorder_outbox_relay_seconds` | Time from relay start until the publisher has the Kafka acknowledgement or the failure |
 | `onlineorder_dead_letter_stored_total`, `onlineorder_dead_letter_events{replay_status}`, `onlineorder_dead_letter_replay_total` | Dead letters |
 | `onlineorder_checkout_requests_total{result}` | Checkout results |
-| `onlineorder_partitions_future{table}`, `onlineorder_partitions_count{table}`, `onlineorder_partitions_oldest_age_seconds{table}`, `onlineorder_partitions_default_rows{table}` | Monthly partitions (section 8): partitions past the current month, all range partitions, how far back the oldest starts, rows in the default partition (up to 10,001). Read from the catalog at most every 30 s; NaN on H2 |
+| `onlineorder_partitions_future{table}`, `onlineorder_partitions_count{table}`, `onlineorder_partitions_oldest_age_seconds{table}`, `onlineorder_partitions_default_rows{table}` | Monthly partitions (section 9): partitions past the current month, all range partitions, how far back the oldest starts, rows in the default partition (up to 10,001). Read from the catalog at most every 30 s; NaN on H2 |
 | `onlineorder_partitions_created_total{table}`, `onlineorder_partitions_dropped_total{table}`, `onlineorder_partitions_maintenance_failures_total{table}` | Partition maintenance job |
 | `onlineorder_ids_worker_id`, `onlineorder_ids_clock_backward_total{outcome}`, `onlineorder_ids_lease_lost_total` | Snowflake order numbers (section 8): the worker id in use (-1 without a lease), clock steps back waited out or refused, leases taken over |
 
@@ -762,3 +762,93 @@ out; a larger one makes checkout answer 503 until the clock has caught up
 Inspect the leases with `SELECT worker_id, owner, lease_until, issued_until_ms FROM snowflake_worker_leases WHERE owner
 IS NOT NULL ORDER BY worker_id`. Several clusters sharing one database share the table as well; clusters with their
 own databases but one Kafka topology and shared order numbers would need disjoint static ranges instead.
+
+## 10. Money with currency (V11)
+
+V11 (`backend/src/main/java/db/migration/V11__Money_with_currency.java`) gives every amount a currency and a fixed
+scale; README "Money and currency" has the model. It creates the `currencies` reference table, adds
+`currency CHAR(3) NOT NULL DEFAULT 'USD'` (checked to be three upper-case letters) to `restaurants`, `menu_items`,
+`carts`, `order_items`, `orders`, `order_history_items` and `merchant_orders`, turns every amount into `NUMERIC(12,2)`
+with a non-negative check, makes `restaurants.currency` reference `currencies`, and adds the composite keys that tie a
+menu item to its restaurant's currency and a cart line to its menu item's and its cart's.
+
+**Supported currencies.** `currencies (code, minor_units)` holds the currencies the `Money` type accepts, with their
+ISO 4217 minor units: USD, EUR, GBP, CHF, CAD, AUD, NZD, SEK, NOK, DKK, PLN, CZK, HUF, CNY, HKD, SGD, TWD, INR, THB,
+MXN, BRL, ZAR and AED (2), JPY and KRW (0). A restaurant can only use one of them, and a menu item in JPY or KRW only
+a whole price (`chk_menu_item_price_minor_units`), so no row created by SQL can make add-to-cart or checkout fail
+inside `Money`. Codes `Money` rejects cannot be added either: the table only takes 2 minor units, or 0 for JPY and
+KRW, so BHD or KWD (3), XAU or XXX (none) and invented codes stay out. To support another currency, add a migration
+that inserts its row with the minor units `java.util.Currency#getDefaultFractionDigits` reports; one without minor
+units (VND, CLP, ...) also has to replace `chk_currency_minor_units` and `chk_menu_item_price_minor_units`, which
+name JPY and KRW. `MoneyCurrencyMigration*Tests` check every row against `Money`.
+
+**Data check.** V11 first checks every existing amount, unit prices (`menu_items`, `order_items`,
+`order_history_items`) and totals (`carts`, `orders`, `merchant_orders`) alike, and stops before changing anything
+when one has more than two decimal places or exceeds 9,999,999,999.99. The error names each such column with its row
+count and the ids of its first ten rows. V11 never rounds an amount: the previous releases stored prices as given and
+summed totals exactly in `NUMERIC`, so an amount with sub-cent digits was edited by hand or is otherwise
+inconsistent. Find the rows, decide the right value (for a total, usually the sum of its lines), fix them, and start
+the release again (on PostgreSQL the failed migration rolled back completely).
+
+```sql
+SELECT 'menu_items' AS source, id, price AS amount FROM menu_items
+WHERE price <> ROUND(price, 2) OR ABS(price) > 9999999999.99
+UNION ALL
+SELECT 'order_items', id, price FROM order_items WHERE price <> ROUND(price, 2) OR ABS(price) > 9999999999.99
+UNION ALL
+SELECT 'order_history_items', id, price FROM order_history_items
+WHERE price <> ROUND(price, 2) OR ABS(price) > 9999999999.99
+UNION ALL
+SELECT 'carts', id, total_price FROM carts WHERE total_price <> ROUND(total_price, 2) OR ABS(total_price) > 9999999999.99
+UNION ALL
+SELECT 'orders', id, total_price FROM orders WHERE total_price <> ROUND(total_price, 2) OR ABS(total_price) > 9999999999.99
+UNION ALL
+SELECT 'merchant_orders', id, total_price FROM merchant_orders
+WHERE total_price <> ROUND(total_price, 2) OR ABS(total_price) > 9999999999.99;
+
+-- An order's total against the sum of its lines (a cart's: SUM over order_items with cart_id = carts.id).
+SELECT o.id, o.total_price, SUM(i.price * i.quantity) AS lines_total
+FROM orders o JOIN order_history_items i ON i.order_id = o.id
+GROUP BY o.id, o.total_price
+HAVING o.total_price <> SUM(i.price * i.quantity);
+```
+
+**Locks.** On PostgreSQL V11 starts with one `LOCK TABLE restaurants, menu_items, carts, order_items, orders,
+order_history_items, merchant_orders IN ACCESS EXCLUSIVE MODE`, before the data check, so that no row changes between
+the check and the type change; reads and writes on those tables wait from then until V11 commits. Changing `NUMERIC`
+to `NUMERIC(12,2)` then rewrites the six tables with an amount, and the new checks and keys scan them again; adding
+the currency columns themselves is catalog-only. `LOCK TABLE` still takes the locks one table at a time, in that
+order. With a `lock_timeout` (rollout step 1) a lock that another session holds makes V11 fail after the timeout and
+roll back, releasing the tables it already had, before it has changed anything; the pod retries when it restarts
+(`MoneyCurrencyMigrationPostgresTests`). Without one, V11 waits, and all traffic on the tables it has locked queues
+behind it.
+
+The migration must also finish within the pod's startup allowance (`startupProbe`: 36 failures x 5 s, about three
+minutes). A pod killed during V11 rolls it back and the next pod starts over, so a rewrite that takes longer never
+completes. Time V11 against a restored copy of production first (sizes:
+`SELECT relname, pg_size_pretty(pg_total_relation_size(oid)) FROM pg_class WHERE relname IN ('orders',
+'order_history_items', 'order_items', 'merchant_orders')`); if it takes more than about two minutes, raise the
+overlay's `startupProbe.failureThreshold` for this release and plan a maintenance window.
+
+**Rollout.** Roll V11 out like V7: no pod of the previous release may run next to it. Follow steps 1-4 of "Deploying
+the release with V7-V7_2" (`SPRING_FLYWAY_INITSQLS` with a `lock_timeout`, scale to zero, one replica that migrates
+alone, then the autoscaler's `minReplicas`). Under the default `RollingUpdate` the old pods keep serving while V11
+runs, and that goes wrong:
+
+- Deadlock: an old pod's add-to-cart locks the cart row (`FOR UPDATE`) and then reads `menu_items`, while V11 holds
+  `menu_items` and waits for `carts`. PostgreSQL aborts one of the two, the customer's request or the migration.
+- Queueing: while V11 waits for or holds its locks, every request on those seven tables waits too.
+- After V11 commits, the old pods' server-side prepared statements on the altered tables fail once per connection
+  ("cached plan must not change result type").
+
+A rollback to the previous release after V11 works while every restaurant prices in USD (it writes no currency, and
+the defaults are USD). It would refuse cart lines of a restaurant in another currency and check such carts out as USD
+orders, so add the first such restaurant only once a rollback past this release is no longer planned. The catalog
+caches moved to key version `v2`, so the two releases never share entries, and the previous release ignores the new
+`data.currency` of order events (consumers of this release read an event without one as USD).
+
+**A restaurant in another currency.** There is no API to create restaurants: insert it with a `currency` from the
+`currencies` table, and its menu items with the same `currency` (the composite key refuses another) and, for JPY or
+KRW, whole prices. A restaurant's currency cannot change while it has menu items, and a cart's not while it has
+lines; repricing a restaurant into another currency means replacing its menu items, and carts that hold them must be
+emptied first.

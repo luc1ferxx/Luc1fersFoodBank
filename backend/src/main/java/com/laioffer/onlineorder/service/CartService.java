@@ -16,6 +16,8 @@ import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 import com.laioffer.onlineorder.model.OrderItemDto;
 import com.laioffer.onlineorder.model.OrderStatus;
+import com.laioffer.onlineorder.money.Money;
+import com.laioffer.onlineorder.money.MoneyOverflowException;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.CartRepository;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
@@ -53,6 +55,7 @@ public class CartService {
 
     public static final String CART_RESTAURANT_CONFLICT = "CART_RESTAURANT_CONFLICT";
     public static final String CART_HAS_MULTIPLE_RESTAURANTS = "CART_HAS_MULTIPLE_RESTAURANTS";
+    public static final String CART_TOTAL_TOO_LARGE = "CART_TOTAL_TOO_LARGE";
 
     private final CartRepository cartRepository;
     private final IdempotencyRequestRepository idempotencyRequestRepository;
@@ -98,6 +101,10 @@ public class CartService {
      * A cart only holds items of one restaurant, so that every order goes to exactly one merchant. Adding an item of
      * another restaurant fails with 409 CART_RESTAURANT_CONFLICT; the customer clears the cart (or checks it out)
      * first. The cart row lock serializes concurrent adds, so two requests cannot fill one cart from two restaurants.
+     *
+     * <p>For the same reason a cart is single-currency: it takes the currency of its restaurant when its first item is
+     * added, and the line keeps the item's price in that currency. There is no separate currency conflict: the
+     * restaurant conflict comes first, and a cart whose lines are all of this restaurant is already in its currency.
      */
     @Transactional
     public void addMenuItemToCart(long customerId, long menuItemId) {
@@ -110,8 +117,31 @@ public class CartService {
                             + "adding items from this restaurant."
             );
         }
-        cartItemQuantityUpdater.incrementQuantity(cart.id(), menuItem.id(), menuItem.price());
-        syncCartTotal(cart.id());
+        Money unitPrice = menuItem.unitPrice();
+        switchCurrencyOfEmptyCart(cart, unitPrice.currencyCode());
+        cartItemQuantityUpdater.incrementQuantity(cart.id(), menuItem.id(), unitPrice);
+        syncCartTotal(cart.id(), unitPrice.currencyCode());
+    }
+
+
+    /**
+     * Moves an empty cart to {@code currency}. A cart with lines is already in it, so a mismatch there is a broken
+     * invariant, not a client error: the caller has ruled out lines of another restaurant, the lines of this one are in
+     * its menu items' currency, which is the restaurant's (composite keys), and a cart line has its cart's currency
+     * (another composite key).
+     *
+     * @throws IllegalStateException when a cart with lines is in another currency than its restaurant
+     */
+    private void switchCurrencyOfEmptyCart(CartEntity cart, String currency) {
+        if (cart.currency().equals(currency)) {
+            return;
+        }
+        if (!orderItemRepository.getAllByCartId(cart.id()).isEmpty()) {
+            throw new IllegalStateException("Cart " + cart.id() + " holds lines in " + cart.currency()
+                    + " and none of another restaurant, but the restaurant prices in " + currency);
+        }
+        Money emptyTotal = Money.zero(currency);
+        cartRepository.updateTotal(cart.id(), emptyTotal.amount(), emptyTotal.currencyCode());
     }
 
 
@@ -132,7 +162,7 @@ public class CartService {
 
         if (orderItem == null) {
             if (quantity == 0) {
-                syncCartTotal(cart.id());
+                syncCartTotal(cart.id(), cart.currency());
                 return;
             }
             throw new ResourceNotFoundException("Cart item not found");
@@ -146,12 +176,13 @@ public class CartService {
                     orderItem.menuItemId(),
                     orderItem.cartId(),
                     orderItem.price(),
-                    quantity
+                    quantity,
+                    orderItem.currency()
             );
             orderItemRepository.save(updatedOrderItem);
         }
 
-        syncCartTotal(cart.id());
+        syncCartTotal(cart.id(), cart.currency());
     }
 
 
@@ -169,7 +200,7 @@ public class CartService {
             return;
         }
         orderItemRepository.deleteByCartId(cart.id());
-        syncCartTotal(cart.id());
+        syncCartTotal(cart.id(), cart.currency());
     }
 
 
@@ -248,28 +279,31 @@ public class CartService {
     }
 
 
+    /**
+     * Turns the locked cart into an order. The order total is the exact sum of the line totals (price snapshot times
+     * quantity) in the cart's currency, and the order and its items take that currency; a line in another currency
+     * would fail the sum ({@link Money#plus}).
+     */
     private OrderDto checkoutInternal(Long customerId, CartEntity cart, String status, String idempotencyKey) {
         List<OrderItemEntity> cartItems = orderItemRepository.getAllByCartId(cart.id());
         if (cartItems.isEmpty()) {
             throw new BadRequestException("Your cart is empty");
         }
 
-        syncCartTotal(cart.id());
-        CartEntity refreshedCart = getRequiredCart(customerId);
         Map<Long, MenuItemEntity> menuItemsById = getRequiredMenuItemsById(cartItems);
         Long restaurantId = requireSingleRestaurant(menuItemsById);
+        Money total = cartTotal(cart.currency(), cartItems);
 
         LocalDateTime createdAt = LocalDateTime.now();
         OrderStatus initialStatus = OrderStatus.normalizeForCheckout(status);
         OrderEntity savedOrder = orderRepository.save(new OrderEntity(
                 null,
                 customerId,
-                refreshedCart.totalPrice(),
+                total,
                 initialStatus.name(),
                 createdAt,
                 restaurantId,
-                null,
-                createdAt
+                null
         ));
         orderStatusHistoryService.record(
                 savedOrder.id(),
@@ -284,16 +318,18 @@ public class CartService {
         List<OrderHistoryItemDto> orderHistoryItemDtos = new ArrayList<>();
         for (OrderItemEntity cartItem : cartItems) {
             MenuItemEntity menuItem = menuItemsById.get(cartItem.menuItemId());
+            Money unitPrice = cartItem.unitPrice();
             OrderHistoryItemEntity orderHistoryItem = new OrderHistoryItemEntity(
                     null,
                     savedOrder.id(),
                     cartItem.menuItemId(),
                     menuItem.restaurantId(),
-                    cartItem.price(),
+                    unitPrice.amount(),
                     cartItem.quantity(),
                     menuItem.name(),
                     menuItem.description(),
-                    menuItem.imageUrl()
+                    menuItem.imageUrl(),
+                    unitPrice.currencyCode()
             );
             orderHistoryItems.add(orderHistoryItem);
         }
@@ -304,7 +340,8 @@ public class CartService {
 
         orderEventOutboxService.enqueueOrderEvent(savedOrder, orderHistoryItemDtos, idempotencyKey, savedOrder.createdAt());
         orderItemRepository.deleteByCartId(cart.id());
-        cartRepository.updateTotalPrice(cart.id(), BigDecimal.ZERO);
+        Money emptyTotal = Money.zero(total.currency());
+        cartRepository.updateTotal(cart.id(), emptyTotal.amount(), emptyTotal.currencyCode());
 
         return new OrderDto(savedOrder, orderHistoryItemDtos);
     }
@@ -401,9 +438,34 @@ public class CartService {
     }
 
 
-    private void syncCartTotal(Long cartId) {
-        BigDecimal totalPrice = orderItemRepository.getTotalPriceByCartId(cartId);
-        cartRepository.updateTotalPrice(cartId, totalPrice);
+    /**
+     * Recomputes the stored cart total from the cart's lines after a change.
+     */
+    private void syncCartTotal(Long cartId, String currency) {
+        Money total = cartTotal(currency, orderItemRepository.getAllByCartId(cartId));
+        cartRepository.updateTotal(cartId, total.amount(), total.currencyCode());
+    }
+
+
+    /**
+     * The exact sum of the line totals in {@code currency}.
+     *
+     * @throws BadRequestException (CART_TOTAL_TOO_LARGE) when the total exceeds the largest storable amount
+     */
+    private static Money cartTotal(String currency, List<OrderItemEntity> lines) {
+        Money total = Money.zero(currency);
+        try {
+            for (OrderItemEntity line : lines) {
+                total = total.plus(line.lineTotal());
+            }
+        } catch (MoneyOverflowException ex) {
+            throw new BadRequestException(
+                    CART_TOTAL_TOO_LARGE,
+                    "The cart total would exceed " + Money.MAX_AMOUNT.toPlainString() + " " + currency
+                            + ". Lower the quantity."
+            );
+        }
+        return total;
     }
 
 

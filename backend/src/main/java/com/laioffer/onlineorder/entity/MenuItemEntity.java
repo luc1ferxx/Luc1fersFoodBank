@@ -6,6 +6,9 @@ import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
 
 
+import com.laioffer.onlineorder.money.Money;
+
+
 import java.math.BigDecimal;
 
 
@@ -23,6 +26,16 @@ public record MenuItemEntity(
         @Column("price")
         BigDecimal price,
         @Column("image_url")
-        String imageUrl
+        String imageUrl,
+        @Column("currency")
+        String currency
 ) {
+
+
+    /**
+     * The price in the restaurant's currency.
+     */
+    public Money unitPrice() {
+        return Money.of(price, currency);
+    }
 }

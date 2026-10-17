@@ -77,7 +77,7 @@ class CustomerServiceTests {
                 userDetails.getUsername().equals("user@example.com")
         ));
         Mockito.verify(customerRepository).updateNameByEmail("user@example.com", "Ada", "Lovelace");
-        Mockito.verify(cartRepository).save(new CartEntity(null, 7L, BigDecimal.ZERO));
+        Mockito.verify(cartRepository).save(new CartEntity(null, 7L, new BigDecimal("0.00"), "USD"));
     }
 
 

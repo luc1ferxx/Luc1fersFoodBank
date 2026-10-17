@@ -12,16 +12,17 @@ public record MenuItemDto(
         String name,
         String description,
         BigDecimal price,
+        String currency,
         String imageUrl
 ) {
 
 
     public MenuItemDto(MenuItemEntity entity) {
-        this(entity.id(), entity.name(), entity.description(), entity.price(), entity.imageUrl());
+        this(entity.id(), entity.name(), entity.description(), entity.price(), entity.currency(), entity.imageUrl());
     }
 
 
     public MenuItemDto(CatalogMenuItemDto item) {
-        this(item.id(), item.name(), item.description(), item.price(), item.imageUrl());
+        this(item.id(), item.name(), item.description(), item.price(), item.currency(), item.imageUrl());
     }
 }

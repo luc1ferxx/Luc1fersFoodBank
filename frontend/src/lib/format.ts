@@ -1,13 +1,37 @@
 import { ApiError } from "../api/client";
+import { type CurrencyCode, LEGACY_CURRENCY } from "../api/currency";
 import type { Cart } from "../api/dto";
 
 export const EMPTY_CART: Cart = Object.freeze({
   order_items: [],
   total_price: 0,
+  currency: LEGACY_CURRENCY,
 });
 
-export const formatCurrency = (value: number | null | undefined): string =>
-  `$${Number(value || 0).toFixed(2)}`;
+/** Money is written the way the (English) UI copy is: $12.50, €0.50, ¥950. */
+const MONEY_LOCALE = "en-US";
+
+const moneyFormats = new Map<CurrencyCode, Intl.NumberFormat>();
+
+/**
+ * `amount` in `currency`, with the currency's symbol and its own number of decimals
+ * (two for USD and EUR, none for JPY). The one place the UI formats money.
+ */
+export const formatMoney = (amount: number, currency: CurrencyCode): string => {
+  let format = moneyFormats.get(currency);
+  if (!format) {
+    format = new Intl.NumberFormat(MONEY_LOCALE, { style: "currency", currency });
+    moneyFormats.set(currency, format);
+  }
+  return format.format(amount);
+};
+
+/**
+ * `price` times `quantity`, computed in integer hundredths: amounts have two decimals,
+ * and 0.1 * 3 is 0.30000000000000004 in floating point.
+ */
+export const lineTotal = (price: number, quantity: number): number =>
+  (Math.round(price * 100) * quantity) / 100;
 
 export const formatDateTime = (value: string | null | undefined): string => {
   if (!value) {

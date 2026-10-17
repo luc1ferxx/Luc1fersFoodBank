@@ -299,6 +299,47 @@ describe("role endpoints", () => {
     );
   });
 
+  it("decode the currency next to every amount", async () => {
+    stubFetch(() =>
+      Promise.resolve(
+        json([
+          {
+            ...orderJson,
+            total_price: 0.5,
+            currency: "EUR",
+            items: [
+              {
+                id: 1,
+                menu_item_id: 30,
+                price: 0.1,
+                currency: "EUR",
+                quantity: 5,
+                menu_item_name: "Fish Taco",
+              },
+            ],
+          },
+        ]),
+      ),
+    );
+    await expect(api.getOrders()).resolves.toMatchObject([
+      { total_price: 0.5, currency: "EUR", items: [{ price: 0.1, currency: "EUR" }] },
+    ]);
+
+    // A backend from before currencies sends none: every amount was USD then.
+    stubFetch(() => Promise.resolve(json([merchantOrderJson])));
+    await expect(api.getMerchantOrders()).resolves.toMatchObject([
+      { total_price: 12.78, currency: "USD", items: [{ price: 6.39, currency: "USD" }] },
+    ]);
+
+    stubFetch(() => Promise.resolve(json([{ ...orderJson, currency: "eur" }])));
+    await expect(api.getOrders()).rejects.toMatchObject({
+      name: "DecodeError",
+      path: "orders[0].currency",
+      message:
+        'Unexpected response from the server: orders[0].currency should be an ISO 4217 currency code, got the string "eur".',
+    });
+  });
+
   it("reject statuses outside the contract", async () => {
     stubFetch(() => Promise.resolve(json([{ ...deliveryJson, status: "LOST" }])));
 

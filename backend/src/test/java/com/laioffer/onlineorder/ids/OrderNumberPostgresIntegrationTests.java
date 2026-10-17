@@ -171,7 +171,7 @@ class OrderNumberPostgresIntegrationTests {
             List<Future<Long>> numbers = new java.util.ArrayList<>();
             for (int i = 0; i < 200; i++) {
                 numbers.add(executor.submit(() -> orderRepository.save(new OrderEntity(
-                        null, customerId, java.math.BigDecimal.ONE, "PLACED", LocalDateTime.now())).orderNo()));
+                        null, customerId, com.laioffer.onlineorder.money.Money.of("1.00", "USD"), "PLACED", LocalDateTime.now())).orderNo()));
             }
             Set<Long> unique = new HashSet<>();
             for (Future<Long> number : numbers) {

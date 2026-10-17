@@ -13,7 +13,9 @@ import java.time.LocalDateTime;
 /**
  * A row of the merchant order inbox.
  *
- * @param items JSON array of the order lines at payment time
+ * @param items    JSON array of the order lines at payment time, priced in {@code currency}
+ * @param currency the ISO 4217 currency of the order, from the order event (USD for events published before orders
+ *                 carried one)
  */
 @Table("merchant_orders")
 public record MerchantOrderEntity(
@@ -39,6 +41,8 @@ public record MerchantOrderEntity(
         @Column("created_at")
         LocalDateTime createdAt,
         @Column("updated_at")
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        @Column("currency")
+        String currency
 ) {
 }

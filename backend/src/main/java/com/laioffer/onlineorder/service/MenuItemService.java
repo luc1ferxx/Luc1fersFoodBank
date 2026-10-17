@@ -11,6 +11,7 @@ import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.model.CatalogMenuItemDto;
 import com.laioffer.onlineorder.model.UpdateMenuItemBody;
+import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.repository.MenuItemRepository;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
@@ -24,6 +25,9 @@ import java.util.Map;
 
 @Service
 public class MenuItemService {
+
+    public static final String CURRENCY_MISMATCH = "CURRENCY_MISMATCH";
+    public static final String INVALID_AMOUNT = "INVALID_AMOUNT";
 
 
     private final MenuItemRepository menuItemRepository;
@@ -74,7 +78,16 @@ public class MenuItemService {
         if (body.hasNoChanges()) {
             throw new BadRequestException("At least one of name, description or price is required");
         }
-        int updatedRows = menuItemRepository.updateCatalogFields(menuItemId, body.name(), body.description(), body.price());
+        Money newPrice = body.price() == null ? null : priceInRestaurantCurrency(menuItemId, body);
+        if (newPrice == null && body.currency() != null) {
+            throw new BadRequestException("A currency is only accepted together with a price");
+        }
+        int updatedRows = menuItemRepository.updateCatalogFields(
+                menuItemId,
+                body.name(),
+                body.description(),
+                newPrice == null ? null : newPrice.amount()
+        );
         if (updatedRows == 0) {
             throw new ResourceNotFoundException("Menu item not found");
         }
@@ -86,12 +99,39 @@ public class MenuItemService {
         Map<String, Object> changes = new LinkedHashMap<>();
         putIfPresent(changes, "name", body.name());
         putIfPresent(changes, "description", body.description());
-        putIfPresent(changes, "price", body.price());
+        if (newPrice != null) {
+            changes.put("price", newPrice.amount());
+            changes.put("currency", newPrice.currencyCode());
+        }
         Map<String, Object> details = new LinkedHashMap<>();
         details.put("restaurant_id", menuItem.restaurantId());
         details.put("changes", changes);
         auditLogService.record(actor, AuditActions.MENU_ITEM_UPDATE, AuditActions.TARGET_MENU_ITEM, menuItemId, details);
         return new CatalogMenuItemDto(menuItem);
+    }
+
+
+    /**
+     * The requested price as an amount in the item's currency, which is its restaurant's (the database ties the
+     * two together). A price in another currency is rejected rather than converted, and so is one with more decimal
+     * places than the currency has (cents for JPY).
+     */
+    private Money priceInRestaurantCurrency(long menuItemId, UpdateMenuItemBody body) {
+        MenuItemEntity menuItem = menuItemRepository.findById(menuItemId)
+                .orElseThrow(() -> new ResourceNotFoundException("Menu item not found"));
+        String currency = body.currency() == null ? menuItem.currency() : body.currency();
+        if (!currency.equals(menuItem.currency())) {
+            throw new BadRequestException(
+                    CURRENCY_MISMATCH,
+                    "Menu item " + menuItemId + " is priced in " + menuItem.currency()
+                            + ", the currency of its restaurant; send the price in " + menuItem.currency()
+            );
+        }
+        try {
+            return Money.of(body.price(), currency);
+        } catch (IllegalArgumentException ex) {
+            throw new BadRequestException(INVALID_AMOUNT, ex.getMessage());
+        }
     }
 
 

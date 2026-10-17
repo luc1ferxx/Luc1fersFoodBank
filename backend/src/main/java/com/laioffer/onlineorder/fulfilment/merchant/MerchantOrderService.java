@@ -147,7 +147,8 @@ public class MerchantOrderService {
                 order.cancelReason(),
                 inboxOrder.paidAt(),
                 inboxOrder.createdAt(),
-                now
+                now,
+                inboxOrder.currency()
         ));
     }
 
@@ -179,7 +180,8 @@ public class MerchantOrderService {
                 entity.customerId(),
                 entity.status(),
                 entity.totalPrice(),
-                readItems(entity.items()),
+                entity.currency(),
+                readItems(entity.items(), entity.currency()),
                 entity.cancelReason(),
                 entity.paidAt(),
                 entity.updatedAt()
@@ -187,13 +189,18 @@ public class MerchantOrderService {
     }
 
 
-    private List<MerchantOrderDto.Item> readItems(String items) {
+    /**
+     * The order lines stored with the inbox row, priced in the row's currency (an order is single-currency; the lines
+     * of an order event carry no currency of their own).
+     */
+    private List<MerchantOrderDto.Item> readItems(String items, String currency) {
         try {
             return objectMapper.readValue(items, ITEMS_TYPE).stream()
                     .map(item -> new MerchantOrderDto.Item(
                             item.menuItemId(),
                             item.menuItemName(),
                             item.price(),
+                            currency,
                             item.quantity()
                     ))
                     .toList();

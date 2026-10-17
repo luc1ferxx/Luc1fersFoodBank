@@ -48,6 +48,15 @@
     </Match>
 
     <!--
+      V11 builds its LOCK TABLE, data checks, CREATE TABLE and ALTER TABLE statements from the migration's constant
+      table, column, constraint and currency names; nothing comes from input.
+    -->
+    <Match>
+        <Class name="db.migration.V11__Money_with_currency"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+
+    <!--
       Baseline at gate introduction: defensive checks for a null KafkaTemplate#send result and a missing producer
       factory. The unit tests exercise both with mocks.
     -->

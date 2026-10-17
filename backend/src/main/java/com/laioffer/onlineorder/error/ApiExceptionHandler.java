@@ -65,7 +65,8 @@ public class ApiExceptionHandler {
             HttpMessageNotReadableException.class
     })
     public ResponseEntity<ApiErrorResponse> handleBadRequest(Exception ex, HttpServletRequest request) {
-        return build("BAD_REQUEST", safeMessage(ex, "Bad request"), HttpStatus.BAD_REQUEST, request);
+        String code = ex instanceof BadRequestException badRequest ? badRequest.getCode() : BadRequestException.DEFAULT_CODE;
+        return build(code, safeMessage(ex, "Bad request"), HttpStatus.BAD_REQUEST, request);
     }
 
 

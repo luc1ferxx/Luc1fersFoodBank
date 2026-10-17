@@ -50,6 +50,9 @@ import java.util.UUID;
  * created (see above) publishes nothing: the order has already moved on.
  *
  * <p>Orders without a restaurant (placed before single-restaurant carts) are not shown to merchants.
+ *
+ * <p>A row keeps the order's currency from the event; an event published before orders carried one is USD, the
+ * currency of every order of that time.
  */
 @Service
 public class MerchantInboxService {
@@ -141,6 +144,7 @@ public class MerchantInboxService {
                         data.restaurantId(),
                         data.customerId(),
                         data.totalPrice(),
+                        data.currencyCode(),
                         serializeItems(data),
                         paidAt,
                         now
@@ -233,6 +237,7 @@ public class MerchantInboxService {
                 data.customerId(),
                 status,
                 data.totalPrice(),
+                data.currencyCode(),
                 serializeItems(data),
                 cancelReason,
                 now

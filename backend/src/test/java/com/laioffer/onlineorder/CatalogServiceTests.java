@@ -33,11 +33,11 @@ class CatalogServiceTests {
         menuItemService = Mockito.mock(MenuItemService.class);
         catalogService = new CatalogService(restaurantService, menuItemService, Duration.ofHours(1));
         Mockito.when(restaurantService.getRestaurantList()).thenReturn(List.of(
-                new CatalogRestaurantDto(1L, "Burger King", "773 N Mathilda Ave", "(408) 736-0101", "bk.png"),
-                new CatalogRestaurantDto(2L, "Empty Kitchen", null, null, null)
+                new CatalogRestaurantDto(1L, "Burger King", "773 N Mathilda Ave", "(408) 736-0101", "bk.png", "USD"),
+                new CatalogRestaurantDto(2L, "Empty Kitchen", null, null, null, "USD")
         ));
         Mockito.when(menuItemService.getMenu(1L)).thenReturn(List.of(
-                new CatalogMenuItemDto(10L, 1L, "Whopper", "Flame grilled", new BigDecimal("6.39"), "w.png")
+                new CatalogMenuItemDto(10L, 1L, "Whopper", "Flame grilled", new BigDecimal("6.39"), "USD", "w.png")
         ));
         Mockito.when(menuItemService.getMenu(2L)).thenReturn(List.of());
     }
@@ -68,7 +68,7 @@ class CatalogServiceTests {
     void getMenu_forARestaurantMissingFromTheCachedList_shouldEvictTheListAndServeTheMenu() {
         Mockito.when(restaurantService.restaurantExists(3L)).thenReturn(true);
         Mockito.when(menuItemService.getMenu(3L)).thenReturn(List.of(
-                new CatalogMenuItemDto(30L, 3L, "Taco", null, new BigDecimal("3.00"), null)
+                new CatalogMenuItemDto(30L, 3L, "Taco", null, new BigDecimal("3.00"), "USD", null)
         ));
 
         List<CatalogMenuItemDto> menu = catalogService.getMenu(3L);
@@ -105,11 +105,11 @@ class CatalogServiceTests {
         List<RestaurantDto> restaurants = catalogService.getRestaurantsWithMenus();
 
         Assertions.assertEquals(List.of(
-                new RestaurantDto(1L, "Burger King", "773 N Mathilda Ave", "(408) 736-0101", "bk.png", List.of(
-                        new MenuItemDto(10L, "Whopper", "Flame grilled", new BigDecimal("6.39"), "w.png")
+                new RestaurantDto(1L, "Burger King", "773 N Mathilda Ave", "(408) 736-0101", "bk.png", "USD", List.of(
+                        new MenuItemDto(10L, "Whopper", "Flame grilled", new BigDecimal("6.39"), "USD", "w.png")
                 )),
                 // No menu items: menu_items stays absent from the JSON, as before.
-                new RestaurantDto(2L, "Empty Kitchen", null, null, null, null)
+                new RestaurantDto(2L, "Empty Kitchen", null, null, null, "USD", null)
         ), restaurants);
     }
 }

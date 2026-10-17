@@ -1,5 +1,5 @@
 import type { MenuItem } from "../api/dto";
-import { formatCurrency } from "../lib/format";
+import { formatMoney } from "../lib/format";
 import { MediaImage } from "./MediaImage";
 
 interface MenuCardProps {
@@ -16,7 +16,7 @@ export function MenuCard({ item, signedIn, quantity, pending, onAdd, onDecrease 
     <article className="menu-card">
       <div className="menu-card__media">
         <MediaImage src={item.image_url} alt={item.name} />
-        <span>{formatCurrency(item.price)}</span>
+        <span>{formatMoney(item.price, item.currency)}</span>
       </div>
       <div className="menu-card__body">
         <div>

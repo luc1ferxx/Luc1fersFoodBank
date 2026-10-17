@@ -7,6 +7,7 @@ import {
   type RiderDelivery,
 } from "../api/dto";
 import type { FakeState } from "./fakeBackend";
+import { USD } from "./fixtures";
 import { type FakeHandler, type FakeRoute, apiError, idParam, json, requestJson } from "./fakeHttp";
 
 /** What the fake's route groups share with the core fake backend. */
@@ -33,7 +34,8 @@ export const merchantOrderFixture = (
   customer_id: 1,
   status: "PAID",
   total_price: 12.78,
-  items: [{ menu_item_id: 10, menu_item_name: "Whopper", price: 6.39, quantity: 2 }],
+  currency: USD,
+  items: [{ menu_item_id: 10, menu_item_name: "Whopper", price: 6.39, currency: USD, quantity: 2 }],
   cancel_reason: null,
   paid_at: "2026-10-16T12:00:00Z",
   updated_at: "2026-10-16T12:00:00Z",

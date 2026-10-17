@@ -5,6 +5,7 @@ import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
+import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -183,6 +184,6 @@ class OrderDeadlineProcessorTests {
 
 
     private OrderDto cancelledOrder(Long orderId, String reason) {
-        return new OrderDto(orderId, BigDecimal.TEN, "CANCELLED", LocalDateTime.now(), List.of(), 2L, reason);
+        return new OrderDto(orderId, Money.of(BigDecimal.TEN, "USD"), "CANCELLED", LocalDateTime.now(), List.of(), 2L, reason);
     }
 }

@@ -194,7 +194,7 @@ class OrderNotificationServiceTests {
                 new OrderNotificationEntity(1L, 9L, 4L, "order.created", "Order placed", "m", createdAt)
         ));
         Mockito.when(orderRepository.findAllById(List.of(9L))).thenReturn(List.of(new OrderEntity(
-                9L, 7_391_022_331_904_512_345L, 4L, amount("22.0"), "PAID", createdAt, 2L, null, createdAt)));
+                9L, 7_391_022_331_904_512_345L, 4L, amount("22.0"), "PAID", createdAt, 2L, null, createdAt, "USD")));
 
         List<OrderNotificationDto> notifications = service.getNotificationsByCustomerId(4L);
 

@@ -6,12 +6,16 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 
+/**
+ * @param currency the ISO 4217 currency of {@code totalPrice} and of every item
+ */
 public record MerchantOrderDto(
         Long orderId,
         Long restaurantId,
         Long customerId,
         String status,
         BigDecimal totalPrice,
+        String currency,
         List<Item> items,
         String cancelReason,
         LocalDateTime paidAt,
@@ -22,6 +26,7 @@ public record MerchantOrderDto(
             Long menuItemId,
             String menuItemName,
             BigDecimal price,
+            String currency,
             Integer quantity
     ) {
     }

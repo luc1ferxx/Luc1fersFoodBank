@@ -20,7 +20,11 @@ public interface CartRepository extends ListCrudRepository<CartEntity, Long> {
     CartEntity lockByCustomerId(Long customerId);
 
 
+    /**
+     * Sets the cart's total and currency. The currency can only change while the cart has no lines: every line
+     * references its cart's (id, currency).
+     */
     @Modifying
-    @Query("UPDATE carts SET total_price = :totalPrice WHERE id = :cartId")
-    void updateTotalPrice(Long cartId, BigDecimal totalPrice);
+    @Query("UPDATE carts SET total_price = :totalPrice, currency = :currency WHERE id = :cartId")
+    void updateTotal(Long cartId, BigDecimal totalPrice, String currency);
 }
