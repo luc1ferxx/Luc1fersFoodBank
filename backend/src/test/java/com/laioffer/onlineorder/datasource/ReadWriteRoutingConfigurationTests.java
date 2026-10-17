@@ -206,6 +206,22 @@ class ReadWriteRoutingConfigurationTests {
 
 
     @Test
+    void aSessionKeepsItsReplicaByTheConfiguredSessionCookie() {
+        contextRunner
+                .withPropertyValues("DATABASE_REPLICA_URLS=" + UNREACHABLE + "replica1")
+                .run(context -> Assertions.assertEquals(ReplicaRouter.DEFAULT_SESSION_COOKIES,
+                        context.getBean(ReplicaRouter.class).sessionCookies()));
+        contextRunner
+                .withPropertyValues(
+                        "DATABASE_REPLICA_URLS=" + UNREACHABLE + "replica1",
+                        "server.servlet.session.cookie.name=ONLINEORDER_SESSION"
+                )
+                .run(context -> Assertions.assertEquals(java.util.Set.of("ONLINEORDER_SESSION"),
+                        context.getBean(ReplicaRouter.class).sessionCookies()));
+    }
+
+
+    @Test
     void theMonitorsConnectionsTakeThePoolsDriverProperties() {
         contextRunner
                 .withPropertyValues(

@@ -7,8 +7,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import jakarta.servlet.http.Cookie;
 import org.mockito.Mockito;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 
 import javax.sql.DataSource;
@@ -54,6 +58,7 @@ class ReplicaRouterTests {
         TransactionSynchronizationManager.setActualTransactionActive(false);
         TransactionSynchronizationManager.setCurrentTransactionReadOnly(false);
         TransactionSynchronizationManager.setCurrentTransactionName(null);
+        RequestContextHolder.resetRequestAttributes();
     }
 
 
@@ -196,6 +201,108 @@ class ReplicaRouterTests {
 
 
     @Test
+    void aRequestKeepsReadingTheReplicaItStartedOn() {
+        inTransaction(true, "com.example.Service.read");
+        // Without a request: round robin.
+        Assertions.assertNotSame(router.route().replica(), router.route().replica());
+
+        inRequest(new MockHttpServletRequest());
+        ReplicaTarget first = router.route().replica();
+        Assertions.assertNotNull(first);
+        for (int i = 0; i < 5; i++) {
+            Assertions.assertSame(first, router.route().replica(), "the request's later reads");
+        }
+
+        // The next request may get the other replica.
+        inRequest(new MockHttpServletRequest());
+        Assertions.assertNotSame(first, router.route().replica());
+    }
+
+
+    @Test
+    void aRequestWhoseReplicaDropsOutReadsThePrimaryNotAnotherReplica() {
+        inTransaction(true, "com.example.Service.read");
+        inRequest(new MockHttpServletRequest());
+        ReplicaTarget first = router.route().replica();
+        first.measured(new WalPositionHistory.Freshness(System.nanoTime(), false));
+
+        // The other replica is routable, but it may be further behind than the one the request already read.
+        Assertions.assertSame(ReplicaRouter.Route.NO_REPLICA, router.route());
+        first.measured(fresh());
+        Assertions.assertSame(ReplicaRouter.Route.NO_REPLICA, router.route(), "and stays there");
+    }
+
+
+    @Test
+    void aRequestThatHadToReadThePrimaryStaysThere() throws SQLException {
+        inTransaction(true, "com.example.Service.read");
+        inRequest(new MockHttpServletRequest());
+        replica1.unreachable("down");
+        replica2.unreachable("down");
+        Mockito.when(primary.getConnection()).thenReturn(Mockito.mock(Connection.class));
+        Assertions.assertSame(ReplicaRouter.Route.NO_REPLICA, router.route());
+
+        replica1.measured(fresh());
+        Assertions.assertSame(ReplicaRouter.Route.NO_REPLICA, router.route());
+
+        // A replica connection failure also sends the rest of its request to the primary.
+        inRequest(new MockHttpServletRequest());
+        Mockito.when(replicaPool1.getConnection()).thenThrow(new SQLTransientConnectionException("busy"));
+        Assertions.assertNotNull(dataSource.getConnection());
+        Assertions.assertTrue(replica1.isRoutable(), "an exhausted pool stays in rotation");
+        Assertions.assertSame(ReplicaRouter.Route.NO_REPLICA, router.route());
+    }
+
+
+    @Test
+    void aSessionKeepsItsReplicaAcrossRequests_andMovesOnlyWhenItDropsOut() {
+        inTransaction(true, "com.example.Service.read");
+        ReplicaTarget sessions = null;
+        for (int request = 0; request < 4; request++) {
+            inRequest(withCookie("SESSION", "c2Vzc2lvbi0x"));
+            ReplicaTarget replica = router.route().replica();
+            Assertions.assertNotNull(replica);
+            if (sessions != null) {
+                Assertions.assertSame(sessions, replica, "request " + request + " of the session");
+            }
+            sessions = replica;
+        }
+        ReplicaTarget other = sessions == replica1 ? replica2 : replica1;
+        // Some other session lands on the other replica (both are used).
+        boolean otherUsed = false;
+        for (int i = 0; i < 50 && !otherUsed; i++) {
+            inRequest(withCookie("SESSION", "session-" + i));
+            otherUsed = router.route().replica() == other;
+        }
+        Assertions.assertTrue(otherUsed);
+
+        sessions.unreachable("down");
+        inRequest(withCookie("SESSION", "c2Vzc2lvbi0x"));
+        Assertions.assertSame(other, router.route().replica());
+
+        // A cookie of another name is no session.
+        ReplicaRouter custom = new ReplicaRouter(List.of(replica1, replica2), readYourWrites, java.util.Set.of("SID"));
+        other.measured(fresh());
+        sessions.measured(fresh());
+        inRequest(withCookie("SID", "c2Vzc2lvbi0x"));
+        ReplicaTarget bySid = custom.route().replica();
+        inRequest(withCookie("SID", "c2Vzc2lvbi0x"));
+        Assertions.assertSame(bySid, custom.route().replica());
+    }
+
+
+    @Test
+    void theReadYourWritesWindowComesBeforeTheRequestsReplica() {
+        inTransaction(true, "com.example.Service.read");
+        inRequest(new MockHttpServletRequest());
+        Assertions.assertNotNull(router.route().replica());
+
+        Mockito.when(readYourWrites.readsMustUsePrimary()).thenReturn(true);
+        Assertions.assertSame(ReplicaRouter.Route.STICKY, router.route());
+    }
+
+
+    @Test
     void explicitCredentialsAndUnwrappingGoToThePrimary() throws SQLException {
         Connection connection = Mockito.mock(Connection.class);
         Mockito.when(primary.getConnection("user", "secret")).thenReturn(connection);
@@ -207,6 +314,18 @@ class ReplicaRouterTests {
         Assertions.assertTrue(dataSource.isWrapperFor(ReadWriteRoutingDataSource.class));
         Assertions.assertEquals("primary", dataSource.unwrap(String.class));
         Assertions.assertTrue(dataSource.isWrapperFor(String.class));
+    }
+
+
+    private static void inRequest(MockHttpServletRequest request) {
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+    }
+
+
+    private static MockHttpServletRequest withCookie(String name, String value) {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setCookies(new Cookie(name, value));
+        return request;
     }
 
 

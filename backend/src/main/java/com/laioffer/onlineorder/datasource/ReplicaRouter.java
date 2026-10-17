@@ -3,6 +3,8 @@ package com.laioffer.onlineorder.datasource;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 
@@ -10,6 +12,7 @@ import java.sql.SQLTransientConnectionException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 
@@ -24,8 +27,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  * lagging replica. Read replicas are opt-in per service method.
  *
  * <p>A replica-eligible transaction still uses the primary while the session is inside its read-your-writes window, or
- * while no replica is routable (lag above the threshold, unreachable). Among routable replicas reads are spread round
- * robin.
+ * while no replica is routable (data older than max-lag, unreachable).
+ *
+ * <p>Reads never go backwards within a request: the first replica-eligible read of an HTTP request picks a replica and
+ * the request keeps it; if it drops out mid-request, or the request had to read the primary, the rest of the request
+ * reads the primary (never another replica, which could be further behind). A request with a session cookie picks its
+ * replica by the cookie, so the polls of one session keep reading the same replica while it stays routable; other
+ * reads are spread round robin.
  */
 public class ReplicaRouter {
 
@@ -43,15 +51,30 @@ public class ReplicaRouter {
 
     static final String READS_METRIC = "onlineorder.db.routing.reads";
 
+    /** Session cookies of Spring Session and of the servlet container. */
+    static final Set<String> DEFAULT_SESSION_COOKIES = Set.of("SESSION", "JSESSIONID");
+    /** The request's replica ({@link ReplicaTarget}), or {@link #PRIMARY} once a read of the request used the primary. */
+    static final String PINNED_ATTRIBUTE = ReplicaRouter.class.getName() + ".PINNED";
+
     private final List<ReplicaTarget> replicas;
     private final ReadYourWritesTracker readYourWrites;
+    private final Set<String> sessionCookies;
     private final AtomicInteger nextReplica = new AtomicInteger();
     private volatile Map<String, Counter> readCounters = Map.of();
 
 
     public ReplicaRouter(List<ReplicaTarget> replicas, ReadYourWritesTracker readYourWrites) {
+        this(replicas, readYourWrites, DEFAULT_SESSION_COOKIES);
+    }
+
+
+    /**
+     * @param sessionCookies names of the session cookie whose value keeps a session on one replica
+     */
+    public ReplicaRouter(List<ReplicaTarget> replicas, ReadYourWritesTracker readYourWrites, Set<String> sessionCookies) {
         this.replicas = List.copyOf(replicas);
         this.readYourWrites = readYourWrites;
+        this.sessionCookies = Set.copyOf(sessionCookies);
     }
 
 
@@ -66,8 +89,39 @@ public class ReplicaRouter {
         if (readYourWrites.readsMustUsePrimary()) {
             return Route.STICKY;
         }
-        ReplicaTarget replica = nextRoutableReplica();
-        return replica == null ? Route.NO_REPLICA : new Route(replica, replica.name(), REASON_REPLICA);
+        HttpServletRequest request = ReadYourWritesTracker.currentRequest();
+        Object pinned = request == null ? null : request.getAttribute(PINNED_ATTRIBUTE);
+        if (pinned instanceof ReplicaTarget replica) {
+            if (replica.isRoutable()) {
+                return replicaRoute(replica);
+            }
+            pinPrimary(request);
+            return Route.NO_REPLICA;
+        }
+        if (pinned != null) {
+            return Route.NO_REPLICA;
+        }
+        ReplicaTarget replica = nextRoutableReplica(request);
+        if (replica == null) {
+            pinPrimary(request);
+            return Route.NO_REPLICA;
+        }
+        if (request != null) {
+            request.setAttribute(PINNED_ATTRIBUTE, replica);
+        }
+        return replicaRoute(replica);
+    }
+
+
+    private static Route replicaRoute(ReplicaTarget replica) {
+        return new Route(replica, replica.name(), REASON_REPLICA);
+    }
+
+
+    private static void pinPrimary(HttpServletRequest request) {
+        if (request != null) {
+            request.setAttribute(PINNED_ATTRIBUTE, PRIMARY);
+        }
     }
 
 
@@ -97,6 +151,7 @@ public class ReplicaRouter {
         if (!poolExhausted) {
             replica.unreachable("no connection: " + failure);
         }
+        pinPrimary(ReadYourWritesTracker.currentRequest());
         return Route.REPLICA_FAILED;
     }
 
@@ -111,13 +166,37 @@ public class ReplicaRouter {
     }
 
 
-    private ReplicaTarget nextRoutableReplica() {
+    /**
+     * The first routable replica from the session's own (by its cookie), or from the next in round robin.
+     */
+    private ReplicaTarget nextRoutableReplica(HttpServletRequest request) {
         int size = replicas.size();
-        int start = Math.floorMod(nextReplica.getAndIncrement(), size);
+        String sessionCookie = sessionCookie(request);
+        int start = sessionCookie != null
+                ? Math.floorMod(sessionCookie.hashCode(), size)
+                : Math.floorMod(nextReplica.getAndIncrement(), size);
         for (int i = 0; i < size; i++) {
             ReplicaTarget candidate = replicas.get((start + i) % size);
             if (candidate.isRoutable()) {
                 return candidate;
+            }
+        }
+        return null;
+    }
+
+
+    /**
+     * The session cookie's value, read from the request headers: looking the session itself up could mean a call to
+     * the session store.
+     */
+    private String sessionCookie(HttpServletRequest request) {
+        Cookie[] cookies = request == null ? null : request.getCookies();
+        if (cookies == null) {
+            return null;
+        }
+        for (Cookie cookie : cookies) {
+            if (sessionCookies.contains(cookie.getName()) && cookie.getValue() != null && !cookie.getValue().isEmpty()) {
+                return cookie.getValue();
             }
         }
         return null;
@@ -142,6 +221,11 @@ public class ReplicaRouter {
 
     List<ReplicaTarget> replicas() {
         return replicas;
+    }
+
+
+    Set<String> sessionCookies() {
+        return sessionCookies;
     }
 
 

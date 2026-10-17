@@ -31,6 +31,8 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.context.request.RequestAttributes;
+import org.springframework.web.context.request.RequestContextHolder;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -458,11 +460,22 @@ class ReadReplicaRoutingIntegrationTests {
     }
 
 
+    /**
+     * A read-only transaction outside any HTTP request. Spring's test listener binds one mock request to the test
+     * thread for the whole test method, and the router keeps a request on the pool its first read used; each read here
+     * stands for a request of its own.
+     */
     private <T> T inReadOnlyTransaction(Supplier<T> work) {
-        TransactionTemplate template = new TransactionTemplate(transactionManager);
-        template.setReadOnly(true);
-        template.setName("ReadReplicaRoutingIntegrationTests.read");
-        return template.execute(status -> work.get());
+        RequestAttributes testRequest = RequestContextHolder.getRequestAttributes();
+        RequestContextHolder.resetRequestAttributes();
+        try {
+            TransactionTemplate template = new TransactionTemplate(transactionManager);
+            template.setReadOnly(true);
+            template.setName("ReadReplicaRoutingIntegrationTests.read");
+            return template.execute(status -> work.get());
+        } finally {
+            RequestContextHolder.setRequestAttributes(testRequest);
+        }
     }
 
 

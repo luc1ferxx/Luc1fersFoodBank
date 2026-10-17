@@ -18,6 +18,7 @@ import javax.sql.DataSource;
 import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 
 /**
@@ -77,9 +78,21 @@ public class ReadWriteRoutingConfiguration {
     }
 
 
+    /**
+     * The router. A session keeps its replica by its cookie: {@code server.servlet.session.cookie.name} when set, else
+     * Spring Session's and the servlet container's default names.
+     */
     @Bean
-    ReplicaRouter replicaRouter(RoutingDataSources dataSources, ReadYourWritesTracker readYourWritesTracker) {
-        return new ReplicaRouter(dataSources.replicas(), readYourWritesTracker);
+    ReplicaRouter replicaRouter(
+            RoutingDataSources dataSources,
+            ReadYourWritesTracker readYourWritesTracker,
+            Environment environment
+    ) {
+        String cookieName = environment.getProperty("server.servlet.session.cookie.name");
+        Set<String> sessionCookies = cookieName == null || cookieName.isBlank()
+                ? ReplicaRouter.DEFAULT_SESSION_COOKIES
+                : Set.of(cookieName);
+        return new ReplicaRouter(dataSources.replicas(), readYourWritesTracker, sessionCookies);
     }
 
 
