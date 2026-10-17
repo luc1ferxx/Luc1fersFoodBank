@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.cache;
 
 
+import com.laioffer.onlineorder.datasource.ReplicaRoutingProperties;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -117,6 +118,37 @@ class CatalogCacheInvalidatorTests {
 
         Assertions.assertDoesNotThrow(() ->
                 TransactionSynchronizationUtils.invokeAfterCommit(TransactionSynchronizationManager.getSynchronizations()));
+    }
+
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void withReadReplicas_theSecondDeleteWaitsOutTheReplicasMaximumStaleness() {
+        // max-lag 2s + lag-check-interval 1s: a reader can load the old row from a replica for up to 3s.
+        ReplicaRoutingProperties replicas = new ReplicaRoutingProperties(
+                List.of("jdbc:postgresql://replica/onlineorder"),
+                null,
+                null,
+                new ReplicaRoutingProperties.Pool(20, Duration.ofSeconds(1), Duration.ofSeconds(15)),
+                Duration.ofSeconds(5),
+                Duration.ofSeconds(2),
+                Duration.ofSeconds(1),
+                Duration.ofSeconds(1)
+        );
+        ObjectProvider<ReplicaRoutingProperties> configured = Mockito.mock(ObjectProvider.class);
+        Mockito.when(configured.getIfAvailable()).thenReturn(replicas);
+        ObjectProvider<ReplicaRoutingProperties> none = Mockito.mock(ObjectProvider.class);
+
+        CacheManager cacheManager = Mockito.mock(CacheManager.class);
+        Assertions.assertEquals(Duration.ofSeconds(3), new CatalogCacheInvalidator(
+                cacheManager, providerOf(taskScheduler), Duration.ofSeconds(1), configured).secondDeleteDelay());
+        Assertions.assertEquals(Duration.ofSeconds(10), new CatalogCacheInvalidator(
+                cacheManager, providerOf(taskScheduler), Duration.ofSeconds(10), configured).secondDeleteDelay());
+        Assertions.assertEquals(Duration.ZERO, new CatalogCacheInvalidator(
+                cacheManager, providerOf(taskScheduler), Duration.ZERO, configured).secondDeleteDelay(),
+                "a disabled second delete stays disabled");
+        Assertions.assertEquals(Duration.ofSeconds(1), new CatalogCacheInvalidator(
+                cacheManager, providerOf(taskScheduler), Duration.ofSeconds(1), none).secondDeleteDelay());
     }
 
 
