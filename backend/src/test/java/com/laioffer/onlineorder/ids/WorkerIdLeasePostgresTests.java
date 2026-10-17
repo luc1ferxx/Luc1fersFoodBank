@@ -216,6 +216,29 @@ class WorkerIdLeasePostgresTests {
 
 
     @Test
+    void start_whenTheLowestFreeWorkerIdIsFarAheadOfTheClock_shouldTakeTheNextFreeOne() {
+        // Worker id 0's last holder ran ten TTLs fast; worker ids 1 and up are free.
+        jdbcTemplate.update("UPDATE snowflake_worker_leases SET issued_until_ms = ? WHERE worker_id = 0",
+                T + 10 * TTL.toMillis());
+        List<Long> sleeps = new ArrayList<>();
+
+        WorkerIdLeaseManager manager = start("pod-new", new AtomicLong(T), sleeps);
+
+        Assertions.assertEquals(1, manager.workerId(), "skips the row it could not use");
+        Assertions.assertEquals(List.of(), sleeps);
+        Assertions.assertEquals(1, SnowflakeIdGenerator.workerIdOf(manager.nextId()));
+        // The lease thread, claiming a worker id after losing its own, skips it as well.
+        WorkerIdLeaseManager late = manager("pod-late", new AtomicLong(T), new ArrayList<>(), null);
+        started.add(late);
+        late.maintain();
+        Assertions.assertEquals(2, late.workerId());
+        Assertions.assertEquals(List.of("null|" + (T + 10 * TTL.toMillis())), jdbcTemplate.queryForList(
+                "SELECT COALESCE(owner, 'null') || '|' || issued_until_ms FROM snowflake_worker_leases WHERE worker_id = 0",
+                String.class), "worker id 0 keeps its fence for a holder whose clock reaches it");
+    }
+
+
+    @Test
     void maintain_withoutALease_shouldLeaseOneAndNeverThrow() {
         WorkerIdLeaseManager manager = manager("pod-late", new AtomicLong(T), new ArrayList<>(), null);
         started.add(manager);

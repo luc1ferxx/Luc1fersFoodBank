@@ -632,7 +632,9 @@ LOCKED`) and holds it for `APP_IDS_LEASE_TTL` (60s) of database time, renewed ev
 stopped, a crashed pod's row is free after the TTL. If no row is free the pod does not start. Each row also stores
 `issued_until_ms`, a bound on the timestamps of the ids issued under it: the holder never issues past it and raises it
 only after the database has stored the new value, and the next holder starts after it (waiting up to one TTL if its
-clock is behind). So a pod that stalls past its lease cannot collide with the pod that took its worker id over, and a
+clock is behind). A free row whose bound is more than one TTL ahead of the pod's clock (its last holder's clock ran
+fast) is claimed only when no other row is free, and then handed back with a start failure; otherwise the pod takes
+the next free row. So a pod that stalls past its lease cannot collide with the pod that took its worker id over, and a
 pod that cannot renew (database unreachable) stops issuing about one TTL after its last renewal: checkout answers
 `503 SERVICE_UNAVAILABLE` until the database is back. A renewal that finds the row taken over leases another one
 (`onlineorder_ids_lease_lost_total`).

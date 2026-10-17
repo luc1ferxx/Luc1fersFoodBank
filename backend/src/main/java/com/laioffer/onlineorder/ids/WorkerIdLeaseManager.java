@@ -25,7 +25,7 @@ import java.util.function.LongSupplier;
  *
  * <p>{@code snowflake_worker_leases} (V10_2) has one row per worker id 0-1022. On start the instance claims the lowest
  * row whose lease has expired ({@code FOR UPDATE SKIP LOCKED}, so instances starting together claim different rows),
- * then renews it every renew-interval on a thread of its own; the lease lasts app.ids.lease.ttl of database time from
+ * preferring rows whose fence (below) its clock reaches within one TTL, then renews it every renew-interval on a thread of its own; the lease lasts app.ids.lease.ttl of database time from
  * the last renewal. On a graceful stop the row is released at once; a crashed instance's row is free again after the
  * TTL.
  *
@@ -239,16 +239,21 @@ public final class WorkerIdLeaseManager implements DistributedIdGenerator, Smart
         long wallNow = wallClock.getAsLong();
         Claim claim = transactionTemplate.execute(status -> {
             OffsetDateTime databaseNow = databaseNow();
+            // The lowest free worker id whose previous holder's bound this clock reaches within one TTL. A row whose
+            // bound is further ahead (its last holder's clock ran fast) comes last, so one such row does not stop
+            // every new instance while other worker ids are free; only when nothing else is free is it claimed, and
+            // then handed back below.
             List<Claim> free = jdbcTemplate.query("""
                             SELECT worker_id, issued_until_ms
                             FROM snowflake_worker_leases
                             WHERE lease_until IS NULL OR lease_until < ?
-                            ORDER BY worker_id
+                            ORDER BY issued_until_ms > ?, worker_id
                             LIMIT 1
                             FOR UPDATE SKIP LOCKED
                             """,
                     (row, rowNumber) -> new Claim(row.getInt(1), row.getLong(2), 0L),
-                    databaseNow
+                    databaseNow,
+                    wallNow + ttlMillis
             );
             if (free.isEmpty()) {
                 return null;
