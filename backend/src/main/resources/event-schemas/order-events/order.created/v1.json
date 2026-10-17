@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/order-events/order.created/v1.json",
+  "title": "order.created, version 1",
+  "description": "An order was placed unpaid (checkout without payment). The timeout module starts its payment deadline from it. Topic order-events, record key: the order id, aggregate: ORDER (aggregate_id = the order id).",
+  "$ref": "../../common/envelope/v1.json",
+  "properties": {
+    "event_type": {
+      "const": "order.created"
+    },
+    "aggregate_type": {
+      "const": "ORDER"
+    },
+    "data": {
+      "$ref": "../../common/order-data/v1.json",
+      "properties": {
+        "status": {
+          "const": "PLACED"
+        }
+      }
+    }
+  }
+}

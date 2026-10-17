@@ -4,8 +4,10 @@ package com.laioffer.onlineorder.fulfilment.dispatch;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
+import com.laioffer.onlineorder.messaging.EventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.junit.jupiter.api.Assertions;
@@ -46,6 +48,9 @@ class DispatchServiceTests {
     private ProcessedEventService processedEventService;
 
     @Mock
+    private EventSequenceTracker sequenceTracker;
+
+    @Mock
     private ApplicationMetricsService metricsService;
 
     private DispatchService service;
@@ -59,9 +64,12 @@ class DispatchServiceTests {
                 riderRepository,
                 outboxService,
                 processedEventService,
+                sequenceTracker,
                 metricsService,
                 "delivery-events"
         );
+        // Events built by FulfilmentTestEvents carry no sequence; the tracker applies them (EventSequenceTrackerTests).
+        Mockito.lenient().when(sequenceTracker.advance(Mockito.anyString(), Mockito.any())).thenReturn(true);
     }
 
 
@@ -84,17 +92,16 @@ class DispatchServiceTests {
         lockOrder.verify(riderRepository).lockLeastLoadedUnlockedRider();
         Mockito.verify(riderRepository).incrementLoad(Mockito.eq(3L), Mockito.any());
         Mockito.verify(riderRepository, Mockito.never()).lockLeastLoadedRider();
-        ArgumentCaptor<Object> envelope = ArgumentCaptor.forClass(Object.class);
+        ArgumentCaptor<EventEnvelope> envelope = ArgumentCaptor.forClass(EventEnvelope.class);
         Mockito.verify(outboxService).enqueueEvent(
-                Mockito.eq("DELIVERY"),
-                Mockito.eq(7L),
                 Mockito.eq("delivery-events"),
                 Mockito.eq(String.valueOf(ORDER_ID)),
-                Mockito.eq("delivery.assigned"),
-                Mockito.anyString(),
                 envelope.capture()
         );
         DeliveryEventEnvelope event = (DeliveryEventEnvelope) envelope.getValue();
+        Assertions.assertEquals("DELIVERY", event.aggregateType());
+        Assertions.assertEquals(7L, event.aggregateId());
+        Assertions.assertEquals("delivery.assigned", event.eventType());
         Assertions.assertEquals(ORDER_ID, event.data().orderId());
         Assertions.assertEquals("Alice", event.data().riderName());
         Assertions.assertEquals("ASSIGNED", event.data().status());
@@ -207,8 +214,8 @@ class DispatchServiceTests {
                 Mockito.eq(7L), Mockito.eq("CANCELLED"), Mockito.isNull(), Mockito.isNull(), Mockito.any(), Mockito.any());
         Mockito.verify(riderRepository).decrementLoad(Mockito.eq(3L), Mockito.any());
         Mockito.verify(outboxService).enqueueEvent(
-                Mockito.eq("DELIVERY"), Mockito.eq(7L), Mockito.eq("delivery-events"), Mockito.eq("10"),
-                Mockito.eq("delivery.cancelled"), Mockito.anyString(), Mockito.any());
+                Mockito.eq("delivery-events"), Mockito.eq("10"), Mockito.argThat(event -> "DELIVERY".equals(event.aggregateType())
+                        && Long.valueOf(7L).equals(event.aggregateId()) && "delivery.cancelled".equals(event.eventType())));
     }
 
 
@@ -252,8 +259,8 @@ class DispatchServiceTests {
         Assertions.assertNotNull(delivered.deliveredAt());
         Mockito.verify(riderRepository).decrementLoad(Mockito.eq(3L), Mockito.any());
         Mockito.verify(outboxService).enqueueEvent(
-                Mockito.eq("DELIVERY"), Mockito.eq(7L), Mockito.eq("delivery-events"), Mockito.eq("10"),
-                Mockito.eq("delivery.delivered"), Mockito.anyString(), Mockito.any());
+                Mockito.eq("delivery-events"), Mockito.eq("10"), Mockito.argThat(event -> "DELIVERY".equals(event.aggregateType())
+                        && Long.valueOf(7L).equals(event.aggregateId()) && "delivery.delivered".equals(event.eventType())));
     }
 
 
@@ -289,8 +296,8 @@ class DispatchServiceTests {
         Mockito.verify(deliveryRepository, Mockito.never()).lockById(Mockito.anyLong());
         Mockito.verify(riderRepository, Mockito.never()).decrementLoad(Mockito.anyLong(), Mockito.any());
         Mockito.verify(outboxService).enqueueEvent(
-                Mockito.eq("DELIVERY"), Mockito.eq(7L), Mockito.eq("delivery-events"), Mockito.eq("10"),
-                Mockito.eq("delivery.picked_up"), Mockito.anyString(), Mockito.any());
+                Mockito.eq("delivery-events"), Mockito.eq("10"), Mockito.argThat(event -> "DELIVERY".equals(event.aggregateType())
+                        && Long.valueOf(7L).equals(event.aggregateId()) && "delivery.picked_up".equals(event.eventType())));
     }
 
 
@@ -342,17 +349,16 @@ class DispatchServiceTests {
         Mockito.verify(riderRepository).incrementLoad(Mockito.eq(4L), Mockito.any());
         Mockito.verify(deliveryRepository, Mockito.never())
                 .updateStatus(Mockito.anyLong(), Mockito.anyString(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
-        ArgumentCaptor<Object> envelope = ArgumentCaptor.forClass(Object.class);
+        ArgumentCaptor<EventEnvelope> envelope = ArgumentCaptor.forClass(EventEnvelope.class);
         Mockito.verify(outboxService).enqueueEvent(
-                Mockito.eq("DELIVERY"),
-                Mockito.eq(7L),
                 Mockito.eq("delivery-events"),
                 Mockito.eq(String.valueOf(ORDER_ID)),
-                Mockito.eq("delivery.reassigned"),
-                Mockito.anyString(),
                 envelope.capture()
         );
         DeliveryEventEnvelope event = (DeliveryEventEnvelope) envelope.getValue();
+        Assertions.assertEquals("DELIVERY", event.aggregateType());
+        Assertions.assertEquals(7L, event.aggregateId());
+        Assertions.assertEquals("delivery.reassigned", event.eventType());
         Assertions.assertEquals(4L, event.data().riderId());
         Assertions.assertEquals("Bob", event.data().riderName());
         Assertions.assertEquals("PICKED_UP", event.data().status());

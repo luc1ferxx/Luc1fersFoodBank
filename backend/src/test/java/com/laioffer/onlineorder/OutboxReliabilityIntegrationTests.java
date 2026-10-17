@@ -7,9 +7,9 @@ import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.entity.OutboxEventEntity;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
+import com.laioffer.onlineorder.messaging.OrderEventItem;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.messaging.OutboxEventPublisher;
-import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.CartRepository;
 import com.laioffer.onlineorder.repository.CustomerRepository;
@@ -276,7 +276,17 @@ class OutboxReliabilityIntegrationTests {
                 order.id(),
                 menuItem.price(),
                 now,
-                new OrderHistoryItemDto(historyItem)
+                new OrderEventItem(
+                        historyItem.id(),
+                        historyItem.menuItemId(),
+                        historyItem.restaurantId(),
+                        historyItem.price(),
+                        null,
+                        historyItem.quantity(),
+                        historyItem.menuItemName(),
+                        historyItem.menuItemDescription(),
+                        historyItem.menuItemImageUrl()
+                )
         );
     }
 
@@ -304,7 +314,7 @@ class OutboxReliabilityIntegrationTests {
             Long orderId,
             BigDecimal totalPrice,
             LocalDateTime createdAt,
-            OrderHistoryItemDto itemDto
+            OrderEventItem itemDto
     ) {
     }
 }

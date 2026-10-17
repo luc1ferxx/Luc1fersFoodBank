@@ -1,0 +1,12 @@
+{
+  "envelope": "common/envelope/v1.json",
+  "event_types": {
+    "order.paid": {
+      "topic": "order-events",
+      "versions": {
+        "1": "INITIAL",
+        "2": "BREAKING"
+      }
+    }
+  }
+}

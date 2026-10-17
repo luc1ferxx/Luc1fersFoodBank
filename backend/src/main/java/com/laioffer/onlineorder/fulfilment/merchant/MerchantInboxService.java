@@ -8,6 +8,7 @@ import com.laioffer.onlineorder.messaging.MerchantEventPayload;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.slf4j.Logger;
@@ -56,6 +57,12 @@ public class MerchantInboxService {
     static final String MERCHANT_INBOX_CONSUMER = "merchant-inbox-consumer";
     static final String MERCHANT_ORDER_AGGREGATE = "MERCHANT_ORDER";
 
+    /**
+     * The schema version of merchant.order_received written here:
+     * event-schemas/merchant-events/merchant.order_received/v1.json.
+     */
+    static final int MERCHANT_EVENT_VERSION = 1;
+
     private static final Logger LOGGER = LoggerFactory.getLogger(MerchantInboxService.class);
 
     private static final List<String> BEFORE_ACCEPTED = List.of("PAID");
@@ -75,6 +82,7 @@ public class MerchantInboxService {
     private final ApplicationMetricsService metricsService;
     private final ObjectMapper objectMapper;
     private final ProcessedEventService processedEventService;
+    private final EventSequenceTracker sequenceTracker;
     private final String merchantTopic;
 
 
@@ -85,6 +93,7 @@ public class MerchantInboxService {
             ApplicationMetricsService metricsService,
             ObjectMapper objectMapper,
             ProcessedEventService processedEventService,
+            EventSequenceTracker sequenceTracker,
             @Value("${app.fulfilment.merchant-topic:merchant-events}") String merchantTopic
     ) {
         this.merchantOrderRepository = merchantOrderRepository;
@@ -93,10 +102,16 @@ public class MerchantInboxService {
         this.metricsService = metricsService;
         this.objectMapper = objectMapper;
         this.processedEventService = processedEventService;
+        this.sequenceTracker = sequenceTracker;
         this.merchantTopic = merchantTopic;
     }
 
 
+    /**
+     * An event older (by sequence) than the last order event this consumer applied for the order is stale: the row
+     * already reflects a later state, so its status stays. A stale order.paid still records the payment time when the
+     * row has none (a later event created it first), exactly like an order.paid without a sequence that finds a row.
+     */
     @Transactional
     public void handle(OrderEventEnvelope event) {
         if (event == null || !HANDLED_EVENT_TYPES.contains(event.eventType())) {
@@ -112,6 +127,12 @@ public class MerchantInboxService {
 
         LocalDateTime now = LocalDateTime.now();
         Long orderId = event.aggregateId();
+        if (!sequenceTracker.advance(MERCHANT_INBOX_CONSUMER, event)) {
+            if (FulfilmentEvents.ORDER_PAID.equals(event.eventType())) {
+                merchantOrderRepository.recordPayment(orderId, event.occurredAt() == null ? now : event.occurredAt(), now);
+            }
+            return;
+        }
         switch (event.eventType()) {
             case FulfilmentEvents.ORDER_PAID -> {
                 LocalDateTime paidAt = event.occurredAt() == null ? now : event.occurredAt();
@@ -181,7 +202,7 @@ public class MerchantInboxService {
         String eventId = UUID.randomUUID().toString();
         MerchantEventEnvelope envelope = new MerchantEventEnvelope(
                 eventId,
-                1,
+                MERCHANT_EVENT_VERSION,
                 FulfilmentEvents.MERCHANT_ORDER_RECEIVED,
                 MERCHANT_ORDER_AGGREGATE,
                 orderId,
@@ -190,15 +211,7 @@ public class MerchantInboxService {
                 null,
                 new MerchantEventPayload(orderId, restaurantId, paidAt, activeMerchants)
         );
-        outboxService.enqueueEvent(
-                MERCHANT_ORDER_AGGREGATE,
-                orderId,
-                merchantTopic,
-                String.valueOf(orderId),
-                FulfilmentEvents.MERCHANT_ORDER_RECEIVED,
-                eventId,
-                envelope
-        );
+        outboxService.enqueueEvent(merchantTopic, String.valueOf(orderId), envelope);
         AfterCommit.run(() -> metricsService.recordMerchantOrderReceived("staffed"));
     }
 

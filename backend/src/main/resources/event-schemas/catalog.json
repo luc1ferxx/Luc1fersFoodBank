@@ -1,0 +1,78 @@
+{
+  "description": "Index of the published event contracts (README \"Event contracts\"). Every event type lists its topic and its schema versions, event-schemas/<topic>/<event_type>/v<N>.json, each marked INITIAL (the first version), BACKWARD (only adds optional properties: compatible both ways with the versions before it, back to the last BREAKING one, so producers may switch first) or BREAKING (a new major version, a relaxed constraint included: consumers accept it and the version before it, and ship first). Published schema files never change (SHA256SUMS); this index and SHA256SUMS only grow.",
+  "envelope": "common/envelope/v1.json",
+  "event_types": {
+    "order.created": {
+      "topic": "order-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "order.paid": {
+      "topic": "order-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "order.accepted": {
+      "topic": "order-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "order.preparing": {
+      "topic": "order-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "order.completed": {
+      "topic": "order-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "order.cancelled": {
+      "topic": "order-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "delivery.assigned": {
+      "topic": "delivery-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "delivery.picked_up": {
+      "topic": "delivery-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "delivery.delivered": {
+      "topic": "delivery-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "delivery.cancelled": {
+      "topic": "delivery-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "delivery.reassigned": {
+      "topic": "delivery-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "merchant.order_received": {
+      "topic": "merchant-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    }
+  }
+}

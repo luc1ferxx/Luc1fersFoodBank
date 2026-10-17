@@ -1,0 +1,17 @@
+{
+  "event_id": "legacy-assigned-1",
+  "event_version": 1,
+  "event_type": "delivery.assigned",
+  "aggregate_type": "DELIVERY",
+  "aggregate_id": 77,
+  "occurred_at": "2026-03-01T09:20:00",
+  "correlation_id": "legacy-assigned-1",
+  "data": {
+    "order_id": 1001,
+    "customer_id": 3,
+    "restaurant_id": 1,
+    "rider_id": 4,
+    "rider_name": "Alice Rider",
+    "status": "ASSIGNED"
+  }
+}

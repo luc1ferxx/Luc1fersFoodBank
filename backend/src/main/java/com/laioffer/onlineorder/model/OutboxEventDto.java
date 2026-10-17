@@ -7,10 +7,15 @@ import com.laioffer.onlineorder.entity.OutboxEventEntity;
 import java.time.LocalDateTime;
 
 
+/**
+ * @param aggregateSequence the event's position among the events of its aggregate; the publisher sends them in this
+ *                          order, so a FAILED event holds back the later ones of the same aggregate
+ */
 public record OutboxEventDto(
         Long id,
         String aggregateType,
         Long aggregateId,
+        Long aggregateSequence,
         String eventId,
         String topic,
         String eventKey,
@@ -28,6 +33,7 @@ public record OutboxEventDto(
                 entity.id(),
                 entity.aggregateType(),
                 entity.aggregateId(),
+                entity.aggregateSequence(),
                 entity.eventId(),
                 entity.topic(),
                 entity.eventKey(),

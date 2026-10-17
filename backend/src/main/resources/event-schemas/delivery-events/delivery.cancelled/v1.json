@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/delivery-events/delivery.cancelled/v1.json",
+  "title": "delivery.cancelled, version 1",
+  "description": "The delivery was cancelled because its order was cancelled; the rider was released. Topic delivery-events, record key: the order id, aggregate: DELIVERY (aggregate_id = the delivery id).",
+  "$ref": "../../common/envelope/v1.json",
+  "properties": {
+    "event_type": {
+      "const": "delivery.cancelled"
+    },
+    "aggregate_type": {
+      "const": "DELIVERY"
+    },
+    "data": {
+      "$ref": "../../common/delivery-data/v1.json",
+      "properties": {
+        "status": {
+          "const": "CANCELLED"
+        }
+      }
+    }
+  }
+}

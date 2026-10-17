@@ -117,6 +117,78 @@ class OutboxAdminControllerIntegrationTests {
     }
 
 
+    @Test
+    void abandonFailedEvent_shouldRequireAdminAReasonAndAFailedEventAndBeAudited() {
+        Long failedEventId = insertOutboxEvent("FAILED", 10, "RecordTooLargeException", null);
+        HttpHeaders userHeaders = jsonHeadersWithCookie(signupAndLoginUser());
+        ResponseEntity<String> userResponse = restTemplate.exchange(
+                url("/admin/outbox/events/" + failedEventId + "/abandon"),
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of("reason", "too large"), userHeaders),
+                String.class
+        );
+        Assertions.assertEquals(HttpStatus.FORBIDDEN, userResponse.getStatusCode());
+
+        HttpHeaders adminHeaders = jsonHeadersWithCookie(login("demo@laifood.com", "demo123"));
+        ResponseEntity<String> withoutReason = restTemplate.exchange(
+                url("/admin/outbox/events/" + failedEventId + "/abandon"),
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of("reason", " "), adminHeaders),
+                String.class
+        );
+        Assertions.assertEquals(HttpStatus.BAD_REQUEST, withoutReason.getStatusCode());
+        Assertions.assertEquals("FAILED", jdbcTemplate.queryForObject(
+                "SELECT status FROM outbox_events WHERE id = ?", String.class, failedEventId));
+
+        ResponseEntity<Map> abandonResponse = restTemplate.exchange(
+                url("/admin/outbox/events/" + failedEventId + "/abandon"),
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of("reason", "  Record over the broker limit; order cancelled by hand  "), adminHeaders),
+                Map.class
+        );
+        Assertions.assertEquals(HttpStatus.OK, abandonResponse.getStatusCode());
+        Assertions.assertEquals("ABANDONED", abandonResponse.getBody().get("status"));
+        Assertions.assertEquals("RecordTooLargeException", abandonResponse.getBody().get("last_error"));
+        Assertions.assertNull(abandonResponse.getBody().get("published_at"));
+        Assertions.assertEquals(
+                "outbox_event.abandon|ROLE_ADMIN",
+                jdbcTemplate.queryForObject("""
+                        SELECT action || '|' || actor_role FROM audit_log
+                        WHERE target_type = 'OUTBOX_EVENT' AND target_id = ?
+                        """, String.class, String.valueOf(failedEventId))
+        );
+        Assertions.assertTrue(jdbcTemplate.queryForObject("""
+                SELECT details FROM audit_log WHERE target_type = 'OUTBOX_EVENT' AND target_id = ?
+                """, String.class, String.valueOf(failedEventId))
+                .contains("\"reason\":\"Record over the broker limit; order cancelled by hand\""));
+
+        ResponseEntity<String> again = restTemplate.exchange(
+                url("/admin/outbox/events/" + failedEventId + "/abandon"),
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of("reason", "twice"), adminHeaders),
+                String.class
+        );
+        Assertions.assertEquals(HttpStatus.BAD_REQUEST, again.getStatusCode());
+        ResponseEntity<String> missing = restTemplate.exchange(
+                url("/admin/outbox/events/999999999/abandon"),
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of("reason", "gone"), adminHeaders),
+                String.class
+        );
+        Assertions.assertEquals(HttpStatus.NOT_FOUND, missing.getStatusCode());
+        Assertions.assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM audit_log WHERE target_type = 'OUTBOX_EVENT' AND target_id = ?",
+                Integer.class, String.valueOf(failedEventId)), "refused attempts are not audited");
+    }
+
+
+    private HttpHeaders jsonHeadersWithCookie(String sessionCookie) {
+        HttpHeaders headers = headersWithCookie(sessionCookie);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return headers;
+    }
+
+
     private Long insertOutboxEvent(String status, int attempts, String lastError, LocalDateTime publishedAt) {
         String uniqueId = "test-outbox-" + status.toLowerCase() + "-" + System.nanoTime();
         LocalDateTime now = LocalDateTime.now();

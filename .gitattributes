@@ -1,3 +1,4 @@
 /backend/gradlew text eol=lf
 *.bat text eol=crlf
 *.jar binary
+/backend/src/main/resources/event-schemas/** text eol=lf

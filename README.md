@@ -224,6 +224,7 @@ The `h2` profile runs Flyway migrations and includes the demo seed callback by d
 | `PATCH` | `/orders/{orderId}/status` | Move order through the status state machine |
 | `GET` | `/admin/outbox/events/failed?limit=50` | Inspect failed outbox events |
 | `POST` | `/admin/outbox/events/{eventId}/retry` | Reset failed outbox event to `PENDING` |
+| `POST` | `/admin/outbox/events/{eventId}/abandon` | Give up on a failed event that can never be published (`{"reason": ...}`, audited), releasing the later events of its aggregate |
 | `PATCH` | `/admin/menu-items/{menuItemId}` | Update a menu item's `name`, `description` or `price`; evicts that restaurant's cached menu after commit |
 | `PATCH` | `/admin/restaurants/{restaurantId}` | Update a restaurant's `name`, `address`, `phone` or `image_url`; evicts the cached restaurant list after commit |
 | `POST` | `/dead-letters/{deadLetterEventId}/replay` | Replay a stored dead-letter event |
@@ -316,13 +317,88 @@ migrations, which must not run next to pods of an older version.
 
 ### Outbox and Kafka
 
-- Order events are inserted into `outbox_events` inside the same transaction as the order change.
-- A scheduled publisher claims `PENDING` or stale `PROCESSING` rows with `FOR UPDATE SKIP LOCKED`.
+- Order events are inserted into `outbox_events` inside the same transaction as the order change, after the event was
+  checked against its published schema ("Event contracts" below).
+- Each event gets the next sequence of its aggregate (`aggregate_sequence`, the envelope's `sequence`: 1, 2, 3, ... per
+  order, delivery or merchant order, in commit order).
+- A scheduled publisher claims `PENDING` or stale `PROCESSING` rows with `FOR UPDATE SKIP LOCKED`, but only the head
+  of each aggregate: an event waits while an earlier event of its aggregate is `PENDING`, `PROCESSING` or `FAILED`. So
+  an aggregate's events reach Kafka in sequence order, one acknowledgement after the other, across publisher instances.
 - Successful publish marks the row `PUBLISHED`.
 - Retryable failures return to `PENDING` until `app.outbox.max-attempts`.
-- Max-attempt failures become `FAILED` and require admin retry after the root cause is fixed.
-- Consumers use `processed_events` to deduplicate at-least-once Kafka delivery.
+- Max-attempt failures become `FAILED` and require admin retry after the root cause is fixed; until then the later
+  events of the same aggregate wait (`onlineorder_outbox_blocked_aggregates`, alert `OnlineOrderOutboxAggregatesBlocked`).
+  An event that can never be published is abandoned instead (`ABANDONED`, audited): its consumers never receive it and
+  the later events go out ([docs/operations.md](docs/operations.md) section 8).
+- After publishing a head the publisher claims again in the same run when its aggregate has a next event waiting, so a
+  backlog of k events of one order goes out in one run rather than one per publish interval.
+- Consumers use `processed_events` to deduplicate at-least-once Kafka delivery, and the consumers that keep
+  per-aggregate state skip events older than the last one they applied ("Out-of-order events").
 - Notification creation also has a database uniqueness safety net.
+
+### Event contracts
+
+Every event on `order-events`, `delivery-events` and `merchant-events` has a published, versioned JSON Schema (draft
+2020-12) under `backend/src/main/resources/event-schemas/`:
+
+```text
+event-schemas/
+|-- catalog.json                       every event type: its topic and schema versions (INITIAL, BACKWARD, BREAKING)
+|-- SHA256SUMS                         checksum of every published schema file
+|-- common/envelope/v1.json            event_id, event_version, event_type, aggregate_type, aggregate_id, sequence,
+|                                      occurred_at, correlation_id, idempotency_key, data
+|-- common/order-data/v1.json          order event data; money amounts with an optional ISO 4217 currency next to them
+|-- common/delivery-data/v1.json       delivery event data
+|-- order-events/<event_type>/v1.json      order.created ... order.cancelled (data.status fixed per type)
+|-- delivery-events/<event_type>/v1.json   delivery.assigned ... delivery.reassigned
+`-- merchant-events/merchant.order_received/v1.json
+```
+
+The JSON is snake_case with nulls omitted (the application ObjectMapper). `event_version` names the schema version of
+the event's type the producer wrote; the payload records (`messaging.OrderEventPayload`, `OrderEventItem`,
+`DeliveryEventPayload`, `MerchantEventPayload`) belong to the contract and no longer reuse REST DTOs. V1 is the shape
+the events already had plus two optional fields: `sequence` (absent on events written before V9) and `currency` on the
+order total and on each item price (absent until orders carry a currency).
+
+**Validation.** `EventContracts` (networknt json-schema-validator 3.x, the line built on Jackson 3, so events are
+checked as `tools.jackson` trees without a second JSON library; schemas refer to each other by `$id` under
+`https://onlineorder.example/event-schemas/`, mapped to the classpath, so nothing is fetched over the network):
+
+- Producer: `OrderEventOutboxService.enqueueEvent` serializes the envelope with its sequence and checks it against the
+  exact published version it declares, in the producing transaction. An invalid event, an unpublished type or version,
+  or a type sent to the wrong topic is a bug: `EventSchemaViolationException` rolls the transaction back (the request
+  fails), the violations are logged as an error and `onlineorder_events_schema_violations_total{side="producer"}`
+  counts it.
+- Consumer: every listener reads its record through `EventContracts.read`. A record that is not JSON or breaks its
+  schema throws `EventSchemaViolationException`, which the listener error handler classifies as not retryable: it goes
+  to the DLT on the first attempt, with the violations in `dead_letter_events.error_message`
+  (`side="consumer"`). A version newer than the instance knows is checked against the latest version it knows (schemas
+  are open, so a compatible addition passes); an unknown event type only against the envelope, and the consumer skips
+  it as before.
+
+**Evolution rules** (checked by `EventSchemaContractTests` in the backend CI job, and by the "Published event schemas
+are append-only" step of `config-lint` on pull requests):
+
+- A published schema file never changes and is never deleted: `SHA256SUMS` lists its checksum. Change a contract by
+  adding the next version file, `v<N+1>.json`, with its line in `SHA256SUMS` and its entry in `catalog.json`.
+- `BACKWARD` versions only add optional properties. The test keeps sample events of every version under
+  `backend/src/test/resources/event-samples/<topic>/<event_type>/v<N>/` and checks a `BACKWARD` version both ways
+  against the versions before it (back to the last `BREAKING` one): it must accept their samples (new consumers read
+  old events), and they must accept its samples, because a consumer that does not know the new version yet checks its
+  events against the latest version it knows. That is what lets producers move to a `BACKWARD` version before every
+  consumer knows it.
+- Anything else (a removed, renamed or newly required property, a changed type or meaning, and also a relaxed
+  constraint such as a lower minimum or a wider enum, which older consumers would reject) is `BREAKING`, a new major
+  version: consumers must accept N and N-1, so ship consumers that handle N first, then switch the producer, and keep
+  N-1 in the catalog (the test enforces it) until no N-1 event can still arrive. Retiring a version means removing it
+  from `catalog.json` once no event of it can be in flight (outbox retention, stored dead letters); its file stays.
+
+**Adding or evolving an event:** write the schema file (`$schema` draft 2020-12, `$id` under the base IRI, `$ref` to
+the envelope), list it in `catalog.json`, add its checksum (`shasum -a 256 <file>` in `event-schemas/`; the test
+prints the line to add), add sample events, give the producer the version constant, and send the event through
+`OrderEventOutboxService.enqueueEvent(topic, key, envelope)`. Roll a new version out in the order the rules above
+give. [docs/operations.md](docs/operations.md) section 8 shows how to mirror the schemas into a schema registry
+(Confluent, Apicurio) without making the application depend on one.
 
 ### Catalog Caching
 
@@ -475,20 +551,27 @@ offset, like the existing one.
 
 ### Out-of-order events (dead letters replayed late)
 
-`processed_events` drops exact duplicates. A dead letter replayed after later events of the same order were applied
-reaches a group out of order, so each module also stays correct when the order of two events flips:
+`processed_events` drops exact duplicates. The outbox publishes an aggregate's events in sequence order, but a dead
+letter replayed after later events of the same order were applied still reaches a group out of order. The consumers
+that keep per-aggregate state (merchant inbox, dispatch, timeout) therefore record the last sequence they applied per
+order (`consumer_aggregate_sequences`, through `EventSequenceTracker`) and skip an event whose sequence is not above it
+(`onlineorder_events_stale_skipped_total`). Only event types a consumer applies move its position: dispatch ignores
+`order.preparing`, so an `order.accepted` dead-lettered for want of a rider and replayed after it still gets one.
+Events without a sequence (written before V9) and positions older than the processed-events retention fall back on the
+rules below, which still hold for every module when the order of two events flips:
 
 - **Merchant inbox:** an order event that finds no inbox row creates it with the status it reports (`order.cancelled`
   leaves a cancelled tombstone) and no `paid_at`. The merchant only sees rows with a `paid_at`; the late `order.paid`
-  then only sets it. A replayed `order.paid` therefore shows the order as `CANCELLED` (or `ACCEPTED`, ...) instead of a
-  stale `PAID` row that no merchant command could resolve. An order cancelled before it was ever paid keeps such a
-  hidden row.
+  then only sets it (also when it is stale by sequence: the payment time is a fact no later event carries). A replayed
+  `order.paid` therefore shows the order as `CANCELLED` (or `ACCEPTED`, ...) instead of a stale `PAID` row that no
+  merchant command could resolve. An order cancelled before it was ever paid keeps such a hidden row.
 - **Dispatch:** `order.accepted` and `order.cancelled` both create and lock the order's `dispatch_orders` row before
   they touch deliveries, so they serialize per order even on different consumers. `order.cancelled` sets
   `cancelled_at` there even when no delivery exists yet, and an `order.accepted` handled afterwards (for example one
   dead-lettered because no rider was active, replayed after the customer cancelled) assigns no rider.
-- **Timeout:** a deadline written by a late `order.created` or `merchant.order_received` fires as a no-op: the poller
-  only cancels an order that is still in the status the deadline waits in. `merchant.order_received` and the later
+- **Timeout:** a late `order.created` with a sequence is skipped once a later order event was applied. A deadline
+  written by a late event without one, or by a late `merchant.order_received`, fires as a no-op: the poller only
+  cancels an order that is still in the status the deadline waits in. `merchant.order_received` and the later
   order events travel on different topics, so this also covers an order accepted before its announcement arrived.
 - **Order completion:** a `delivery.delivered` for a cancelled order is ignored.
 
@@ -672,6 +755,13 @@ The test suite covers:
   to end on PostgreSQL, Redis and Kafka: pay -> accept -> deliver -> complete with and without the merchant's
   `PREPARING`, once through the rider API (`FulfilmentFlowContainerTests`), and the accept timeout at a staffed and an
   unstaffed restaurant and the payment timeout (`FulfilmentTimeoutContainerTests`)
+- event contracts and order: every published schema unchanged, valid and listed, every version accepting its samples
+  and `BACKWARD` versions compatible both ways with the versions before (`EventSchemaContractTests`, with fixture sets
+  that break each rule); producer and consumer validation, including dead-lettering on the first attempt end to end
+  (`ContainerizedOrderFlowTests`); two publishers with induced failures never publishing an aggregate's events out of
+  order, a `FAILED` head blocking its aggregate until retried or abandoned, a backlog drained in one run, and
+  sequences under concurrent writers (`OutboxAggregateOrderingPostgresTests`, on H2 `OutboxSequenceAllocatorH2Tests`); the V9 backlog numbering and head index (`OutboxAggregateSequenceMigration*Tests`);
+  consumers skipping stale events (`StaleEventPostgresIntegrationTests`)
 - staff accounts: provisioning, `GET /me`, the role matrix, deactivation on the next request, dispatch to active
   on-duty riders only, and a rider never reaching another rider's delivery (`StaffAccountsPostgresIntegrationTests`)
 - 64-bit keys and the audit trails: an order with ids past 2^31 through checkout and fulfilment on PostgreSQL and H2
@@ -736,7 +826,10 @@ This project is intentionally strong on backend correctness patterns, but it is 
 - Payment is simulated with local request validation. There is no real payment provider, authorization, capture, webhook, or settlement flow.
 - There is no inventory reservation or stock decrement model.
 - The merchant and rider consoles poll every 15 seconds instead of receiving pushed updates, and the rider console has no map, location, or ETA.
-- Kafka delivery is treated as at-least-once with consumer-side idempotency, not end-to-end exactly-once delivery.
+- Kafka delivery is treated as at-least-once with consumer-side idempotency, not end-to-end exactly-once delivery. The
+  outbox keeps each aggregate's events in order on their way to Kafka, so one `FAILED` event stops its order until an
+  operator retries it, or abandons it and reconciles what its consumers missed.
+- Event schemas live in the repository (`event-schemas/`); there is no schema registry service.
 - Failed outbox rows require explicit admin retry after the underlying cause is fixed.
 - H2 is a lightweight local fallback, not the production-shaped runtime.
 - Catalog edits are limited to admin updates of existing restaurants and menu items. There is no create or delete API, so rows changed directly in the database show up once the cached entries expire. One exception: `GET /restaurant/{id}/menu` serves a directly inserted restaurant at once and evicts the stale list, because an id missing from the cached list is checked in the database (rate-limited) before the `404`. The demo seed matches rows by name, so renaming a demo restaurant or item makes the next startup with `db/demo` insert the original again.

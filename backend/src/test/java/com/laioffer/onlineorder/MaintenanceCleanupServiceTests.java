@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder;
 
 
+import com.laioffer.onlineorder.repository.ConsumerAggregateSequenceRepository;
 import com.laioffer.onlineorder.repository.DeadLetterEventRepository;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.OutboxEventRepository;
@@ -34,6 +35,9 @@ class MaintenanceCleanupServiceTests {
     @Mock
     private DeadLetterEventRepository deadLetterEventRepository;
 
+    @Mock
+    private ConsumerAggregateSequenceRepository consumerAggregateSequenceRepository;
+
 
     @Test
     void cleanupExpiredRecords_shouldDeleteExpiredOperationalData() {
@@ -47,7 +51,8 @@ class MaintenanceCleanupServiceTests {
                 outboxEventRepository,
                 processedEventRepository,
                 idempotencyRequestRepository,
-                deadLetterEventRepository
+                deadLetterEventRepository,
+                consumerAggregateSequenceRepository
         );
 
         service.cleanupExpiredRecords();
@@ -58,6 +63,8 @@ class MaintenanceCleanupServiceTests {
                 Mockito.eq(1000)
         );
         Mockito.verify(processedEventRepository).deleteByProcessedAtBefore(Mockito.any(LocalDateTime.class), Mockito.eq(1000));
+        Mockito.verify(consumerAggregateSequenceRepository)
+                .deleteByUpdatedAtBefore(Mockito.any(LocalDateTime.class), Mockito.eq(1000));
         Mockito.verify(idempotencyRequestRepository).deleteByUpdatedAtBefore(Mockito.any(LocalDateTime.class), Mockito.eq(1000));
         Mockito.verify(deadLetterEventRepository).deleteByReplayStatusAndUpdatedAtBefore(
                 Mockito.eq("REPLAYED"),
@@ -79,7 +86,8 @@ class MaintenanceCleanupServiceTests {
                 outboxEventRepository,
                 processedEventRepository,
                 idempotencyRequestRepository,
-                deadLetterEventRepository
+                deadLetterEventRepository,
+                consumerAggregateSequenceRepository
         );
         Mockito.when(outboxEventRepository.deleteByStatusAndPublishedAtBefore(
                 Mockito.eq("PUBLISHED"),
@@ -122,7 +130,8 @@ class MaintenanceCleanupServiceTests {
                 outboxEventRepository,
                 processedEventRepository,
                 idempotencyRequestRepository,
-                deadLetterEventRepository
+                deadLetterEventRepository,
+                consumerAggregateSequenceRepository
         );
 
         service.cleanupExpiredRecords();
@@ -131,7 +140,8 @@ class MaintenanceCleanupServiceTests {
                 outboxEventRepository,
                 processedEventRepository,
                 idempotencyRequestRepository,
-                deadLetterEventRepository
+                deadLetterEventRepository,
+                consumerAggregateSequenceRepository
         );
     }
 }

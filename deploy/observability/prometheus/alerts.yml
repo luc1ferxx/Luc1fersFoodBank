@@ -122,6 +122,36 @@ groups:
           summary: Outbox events reached FAILED
           description: '{{ $value }} outbox event(s) used up app.outbox.max-attempts. Fix the cause, then retry them with POST /admin/outbox/events/{id}/retry.'
 
+      # The publisher keeps each aggregate's events in order (README "Event contracts"), so a FAILED event holds back
+      # the later events of its order or delivery until an operator retries or abandons it: that order's fulfilment is
+      # stuck.
+      - alert: OnlineOrderOutboxAggregatesBlocked
+        expr: max(onlineorder_outbox_blocked_aggregates{application="OnlineOrder"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Outbox events are held back behind a FAILED event of their aggregate
+          description: '{{ $value }} aggregate(s) have later outbox events waiting behind a FAILED one (onlineorder_outbox_blocked_events counts them). Fix the cause, then retry the FAILED event with POST /admin/outbox/events/{id}/retry; the held-back events follow in order. Only an event that can never be published is abandoned instead (POST /admin/outbox/events/{id}/abandon, docs/operations.md section 8).'
+
+      # A producer-side violation is a bug (its transaction was rolled back); a consumer-side one is a record that was
+      # dead-lettered without retries. The counter series starts at 1 like the dead-letter counter, hence the second
+      # branch.
+      - alert: OnlineOrderEventSchemaViolations
+        expr: |
+          sum by (side) (increase(onlineorder_events_schema_violations_total{application="OnlineOrder"}[15m])) > 0
+          or
+          count by (side) (
+            onlineorder_events_schema_violations_total{application="OnlineOrder"}
+            unless
+            onlineorder_events_schema_violations_total{application="OnlineOrder"} offset 15m
+          ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Events broke their published contract ({{ $labels.side }})
+          description: 'Events that do not match their schema under event-schemas/ were seen on the {{ $labels.side }} side in the last 15 minutes. Producer: the writing transaction failed (a bug, see the ERROR log). Consumer: the record went straight to the DLT; its error_message lists the violations.'
+
       # The counter is registered by the first dead letter an instance stores, so its series starts at 1 and
       # increase() cannot see that first event. The second branch catches a series that appeared within the window
       # (the first dead letter after a start, or of a new source topic); increase() covers the rest, counter resets

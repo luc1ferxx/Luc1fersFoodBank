@@ -1,9 +1,11 @@
 package com.laioffer.onlineorder.fulfilment.merchant;
 
 
+import com.laioffer.onlineorder.messaging.EventEnvelope;
 import com.laioffer.onlineorder.messaging.MerchantEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,6 +46,9 @@ class MerchantInboxServiceTests {
     @Mock
     private ApplicationMetricsService metricsService;
 
+    @Mock
+    private EventSequenceTracker sequenceTracker;
+
     private MerchantInboxService service;
 
 
@@ -56,8 +61,11 @@ class MerchantInboxServiceTests {
                 metricsService,
                 JsonMapper.builder().build(),
                 processedEventService,
+                sequenceTracker,
                 "merchant-events"
         );
+        // Events built by FulfilmentTestEvents carry no sequence; the tracker applies them (EventSequenceTrackerTests).
+        Mockito.lenient().when(sequenceTracker.advance(Mockito.anyString(), Mockito.any())).thenReturn(true);
     }
 
 
@@ -210,19 +218,15 @@ class MerchantInboxServiceTests {
 
         service.handle(paid);
 
-        ArgumentCaptor<Object> envelope = ArgumentCaptor.forClass(Object.class);
-        ArgumentCaptor<String> eventId = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<EventEnvelope> envelope = ArgumentCaptor.forClass(EventEnvelope.class);
         Mockito.verify(outboxService).enqueueEvent(
-                Mockito.eq("MERCHANT_ORDER"),
-                Mockito.eq(10L),
                 Mockito.eq("merchant-events"),
                 Mockito.eq("10"),
-                Mockito.eq("merchant.order_received"),
-                eventId.capture(),
                 envelope.capture()
         );
         MerchantEventEnvelope event = (MerchantEventEnvelope) envelope.getValue();
-        assertEquals(eventId.getValue(), event.eventId());
+        assertEquals("MERCHANT_ORDER", event.aggregateType());
+        assertEquals(1, event.eventVersion());
         assertEquals("merchant.order_received", event.eventType());
         assertEquals(10L, event.aggregateId());
         assertEquals(paid.correlationId(), event.correlationId());

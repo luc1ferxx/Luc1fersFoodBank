@@ -1,0 +1,8 @@
+{
+  "event_id": "e-1",
+  "event_version": 1,
+  "event_type": "order.paid",
+  "data": {
+    "customer_id": 3
+  }
+}

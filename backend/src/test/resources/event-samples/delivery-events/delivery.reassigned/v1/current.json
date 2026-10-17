@@ -1,0 +1,18 @@
+{
+  "event_id": "6a1d2f3c-1b2a-4c5d-8e9f-000000000005",
+  "event_version": 1,
+  "event_type": "delivery.reassigned",
+  "aggregate_type": "DELIVERY",
+  "aggregate_id": 77,
+  "sequence": 3,
+  "occurred_at": "2026-04-25T12:25:00",
+  "correlation_id": "6a1d2f3c-1b2a-4c5d-8e9f-000000000005",
+  "data": {
+    "order_id": 1001,
+    "customer_id": 3,
+    "restaurant_id": 1,
+    "rider_id": 5,
+    "rider_name": "Bob Rider",
+    "status": "PICKED_UP"
+  }
+}

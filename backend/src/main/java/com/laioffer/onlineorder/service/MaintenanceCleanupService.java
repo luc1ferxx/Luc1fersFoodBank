@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.service;
 
 
+import com.laioffer.onlineorder.repository.ConsumerAggregateSequenceRepository;
 import com.laioffer.onlineorder.repository.DeadLetterEventRepository;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.OutboxEventRepository;
@@ -34,6 +35,7 @@ public class MaintenanceCleanupService {
     private final ProcessedEventRepository processedEventRepository;
     private final IdempotencyRequestRepository idempotencyRequestRepository;
     private final DeadLetterEventRepository deadLetterEventRepository;
+    private final ConsumerAggregateSequenceRepository consumerAggregateSequenceRepository;
 
 
     public MaintenanceCleanupService(
@@ -46,7 +48,8 @@ public class MaintenanceCleanupService {
             OutboxEventRepository outboxEventRepository,
             ProcessedEventRepository processedEventRepository,
             IdempotencyRequestRepository idempotencyRequestRepository,
-            DeadLetterEventRepository deadLetterEventRepository
+            DeadLetterEventRepository deadLetterEventRepository,
+            ConsumerAggregateSequenceRepository consumerAggregateSequenceRepository
     ) {
         this.cleanupEnabled = cleanupEnabled;
         this.outboxRetention = outboxRetention;
@@ -58,6 +61,7 @@ public class MaintenanceCleanupService {
         this.processedEventRepository = processedEventRepository;
         this.idempotencyRequestRepository = idempotencyRequestRepository;
         this.deadLetterEventRepository = deadLetterEventRepository;
+        this.consumerAggregateSequenceRepository = consumerAggregateSequenceRepository;
     }
 
 
@@ -84,6 +88,12 @@ public class MaintenanceCleanupService {
                 processedCutoff,
                 limit
         ));
+        // Consumer positions (stale-event detection) age out with the processed_events marks: an event older than that
+        // is applied without the check, and the consumers' own guards still hold.
+        int deletedPositions = deleteInBatches(limit -> consumerAggregateSequenceRepository.deleteByUpdatedAtBefore(
+                processedCutoff,
+                limit
+        ));
         int deletedIdempotency = deleteInBatches(limit -> idempotencyRequestRepository.deleteByUpdatedAtBefore(
                 idempotencyCutoff,
                 limit
@@ -95,9 +105,11 @@ public class MaintenanceCleanupService {
         ));
 
         LOGGER.info(
-                "Maintenance cleanup finished: outbox={}, processed_events={}, idempotency_requests={}, dead_letters={}",
+                "Maintenance cleanup finished: outbox={}, processed_events={}, consumer_aggregate_sequences={}, "
+                        + "idempotency_requests={}, dead_letters={}",
                 deletedOutbox,
                 deletedProcessed,
+                deletedPositions,
                 deletedIdempotency,
                 deletedDeadLetters
         );

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/merchant-events/merchant.order_received/v1.json",
+  "title": "merchant.order_received, version 1",
+  "description": "A paid order reached the inbox of a restaurant with at least one active merchant account, so a merchant is expected to accept it; the timeout module sets the accept deadline from occurred_at (when the inbox received the order). Not published for unstaffed restaurants. Topic merchant-events, record key: the order id, aggregate: MERCHANT_ORDER (aggregate_id = the order id).",
+  "$ref": "../../common/envelope/v1.json",
+  "properties": {
+    "event_type": {
+      "const": "merchant.order_received"
+    },
+    "aggregate_type": {
+      "const": "MERCHANT_ORDER"
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "order_id",
+        "restaurant_id",
+        "paid_at",
+        "active_merchants"
+      ],
+      "properties": {
+        "order_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "restaurant_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "paid_at": {
+          "description": "When the order was paid (the order.paid event time).",
+          "$ref": "../../common/envelope/v1.json#/$defs/local_date_time"
+        },
+        "active_merchants": {
+          "description": "Active merchant accounts of the restaurant when the inbox received the order.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

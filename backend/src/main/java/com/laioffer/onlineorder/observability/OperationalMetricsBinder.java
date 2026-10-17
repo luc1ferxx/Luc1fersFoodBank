@@ -22,6 +22,7 @@ public class OperationalMetricsBinder implements MeterBinder {
     private static final String OUTBOX_STATUS_PROCESSING = "PROCESSING";
     private static final String OUTBOX_STATUS_FAILED = "FAILED";
     private static final String OUTBOX_STATUS_PUBLISHED = "PUBLISHED";
+    private static final String OUTBOX_STATUS_ABANDONED = "ABANDONED";
 
     private static final String REPLAY_STATUS_PENDING = "PENDING";
     private static final String REPLAY_STATUS_REPLAYING = "REPLAYING";
@@ -47,6 +48,7 @@ public class OperationalMetricsBinder implements MeterBinder {
         bindOutboxStatus(registry, OUTBOX_STATUS_PROCESSING, "processing");
         bindOutboxStatus(registry, OUTBOX_STATUS_FAILED, "failed");
         bindOutboxStatus(registry, OUTBOX_STATUS_PUBLISHED, "published");
+        bindOutboxStatus(registry, OUTBOX_STATUS_ABANDONED, "abandoned");
 
         Gauge.builder("onlineorder.outbox.backlog", this::countOutboxBacklog)
                 .description("Outbox events waiting for publish or currently claimed by the publisher")
@@ -56,6 +58,13 @@ public class OperationalMetricsBinder implements MeterBinder {
                 .register(registry);
         TimeGauge.builder("onlineorder.outbox.oldest_pending_age", this::oldestPendingAgeSeconds, TimeUnit.SECONDS)
                 .description("Age of the oldest outbox event not yet published (PENDING or PROCESSING), 0 when none")
+                .register(registry);
+        Gauge.builder("onlineorder.outbox.blocked_aggregates", outboxEventRepository::countBlockedAggregates)
+                .description("Aggregates whose later outbox events wait behind a FAILED event of the same aggregate "
+                        + "(the publisher keeps each aggregate's events in order)")
+                .register(registry);
+        Gauge.builder("onlineorder.outbox.blocked_events", outboxEventRepository::countBlockedEvents)
+                .description("Unpublished outbox events held back behind a FAILED event of their aggregate")
                 .register(registry);
 
         Gauge.builder("onlineorder.dead_letter.total", this::countDeadLetterTotal)

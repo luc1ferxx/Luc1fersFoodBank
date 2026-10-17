@@ -2,14 +2,17 @@ package com.laioffer.onlineorder;
 
 
 import com.laioffer.onlineorder.messaging.OrderEventConsumer;
+import com.laioffer.onlineorder.messaging.contract.EventSchemaViolationException;
 import com.laioffer.onlineorder.messaging.OrderEventDeadLetterConsumer;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.header.Header;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.context.properties.bind.Binder;
@@ -30,11 +33,13 @@ import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ListenerExecutionFailedException;
 import org.springframework.kafka.listener.MessageListenerContainer;
+import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.util.backoff.BackOffExecution;
 
 
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.sql.SQLTransientConnectionException;
 import java.time.Duration;
 import java.util.Arrays;
@@ -226,6 +231,36 @@ class KafkaConfigurationTests {
                     // Three retries, then the fourth failure is dead-lettered.
                     Assertions.assertEquals(4, handleUntilRecovered(errorHandler, invalidEvent, Mockito.mock(Consumer.class), 100));
                     Mockito.verify(kafkaTemplate).send(Mockito.<ProducerRecord<String, String>>any());
+                });
+    }
+
+
+    @Test
+    void orderListener_shouldDeadLetterAnEventSchemaViolationOnItsFirstFailureWithTheViolations() {
+        KafkaTemplate<String, String> kafkaTemplate = deadLetterTemplate();
+        contextRunner
+                .withBean(KafkaTemplate.class, () -> kafkaTemplate)
+                .withPropertyValues("KAFKA_LISTENER_BACKOFF=1ms")
+                .run(context -> {
+                    CommonErrorHandler errorHandler = orderEventErrorHandler(context);
+                    // What the listener throws for a record that breaks its contract (EventContracts.read).
+                    Exception violation = new ListenerExecutionFailedException(
+                            "Listener method threw exception",
+                            new EventSchemaViolationException(
+                                    "Record on order-events: event evt-1 (order.paid v1)",
+                                    List.of("/data: required property 'customer_id' not found")
+                            )
+                    );
+
+                    Assertions.assertEquals(1, handleUntilRecovered(errorHandler, violation, Mockito.mock(Consumer.class), 100));
+                    @SuppressWarnings("unchecked")
+                    ArgumentCaptor<ProducerRecord<String, String>> deadLetter = ArgumentCaptor.forClass(ProducerRecord.class);
+                    Mockito.verify(kafkaTemplate).send(deadLetter.capture());
+                    Header message = deadLetter.getValue().headers().lastHeader(KafkaHeaders.DLT_EXCEPTION_MESSAGE);
+                    Assertions.assertNotNull(message);
+                    String text = new String(message.value(), StandardCharsets.UTF_8);
+                    Assertions.assertTrue(text.contains("violates its event schema"), text);
+                    Assertions.assertTrue(text.contains("customer_id"), text);
                 });
     }
 

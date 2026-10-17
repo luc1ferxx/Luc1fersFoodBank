@@ -1,6 +1,8 @@
 package com.laioffer.onlineorder;
 
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import org.apache.kafka.clients.admin.AdminClient;
@@ -20,6 +22,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -72,6 +75,12 @@ class ContainerizedOrderFlowTests {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private KafkaTemplate<String, String> kafkaTemplate;
+
+    @Autowired
+    private MeterRegistry meterRegistry;
 
 
     @DynamicPropertySource
@@ -165,6 +174,46 @@ class ContainerizedOrderFlowTests {
             }
             return false;
         });
+    }
+
+
+    /**
+     * A record that breaks its contract fails the same way on every attempt, so each of the four consumer groups on the
+     * order topic dead-letters it on its first attempt (listener-retries is 1 here) and the stored dead letter carries
+     * the violations.
+     */
+    @Test
+    void schemaInvalidEvent_shouldBeDeadLetteredByEveryGroupWithoutRetriesAndKeepTheViolation() throws Exception {
+        String eventId = "invalid-" + System.nanoTime();
+        String payload = """
+                {"event_id":"%s","event_version":1,"event_type":"order.paid","aggregate_type":"ORDER",
+                 "aggregate_id":424242,"sequence":1,"occurred_at":"2026-04-25T12:00:00",
+                 "data":{"status":"PAID","total_price":10.59,"created_at":"2026-04-25T12:00:00","items":[]}}
+                """.formatted(eventId);
+
+        kafkaTemplate.send("order-events", "424242", payload).get(30, TimeUnit.SECONDS);
+
+        await(Duration.ofSeconds(60), () -> consumerViolations() >= 4 && !jdbcTemplate.queryForList(
+                "SELECT id FROM dead_letter_events WHERE event_id = ?", Long.class, eventId).isEmpty());
+        String errorMessage = jdbcTemplate.queryForObject(
+                "SELECT error_message FROM dead_letter_events WHERE event_id = ?", String.class, eventId);
+        Assertions.assertTrue(errorMessage.contains("violates its event schema"), errorMessage);
+        Assertions.assertTrue(errorMessage.contains("customer_id"), errorMessage);
+        // A retried record would be read (and counted) again after the 200ms listener backoff.
+        Thread.sleep(1500);
+        Assertions.assertEquals(4.0, consumerViolations());
+        Assertions.assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM merchant_orders WHERE order_id = 424242", Integer.class));
+    }
+
+
+    private double consumerViolations() {
+        return meterRegistry.find("onlineorder.events.schema_violations")
+                .tags("side", "consumer", "topic", "order-events", "event_type", "order.paid")
+                .counters()
+                .stream()
+                .mapToDouble(Counter::count)
+                .sum();
     }
 
 

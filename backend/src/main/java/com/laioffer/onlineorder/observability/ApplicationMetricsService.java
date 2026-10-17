@@ -109,6 +109,37 @@ public class ApplicationMetricsService {
     }
 
 
+    /**
+     * An event that broke its published contract (README "Event contracts").
+     *
+     * @param side      producer (an event the application tried to write: a bug, its transaction was rolled back) or
+     *                  consumer (a record read from Kafka: dead-lettered without retries)
+     * @param topic     the contract topic (order-events, delivery-events, merchant-events), or unknown
+     * @param eventType a published event type, or unknown
+     */
+    public void recordEventSchemaViolation(String side, String topic, String eventType) {
+        meterRegistry.counter(
+                "onlineorder.events.schema_violations",
+                "side", normalize(side),
+                "topic", normalize(topic),
+                "event_type", normalize(eventType)
+        ).increment();
+    }
+
+
+    /**
+     * A consumer skipped an event whose sequence was not above the last one it applied for the event's aggregate (a
+     * late or replayed event that later events already superseded).
+     */
+    public void recordStaleEventSkipped(String consumer, String eventType) {
+        meterRegistry.counter(
+                "onlineorder.events.stale_skipped",
+                "consumer", normalize(consumer),
+                "event_type", normalize(eventType)
+        ).increment();
+    }
+
+
     public void recordDeadLetterStored(String sourceTopic) {
         meterRegistry.counter(
                 "onlineorder.dead_letter.stored",

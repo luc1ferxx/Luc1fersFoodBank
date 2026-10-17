@@ -6,8 +6,11 @@ import com.laioffer.onlineorder.entity.OutboxEventEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.messaging.EventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
+import com.laioffer.onlineorder.messaging.OrderEventItem;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
+import com.laioffer.onlineorder.messaging.contract.EventContracts;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 import com.laioffer.onlineorder.model.OutboxEventDto;
@@ -16,6 +19,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
@@ -30,12 +34,18 @@ import java.util.UUID;
 @Service
 public class OrderEventOutboxService {
 
+    /**
+     * The schema version of the order events written here: event-schemas/order-events/&lt;event_type&gt;/v1.json.
+     */
+    public static final int ORDER_EVENT_VERSION = 1;
+
     private static final Logger LOGGER = LoggerFactory.getLogger(OrderEventOutboxService.class);
 
     private static final String OUTBOX_STATUS_PENDING = "PENDING";
     private static final String OUTBOX_STATUS_PROCESSING = "PROCESSING";
     private static final String OUTBOX_STATUS_PUBLISHED = "PUBLISHED";
     private static final String OUTBOX_STATUS_FAILED = "FAILED";
+    private static final String OUTBOX_STATUS_ABANDONED = "ABANDONED";
 
     private final int batchSize;
     private final Duration claimTimeout;
@@ -43,6 +53,8 @@ public class OrderEventOutboxService {
     private final ObjectMapper objectMapper;
     private final String orderTopic;
     private final OutboxEventRepository outboxEventRepository;
+    private final OutboxSequenceAllocator sequenceAllocator;
+    private final EventContracts eventContracts;
 
 
     public OrderEventOutboxService(
@@ -51,7 +63,9 @@ public class OrderEventOutboxService {
             @Value("${app.outbox.max-attempts:10}") int maxAttempts,
             @Value("${app.kafka.order-topic}") String orderTopic,
             ObjectMapper objectMapper,
-            OutboxEventRepository outboxEventRepository
+            OutboxEventRepository outboxEventRepository,
+            OutboxSequenceAllocator sequenceAllocator,
+            EventContracts eventContracts
     ) {
         this.batchSize = batchSize;
         this.claimTimeout = claimTimeout;
@@ -59,6 +73,8 @@ public class OrderEventOutboxService {
         this.objectMapper = objectMapper;
         this.orderTopic = orderTopic;
         this.outboxEventRepository = outboxEventRepository;
+        this.sequenceAllocator = sequenceAllocator;
+        this.eventContracts = eventContracts;
     }
 
 
@@ -66,6 +82,7 @@ public class OrderEventOutboxService {
      * @param occurredAt when the change this event describes happened: the order creation time for a
      *                   new order, or the transition time for a status change
      */
+    @Transactional(propagation = Propagation.MANDATORY)
     public void enqueueOrderEvent(
             OrderEntity order,
             List<OrderHistoryItemDto> items,
@@ -78,7 +95,7 @@ public class OrderEventOutboxService {
         String normalizedIdempotencyKey = normalizeNullable(idempotencyKey);
         OrderEventEnvelope envelope = new OrderEventEnvelope(
                 eventId,
-                1,
+                ORDER_EVENT_VERSION,
                 eventType,
                 "ORDER",
                 order.id(),
@@ -90,52 +107,67 @@ public class OrderEventOutboxService {
                         order.status(),
                         order.totalPrice(),
                         order.createdAt(),
-                        items,
+                        eventItems(items),
                         order.restaurantId(),
                         order.cancelReason()
                 )
         );
-        enqueueEvent("ORDER", order.id(), orderTopic, String.valueOf(order.id()), eventType, eventId, envelope);
+        enqueueEvent(orderTopic, String.valueOf(order.id()), envelope);
     }
 
 
     /**
-     * Stores an event of any aggregate in the outbox, in the caller's transaction, for the publisher to relay to
-     * {@code topic}. Every outbox write, order events included, goes through this method.
+     * Stores an event of any aggregate in the outbox, in the caller's transaction (required), for the publisher to
+     * relay to {@code topic}. Every outbox write, order events included, goes through this method:
+     * <ol>
+     *     <li>the event gets the next sequence of its aggregate ({@link OutboxSequenceAllocator}; the aggregate's
+     *     counter row stays locked until the caller's transaction ends, so its events commit in sequence order);</li>
+     *     <li>the envelope, with that sequence, is serialized and checked against the published schema of its event
+     *     type and version ({@link EventContracts#serialize}); an event that breaks its contract fails the caller's
+     *     transaction with {@code EventSchemaViolationException};</li>
+     *     <li>the row is inserted with the aggregate, event id, event type and sequence of the envelope.</li>
+     * </ol>
      *
+     * @param topic    the Kafka topic name (app.kafka.order-topic, app.fulfilment.delivery-topic or
+     *                 app.fulfilment.merchant-topic)
      * @param eventKey the Kafka record key: events with the same key keep their order. Use the order id, so that
      *                 all events about one order land on the same partition of each topic.
-     * @param envelope the event envelope, serialized to JSON as the record value; its event id is {@code eventId}
+     * @param envelope the event without a sequence; serialized to JSON (snake_case) as the record value
      */
-    public void enqueueEvent(
-            String aggregateType,
-            Long aggregateId,
-            String topic,
-            String eventKey,
-            String eventType,
-            String eventId,
-            Object envelope
-    ) {
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void enqueueEvent(String topic, String eventKey, EventEnvelope envelope) {
+        long sequence = sequenceAllocator.next(envelope.aggregateType(), envelope.aggregateId());
+        EventEnvelope sequenced = envelope.withSequence(sequence);
+        String payload = eventContracts.serialize(topic, sequenced);
         LocalDateTime now = LocalDateTime.now();
         outboxEventRepository.save(new OutboxEventEntity(
                 null,
-                aggregateType,
-                aggregateId,
-                eventId,
+                sequenced.aggregateType(),
+                sequenced.aggregateId(),
+                sequenced.eventId(),
                 topic,
                 eventKey,
-                eventType,
-                serializePayload(envelope),
+                sequenced.eventType(),
+                payload,
                 OUTBOX_STATUS_PENDING,
                 0,
                 null,
                 now,
                 now,
-                null
+                null,
+                null,
+                sequence
         ));
     }
 
 
+    /**
+     * Claims up to batch-size events that are ready: PENDING, or PROCESSING with an expired claim, and the head of their
+     * aggregate, so no earlier event of the same aggregate is still PENDING, PROCESSING or FAILED
+     * ({@link OutboxEventRepository#lockNextBatchReadyToPublish}). An aggregate's next event is only claimed once Kafka
+     * acknowledged the previous one, whichever instance published it, and a FAILED event holds back the later events of
+     * its aggregate until an operator retries ({@link #retryFailedEvent}) or abandons ({@link #abandonFailedEvent}) it.
+     */
     @Transactional
     public List<OutboxEventEntity> claimNextBatch() {
         LocalDateTime now = LocalDateTime.now();
@@ -269,6 +301,62 @@ public class OrderEventOutboxService {
     }
 
 
+    /**
+     * Gives up on a FAILED event that can never be published (for example a record the broker will always reject), so
+     * that the later events of its aggregate, which the head-of-line claim holds back behind it, are published. The
+     * event becomes ABANDONED: never published, never retried, never deleted by the cleanup, with its last_error kept.
+     * Its consumers never receive it, so whatever it would have caused there does not happen; the operator reconciles
+     * that by hand (docs/operations.md section 8). Prefer {@link #retryFailedEvent} whenever the cause can be fixed.
+     *
+     * @return the abandoned event
+     */
+    @Transactional
+    public OutboxEventDto abandonFailedEvent(Long eventId) {
+        OutboxEventEntity event = outboxEventRepository.lockById(eventId);
+        if (event == null) {
+            throw new ResourceNotFoundException("Outbox event not found");
+        }
+        if (!OUTBOX_STATUS_FAILED.equals(event.status())) {
+            throw new BadRequestException("Only FAILED outbox events can be abandoned");
+        }
+
+        int updated = outboxEventRepository.markFailedAbandoned(
+                eventId,
+                OUTBOX_STATUS_FAILED,
+                OUTBOX_STATUS_ABANDONED,
+                LocalDateTime.now()
+        );
+        if (updated != 1) {
+            throw new ConflictException("Unable to abandon outbox event");
+        }
+        LOGGER.warn(
+                "Failed outbox event {} abandoned; it will never be published: aggregate_type={}, aggregate_id={}, "
+                        + "sequence={}, event_type={}, last_error={}",
+                event.id(),
+                event.aggregateType(),
+                event.aggregateId(),
+                event.aggregateSequence(),
+                event.eventType(),
+                event.lastError()
+        );
+        return outboxEventRepository.findById(eventId)
+                .map(OutboxEventDto::new)
+                .orElseThrow(() -> new ResourceNotFoundException("Outbox event not found"));
+    }
+
+
+    /**
+     * @return whether one of the given published events has a PENDING successor in its aggregate that the head-of-line
+     * claim can return now
+     */
+    public boolean hasPendingSuccessor(List<Long> publishedIds) {
+        if (publishedIds.isEmpty()) {
+            return false;
+        }
+        return outboxEventRepository.countWithPendingSuccessor(publishedIds) > 0;
+    }
+
+
     public OrderEventEnvelope readEnvelope(String payload) {
         try {
             return objectMapper.readValue(payload, OrderEventEnvelope.class);
@@ -290,12 +378,26 @@ public class OrderEventOutboxService {
     }
 
 
-    private String serializePayload(Object payload) {
-        try {
-            return objectMapper.writeValueAsString(payload);
-        } catch (JacksonException ex) {
-            throw new IllegalStateException("Unable to serialize order event payload", ex);
+    /**
+     * The order lines as the event contract has them; the REST DTO is only the input of this mapping.
+     */
+    private static List<OrderEventItem> eventItems(List<OrderHistoryItemDto> items) {
+        if (items == null) {
+            return List.of();
         }
+        return items.stream()
+                .map(item -> new OrderEventItem(
+                        item.id(),
+                        item.menuItemId(),
+                        item.restaurantId(),
+                        item.price(),
+                        null,
+                        item.quantity(),
+                        item.menuItemName(),
+                        item.menuItemDescription(),
+                        item.menuItemImageUrl()
+                ))
+                .toList();
     }
 
 

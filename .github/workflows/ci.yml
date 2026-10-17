@@ -110,6 +110,29 @@ jobs:
             -strict -summary -kubernetes-version 1.31.0 /manifests
       - name: Workflow files (actionlint)
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
+      # EventSchemaContractTests (backend-test) checks the schema files against SHA256SUMS; this keeps a pull request
+      # from changing a published file and its checksum together. Only new files and new SHA256SUMS lines may appear;
+      # catalog.json may change (new versions, retirements).
+      - name: Published event schemas are append-only
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SCHEMAS: backend/src/main/resources/event-schemas
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          changed=$(git diff --name-only --diff-filter=DMRT "$BASE_SHA" HEAD -- "$SCHEMAS" \
+            ":(exclude)$SCHEMAS/catalog.json" ":(exclude)$SCHEMAS/SHA256SUMS")
+          if [ -n "$changed" ]; then
+            echo "::error::Published event schemas never change; publish the next version instead (README \"Event contracts\"):"
+            echo "$changed"
+            exit 1
+          fi
+          removed=$(git diff -U0 "$BASE_SHA" HEAD -- "$SCHEMAS/SHA256SUMS" | grep -E '^-[0-9a-f]{64}' || true)
+          if [ -n "$removed" ]; then
+            echo "::error::Lines of $SCHEMAS/SHA256SUMS were changed or removed:"
+            echo "$removed"
+            exit 1
+          fi
 
   package-backend:
     runs-on: ubuntu-latest
