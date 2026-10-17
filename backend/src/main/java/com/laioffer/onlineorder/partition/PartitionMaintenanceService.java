@@ -44,8 +44,8 @@ import java.util.function.Supplier;
  * the table locks it needs before any DDL, in the order application transactions take them (see lockForDdl): ACCESS
  * EXCLUSIVE on the parent table and its default partition for a moment (for a move, while the rows move); a
  * {@code lock_timeout} (app.partitions.lock-timeout) makes the step give up instead of queueing every insert behind a
- * long-running query, and the next run retries. On H2 nothing is
- * partitioned and the job does nothing; MaintenanceCleanupService deletes rows there.
+ * long-running query, and the next run retries. On H2 nothing is partitioned and the job does nothing;
+ * MaintenanceCleanupService deletes rows there.
  *
  * <p>Meters: {@code onlineorder.partitions.created}, {@code onlineorder.partitions.dropped} and
  * {@code onlineorder.partitions.maintenance.failures}, tagged with the table; the partition gauges are in
