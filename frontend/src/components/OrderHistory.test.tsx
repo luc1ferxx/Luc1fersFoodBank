@@ -9,6 +9,7 @@ import {
   installFakeBackend,
   json,
   orderFixture,
+  orderNoFor,
 } from "../test/fakeBackend";
 import { flushPromises, renderApp } from "../test/helpers";
 
@@ -30,11 +31,13 @@ const rejected: OrderStatusChange = {
   occurred_at: "2026-10-16T12:05:00Z",
 };
 
+const historyName = `Status history of Order #${orderNoFor(7)}`;
+
 const openHistory = async (user: UserEvent) => {
   await screen.findByText(`${demoUser.first_name} is signed in`);
   await user.click(screen.getByRole("button", { name: "Orders" }));
   await user.click(await screen.findByRole("button", { name: "Status history" }));
-  return screen.findByRole("region", { name: "Status history of order #7" });
+  return screen.findByRole("region", { name: historyName });
 };
 
 const historyLines = (section: HTMLElement) =>
@@ -64,7 +67,7 @@ describe("order status history", () => {
     const toggle = screen.getByRole("button", { name: "Hide status history" });
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     await user.click(toggle);
-    expect(screen.queryByRole("region", { name: "Status history of order #7" })).toBeNull();
+    expect(screen.queryByRole("region", { name: historyName })).toBeNull();
     expect(backend.callsTo("GET", "/orders/7/history")).toHaveLength(1);
   });
 

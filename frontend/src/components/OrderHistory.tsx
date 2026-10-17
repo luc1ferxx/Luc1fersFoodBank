@@ -4,20 +4,25 @@ import { formatDateTime } from "../lib/format";
 import { ACTOR_LABELS } from "../lib/labels";
 import { Alert } from "./Alert";
 
-/** The status changes of one order, oldest first. */
+/**
+ * The status changes of one order, oldest first. `orderId` is the internal id the API
+ * takes; `label` names the order for people ("Order #<order number>").
+ */
 export function OrderHistory({
   id,
   orderId,
+  label,
   status,
 }: {
   id: string;
   orderId: number;
+  label: string;
   status: OrderStatus;
 }) {
   const history = useOrderHistory(orderId, status);
 
   return (
-    <section className="order-history" id={id} aria-label={`Status history of order #${orderId}`}>
+    <section className="order-history" id={id} aria-label={`Status history of ${label}`}>
       <div className="order-history__heading">
         <h4>Status history</h4>
         <button

@@ -23,3 +23,10 @@ export const DELIVERY_STATUS_LABELS: Readonly<Record<DeliveryStatus, string>> = 
   DELIVERED: "Delivered",
   CANCELLED: "Cancelled",
 };
+
+/**
+ * "Order #<order number>": the public number customers see, with the internal id as a
+ * fallback for a backend that does not send one. Staff tools that need the id add it.
+ */
+export const orderLabel = (order: { id: number; order_no: string | null }): string =>
+  `Order #${order.order_no ?? order.id}`;

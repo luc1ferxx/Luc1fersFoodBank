@@ -3,6 +3,7 @@ import type { CartItem, Order } from "../api/dto";
 import type { CartState } from "../hooks/useCart";
 import type { CheckoutState } from "../hooks/useCheckout";
 import { formatCurrency, formatDateTime } from "../lib/format";
+import { orderLabel } from "../lib/labels";
 import { Alert } from "./Alert";
 import { MediaImage } from "./MediaImage";
 
@@ -62,7 +63,7 @@ function OrderConfirmation({ order }: { order: Order }) {
     <article className="confirmation-card">
       <p className="section-kicker">Order confirmation</p>
       <h3>
-        Order #{order.id} · {order.status}
+        {orderLabel(order)} · {order.status}
       </h3>
       <p>
         {formatCurrency(order.total_price)} · {formatDateTime(order.created_at)}

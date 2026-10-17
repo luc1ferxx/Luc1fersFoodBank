@@ -2,6 +2,7 @@ import type { FormEvent } from "react";
 import { ORDER_STATUSES, parseOrderStatus } from "../api/dto";
 import type { AdminTools } from "../hooks/useAdminTools";
 import { formText } from "../lib/forms";
+import { orderLabel } from "../lib/labels";
 import { Alert } from "./Alert";
 
 const readField = (event: FormEvent<HTMLFormElement>, name: string) =>
@@ -55,7 +56,7 @@ export function AdminPanel({ admin }: { admin: AdminTools }) {
         </button>
         {orderResult ? (
           <div className="result-box">
-            Order #{orderResult.id} is {orderResult.status}
+            {orderLabel(orderResult)} (id {orderResult.id}) is {orderResult.status}
           </div>
         ) : null}
       </form>

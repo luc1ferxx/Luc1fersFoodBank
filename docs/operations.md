@@ -606,7 +606,9 @@ build a second one.
 (`SnowflakeIdGenerator`: 41 bits of milliseconds since 2020-01-01, 10 bits of worker id, 12 bits of sequence starting
 at a random value below 2048 each millisecond). Checkout assigns it (`OrderNumberCallback`, on the insert of a new
 order); the order APIs return it as `order_no`, a JSON string because JavaScript numbers lose digits past 2^53;
-notifications name the order by it. The internal `id` stays the key of every table and API path. Order numbers do not
+notifications name the order by it, and so does the customer UI (`orderLabel` in `frontend/src/lib/labels.ts`; the
+merchant and rider consoles still show the internal id, see README "Honest Boundaries"). The internal `id` stays the key of
+every table and API path. Order numbers do not
 reveal how many orders exist, but they are not secrets: every endpoint still checks who may read the order.
 
 V10_1 numbers the existing orders in id order from their `created_at`, with worker id 1023, which no running instance

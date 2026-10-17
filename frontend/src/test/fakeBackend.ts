@@ -29,7 +29,13 @@ import {
   noContent,
   requestJson,
 } from "./fakeHttp";
-import { PASSWORDS, menusFixture, restaurantsFixture, riderProfileFixture } from "./fixtures";
+import {
+  PASSWORDS,
+  menusFixture,
+  orderNoFor,
+  restaurantsFixture,
+  riderProfileFixture,
+} from "./fixtures";
 
 export {
   apiError,
@@ -48,6 +54,7 @@ export {
   menusFixture,
   merchantUser,
   orderFixture,
+  orderNoFor,
   restaurantsFixture,
   riderProfileFixture,
   riderUser,
@@ -282,8 +289,10 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
       "POST",
       /^\/payments\/checkout$/,
       protectedRoute(() => {
+        const id = state.nextOrderId++;
         const order: Order = {
-          id: state.nextOrderId++,
+          id,
+          order_no: orderNoFor(id),
           status: "PAID",
           total_price: state.cart.total_price,
           created_at: "2026-10-16T12:00:00Z",
@@ -305,9 +314,10 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
         state.notifications.unshift({
           id: order.id,
           order_id: order.id,
+          order_no: order.order_no,
           event_type: "ORDER_PAID",
-          title: `Order #${order.id} paid`,
-          message: "Payment captured.",
+          title: "Order paid",
+          message: `Order #${order.order_no ?? order.id} was paid successfully.`,
           created_at: order.created_at,
         });
         state.cart.order_items = [];

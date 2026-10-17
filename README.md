@@ -653,7 +653,8 @@ when it is not enough:
   transaction-scoped advisory lock and an insert that checks every partition, plus a unique index per partition. H2
   keeps plain tables. Gauges and alerts watch the months ahead and the default partitions.
 - **Public order numbers (V10_1).** `orders.order_no` is a 64-bit Snowflake id (timestamp, worker id, sequence)
-  assigned at checkout, returned by the order APIs and used in notifications; the internal `id` stays the key.
+  assigned at checkout, returned by the order APIs (as a string) and used in notifications; the customer UI names
+  orders by it, while the internal `id` stays the key of every table and API path.
   Existing orders were numbered from their creation time with a reserved worker id.
 - **Worker ids (V10_2).** Each instance needs its own worker id: configured (`APP_IDS_WORKER_ID`) for single
   instances and StatefulSets, or leased from `snowflake_worker_leases` on Kubernetes, where a timestamp fence keeps a
@@ -781,7 +782,7 @@ This project is intentionally strong on backend correctness patterns, but it is 
 - H2 is a lightweight local fallback, not the production-shaped runtime.
 - Catalog edits are limited to admin updates of existing restaurants and menu items. There is no create or delete API, so rows changed directly in the database show up once the cached entries expire. One exception: `GET /restaurant/{id}/menu` serves a directly inserted restaurant at once and evicts the stale list, because an id missing from the cached list is checked in the database (rate-limited) before the `404`. The demo seed matches rows by name, so renaming a demo restaurant or item makes the next startup with `db/demo` insert the original again.
 - The architecture is a deliberate monolith. Service decomposition is deferred until the core transaction is correct and observable.
-- The order data lives in one PostgreSQL database; sharding is planned ([ADR 0001](docs/adr/0001-order-sharding.md)), not built. The React UI still labels orders and notifications with the internal `id`; the APIs and notification texts already carry the public `order_no`.
+- The order data lives in one PostgreSQL database; sharding is planned ([ADR 0001](docs/adr/0001-order-sharding.md)), not built. Customers see only the public `order_no` (order history, checkout confirmation, notifications; the admin order tool shows both), but the merchant and rider consoles still name orders by the internal `id`: the order events do not carry `order_no` yet, so the merchant and dispatch projections cannot show it.
 
 ---
 

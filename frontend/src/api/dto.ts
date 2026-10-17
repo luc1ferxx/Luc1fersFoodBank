@@ -239,9 +239,14 @@ export const decodeOrderItem: Decoder<OrderItem> = (value, path) => {
   };
 };
 
-/** GET /orders, checkout, cancel, and status change responses (OrderDto). */
+/**
+ * GET /orders, checkout, cancel, and status change responses (OrderDto). `id` is the
+ * internal key the order endpoints take; `order_no` is the public order number shown to
+ * people (a 64-bit Snowflake id, sent as a string because it does not fit a JS number).
+ */
 export interface Order {
   id: number;
+  order_no: string | null;
   total_price: number;
   status: OrderStatus;
   created_at: string | null;
@@ -254,6 +259,7 @@ export const decodeOrder: Decoder<Order> = (value, path) => {
   const f = fieldsOf(value, path);
   return {
     id: f.number("id"),
+    order_no: f.optionalString("order_no"),
     total_price: f.number("total_price"),
     status: f.oneOf("status", ORDER_STATUSES),
     created_at: f.optionalString("created_at"),
@@ -289,10 +295,11 @@ export const decodeOrderStatusChange: Decoder<OrderStatusChange> = (value, path)
   };
 };
 
-/** GET /notifications (OrderNotificationDto). */
+/** GET /notifications (OrderNotificationDto); `order_no` as in Order. */
 export interface OrderNotification {
   id: number;
   order_id: number;
+  order_no: string | null;
   event_type: string;
   title: string;
   message: string;
@@ -304,6 +311,7 @@ export const decodeNotification: Decoder<OrderNotification> = (value, path) => {
   return {
     id: f.number("id"),
     order_id: f.number("order_id"),
+    order_no: f.optionalString("order_no"),
     event_type: f.string("event_type"),
     title: f.string("title"),
     message: f.string("message"),
