@@ -55,6 +55,12 @@ public class DispatchService {
     static final String DISPATCH_CONSUMER = "dispatch-consumer";
     static final String DELIVERY_STATUS_CONFLICT = "DELIVERY_STATUS_CONFLICT";
     static final String RIDER_NOT_DISPATCHABLE = "RIDER_NOT_DISPATCHABLE";
+    static final String DELIVERY_AGGREGATE = "DELIVERY";
+
+    /**
+     * The schema version of the delivery events written here: event-schemas/delivery-events/&lt;event_type&gt;/v1.json.
+     */
+    static final int DELIVERY_EVENT_VERSION = 1;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DispatchService.class);
 
@@ -394,9 +400,9 @@ public class DispatchService {
         String eventId = UUID.randomUUID().toString();
         DeliveryEventEnvelope envelope = new DeliveryEventEnvelope(
                 eventId,
-                1,
+                DELIVERY_EVENT_VERSION,
                 eventType,
-                "DELIVERY",
+                DELIVERY_AGGREGATE,
                 delivery.id(),
                 occurredAt,
                 eventId,
@@ -410,15 +416,7 @@ public class DispatchService {
                         delivery.status()
                 )
         );
-        outboxService.enqueueEvent(
-                "DELIVERY",
-                delivery.id(),
-                deliveryTopic,
-                String.valueOf(delivery.orderId()),
-                eventType,
-                eventId,
-                envelope
-        );
+        outboxService.enqueueEvent(deliveryTopic, String.valueOf(delivery.orderId()), envelope);
     }
 
 

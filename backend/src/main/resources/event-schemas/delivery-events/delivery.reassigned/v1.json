@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/delivery-events/delivery.reassigned/v1.json",
+  "title": "delivery.reassigned, version 1",
+  "description": "An admin moved an open delivery to another rider (data.rider_id); the delivery status is unchanged. Topic delivery-events, record key: the order id, aggregate: DELIVERY (aggregate_id = the delivery id).",
+  "$ref": "../../common/envelope/v1.json",
+  "properties": {
+    "event_type": {
+      "const": "delivery.reassigned"
+    },
+    "aggregate_type": {
+      "const": "DELIVERY"
+    },
+    "data": {
+      "$ref": "../../common/delivery-data/v1.json",
+      "properties": {
+        "status": {
+          "enum": [
+            "ASSIGNED",
+            "PICKED_UP"
+          ]
+        }
+      }
+    }
+  }
+}

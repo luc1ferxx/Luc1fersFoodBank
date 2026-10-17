@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/common/envelope/v1.json",
+  "title": "Event envelope, version 1",
+  "description": "Fields every event on order-events, delivery-events and merchant-events carries, in snake_case. The content model is open: a consumer ignores properties it does not know, so a compatible version of an event type may add optional properties. Each event type's schema refers to this envelope and constrains event_type, aggregate_type and data.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "event_version",
+    "event_type",
+    "aggregate_type",
+    "aggregate_id",
+    "occurred_at",
+    "data"
+  ],
+  "properties": {
+    "event_id": {
+      "description": "Unique per event. Consumers deduplicate on it (processed_events).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "event_version": {
+      "description": "Version of the event type's schema the producer wrote: event-schemas/<topic>/<event_type>/v<event_version>.json.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "event_type": {
+      "description": "<module>.<fact>, for example order.paid.",
+      "type": "string",
+      "pattern": "^[a-z]+\\.[a-z_]+$"
+    },
+    "aggregate_type": {
+      "description": "ORDER, DELIVERY or MERCHANT_ORDER.",
+      "type": "string",
+      "pattern": "^[A-Z_]+$"
+    },
+    "aggregate_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "sequence": {
+      "description": "Position of the event among the events of its aggregate (aggregate_type, aggregate_id): 1, 2, 3, ... without gaps, in commit order, assigned by the outbox. The outbox publishes an aggregate's events in this order; consumers that keep per-aggregate state skip an event whose sequence is not above the last one they applied. Absent on events written before migration V9.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "occurred_at": {
+      "description": "When the fact happened.",
+      "$ref": "#/$defs/local_date_time"
+    },
+    "correlation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotency_key": {
+      "description": "The Idempotency-Key of the request that caused the event, when it had one.",
+      "type": "string",
+      "minLength": 1
+    },
+    "data": {
+      "description": "The event type's payload.",
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "local_date_time": {
+      "description": "ISO-8601 local date-time without an offset (Jackson's LocalDateTime format), in the producing instance's time zone.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]{1,9})?)?$"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/order-events/order.paid/v2.json",
+  "title": "Fixture order.paid v2",
+  "$ref": "../../common/envelope/v1.json",
+  "properties": {
+    "event_type": {
+      "const": "order.paid"
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "customer_id"
+      ],
+      "properties": {
+        "customer_id": {
+          "type": "integer"
+        },
+        "tip": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

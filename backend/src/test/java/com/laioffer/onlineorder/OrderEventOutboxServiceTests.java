@@ -4,7 +4,12 @@ import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OutboxEventEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
+import com.laioffer.onlineorder.messaging.DeliveryEventPayload;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
+import com.laioffer.onlineorder.messaging.contract.EventSchemaViolationException;
+import com.laioffer.onlineorder.messaging.contract.EventTestSupport;
+import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 import com.laioffer.onlineorder.model.OutboxEventDto;
 import com.laioffer.onlineorder.repository.OutboxEventRepository;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
@@ -14,7 +19,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
-import tools.jackson.databind.json.JsonMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -76,23 +82,101 @@ class OrderEventOutboxServiceTests {
 
 
     @Test
-    void enqueueEvent_shouldStoreAnEventOfAnyAggregateOnItsOwnTopic() {
+    void enqueueOrderEvent_shouldWriteTheOrderLinesAsTheEventContractHasThem() throws Exception {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        LocalDateTime createdAt = LocalDateTime.of(2026, 4, 25, 12, 0);
+        OrderEntity paidOrder = new OrderEntity(10L, 3L, new BigDecimal("21.18"), "PAID", createdAt, 2L, null);
+        OrderHistoryItemDto line = new OrderHistoryItemDto(
+                5L, 7L, 2L, new BigDecimal("10.59"), 2, "Whopper Meal", "Meal", "https://example.com/whopper.png");
+
+        service.enqueueOrderEvent(paidOrder, List.of(line), "checkout-key", createdAt);
+
+        OutboxEventEntity stored = savedOutboxEvent(repository);
+        JsonNode payload = EventTestSupport.mapper().readTree(stored.payload());
+        Assertions.assertEquals(1, payload.get("event_version").asInt());
+        JsonNode item = payload.get("data").get("items").get(0);
+        Assertions.assertEquals(5L, item.get("id").asLong());
+        Assertions.assertEquals(7L, item.get("menu_item_id").asLong());
+        Assertions.assertEquals("10.59", item.get("price").decimalValue().toPlainString());
+        Assertions.assertEquals(2, item.get("quantity").asInt());
+        Assertions.assertEquals("Whopper Meal", item.get("menu_item_name").asString());
+        // The currency is optional until the order carries one; an absent currency is omitted, not null.
+        Assertions.assertFalse(item.has("currency"));
+        Assertions.assertFalse(payload.get("data").has("currency"));
+        Assertions.assertTrue(stored.payload().contains("\"total_price\":21.18"), stored.payload());
+    }
+
+
+    @Test
+    void enqueueEvent_shouldStoreAnEventOfAnyAggregateOnItsOwnTopic() throws Exception {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
         OrderEventOutboxService service = newService(repository);
 
-        service.enqueueEvent("DELIVERY", 7L, "delivery-events", "10", "delivery.assigned", "evt-7",
-                java.util.Map.of("eventId", "evt-7", "eventType", "delivery.assigned"));
+        service.enqueueEvent("delivery-events", "10", deliveryEvent("evt-7", 7L, "ASSIGNED"));
 
-        OutboxEventEntity event = savedOutboxEvent(repository);
-        Assertions.assertEquals("DELIVERY", event.aggregateType());
-        Assertions.assertEquals(7L, event.aggregateId());
-        Assertions.assertEquals("delivery-events", event.topic());
-        Assertions.assertEquals("10", event.eventKey());
-        Assertions.assertEquals("delivery.assigned", event.eventType());
-        Assertions.assertEquals("evt-7", event.eventId());
-        Assertions.assertEquals("PENDING", event.status());
-        Assertions.assertEquals(0, event.attempts());
-        Assertions.assertTrue(event.payload().contains("\"eventType\":\"delivery.assigned\""));
+        ArgumentCaptor<OutboxEventEntity> captor = ArgumentCaptor.forClass(OutboxEventEntity.class);
+        Mockito.verify(repository).save(captor.capture());
+        OutboxEventEntity first = captor.getValue();
+        Assertions.assertEquals("DELIVERY", first.aggregateType());
+        Assertions.assertEquals(7L, first.aggregateId());
+        Assertions.assertEquals("delivery-events", first.topic());
+        Assertions.assertEquals("10", first.eventKey());
+        Assertions.assertEquals("delivery.assigned", first.eventType());
+        Assertions.assertEquals("evt-7", first.eventId());
+        Assertions.assertEquals("PENDING", first.status());
+        Assertions.assertEquals(0, first.attempts());
+        JsonNode payload = EventTestSupport.mapper().readTree(first.payload());
+        Assertions.assertEquals("evt-7", payload.get("event_id").asString());
+        Assertions.assertEquals("delivery.assigned", payload.get("event_type").asString());
+    }
+
+
+    @Test
+    void enqueueEvent_whenTheEventBreaksItsSchema_shouldStoreNothingAndCountTheViolation() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+        OrderEventOutboxService service = newService(repository, meterRegistry);
+
+        EventSchemaViolationException violation = Assertions.assertThrows(
+                EventSchemaViolationException.class,
+                () -> service.enqueueEvent("delivery-events", "10", deliveryEvent("evt-7", 7L, "LOST"))
+        );
+
+        Assertions.assertTrue(violation.getMessage().contains("/data/status"), violation.getMessage());
+        Mockito.verify(repository, Mockito.never()).save(Mockito.any());
+        Assertions.assertEquals(1.0, meterRegistry.get("onlineorder.events.schema_violations")
+                .tag("side", "producer")
+                .tag("topic", "delivery-events")
+                .tag("event_type", "delivery.assigned")
+                .counter()
+                .count());
+    }
+
+
+    @Test
+    void enqueueEvent_onATopicWithoutContractsOrForAnUnpublishedVersion_shouldStoreNothing() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        DeliveryEventEnvelope assigned = deliveryEvent("evt-7", 7L, "ASSIGNED");
+        DeliveryEventEnvelope unpublishedVersion = new DeliveryEventEnvelope("evt-8", 2, "delivery.assigned",
+                "DELIVERY", 7L, assigned.occurredAt(), "evt-8", null, assigned.data());
+
+        Assertions.assertThrows(
+                EventSchemaViolationException.class,
+                () -> service.enqueueEvent("rider-events", "10", assigned)
+        );
+        Assertions.assertThrows(
+                EventSchemaViolationException.class,
+                () -> service.enqueueEvent("order-events", "10", assigned)
+        );
+        EventSchemaViolationException newerVersion = Assertions.assertThrows(
+                EventSchemaViolationException.class,
+                () -> service.enqueueEvent("delivery-events", "10", unpublishedVersion)
+        );
+
+        Assertions.assertTrue(newerVersion.getMessage().contains("is not published"), newerVersion.getMessage());
+        Mockito.verify(repository, Mockito.never()).save(Mockito.any());
     }
 
 
@@ -101,8 +185,8 @@ class OrderEventOutboxServiceTests {
         OrderEventOutboxService service = newService(Mockito.mock(OutboxEventRepository.class));
 
         OrderEventEnvelope envelope = service.readEnvelope("""
-                {"eventId":"evt-legacy","eventVersion":1,"eventType":"order.paid","aggregateType":"ORDER",
-                 "aggregateId":10,"data":{"customerId":3,"status":"PAID","totalPrice":19.0,"items":[]}}
+                {"event_id":"evt-legacy","event_version":1,"event_type":"order.paid","aggregate_type":"ORDER",
+                 "aggregate_id":10,"data":{"customer_id":3,"status":"PAID","total_price":19.0,"items":[]}}
                 """);
 
         Assertions.assertEquals(3L, envelope.data().customerId());
@@ -218,14 +302,7 @@ class OrderEventOutboxServiceTests {
     @Test
     void markRetryableFailure_whenAttemptsReachMax_shouldMarkFailed() {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
-        OrderEventOutboxService service = new OrderEventOutboxService(
-                20,
-                Duration.ofSeconds(30),
-                2,
-                "order-events",
-                JsonMapper.builder().build(),
-                repository
-        );
+        OrderEventOutboxService service = newService(repository);
         OutboxEventEntity event = eventWithAttempts(2);
         Mockito.when(repository.findById(1L)).thenReturn(Optional.of(event));
 
@@ -248,14 +325,7 @@ class OrderEventOutboxServiceTests {
     @Test
     void markRetryableFailure_whenAttemptsBelowMax_shouldKeepPending() {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
-        OrderEventOutboxService service = new OrderEventOutboxService(
-                20,
-                Duration.ofSeconds(30),
-                2,
-                "order-events",
-                JsonMapper.builder().build(),
-                repository
-        );
+        OrderEventOutboxService service = newService(repository);
         OutboxEventEntity event = eventWithAttempts(1);
         Mockito.when(repository.findById(1L)).thenReturn(Optional.of(event));
 
@@ -349,13 +419,37 @@ class OrderEventOutboxServiceTests {
 
 
     private OrderEventOutboxService newService(OutboxEventRepository repository) {
+        return newService(repository, new SimpleMeterRegistry());
+    }
+
+
+    /**
+     * The application's JSON mapper and event contracts.
+     */
+    private OrderEventOutboxService newService(OutboxEventRepository repository, SimpleMeterRegistry meterRegistry) {
         return new OrderEventOutboxService(
                 20,
                 Duration.ofSeconds(30),
                 2,
                 "order-events",
-                JsonMapper.builder().build(),
-                repository
+                EventTestSupport.mapper(),
+                repository,
+                EventTestSupport.contracts(meterRegistry)
+        );
+    }
+
+
+    private static DeliveryEventEnvelope deliveryEvent(String eventId, Long deliveryId, String status) {
+        return new DeliveryEventEnvelope(
+                eventId,
+                1,
+                "PICKED_UP".equals(status) ? "delivery.picked_up" : "delivery.assigned",
+                "DELIVERY",
+                deliveryId,
+                LocalDateTime.of(2026, 4, 25, 12, 30),
+                eventId,
+                null,
+                new DeliveryEventPayload(10L, 3L, 2L, 4L, "Alice", status)
         );
     }
 

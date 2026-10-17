@@ -138,6 +138,38 @@ tests:
               summary: Requests keep waiting for a database connection on app:8081
               description: Threads have been waiting for a pooled connection for 5 minutes (9 now). Requests that wait longer than the 2s connection-timeout fail with 503.
 
+  - name: event schema violations on the consumer side
+    interval: 1m
+    input_series:
+      # The first violation of an instance registers the series at 1; a later one raises it.
+      - series: 'onlineorder_events_schema_violations_total{application="OnlineOrder", instance="app:8081", side="consumer", topic="order-events", event_type="order.paid"}'
+        values: '_x20 1x20 2x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OnlineOrderEventSchemaViolations
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: OnlineOrderEventSchemaViolations
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              side: consumer
+            exp_annotations:
+              summary: Events broke their published contract (consumer)
+              description: 'Events that do not match their schema under event-schemas/ were seen on the consumer side in the last 15 minutes. Producer: the writing transaction failed (a bug, see the ERROR log). Consumer: the record went straight to the DLT; its error_message lists the violations.'
+      - eval_time: 38m
+        alertname: OnlineOrderEventSchemaViolations
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: OnlineOrderEventSchemaViolations
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              side: consumer
+            exp_annotations:
+              summary: Events broke their published contract (consumer)
+              description: 'Events that do not match their schema under event-schemas/ were seen on the consumer side in the last 15 minutes. Producer: the writing transaction failed (a bug, see the ERROR log). Consumer: the record went straight to the DLT; its error_message lists the violations.'
+
   # onlineorder.dead_letter.stored is registered by the first dead letter, so its series starts at 1.
   - name: first dead letter after a start
     interval: 1m

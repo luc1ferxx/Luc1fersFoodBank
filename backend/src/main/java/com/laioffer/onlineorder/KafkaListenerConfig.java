@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder;
 
 
+import com.laioffer.onlineorder.messaging.contract.EventSchemaViolationException;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.springframework.beans.factory.annotation.Value;
@@ -59,6 +60,10 @@ public class KafkaListenerConfig {
         errorHandler.setBackOffFunction((record, ex) -> isTransientDatabaseFailure(ex)
                 ? transientDatabaseBackOff(backOff, transientMaxBackOff, transientRetryTimeout)
                 : null);
+        // A record that breaks its event contract (or is not JSON) fails the same way on every attempt: straight to the
+        // DLT, with the violations in the exception message header. The classifier looks through the listener's
+        // wrapping exceptions.
+        errorHandler.addNotRetryableExceptions(EventSchemaViolationException.class);
         factory.setCommonErrorHandler(errorHandler);
         return factory;
     }

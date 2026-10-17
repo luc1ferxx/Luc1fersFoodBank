@@ -122,6 +122,24 @@ groups:
           summary: Outbox events reached FAILED
           description: '{{ $value }} outbox event(s) used up app.outbox.max-attempts. Fix the cause, then retry them with POST /admin/outbox/events/{id}/retry.'
 
+      # A producer-side violation is a bug (its transaction was rolled back); a consumer-side one is a record that was
+      # dead-lettered without retries. The counter series starts at 1 like the dead-letter counter, hence the second
+      # branch.
+      - alert: OnlineOrderEventSchemaViolations
+        expr: |
+          sum by (side) (increase(onlineorder_events_schema_violations_total{application="OnlineOrder"}[15m])) > 0
+          or
+          count by (side) (
+            onlineorder_events_schema_violations_total{application="OnlineOrder"}
+            unless
+            onlineorder_events_schema_violations_total{application="OnlineOrder"} offset 15m
+          ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Events broke their published contract ({{ $labels.side }})
+          description: 'Events that do not match their schema under event-schemas/ were seen on the {{ $labels.side }} side in the last 15 minutes. Producer: the writing transaction failed (a bug, see the ERROR log). Consumer: the record went straight to the DLT; its error_message lists the violations.'
+
       # The counter is registered by the first dead letter an instance stores, so its series starts at 1 and
       # increase() cannot see that first event. The second branch catches a series that appeared within the window
       # (the first dead letter after a start, or of a new source topic); increase() covers the rest, counter resets

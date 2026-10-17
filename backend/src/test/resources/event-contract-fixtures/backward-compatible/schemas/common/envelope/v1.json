@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/common/envelope/v1.json",
+  "title": "Fixture envelope",
+  "type": "object",
+  "required": [
+    "event_id",
+    "event_version",
+    "event_type",
+    "data"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "event_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "event_type": {
+      "type": "string"
+    },
+    "data": {
+      "type": "object"
+    }
+  }
+}

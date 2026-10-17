@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/delivery-events/delivery.picked_up/v1.json",
+  "title": "delivery.picked_up, version 1",
+  "description": "The rider picked the order up. Topic delivery-events, record key: the order id, aggregate: DELIVERY (aggregate_id = the delivery id).",
+  "$ref": "../../common/envelope/v1.json",
+  "properties": {
+    "event_type": {
+      "const": "delivery.picked_up"
+    },
+    "aggregate_type": {
+      "const": "DELIVERY"
+    },
+    "data": {
+      "$ref": "../../common/delivery-data/v1.json",
+      "properties": {
+        "status": {
+          "const": "PICKED_UP"
+        }
+      }
+    }
+  }
+}

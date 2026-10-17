@@ -2,26 +2,27 @@ package com.laioffer.onlineorder.fulfilment.timeout;
 
 
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
+import com.laioffer.onlineorder.messaging.contract.EventContracts;
+import com.laioffer.onlineorder.messaging.contract.EventTopic;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
-import tools.jackson.databind.ObjectMapper;
 
 
 /**
  * Timeout consumer group on the order topic; failures are retried and dead-lettered by the shared
- * orderEventKafkaListenerContainerFactory.
+ * orderEventKafkaListenerContainerFactory, a record that breaks its contract right away.
  */
 @Component
 @ConditionalOnProperty(name = "app.kafka.enabled", havingValue = "true", matchIfMissing = true)
 public class OrderDeadlineConsumer {
 
-    private final ObjectMapper objectMapper;
+    private final EventContracts eventContracts;
     private final OrderDeadlineService orderDeadlineService;
 
 
-    public OrderDeadlineConsumer(ObjectMapper objectMapper, OrderDeadlineService orderDeadlineService) {
-        this.objectMapper = objectMapper;
+    public OrderDeadlineConsumer(EventContracts eventContracts, OrderDeadlineService orderDeadlineService) {
+        this.eventContracts = eventContracts;
         this.orderDeadlineService = orderDeadlineService;
     }
 
@@ -34,8 +35,9 @@ public class OrderDeadlineConsumer {
             concurrency = "${app.fulfilment.listener-concurrency:${app.kafka.listener-concurrency:3}}"
     )
     public void consume(String payload) {
+        OrderEventEnvelope event = eventContracts.read(EventTopic.ORDER_EVENTS, payload, OrderEventEnvelope.class);
         try {
-            orderDeadlineService.handle(objectMapper.readValue(payload, OrderEventEnvelope.class));
+            orderDeadlineService.handle(event);
         } catch (Exception ex) {
             throw new IllegalStateException("Unable to process order event for the order deadlines", ex);
         }

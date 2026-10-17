@@ -1,0 +1,16 @@
+{
+  "event_id": "9c8b7a6d-5e4f-4a3b-9c2d-000000000001",
+  "event_version": 1,
+  "event_type": "merchant.order_received",
+  "aggregate_type": "MERCHANT_ORDER",
+  "aggregate_id": 1001,
+  "sequence": 1,
+  "occurred_at": "2026-04-25T12:01:31.004",
+  "correlation_id": "checkout-3f9a",
+  "data": {
+    "order_id": 1001,
+    "restaurant_id": 1,
+    "paid_at": "2026-04-25T12:01:30.412873",
+    "active_merchants": 2
+  }
+}

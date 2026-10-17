@@ -5,7 +5,7 @@ import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
 import com.laioffer.onlineorder.messaging.DeliveryEventPayload;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
-import com.laioffer.onlineorder.model.OrderHistoryItemDto;
+import com.laioffer.onlineorder.messaging.OrderEventItem;
 import com.laioffer.onlineorder.repository.OrderNotificationRepository;
 import com.laioffer.onlineorder.service.OrderNotificationService;
 import org.junit.jupiter.api.Assertions;
@@ -190,7 +190,7 @@ class OrderNotificationServiceTests {
                         status,
                         amount("22.0"),
                         occurredAt,
-                        List.of(new OrderHistoryItemDto(1L, orderId, 2L, amount("10.0"), 1, "Burger", "Classic", "image"))
+                        List.of(new OrderEventItem(1L, orderId, 2L, amount("10.0"), null, 1, "Burger", "Classic", "image"))
                 )
         );
     }

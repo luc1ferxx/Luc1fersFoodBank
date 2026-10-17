@@ -6,8 +6,11 @@ import com.laioffer.onlineorder.entity.OutboxEventEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.messaging.EventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
+import com.laioffer.onlineorder.messaging.OrderEventItem;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
+import com.laioffer.onlineorder.messaging.contract.EventContracts;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 import com.laioffer.onlineorder.model.OutboxEventDto;
@@ -16,6 +19,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
@@ -30,6 +34,11 @@ import java.util.UUID;
 @Service
 public class OrderEventOutboxService {
 
+    /**
+     * The schema version of the order events written here: event-schemas/order-events/&lt;event_type&gt;/v1.json.
+     */
+    public static final int ORDER_EVENT_VERSION = 1;
+
     private static final Logger LOGGER = LoggerFactory.getLogger(OrderEventOutboxService.class);
 
     private static final String OUTBOX_STATUS_PENDING = "PENDING";
@@ -43,6 +52,7 @@ public class OrderEventOutboxService {
     private final ObjectMapper objectMapper;
     private final String orderTopic;
     private final OutboxEventRepository outboxEventRepository;
+    private final EventContracts eventContracts;
 
 
     public OrderEventOutboxService(
@@ -51,7 +61,8 @@ public class OrderEventOutboxService {
             @Value("${app.outbox.max-attempts:10}") int maxAttempts,
             @Value("${app.kafka.order-topic}") String orderTopic,
             ObjectMapper objectMapper,
-            OutboxEventRepository outboxEventRepository
+            OutboxEventRepository outboxEventRepository,
+            EventContracts eventContracts
     ) {
         this.batchSize = batchSize;
         this.claimTimeout = claimTimeout;
@@ -59,6 +70,7 @@ public class OrderEventOutboxService {
         this.objectMapper = objectMapper;
         this.orderTopic = orderTopic;
         this.outboxEventRepository = outboxEventRepository;
+        this.eventContracts = eventContracts;
     }
 
 
@@ -66,6 +78,7 @@ public class OrderEventOutboxService {
      * @param occurredAt when the change this event describes happened: the order creation time for a
      *                   new order, or the transition time for a status change
      */
+    @Transactional(propagation = Propagation.MANDATORY)
     public void enqueueOrderEvent(
             OrderEntity order,
             List<OrderHistoryItemDto> items,
@@ -78,7 +91,7 @@ public class OrderEventOutboxService {
         String normalizedIdempotencyKey = normalizeNullable(idempotencyKey);
         OrderEventEnvelope envelope = new OrderEventEnvelope(
                 eventId,
-                1,
+                ORDER_EVENT_VERSION,
                 eventType,
                 "ORDER",
                 order.id(),
@@ -90,42 +103,44 @@ public class OrderEventOutboxService {
                         order.status(),
                         order.totalPrice(),
                         order.createdAt(),
-                        items,
+                        eventItems(items),
                         order.restaurantId(),
                         order.cancelReason()
                 )
         );
-        enqueueEvent("ORDER", order.id(), orderTopic, String.valueOf(order.id()), eventType, eventId, envelope);
+        enqueueEvent(orderTopic, String.valueOf(order.id()), envelope);
     }
 
 
     /**
-     * Stores an event of any aggregate in the outbox, in the caller's transaction, for the publisher to relay to
-     * {@code topic}. Every outbox write, order events included, goes through this method.
+     * Stores an event of any aggregate in the outbox, in the caller's transaction (required), for the publisher to
+     * relay to {@code topic}. Every outbox write, order events included, goes through this method:
+     * <ol>
+     *     <li>the envelope is serialized and checked against the published schema of its event type and version
+     *     ({@link EventContracts#serialize}); an event that breaks its contract fails the caller's transaction with
+     *     {@code EventSchemaViolationException};</li>
+     *     <li>the row is inserted with the aggregate, event id and event type of the envelope.</li>
+     * </ol>
      *
+     * @param topic    the Kafka topic name (app.kafka.order-topic, app.fulfilment.delivery-topic or
+     *                 app.fulfilment.merchant-topic)
      * @param eventKey the Kafka record key: events with the same key keep their order. Use the order id, so that
      *                 all events about one order land on the same partition of each topic.
-     * @param envelope the event envelope, serialized to JSON as the record value; its event id is {@code eventId}
+     * @param envelope the event; serialized to JSON (snake_case) as the record value
      */
-    public void enqueueEvent(
-            String aggregateType,
-            Long aggregateId,
-            String topic,
-            String eventKey,
-            String eventType,
-            String eventId,
-            Object envelope
-    ) {
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void enqueueEvent(String topic, String eventKey, EventEnvelope envelope) {
+        String payload = eventContracts.serialize(topic, envelope);
         LocalDateTime now = LocalDateTime.now();
         outboxEventRepository.save(new OutboxEventEntity(
                 null,
-                aggregateType,
-                aggregateId,
-                eventId,
+                envelope.aggregateType(),
+                envelope.aggregateId(),
+                envelope.eventId(),
                 topic,
                 eventKey,
-                eventType,
-                serializePayload(envelope),
+                envelope.eventType(),
+                payload,
                 OUTBOX_STATUS_PENDING,
                 0,
                 null,
@@ -290,12 +305,26 @@ public class OrderEventOutboxService {
     }
 
 
-    private String serializePayload(Object payload) {
-        try {
-            return objectMapper.writeValueAsString(payload);
-        } catch (JacksonException ex) {
-            throw new IllegalStateException("Unable to serialize order event payload", ex);
+    /**
+     * The order lines as the event contract has them; the REST DTO is only the input of this mapping.
+     */
+    private static List<OrderEventItem> eventItems(List<OrderHistoryItemDto> items) {
+        if (items == null) {
+            return List.of();
         }
+        return items.stream()
+                .map(item -> new OrderEventItem(
+                        item.id(),
+                        item.menuItemId(),
+                        item.restaurantId(),
+                        item.price(),
+                        null,
+                        item.quantity(),
+                        item.menuItemName(),
+                        item.menuItemDescription(),
+                        item.menuItemImageUrl()
+                ))
+                .toList();
     }
 
 

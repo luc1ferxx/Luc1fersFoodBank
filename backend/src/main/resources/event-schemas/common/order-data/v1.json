@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/common/order-data/v1.json",
+  "title": "Order event data, version 1",
+  "description": "The data of every order event (order-events topic): the order after the change the event reports. Money amounts carry an optional ISO 4217 currency next to them; an amount without one is in the shop currency.",
+  "type": "object",
+  "required": [
+    "customer_id",
+    "status",
+    "total_price",
+    "created_at",
+    "items"
+  ],
+  "properties": {
+    "customer_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "description": "The order status after the event; each order event type fixes it.",
+      "enum": [
+        "PLACED",
+        "PAID",
+        "ACCEPTED",
+        "PREPARING",
+        "COMPLETED",
+        "CANCELLED"
+      ]
+    },
+    "total_price": {
+      "$ref": "#/$defs/amount"
+    },
+    "currency": {
+      "description": "Currency of total_price.",
+      "$ref": "#/$defs/currency"
+    },
+    "created_at": {
+      "description": "When the order was placed.",
+      "$ref": "../envelope/v1.json#/$defs/local_date_time"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "restaurant_id": {
+      "description": "Absent for orders placed before single-restaurant carts; the fulfilment modules ignore those.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "reason": {
+      "description": "Why the order was cancelled (order.cancelled only), for example MERCHANT_TIMEOUT or MERCHANT_REJECTED: <note>.",
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "amount": {
+      "type": "number",
+      "minimum": 0
+    },
+    "currency": {
+      "description": "ISO 4217 alphabetic code.",
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "item": {
+      "type": "object",
+      "required": [
+        "menu_item_id",
+        "menu_item_name",
+        "price",
+        "quantity"
+      ],
+      "properties": {
+        "id": {
+          "description": "The order line (order_history_items.id).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "menu_item_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "restaurant_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "price": {
+          "description": "Unit price.",
+          "$ref": "#/$defs/amount"
+        },
+        "currency": {
+          "description": "Currency of price.",
+          "$ref": "#/$defs/currency"
+        },
+        "quantity": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "menu_item_name": {
+          "type": "string"
+        },
+        "menu_item_description": {
+          "type": "string"
+        },
+        "menu_item_image_url": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

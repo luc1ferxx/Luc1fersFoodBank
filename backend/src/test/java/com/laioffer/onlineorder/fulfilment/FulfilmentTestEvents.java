@@ -2,8 +2,8 @@ package com.laioffer.onlineorder.fulfilment;
 
 
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
+import com.laioffer.onlineorder.messaging.OrderEventItem;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
-import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 
 
 import java.math.BigDecimal;
@@ -45,8 +45,8 @@ public final class FulfilmentTestEvents {
                         status,
                         new BigDecimal("10.59"),
                         occurredAt,
-                        List.of(new OrderHistoryItemDto(
-                                1L, 2L, restaurantId, new BigDecimal("10.59"), 1, "Whopper Meal", "Meal", null)),
+                        List.of(new OrderEventItem(
+                                1L, 2L, restaurantId, new BigDecimal("10.59"), null, 1, "Whopper Meal", "Meal", null)),
                         restaurantId,
                         reason
                 )

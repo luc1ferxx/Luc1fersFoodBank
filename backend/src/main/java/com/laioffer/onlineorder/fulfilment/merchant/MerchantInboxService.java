@@ -56,6 +56,12 @@ public class MerchantInboxService {
     static final String MERCHANT_INBOX_CONSUMER = "merchant-inbox-consumer";
     static final String MERCHANT_ORDER_AGGREGATE = "MERCHANT_ORDER";
 
+    /**
+     * The schema version of merchant.order_received written here:
+     * event-schemas/merchant-events/merchant.order_received/v1.json.
+     */
+    static final int MERCHANT_EVENT_VERSION = 1;
+
     private static final Logger LOGGER = LoggerFactory.getLogger(MerchantInboxService.class);
 
     private static final List<String> BEFORE_ACCEPTED = List.of("PAID");
@@ -181,7 +187,7 @@ public class MerchantInboxService {
         String eventId = UUID.randomUUID().toString();
         MerchantEventEnvelope envelope = new MerchantEventEnvelope(
                 eventId,
-                1,
+                MERCHANT_EVENT_VERSION,
                 FulfilmentEvents.MERCHANT_ORDER_RECEIVED,
                 MERCHANT_ORDER_AGGREGATE,
                 orderId,
@@ -190,15 +196,7 @@ public class MerchantInboxService {
                 null,
                 new MerchantEventPayload(orderId, restaurantId, paidAt, activeMerchants)
         );
-        outboxService.enqueueEvent(
-                MERCHANT_ORDER_AGGREGATE,
-                orderId,
-                merchantTopic,
-                String.valueOf(orderId),
-                FulfilmentEvents.MERCHANT_ORDER_RECEIVED,
-                eventId,
-                envelope
-        );
+        outboxService.enqueueEvent(merchantTopic, String.valueOf(orderId), envelope);
         AfterCommit.run(() -> metricsService.recordMerchantOrderReceived("staffed"));
     }
 

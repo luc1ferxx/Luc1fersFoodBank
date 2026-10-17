@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/common/delivery-data/v1.json",
+  "title": "Delivery event data, version 1",
+  "description": "The data of every delivery event (delivery-events topic): the delivery after the change the event reports.",
+  "type": "object",
+  "required": [
+    "order_id",
+    "customer_id",
+    "restaurant_id",
+    "rider_id",
+    "status"
+  ],
+  "properties": {
+    "order_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "customer_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "restaurant_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "rider_id": {
+      "description": "The rider holding the delivery (for delivery.reassigned, the new rider).",
+      "type": "integer",
+      "minimum": 1
+    },
+    "rider_name": {
+      "type": "string"
+    },
+    "status": {
+      "description": "The delivery status after the event.",
+      "enum": [
+        "ASSIGNED",
+        "PICKED_UP",
+        "DELIVERED",
+        "CANCELLED"
+      ]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "event_id": "e-2",
+  "event_version": 2,
+  "event_type": "order.paid",
+  "data": {
+    "customer_id": 3,
+    "tip": 1.5
+  }
+}
