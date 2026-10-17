@@ -2,7 +2,14 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { CartItem } from "../api/dto";
-import { apiError, deferred, demoUser, installFakeBackend, requestJson } from "../test/fakeBackend";
+import {
+  USD,
+  apiError,
+  deferred,
+  demoUser,
+  installFakeBackend,
+  requestJson,
+} from "../test/fakeBackend";
 import { flushPromises, renderApp } from "../test/helpers";
 
 const whopperLine: CartItem = {
@@ -13,6 +20,7 @@ const whopperLine: CartItem = {
   menu_item_description: "Flame grilled burger",
   menu_item_image_url: "",
   price: 6.39,
+  currency: USD,
   quantity: 2,
 };
 

@@ -2,7 +2,7 @@ import type { FormEvent } from "react";
 import type { CartItem, Order } from "../api/dto";
 import type { CartState } from "../hooks/useCart";
 import type { CheckoutState } from "../hooks/useCheckout";
-import { formatCurrency, formatDateTime } from "../lib/format";
+import { formatDateTime, formatMoney, lineTotal } from "../lib/format";
 import { Alert } from "./Alert";
 import { MediaImage } from "./MediaImage";
 
@@ -22,8 +22,8 @@ function CartLine({
       </div>
       <div>
         <strong>{item.menu_item_name}</strong>
-        <span>{formatCurrency(item.price)} each</span>
-        <span>Subtotal {formatCurrency(item.price * item.quantity)}</span>
+        <span>{formatMoney(item.price, item.currency)} each</span>
+        <span>Subtotal {formatMoney(lineTotal(item.price, item.quantity), item.currency)}</span>
       </div>
       <div className="stepper cart-line__stepper">
         <button
@@ -65,12 +65,13 @@ function OrderConfirmation({ order }: { order: Order }) {
         Order #{order.id} · {order.status}
       </h3>
       <p>
-        {formatCurrency(order.total_price)} · {formatDateTime(order.created_at)}
+        {formatMoney(order.total_price, order.currency)} · {formatDateTime(order.created_at)}
       </p>
       <ul>
         {order.items.map((item) => (
           <li key={item.id}>
-            {item.quantity} x {item.menu_item_name} · {formatCurrency(item.price * item.quantity)}
+            {item.quantity} x {item.menu_item_name} ·{" "}
+            {formatMoney(lineTotal(item.price, item.quantity), item.currency)}
           </li>
         ))}
       </ul>
@@ -81,12 +82,13 @@ function OrderConfirmation({ order }: { order: Order }) {
 function CheckoutForm({
   checkout,
   itemCount,
-  totalPrice,
+  total,
   disabled,
 }: {
   checkout: CheckoutState;
   itemCount: number;
-  totalPrice: number;
+  /** The cart total, already formatted in the cart's currency. */
+  total: string;
   disabled: boolean;
 }) {
   const { form, pending, error, updateField, submit } = checkout;
@@ -102,7 +104,7 @@ function CheckoutForm({
       <div className="panel-heading panel-heading--compact">
         <p className="section-kicker">Demo payment checkout</p>
         <h3>
-          {itemCount} item(s), {formatCurrency(totalPrice)}
+          {itemCount} item(s), {total}
         </h3>
       </div>
       <Alert tone="danger">{error}</Alert>
@@ -148,7 +150,7 @@ function CheckoutForm({
         </label>
       </div>
       <button className="primary-button" type="submit" disabled={inputDisabled}>
-        {pending ? "Processing..." : `Pay ${formatCurrency(totalPrice)}`}
+        {pending ? "Processing..." : `Pay ${total}`}
       </button>
     </form>
   );
@@ -164,12 +166,13 @@ export function CartPanel({
   checkout: CheckoutState;
 }) {
   const lines = cart.cart.order_items;
+  const total = formatMoney(cart.cart.total_price, cart.cart.currency);
 
   return (
     <section className="panel-body" aria-label="Cart and payment checkout">
       <div className="panel-heading">
         <p className="section-kicker">Cart review</p>
-        <h2>{formatCurrency(cart.cart.total_price)} total</h2>
+        <h2>{total} total</h2>
       </div>
       {!signedIn ? (
         <div className="empty-state">Sign in to load and edit your cart.</div>
@@ -208,7 +211,7 @@ export function CartPanel({
           <CheckoutForm
             checkout={checkout}
             itemCount={cart.itemCount}
-            totalPrice={cart.cart.total_price}
+            total={total}
             disabled={!lines.length}
           />
         </>

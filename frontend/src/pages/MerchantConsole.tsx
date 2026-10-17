@@ -6,7 +6,7 @@ import {
   type MerchantStatusFilter,
   useMerchantOrders,
 } from "../hooks/useMerchantOrders";
-import { formatCurrency, formatDateTime } from "../lib/format";
+import { formatDateTime, formatMoney, lineTotal } from "../lib/format";
 import { ORDER_STATUS_LABELS } from "../lib/labels";
 
 const REJECT_REASON_MAX = 200;
@@ -67,7 +67,7 @@ function MerchantOrderCard({
       <div className="order-card__top">
         <div>
           <p className="section-kicker">Order #{order.order_id}</p>
-          <h3>{formatCurrency(order.total_price)}</h3>
+          <h3>{formatMoney(order.total_price, order.currency)}</h3>
         </div>
         <span className={`status-badge status-badge--${order.status}`}>{order.status}</span>
       </div>
@@ -75,7 +75,8 @@ function MerchantOrderCard({
       <ul>
         {order.items.map((item) => (
           <li key={item.menu_item_id}>
-            {item.quantity} x {item.menu_item_name} · {formatCurrency(item.price * item.quantity)}
+            {item.quantity} x {item.menu_item_name} ·{" "}
+            {formatMoney(lineTotal(item.price, item.quantity), item.currency)}
           </li>
         ))}
       </ul>

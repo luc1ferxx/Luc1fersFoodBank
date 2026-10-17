@@ -15,6 +15,7 @@ import {
   menusFixture,
   orderFixture,
   requestJson,
+  USD,
 } from "./test/fakeBackend";
 import { flushPromises, formOf, renderApp, resetVisibility, setVisibility } from "./test/helpers";
 
@@ -26,6 +27,7 @@ const whopperLine: CartItem = {
   menu_item_description: "Flame grilled burger",
   menu_item_image_url: "",
   price: 6.39,
+  currency: USD,
   quantity: 2,
 };
 
@@ -145,6 +147,32 @@ describe("cart and checkout", () => {
     await user.click(within(stepper).getByRole("button", { name: "Increase Whopper" }));
     await waitFor(() => expect(within(stepper).getByText("2")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Pay $12.78" })).toBeInTheDocument();
+  });
+
+  it("prices a restaurant's menu, cart and order in the restaurant's currency", async () => {
+    installFakeBackend({ user: demoUser });
+    const user = renderApp();
+
+    await signedInLabel();
+    await user.click(await screen.findByRole("button", { name: /Taco Town/ }));
+    expect(await screen.findByText("Fish Taco")).toBeInTheDocument();
+    expect(screen.getByText("€0.10")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Add to cart" }));
+    const stepper = await screen.findByLabelText("Fish Taco quantity");
+    for (const quantity of ["2", "3"]) {
+      await user.click(within(stepper).getByRole("button", { name: "Increase Fish Taco" }));
+      await waitFor(() => expect(within(stepper).getByText(quantity)).toBeInTheDocument());
+    }
+    // 3 x 0.10, summed in cents: not 0.30000000000000004.
+    const payButton = screen.getByRole("button", { name: "Pay €0.30" });
+    expect(screen.getByText("Subtotal €0.30")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "€0.30 total" })).toBeInTheDocument();
+
+    await fillPaymentForm(user);
+    await user.click(payButton);
+    const confirmation = await screen.findByText("Order confirmation");
+    expect(confirmation.closest("article")).toHaveTextContent("3 x Fish Taco · €0.30");
   });
 
   it("checks out with payment, confirms the order, and refreshes orders and notifications", async () => {

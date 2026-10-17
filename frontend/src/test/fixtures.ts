@@ -1,3 +1,4 @@
+import { currencyCode } from "../api/currency";
 import {
   type CurrentUser,
   type MenuItem,
@@ -8,6 +9,10 @@ import {
 } from "../api/dto";
 
 /* Shared fixtures of the fake backend and the UI tests. */
+
+export const USD = currencyCode("USD");
+/** Taco Town prices in euros, so the UI tests see a second currency. */
+export const EUR = currencyCode("EUR");
 
 /** A customer who is also an admin, like the demo seed's demo@laifood.com. */
 export const demoUser: CurrentUser = {
@@ -76,9 +81,10 @@ export const restaurantsFixture: Restaurant[] = [
     address: "773 N Mathilda Ave",
     phone: "(408) 736-0101",
     image_url: "",
+    currency: USD,
   },
-  { id: 2, name: "Noodle Nook", address: "1 Market St", phone: "", image_url: "" },
-  { id: 3, name: "Taco Town", address: "2 Mission St", phone: "", image_url: "" },
+  { id: 2, name: "Noodle Nook", address: "1 Market St", phone: "", image_url: "", currency: USD },
+  { id: 3, name: "Taco Town", address: "2 Mission St", phone: "", image_url: "", currency: EUR },
 ];
 
 export const menusFixture: Readonly<Record<number, MenuItem[]>> = {
@@ -89,6 +95,7 @@ export const menusFixture: Readonly<Record<number, MenuItem[]>> = {
       name: "Whopper",
       description: "Flame grilled burger",
       price: 6.39,
+      currency: USD,
       image_url: "",
     },
   ],
@@ -99,16 +106,28 @@ export const menusFixture: Readonly<Record<number, MenuItem[]>> = {
       name: "Dan Dan Noodles",
       description: "",
       price: 11,
+      currency: USD,
       image_url: "",
     },
   ],
-  3: [{ id: 30, restaurant_id: 3, name: "Fish Taco", description: "", price: 4.5, image_url: "" }],
+  3: [
+    {
+      id: 30,
+      restaurant_id: 3,
+      name: "Fish Taco",
+      description: "",
+      price: 0.1,
+      currency: EUR,
+      image_url: "",
+    },
+  ],
 };
 
 /** A placed order with defaults for the fields a test does not care about. */
 export const orderFixture = (overrides: Partial<Order> & Pick<Order, "id">): Order => ({
   status: "PAID",
   total_price: 9,
+  currency: USD,
   created_at: null,
   items: [],
   restaurant_id: 1,

@@ -29,7 +29,7 @@ import {
   noContent,
   requestJson,
 } from "./fakeHttp";
-import { PASSWORDS, menusFixture, restaurantsFixture, riderProfileFixture } from "./fixtures";
+import { PASSWORDS, USD, menusFixture, restaurantsFixture, riderProfileFixture } from "./fixtures";
 
 export {
   apiError,
@@ -43,6 +43,8 @@ export {
 export { deliveryFixture, merchantOrderFixture } from "./fakeFulfilment";
 export { merchantAccountFixture, riderAccountFixture } from "./fakeAdmin";
 export {
+  EUR,
+  USD,
   customerUser,
   demoUser,
   menusFixture,
@@ -58,8 +60,13 @@ const menuItemById = (id: number): MenuItem | undefined =>
     .flat()
     .find((item) => item.id === id);
 
+/** Like the backend: the exact sum of the lines (in cents here), in the cart's currency. */
 const recomputeTotal = (cart: Cart) => {
-  cart.total_price = cart.order_items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const cents = cart.order_items.reduce(
+    (sum, item) => sum + Math.round(item.price * 100) * item.quantity,
+    0,
+  );
+  cart.total_price = cents / 100;
 };
 
 const requestUrl = (input: RequestInfo | URL): string => {
@@ -105,7 +112,11 @@ export interface FakeState {
 export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOptions = {}) {
   const state: FakeState = {
     user,
-    cart: { order_items: cartItems.map((item) => ({ ...item })), total_price: 0 },
+    cart: {
+      order_items: cartItems.map((item) => ({ ...item })),
+      total_price: 0,
+      currency: cartItems[0]?.currency ?? USD,
+    },
     orders: [],
     orderHistory: new Map(),
     notifications: [],
@@ -225,6 +236,10 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
             code: "CART_RESTAURANT_CONFLICT",
           });
         }
+        if (!state.cart.order_items.length) {
+          // An empty cart takes the currency of the restaurant of its first item.
+          state.cart.currency = menuItem.currency;
+        }
         const existing = state.cart.order_items.find((item) => item.menu_item_id === menuId);
         if (existing) {
           existing.quantity += 1;
@@ -237,6 +252,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
             menu_item_description: menuItem.description,
             menu_item_image_url: "",
             price: menuItem.price,
+            currency: menuItem.currency,
             quantity: 1,
           });
         }
@@ -286,6 +302,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
           id: state.nextOrderId++,
           status: "PAID",
           total_price: state.cart.total_price,
+          currency: state.cart.currency,
           created_at: "2026-10-16T12:00:00Z",
           restaurant_id: state.cart.order_items[0]?.restaurant_id ?? null,
           cancel_reason: null,
@@ -297,6 +314,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
             menu_item_description: item.menu_item_description,
             menu_item_image_url: item.menu_item_image_url,
             price: item.price,
+            currency: item.currency,
             quantity: item.quantity,
           })),
         };

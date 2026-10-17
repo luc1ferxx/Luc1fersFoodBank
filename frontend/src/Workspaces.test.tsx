@@ -14,6 +14,7 @@ import {
   merchantUser,
   orderFixture,
   riderUser,
+  USD,
 } from "./test/fakeBackend";
 import { flushPromises, renderApp } from "./test/helpers";
 
@@ -42,6 +43,7 @@ const whopperLine: CartItem = {
   menu_item_description: "Flame grilled burger",
   menu_item_image_url: "",
   price: 6.39,
+  currency: USD,
   quantity: 2,
 };
 

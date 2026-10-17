@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import type { Order } from "../api/dto";
 import { CANCELLABLE_STATUSES, type OrdersState } from "../hooks/useOrders";
-import { formatCurrency, formatDateTime } from "../lib/format";
+import { formatDateTime, formatMoney } from "../lib/format";
 import { Alert } from "./Alert";
 import { OrderHistory } from "./OrderHistory";
 
@@ -23,7 +23,7 @@ function OrderCard({
       <div className="order-card__top">
         <div>
           <p className="section-kicker">Order #{order.id}</p>
-          <h3>{formatCurrency(order.total_price)}</h3>
+          <h3>{formatMoney(order.total_price, order.currency)}</h3>
         </div>
         <span className={`status-badge status-badge--${order.status}`}>{order.status}</span>
       </div>
