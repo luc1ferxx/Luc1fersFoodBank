@@ -3,6 +3,7 @@ package com.laioffer.onlineorder.ids;
 
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
+import com.laioffer.onlineorder.messaging.OrderEventItem;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderNotificationDto;
@@ -131,10 +132,23 @@ class OrderNumberPostgresIntegrationTests {
         cartService.addMenuItemToCart(customerId, 1L);
         OrderDto order = cartService.checkout(customerId);
 
+        List<OrderEventItem> items = order.items().stream()
+                .map(item -> new OrderEventItem(
+                        item.id(),
+                        item.menuItemId(),
+                        item.restaurantId(),
+                        item.price(),
+                        null,
+                        item.quantity(),
+                        item.menuItemName(),
+                        item.menuItemDescription(),
+                        item.menuItemImageUrl()
+                ))
+                .toList();
         orderEventHandlerService.handle(new OrderEventEnvelope(
-                UUID.randomUUID().toString(), 1, "order.created", "ORDER", order.id(), LocalDateTime.now(),
+                UUID.randomUUID().toString(), 1, "order.created", "ORDER", order.id(), null, LocalDateTime.now(),
                 "corr", null,
-                new OrderEventPayload(customerId, "PLACED", order.totalPrice(), order.createdAt(), order.items())
+                new OrderEventPayload(customerId, "PLACED", order.totalPrice(), null, order.createdAt(), items, null, null)
         ));
 
         OrderNotificationDto notification = orderNotificationService.getNotificationsByCustomerId(customerId).stream()
