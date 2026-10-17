@@ -20,6 +20,18 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      # react and react-dom must stay on the same version; separate PRs fail npm ci.
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+    ignore:
+      # @types/node follows the Node major used by CI and the Dockerfile (Node 20); bump them together.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
@@ -37,6 +49,13 @@ updates:
       - /backend
     schedule:
       interval: weekly
+    ignore:
+      # Runtime majors are deliberate upgrades: the JRE stays on the Java 17 LTS line the toolchain targets, and the
+      # Node image follows the Node version in CI. Patch and minor updates still come through.
+      - dependency-name: "eclipse-temurin"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
 
   # Images of the local infrastructure and observability stacks.
   - package-ecosystem: docker-compose
@@ -45,3 +64,12 @@ updates:
       - /deploy/observability
     schedule:
       interval: monthly
+    ignore:
+      # Major versions of the data stores need a coordinated upgrade: the Testcontainers images, both compose files and
+      # the docs move together, and Postgres majors cannot start on an older data volume.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "redis"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "apache/kafka-native"
+        update-types: ["version-update:semver-major"]
