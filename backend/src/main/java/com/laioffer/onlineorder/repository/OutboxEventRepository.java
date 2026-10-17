@@ -59,8 +59,8 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      * Aggregates whose later events are held back by a FAILED event: the publisher claims nothing of such an aggregate
      * until the FAILED event is retried (POST /admin/outbox/events/{id}/retry) and published, or abandoned
      * (POST /admin/outbox/events/{id}/abandon). A FAILED row without a sequence (failed before V9) holds nothing back
-     * and is not counted. An aggregate whose only
-     * unpublished event is the FAILED one is not counted; onlineorder.outbox.failed covers it.
+     * and is not counted, nor is an aggregate whose only unpublished event is the FAILED one; onlineorder.outbox.failed
+     * covers those.
      */
     @Query("""
             SELECT COUNT(*)

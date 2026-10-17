@@ -499,17 +499,17 @@ side.
 `outbox_aggregate_sequences` (one counter per order, delivery and merchant order, kept for good), numbers the events
 that are still `PENDING` or `PROCESSING` per aggregate in id order with one `MERGE` and starts each counter after them;
 published rows keep `NULL` until the outbox cleanup deletes them. `FAILED` rows from before the upgrade keep `NULL` as
-well: they stay what they were, terminal events that hold nothing back (the blocked-aggregate gauges ignore them), so the
-upgrade does not stall the orders they belong to. Triage them before or after the upgrade as before
-(`GET /admin/outbox/events/failed`, rows with `aggregate_sequence` null); a retry publishes such a row unordered, as
-before V9, and its consumers apply it under the out-of-order rules (README "Out-of-order events"). V9_1 builds the unique partial index
-`idx_outbox_events_unpublished_aggregate (aggregate_type, aggregate_id, aggregate_sequence) WHERE status IN ('PENDING',
-'PROCESSING', 'FAILED')` on PostgreSQL (H2 only records the version). Like V3 it is a plain `CREATE INDEX` in Flyway's
-transaction: it scans the table and blocks outbox writes (checkouts, status changes) meanwhile, about a second per
-million rows. V9_2 adds `consumer_aggregate_sequences`, empty. Roll the release out without pods of an older version
-(section 7's procedure): an older pod writes events without a sequence (the claim publishes them unordered) and without
-schema validation. Pods of this release read events written by older pods (no `sequence`) and the reverse (older
-consumers ignore the new field).
+well: they stay what they were, terminal events that hold nothing back (the blocked-aggregate gauges ignore them), so
+the upgrade does not stall the orders they belong to. Triage them before or after the upgrade as before (`GET
+/admin/outbox/events/failed`, rows with `aggregate_sequence` null); a retry publishes such a row unordered, as before
+V9, and its consumers apply it under the out-of-order rules (README "Out-of-order events"). V9_1 builds the unique
+partial index `idx_outbox_events_unpublished_aggregate (aggregate_type, aggregate_id, aggregate_sequence) WHERE status
+IN ('PENDING', 'PROCESSING', 'FAILED')` on PostgreSQL (H2 only records the version). Like V3 it is a plain `CREATE
+INDEX` in Flyway's transaction: it scans the table and blocks outbox writes (checkouts, status changes) meanwhile, about
+a second per million rows. V9_2 adds `consumer_aggregate_sequences`, empty. Roll the release out without pods of an
+older version (section 7's procedure): an older pod writes events without a sequence (the claim publishes them
+unordered) and without schema validation. Pods of this release read events written by older pods (no `sequence`) and the
+reverse (older consumers ignore the new field).
 
 **A blocked aggregate** (`OnlineOrderOutboxAggregatesBlocked`): the publisher only claims the head of each aggregate,
 so a `FAILED` event holds back the later events of its order or delivery, on every topic it writes to, until it is
