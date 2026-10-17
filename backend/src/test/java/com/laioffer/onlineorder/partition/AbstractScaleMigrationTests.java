@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.partition;
 
 
+import com.laioffer.onlineorder.ids.SnowflakeIdGenerator;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -19,7 +20,8 @@ import java.util.List;
 
 /**
  * Upgrades a populated V8 database to the current schema: V10 (monthly partitions on PostgreSQL, plain tables on H2)
- * must keep every row, id, constraint and the processed_events deduplication. Subclasses pick the database.
+ * must keep every row, id, constraint and the processed_events deduplication; V10_1 must give every existing order a
+ * unique order number in the Snowflake layout; V10_2 creates the worker id leases. Subclasses pick the database.
  */
 abstract class AbstractScaleMigrationTests {
 
@@ -43,7 +45,7 @@ abstract class AbstractScaleMigrationTests {
 
 
     @Test
-    void upgradeFromV8_shouldKeepEveryRow() throws SQLException {
+    void upgradeFromV8_shouldKeepEveryRowAndNumberEveryOrder() throws SQLException {
         migrate("8");
         try (Connection connection = connect(); Statement statement = connection.createStatement()) {
             seedV8(statement);
@@ -91,7 +93,45 @@ abstract class AbstractScaleMigrationTests {
                     ON CONFLICT DO NOTHING
                     """));
 
+            assertOrderNumbers(statement);
+            Assertions.assertEquals(List.of("1023|0|1022"), strings(statement, """
+                    SELECT COUNT(*) || '|' || MIN(worker_id) || '|' || MAX(worker_id) FROM snowflake_worker_leases
+                    """));
         }
+    }
+
+
+    private void assertOrderNumbers(Statement statement) throws SQLException {
+        List<long[]> orders = new ArrayList<>();
+        try (ResultSet result = statement.executeQuery("SELECT id, order_no, created_at FROM orders ORDER BY id")) {
+            while (result.next()) {
+                orders.add(new long[]{result.getLong(1), result.getLong(2), result.getTimestamp(3).getTime()});
+            }
+        }
+        Assertions.assertEquals(3, orders.size());
+        long previous = 0;
+        for (long[] order : orders) {
+            long orderNo = order[1];
+            Assertions.assertTrue(orderNo > previous, "numbers increase with the id");
+            previous = orderNo;
+            Assertions.assertEquals(SnowflakeIdGenerator.BACKFILL_WORKER_ID, SnowflakeIdGenerator.workerIdOf(orderNo));
+        }
+        // The first two orders were placed in the same millisecond: same timestamp, consecutive sequences.
+        Assertions.assertEquals(orders.get(0)[2], SnowflakeIdGenerator.timestampMillisOf(orders.get(0)[1]));
+        Assertions.assertEquals(orders.get(1)[2], SnowflakeIdGenerator.timestampMillisOf(orders.get(1)[1]));
+        Assertions.assertEquals(SnowflakeIdGenerator.sequenceOf(orders.get(0)[1]) + 1,
+                SnowflakeIdGenerator.sequenceOf(orders.get(1)[1]));
+        // The third one has the earliest created_at but the highest id: its number still comes after the others.
+        Assertions.assertTrue(orders.get(2)[2] < orders.get(0)[2]);
+
+        Assertions.assertThrows(SQLException.class, () -> statement.execute("""
+                INSERT INTO orders (customer_id, total_price, status, created_at)
+                SELECT MIN(id), 5, 'PLACED', CURRENT_TIMESTAMP FROM customers
+                """), "order_no is NOT NULL");
+        Assertions.assertThrows(SQLException.class, () -> statement.execute("""
+                INSERT INTO orders (customer_id, total_price, status, created_at, order_no)
+                SELECT MIN(customers.id), 5, 'PLACED', CURRENT_TIMESTAMP, MIN(orders.order_no) FROM customers, orders
+                """), "uq_orders_order_no");
     }
 
 

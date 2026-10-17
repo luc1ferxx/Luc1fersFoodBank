@@ -12,6 +12,10 @@ import java.time.LocalDateTime;
 
 
 /**
+ * @param id        the internal key, used by every table and API path that references the order
+ * @param orderNo   the public order number shown to customers (V10_1): a Snowflake id that does not reveal how many
+ *                  orders exist. Null only on a new order before its first save, which assigns it
+ *                  (OrderNumberCallback)
  * @param updatedAt when the order last changed status; its creation time until the first transition
  */
 @Table("orders")
@@ -19,6 +23,8 @@ public record OrderEntity(
         @Id
         @Column("id")
         Long id,
+        @Column("order_no")
+        Long orderNo,
         @Column("customer_id")
         Long customerId,
         @Column("total_price")
@@ -37,6 +43,23 @@ public record OrderEntity(
 
     @PersistenceCreator
     public OrderEntity {
+    }
+
+
+    /**
+     * An order without an order number yet; the first save assigns one.
+     */
+    public OrderEntity(
+            Long id,
+            Long customerId,
+            BigDecimal totalPrice,
+            String status,
+            LocalDateTime createdAt,
+            Long restaurantId,
+            String cancelReason,
+            LocalDateTime updatedAt
+    ) {
+        this(id, null, customerId, totalPrice, status, createdAt, restaurantId, cancelReason, updatedAt);
     }
 
 
@@ -70,6 +93,7 @@ public record OrderEntity(
     public OrderEntity withStatus(String status, String cancelReason, LocalDateTime changedAt) {
         return new OrderEntity(
                 id,
+                orderNo,
                 customerId,
                 totalPrice,
                 status,
@@ -77,6 +101,21 @@ public record OrderEntity(
                 restaurantId,
                 cancelReason,
                 changedAt
+        );
+    }
+
+
+    public OrderEntity withOrderNo(Long orderNo) {
+        return new OrderEntity(
+                id,
+                orderNo,
+                customerId,
+                totalPrice,
+                status,
+                createdAt,
+                restaurantId,
+                cancelReason,
+                updatedAt
         );
     }
 }

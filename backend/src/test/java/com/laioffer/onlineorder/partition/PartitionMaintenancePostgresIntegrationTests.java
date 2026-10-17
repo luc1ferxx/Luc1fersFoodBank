@@ -325,8 +325,8 @@ class PartitionMaintenancePostgresIntegrationTests {
                 INSERT INTO customers (email, password) VALUES (?, 'x') RETURNING id
                 """, Long.class, "partition-" + System.nanoTime() + "@example.com");
         return jdbcTemplate.queryForObject("""
-                INSERT INTO orders (customer_id, total_price, status, created_at)
-                VALUES (?, 5, 'PLACED', ?)
+                INSERT INTO orders (customer_id, total_price, status, created_at, order_no)
+                VALUES (?, 5, 'PLACED', ?, (SELECT COALESCE(MAX(order_no), 0) + 1 FROM orders))
                 RETURNING id
                 """, Long.class, customerId, Timestamp.valueOf(createdAt));
     }

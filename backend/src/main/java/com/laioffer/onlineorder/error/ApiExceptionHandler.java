@@ -4,6 +4,7 @@ package com.laioffer.onlineorder.error;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.ids.IdGeneratorUnavailableException;
 import com.laioffer.onlineorder.model.ApiErrorResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
@@ -113,6 +114,25 @@ public class ApiExceptionHandler {
             SQLTransientConnectionException.class
     })
     public ResponseEntity<ApiErrorResponse> handleDatabaseUnavailable(Exception ex, HttpServletRequest request) {
+        return build(
+                "SERVICE_UNAVAILABLE",
+                "Service temporarily unavailable, please retry",
+                HttpStatus.SERVICE_UNAVAILABLE,
+                request
+        );
+    }
+
+
+    /**
+     * Checkout could not get an order number: no Snowflake worker id lease is held (the database was unreachable for
+     * longer than the lease TTL) or the clock stepped back further than app.ids.max-clock-backward. Both pass, so the
+     * client retries, with the same Idempotency-Key.
+     */
+    @ExceptionHandler(IdGeneratorUnavailableException.class)
+    public ResponseEntity<ApiErrorResponse> handleIdGeneratorUnavailable(
+            IdGeneratorUnavailableException ex,
+            HttpServletRequest request
+    ) {
         return build(
                 "SERVICE_UNAVAILABLE",
                 "Service temporarily unavailable, please retry",

@@ -240,6 +240,17 @@ app:
     # Creating or dropping a partition locks the parent table for a moment; give up after this instead of queueing
     # inserts behind a long-running query.
     lock-timeout: ${PARTITIONS_LOCK_TIMEOUT:5s}
+  # 64-bit Snowflake ids (public order numbers, orders.order_no): each running instance needs its own worker id
+  # (0-1022). static: APP_IDS_WORKER_ID (default 0, one local instance); lease: leased from snowflake_worker_leases
+  # (Kubernetes Deployment, PostgreSQL only). docs/operations.md section 8.
+  ids:
+    worker-id-source: ${APP_IDS_WORKER_ID_SOURCE:static}
+    worker-id: ${APP_IDS_WORKER_ID:0}
+    # A clock step back up to this is waited out; a larger one makes checkout answer 503 until the clock catches up.
+    max-clock-backward: ${APP_IDS_MAX_CLOCK_BACKWARD:50ms}
+    lease:
+      ttl: ${APP_IDS_LEASE_TTL:60s}
+      renew-interval: ${APP_IDS_LEASE_RENEW_INTERVAL:15s}
   # Two-level catalog cache (spring.cache.type=redis): Caffeine L1 per instance in front of Redis L2, with
   # Redis pub/sub dropping other instances' L1 copies on writes. The L2 base TTL is
   # spring.cache.redis.time-to-live. Redis keys: <key-namespace>:<version>:<cache>::<key>.
