@@ -3,6 +3,7 @@ package com.laioffer.onlineorder;
 
 import com.laioffer.onlineorder.repository.OutboxAggregateSequenceRepository;
 import com.laioffer.onlineorder.service.H2OutboxSequenceAllocator;
+import com.laioffer.onlineorder.service.OutboxSequenceAllocatorConfig;
 import com.laioffer.onlineorder.service.PostgresOutboxSequenceAllocator;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -11,8 +12,8 @@ import org.mockito.Mockito;
 
 
 /**
- * The statements each allocator runs; OutboxAggregateOrderingPostgresTests runs the PostgreSQL one under concurrency and
- * the h2 tests the H2 one through checkouts.
+ * The statements each allocator runs, and which one a database gets; OutboxAggregateOrderingPostgresTests runs the
+ * PostgreSQL one under concurrency and OutboxSequenceAllocatorH2Tests the H2 one.
  */
 class OutboxSequenceAllocatorTests {
 
@@ -67,6 +68,28 @@ class OutboxSequenceAllocatorTests {
         order.verify(repository).insertFirstSequence("DELIVERY", 3L);
         order.verify(repository).incrementSequence("DELIVERY", 3L);
         order.verify(repository).findLastSequence("DELIVERY", 3L);
+    }
+
+
+    @Test
+    void h2_whenTheCounterAnotherTransactionStartedCannotBeStepped_shouldFail() {
+        Mockito.when(repository.incrementSequence("DELIVERY", 3L)).thenReturn(0, 0);
+        Mockito.when(repository.insertFirstSequence("DELIVERY", 3L)).thenReturn(0);
+
+        Assertions.assertThrows(
+                IllegalStateException.class, () -> new H2OutboxSequenceAllocator(repository).next("DELIVERY", 3L));
+        Mockito.verify(repository, Mockito.never()).findLastSequence(Mockito.anyString(), Mockito.anyLong());
+    }
+
+
+    @Test
+    void theAllocator_shouldBeChosenByTheDatabaseTheApplicationIsConnectedTo() {
+        Assertions.assertInstanceOf(PostgresOutboxSequenceAllocator.class,
+                OutboxSequenceAllocatorConfig.forDatabase("PostgreSQL", repository));
+        Assertions.assertInstanceOf(H2OutboxSequenceAllocator.class,
+                OutboxSequenceAllocatorConfig.forDatabase("H2", repository));
+        Assertions.assertThrows(IllegalStateException.class,
+                () -> OutboxSequenceAllocatorConfig.forDatabase("MySQL", repository));
     }
 
 
