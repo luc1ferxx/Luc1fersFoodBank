@@ -12,6 +12,7 @@ import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.model.OrderStatusHistoryDto;
+import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
@@ -86,8 +87,8 @@ class OrderServiceTests {
 
     @Test
     void transitionOrderStatus_shouldAdvanceThroughAllowedState() {
-        OrderEntity paidOrder = new OrderEntity(5L, 1L, amount("19.0"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
-        OrderEntity acceptedOrder = new OrderEntity(5L, 1L, amount("19.0"), "ACCEPTED", paidOrder.createdAt());
+        OrderEntity paidOrder = new OrderEntity(5L, 1L, Money.of("19.0", "USD"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
+        OrderEntity acceptedOrder = new OrderEntity(5L, 1L, Money.of("19.0", "USD"), "ACCEPTED", paidOrder.createdAt());
         OrderHistoryItemEntity historyItem = new OrderHistoryItemEntity(
                 6L,
                 5L,
@@ -97,7 +98,8 @@ class OrderServiceTests {
                 1,
                 "Burger",
                 "Classic burger",
-                "image"
+                "image",
+                "USD"
         );
 
         Mockito.when(orderRepository.lockById(5L)).thenReturn(paidOrder);
@@ -125,7 +127,7 @@ class OrderServiceTests {
 
     @Test
     void cancelOrder_shouldRejectInvalidTransition() {
-        OrderEntity completedOrder = new OrderEntity(5L, 1L, amount("19.0"), "COMPLETED", LocalDateTime.of(2026, 4, 4, 12, 0));
+        OrderEntity completedOrder = new OrderEntity(5L, 1L, Money.of("19.0", "USD"), "COMPLETED", LocalDateTime.of(2026, 4, 4, 12, 0));
 
         Mockito.when(orderRepository.lockByIdAndCustomerId(5L, 1L)).thenReturn(completedOrder);
 
@@ -136,7 +138,7 @@ class OrderServiceTests {
 
     @Test
     void transitionOrderStatus_withoutAnActor_shouldRecordSystemInTheHistory() {
-        OrderEntity paidOrder = new OrderEntity(5L, 1L, amount("19.0"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
+        OrderEntity paidOrder = new OrderEntity(5L, 1L, Money.of("19.0", "USD"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
         Mockito.when(orderRepository.lockById(5L)).thenReturn(paidOrder);
         Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -156,7 +158,7 @@ class OrderServiceTests {
 
     @Test
     void idempotentTransitionOrderStatus_shouldRecordTheAdminInTheHistoryAndTheAuditLog() {
-        OrderEntity paidOrder = new OrderEntity(5L, 1L, amount("19.0"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
+        OrderEntity paidOrder = new OrderEntity(5L, 1L, Money.of("19.0", "USD"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
         stubFirstIdempotentAttempt(9L, "admin-key");
         Mockito.when(orderRepository.lockById(5L)).thenReturn(paidOrder);
         Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
@@ -190,7 +192,7 @@ class OrderServiceTests {
 
     @Test
     void idempotentTransitionOrderStatus_toTheCurrentStatus_shouldAuditTheNoOpWithoutHistory() {
-        OrderEntity acceptedOrder = new OrderEntity(5L, 1L, amount("19.0"), "ACCEPTED", LocalDateTime.of(2026, 4, 4, 12, 0));
+        OrderEntity acceptedOrder = new OrderEntity(5L, 1L, Money.of("19.0", "USD"), "ACCEPTED", LocalDateTime.of(2026, 4, 4, 12, 0));
         stubFirstIdempotentAttempt(9L, "same-status-key");
         Mockito.when(orderRepository.lockById(5L)).thenReturn(acceptedOrder);
 
@@ -212,7 +214,7 @@ class OrderServiceTests {
     void getStatusHistory_shouldOnlyServeTheOwnerAndAdmins() {
         List<OrderStatusHistoryDto> history = List.of(new OrderStatusHistoryDto(
                 null, "PLACED", "CUSTOMER", 1L, null, LocalDateTime.of(2026, 4, 4, 12, 0)));
-        OrderEntity order = new OrderEntity(5L, 1L, amount("19.0"), "PLACED", LocalDateTime.of(2026, 4, 4, 12, 0));
+        OrderEntity order = new OrderEntity(5L, 1L, Money.of("19.0", "USD"), "PLACED", LocalDateTime.of(2026, 4, 4, 12, 0));
         Mockito.when(orderRepository.findByIdAndCustomerId(5L, 1L)).thenReturn(Optional.of(order));
         Mockito.when(orderRepository.findByIdAndCustomerId(5L, 2L)).thenReturn(Optional.empty());
         Mockito.when(orderRepository.existsById(5L)).thenReturn(true);

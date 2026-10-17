@@ -153,7 +153,8 @@ class CatalogCacheIntegrationTests {
         Assertions.assertEquals(HttpStatus.OK, menu.getStatusCode());
         Assertions.assertEquals(2, menu.getBody().size());
         Map<String, Object> whopper = menu.getBody().get(0);
-        Assertions.assertEquals(List.of("id", "restaurant_id", "name", "description", "price", "image_url"), new ArrayList<>(whopper.keySet()));
+        Assertions.assertEquals(List.of("id", "restaurant_id", "name", "description", "price", "currency", "image_url"), new ArrayList<>(whopper.keySet()));
+        Assertions.assertEquals("USD", whopper.get("currency"));
         Assertions.assertEquals(whopperId, ((Number) whopper.get("id")).longValue());
         Assertions.assertEquals(restaurantId, ((Number) whopper.get("restaurant_id")).longValue());
         Assertions.assertEquals(0, new BigDecimal("5.00").compareTo(new BigDecimal(whopper.get("price").toString())));
@@ -167,11 +168,11 @@ class CatalogCacheIntegrationTests {
                 .filter(entry -> ((Number) entry.get("id")).longValue() == restaurantId)
                 .findFirst()
                 .orElseThrow();
-        Assertions.assertEquals(List.of("id", "name", "address", "phone", "image_url", "menu_items"), new ArrayList<>(restaurant.keySet()));
+        Assertions.assertEquals(List.of("id", "name", "address", "phone", "image_url", "currency", "menu_items"), new ArrayList<>(restaurant.keySet()));
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> menuItems = (List<Map<String, Object>>) restaurant.get("menu_items");
-        Assertions.assertEquals(List.of("id", "name", "description", "price", "image_url"), new ArrayList<>(menuItems.get(0).keySet()));
-        Assertions.assertTrue(redis.hasKey("onlineorder:cache:v1:restaurants::all"));
+        Assertions.assertEquals(List.of("id", "name", "description", "price", "currency", "image_url"), new ArrayList<>(menuItems.get(0).keySet()));
+        Assertions.assertTrue(redis.hasKey("onlineorder:cache:v2:restaurants::all"));
         Assertions.assertFalse(redis.hasKey("restaurants::SimpleKey []"), "the old single all-in-one key is gone");
     }
 
@@ -184,14 +185,14 @@ class CatalogCacheIntegrationTests {
         Assertions.assertEquals("NOT_FOUND", response.getBody().get("code"));
         Assertions.assertEquals("Restaurant not found", response.getBody().get("message"));
         Assertions.assertFalse(menuCache().isCachedLocally(987654321L));
-        Assertions.assertFalse(redis.hasKey("onlineorder:cache:v1:menu::987654321"));
+        Assertions.assertFalse(redis.hasKey("onlineorder:cache:v2:menu::987654321"));
     }
 
 
     @Test
     void restaurantInsertedBehindTheCache_shouldBeServedRightAwayAndRefreshTheCachedList() {
         getJsonList("/restaurants/menu");
-        Assertions.assertTrue(redis.hasKey("onlineorder:cache:v1:restaurants::all"));
+        Assertions.assertTrue(redis.hasKey("onlineorder:cache:v2:restaurants::all"));
         String name = "Seeded Later " + System.nanoTime();
         jdbcTemplate.update("INSERT INTO restaurants (name, address, image_url, phone) VALUES (?, ?, ?, ?)", name, "2 Seed St", "", "");
         long newRestaurantId = jdbcTemplate.queryForObject("SELECT id FROM restaurants WHERE name = ?", Long.class, name);
@@ -207,7 +208,7 @@ class CatalogCacheIntegrationTests {
         Assertions.assertTrue(getJsonList("/restaurants/menu").getBody().stream()
                 .anyMatch(entry -> ((Number) entry.get("id")).longValue() == newRestaurantId), "the stale list was evicted");
         // Let the delayed second delete of restaurants::all run now rather than during another test.
-        await(() -> !redis.hasKey("onlineorder:cache:v1:restaurants::all"), "the delayed second delete ran");
+        await(() -> !redis.hasKey("onlineorder:cache:v2:restaurants::all"), "the delayed second delete ran");
     }
 
 
@@ -280,7 +281,7 @@ class CatalogCacheIntegrationTests {
     @Test
     void adminRestaurantUpdate_shouldEvictTheRestaurantList() {
         getJsonList("/restaurants/menu");
-        Assertions.assertTrue(redis.hasKey("onlineorder:cache:v1:restaurants::all"));
+        Assertions.assertTrue(redis.hasKey("onlineorder:cache:v2:restaurants::all"));
         String adminCookie = login("demo@laifood.com", "demo123");
 
         ResponseEntity<Map> update = patch(
@@ -291,7 +292,7 @@ class CatalogCacheIntegrationTests {
 
         Assertions.assertEquals(HttpStatus.OK, update.getStatusCode());
         Assertions.assertEquals("1 Cache Way", update.getBody().get("address"));
-        Assertions.assertFalse(redis.hasKey("onlineorder:cache:v1:restaurants::all"));
+        Assertions.assertFalse(redis.hasKey("onlineorder:cache:v2:restaurants::all"));
         Map<String, Object> restaurant = getJsonList("/restaurants/menu").getBody().stream()
                 .filter(entry -> ((Number) entry.get("id")).longValue() == restaurantId)
                 .findFirst()
@@ -299,7 +300,7 @@ class CatalogCacheIntegrationTests {
         Assertions.assertEquals("Renamed Kitchen " + restaurantId, restaurant.get("name"));
         Assertions.assertEquals("(408) 555-0199", restaurant.get("phone"));
         // Let the delayed second delete of restaurants::all run now rather than during another test.
-        await(() -> !redis.hasKey("onlineorder:cache:v1:restaurants::all"), "the delayed second delete ran");
+        await(() -> !redis.hasKey("onlineorder:cache:v2:restaurants::all"), "the delayed second delete ran");
     }
 
 
@@ -324,6 +325,42 @@ class CatalogCacheIntegrationTests {
         Assertions.assertEquals(HttpStatus.NOT_FOUND, patch("/admin/restaurants/987654321", Map.of("name", "x"), adminCookie).getStatusCode());
         Assertions.assertEquals(HttpStatus.OK, patch("/admin/menu-items/" + whopperId, body, adminCookie).getStatusCode());
         Assertions.assertEquals(0, new BigDecimal("1.00").compareTo(priceInDatabase(whopperId)));
+
+        // Prices are set in the restaurant's currency only (the test restaurant prices in USD).
+        ResponseEntity<Map> otherCurrency = patch(
+                "/admin/menu-items/" + whopperId,
+                Map.of("price", new BigDecimal("2.00"), "currency", "EUR"),
+                adminCookie
+        );
+        Assertions.assertEquals(HttpStatus.BAD_REQUEST, otherCurrency.getStatusCode());
+        Assertions.assertEquals("CURRENCY_MISMATCH", otherCurrency.getBody().get("code"));
+        Assertions.assertEquals(HttpStatus.BAD_REQUEST, patch("/admin/menu-items/" + whopperId,
+                Map.of("price", new BigDecimal("2.00"), "currency", "usd"), adminCookie).getStatusCode());
+        Assertions.assertEquals(HttpStatus.BAD_REQUEST, patch("/admin/menu-items/" + whopperId,
+                Map.of("currency", "USD"), adminCookie).getStatusCode(), "a currency without a price");
+        Assertions.assertEquals(0, new BigDecimal("1.00").compareTo(priceInDatabase(whopperId)), "rejected writes change nothing");
+        ResponseEntity<Map> sameCurrency = patch(
+                "/admin/menu-items/" + whopperId,
+                Map.of("price", new BigDecimal("2.00"), "currency", "USD"),
+                adminCookie
+        );
+        Assertions.assertEquals(HttpStatus.OK, sameCurrency.getStatusCode());
+        Assertions.assertEquals("USD", sameCurrency.getBody().get("currency"));
+        Assertions.assertEquals(0, new BigDecimal("2.00").compareTo(priceInDatabase(whopperId)));
+
+        // A restaurant priced in yen takes whole yen only.
+        jdbcTemplate.update("INSERT INTO restaurants (name, currency) VALUES ('Yen Ramen', 'JPY')");
+        Long yenRestaurant = jdbcTemplate.queryForObject("SELECT id FROM restaurants WHERE name = 'Yen Ramen'", Long.class);
+        jdbcTemplate.update("INSERT INTO menu_items (restaurant_id, name, price, currency) VALUES (?, 'Ramen', 900, 'JPY')",
+                yenRestaurant);
+        Long ramen = jdbcTemplate.queryForObject("SELECT id FROM menu_items WHERE restaurant_id = ?", Long.class, yenRestaurant);
+        ResponseEntity<Map> fractionalYen = patch("/admin/menu-items/" + ramen, Map.of("price", new BigDecimal("950.50")), adminCookie);
+        Assertions.assertEquals(HttpStatus.BAD_REQUEST, fractionalYen.getStatusCode());
+        Assertions.assertEquals("INVALID_AMOUNT", fractionalYen.getBody().get("code"));
+        ResponseEntity<Map> wholeYen = patch("/admin/menu-items/" + ramen, Map.of("price", 950), adminCookie);
+        Assertions.assertEquals(HttpStatus.OK, wholeYen.getStatusCode());
+        Assertions.assertEquals("JPY", wholeYen.getBody().get("currency"));
+        jdbcTemplate.update("DELETE FROM restaurants WHERE id = ?", yenRestaurant);
     }
 
 
@@ -431,7 +468,7 @@ class CatalogCacheIntegrationTests {
 
 
     private String menuKey() {
-        return "onlineorder:cache:v1:menu::" + restaurantId;
+        return "onlineorder:cache:v2:menu::" + restaurantId;
     }
 
 

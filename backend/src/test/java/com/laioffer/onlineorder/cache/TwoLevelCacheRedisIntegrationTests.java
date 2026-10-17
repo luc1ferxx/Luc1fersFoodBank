@@ -92,20 +92,20 @@ class TwoLevelCacheRedisIntegrationTests {
         Instance reader = newInstance("reader");
         awaitSubscribed(writer, reader);
         List<CatalogMenuItemDto> menu = List.of(
-                new CatalogMenuItemDto(10L, 5L, "Whopper", "Flame grilled", new BigDecimal("6.39"), "w.png"),
-                new CatalogMenuItemDto(11L, 5L, "Fries", null, new BigDecimal("2.10"), null)
+                new CatalogMenuItemDto(10L, 5L, "Whopper", "Flame grilled", new BigDecimal("6.39"), "USD", "w.png"),
+                new CatalogMenuItemDto(11L, 5L, "Fries", null, new BigDecimal("2.10"), "USD", null)
         );
 
         writer.menu().put(5L, menu);
 
-        String raw = redis.opsForValue().get("onlineorder:cache:v1:menu::5");
-        Assertions.assertNotNull(raw, "versioned key onlineorder:cache:v1:menu::5");
+        String raw = redis.opsForValue().get("onlineorder:cache:v2:menu::5");
+        Assertions.assertNotNull(raw, "versioned key onlineorder:cache:v2:menu::5");
         Assertions.assertTrue(raw.startsWith("[{"), raw);
         Assertions.assertFalse(raw.contains("@class"), "no embedded type information: " + raw);
         Assertions.assertTrue(raw.contains("\"restaurantId\":5"), raw);
         Assertions.assertTrue(raw.contains("\"price\":6.39"), raw);
 
-        Long ttlMillis = redis.getExpire("onlineorder:cache:v1:menu::5", java.util.concurrent.TimeUnit.MILLISECONDS);
+        Long ttlMillis = redis.getExpire("onlineorder:cache:v2:menu::5", java.util.concurrent.TimeUnit.MILLISECONDS);
         Assertions.assertTrue(ttlMillis >= REMOTE_TTL.toMillis() * 0.85 - 1000, "ttl " + ttlMillis);
         Assertions.assertTrue(ttlMillis <= REMOTE_TTL.toMillis() * 1.15, "ttl " + ttlMillis);
 
@@ -123,11 +123,11 @@ class TwoLevelCacheRedisIntegrationTests {
         Instance writer = newInstance("writer");
         Instance reader = newInstance("reader");
         awaitSubscribed(writer, reader);
-        List<CatalogRestaurantDto> restaurants = List.of(new CatalogRestaurantDto(1L, "Burger King", "Main St", "123", "bk.png"));
+        List<CatalogRestaurantDto> restaurants = List.of(new CatalogRestaurantDto(1L, "Burger King", "Main St", "123", "bk.png", "USD"));
 
         writer.restaurants().put(CatalogCaches.ALL_RESTAURANTS_KEY, restaurants);
 
-        Assertions.assertNotNull(redis.opsForValue().get("onlineorder:cache:v1:restaurants::all"));
+        Assertions.assertNotNull(redis.opsForValue().get("onlineorder:cache:v2:restaurants::all"));
         Assertions.assertEquals(restaurants, reader.restaurants().get(CatalogCaches.ALL_RESTAURANTS_KEY).get());
     }
 
@@ -137,17 +137,17 @@ class TwoLevelCacheRedisIntegrationTests {
         Instance instance = newInstance("instance");
         awaitSubscribed(instance);
         redis.opsForValue().set(
-                "onlineorder:cache:v1:menu::5",
+                "onlineorder:cache:v2:menu::5",
                 "[{\"@class\":\"java.util.HashMap\",\"id\":10,\"unexpected\":true}]"
         );
 
         List<CatalogMenuItemDto> loaded = instance.menu().get(5L, () -> List.of(
-                new CatalogMenuItemDto(10L, 5L, "Whopper", null, new BigDecimal("6.39"), null)
+                new CatalogMenuItemDto(10L, 5L, "Whopper", null, new BigDecimal("6.39"), "USD", null)
         ));
 
         Assertions.assertEquals("Whopper", loaded.get(0).name());
         Assertions.assertEquals(List.of("get:5"), errors, "the unreadable entry is reported, not thrown");
-        Assertions.assertTrue(redis.opsForValue().get("onlineorder:cache:v1:menu::5").contains("Whopper"));
+        Assertions.assertTrue(redis.opsForValue().get("onlineorder:cache:v2:menu::5").contains("Whopper"));
     }
 
 
@@ -156,8 +156,8 @@ class TwoLevelCacheRedisIntegrationTests {
         Instance first = newInstance("first");
         Instance second = newInstance("second");
         awaitSubscribed(first, second);
-        List<CatalogMenuItemDto> oldMenu = List.of(new CatalogMenuItemDto(10L, 7L, "Whopper", null, new BigDecimal("6.39"), null));
-        List<CatalogMenuItemDto> newMenu = List.of(new CatalogMenuItemDto(10L, 7L, "Whopper", null, new BigDecimal("7.25"), null));
+        List<CatalogMenuItemDto> oldMenu = List.of(new CatalogMenuItemDto(10L, 7L, "Whopper", null, new BigDecimal("6.39"), "USD", null));
+        List<CatalogMenuItemDto> newMenu = List.of(new CatalogMenuItemDto(10L, 7L, "Whopper", null, new BigDecimal("7.25"), "USD", null));
 
         first.menu().get(7L, () -> oldMenu);
         Assertions.assertEquals(oldMenu, second.menu().get(7L, () -> Assertions.fail("served from Redis")));
@@ -166,7 +166,7 @@ class TwoLevelCacheRedisIntegrationTests {
         first.menu().evict(7L);
 
         Assertions.assertFalse(first.menu().isCachedLocally(7L));
-        Assertions.assertFalse(redis.hasKey("onlineorder:cache:v1:menu::7"));
+        Assertions.assertFalse(redis.hasKey("onlineorder:cache:v2:menu::7"));
         await(() -> !second.menu().isCachedLocally(7L), "second instance's L1 copy is dropped");
         Assertions.assertEquals(newMenu, second.menu().get(7L, () -> newMenu));
         Assertions.assertEquals(1, second.menu().remoteInvalidationsReceivedCount());
@@ -179,8 +179,8 @@ class TwoLevelCacheRedisIntegrationTests {
         Instance first = newInstance("first");
         Instance second = newInstance("second");
         awaitSubscribed(first, second);
-        List<CatalogRestaurantDto> before = List.of(new CatalogRestaurantDto(1L, "Old name", null, null, null));
-        List<CatalogRestaurantDto> after = List.of(new CatalogRestaurantDto(1L, "New name", null, null, null));
+        List<CatalogRestaurantDto> before = List.of(new CatalogRestaurantDto(1L, "Old name", null, null, null, "USD"));
+        List<CatalogRestaurantDto> after = List.of(new CatalogRestaurantDto(1L, "New name", null, null, null, "USD"));
         second.restaurants().get(CatalogCaches.ALL_RESTAURANTS_KEY, () -> before);
 
         first.restaurants().put(CatalogCaches.ALL_RESTAURANTS_KEY, after);
@@ -197,12 +197,12 @@ class TwoLevelCacheRedisIntegrationTests {
         awaitSubscribed(first, second);
         for (long restaurantId = 1; restaurantId <= 3; restaurantId++) {
             long id = restaurantId;
-            second.menu().get(id, () -> List.of(new CatalogMenuItemDto(id * 10, id, "Item", null, BigDecimal.ONE, null)));
+            second.menu().get(id, () -> List.of(new CatalogMenuItemDto(id * 10, id, "Item", null, BigDecimal.ONE, "USD", null)));
         }
 
         first.menu().clear();
 
-        Assertions.assertTrue(redis.keys("onlineorder:cache:v1:menu::*").isEmpty());
+        Assertions.assertTrue(redis.keys("onlineorder:cache:v2:menu::*").isEmpty());
         await(() -> !second.menu().isCachedLocally(1L) && !second.menu().isCachedLocally(3L), "second L1 cleared");
     }
 

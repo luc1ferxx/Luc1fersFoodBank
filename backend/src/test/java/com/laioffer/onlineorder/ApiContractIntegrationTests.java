@@ -210,7 +210,79 @@ class ApiContractIntegrationTests {
                 .getResponse()
                 .getContentAsString();
         String firstItem = menu.substring(0, menu.indexOf('}') + 1);
-        Assertions.assertEquals(List.of("id", "restaurant_id", "name", "description", "price", "image_url"), keys(firstItem), firstItem);
+        Assertions.assertEquals(
+                List.of("id", "restaurant_id", "name", "description", "price", "currency", "image_url"),
+                keys(firstItem),
+                firstItem
+        );
+    }
+
+
+    /**
+     * Every amount in a response has a sibling currency field (ISO 4217); the amounts keep their names and stay JSON
+     * numbers.
+     */
+    @Test
+    void moneyFields_shouldEachComeWithTheirCurrency() throws Exception {
+        mockMvc.perform(get("/restaurants/menu"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].currency").value("USD"))
+                .andExpect(jsonPath("$[0].menu_items[0].price").isNumber())
+                .andExpect(jsonPath("$[0].menu_items[0].currency").value("USD"));
+        mockMvc.perform(get("/restaurant/1/menu"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].price").value(4.89))
+                .andExpect(jsonPath("$[0].currency").value("USD"));
+
+        MockHttpSession session = signUpAndLogIn("money-contract-");
+        for (int i = 0; i < 2; i++) {
+            mockMvc.perform(post("/cart")
+                            .session(session)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"menu_id\": 1}"))
+                    .andExpect(status().isOk());
+        }
+        mockMvc.perform(get("/cart").session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total_price").value(9.78))
+                .andExpect(jsonPath("$.currency").value("USD"))
+                .andExpect(jsonPath("$.order_items[0].price").value(4.89))
+                .andExpect(jsonPath("$.order_items[0].currency").value("USD"));
+        mockMvc.perform(post("/cart/checkout")
+                        .session(session)
+                        .header("Idempotency-Key", "money-contract-" + System.nanoTime()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total_price").value(9.78))
+                .andExpect(jsonPath("$.currency").value("USD"))
+                .andExpect(jsonPath("$.items[0].price").value(4.89))
+                .andExpect(jsonPath("$.items[0].currency").value("USD"));
+        mockMvc.perform(get("/orders").session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].total_price").value(9.78))
+                .andExpect(jsonPath("$[0].currency").value("USD"))
+                .andExpect(jsonPath("$[0].items[0].currency").value("USD"));
+        mockMvc.perform(get("/cart").session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total_price").value(0))
+                .andExpect(jsonPath("$.currency").value("USD"));
+    }
+
+
+    private MockHttpSession signUpAndLogIn(String emailPrefix) throws Exception {
+        String email = emailPrefix + System.nanoTime() + "@example.com";
+        mockMvc.perform(post("/signup")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"email": "%s", "password": "demo123", "first_name": "Money", "last_name": "User"}
+                                """.formatted(email)))
+                .andExpect(status().isCreated());
+        return (MockHttpSession) mockMvc.perform(post("/login")
+                        .param("username", email)
+                        .param("password", "demo123"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getRequest()
+                .getSession(false);
     }
 
 

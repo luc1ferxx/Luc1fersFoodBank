@@ -90,12 +90,22 @@ public class OrderEventOutboxService {
                         order.status(),
                         order.totalPrice(),
                         order.createdAt(),
-                        items,
+                        eventItems(items),
                         order.restaurantId(),
-                        order.cancelReason()
+                        order.cancelReason(),
+                        order.currency()
                 )
         );
         enqueueEvent("ORDER", order.id(), orderTopic, String.valueOf(order.id()), eventType, eventId, envelope);
+    }
+
+
+    /**
+     * The order lines of an event: priced in the payload's currency (an order is single-currency), so without a
+     * currency of their own.
+     */
+    private static List<OrderHistoryItemDto> eventItems(List<OrderHistoryItemDto> items) {
+        return items == null ? null : items.stream().map(OrderHistoryItemDto::withoutCurrency).toList();
     }
 
 

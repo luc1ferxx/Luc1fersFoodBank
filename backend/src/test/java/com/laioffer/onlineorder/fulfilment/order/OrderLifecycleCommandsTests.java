@@ -8,6 +8,7 @@ import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.Delivery
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.RestaurantOrderTransition;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
+import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
@@ -493,7 +494,7 @@ class OrderLifecycleCommandsTests {
         return new OrderEntity(
                 ORDER_ID,
                 1L,
-                new BigDecimal("19.00"),
+                Money.of("19.00", "USD"),
                 status,
                 LocalDateTime.of(2026, 4, 4, 12, 0),
                 restaurantId,

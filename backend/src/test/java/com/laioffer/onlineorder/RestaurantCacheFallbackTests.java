@@ -75,10 +75,10 @@ class RestaurantCacheFallbackTests {
         cacheManager.clearLocal();
         cacheManager.getTwoLevelCache(CatalogCaches.MENU).getRemoteCircuitBreaker().reset();
         Mockito.when(restaurantRepository.findAllOrderById()).thenReturn(List.of(
-                new RestaurantEntity(1L, "Burger King", "773 N Mathilda Ave", "(408) 736-0101", "")
+                new RestaurantEntity(1L, "Burger King", "773 N Mathilda Ave", "(408) 736-0101", "", "USD")
         ));
         Mockito.when(menuItemRepository.findByRestaurantIdOrderById(1L)).thenReturn(List.of(
-                new MenuItemEntity(10L, 1L, "Whopper", "Flame grilled burger", new BigDecimal("6.39"), "")
+                new MenuItemEntity(10L, 1L, "Whopper", "Flame grilled burger", new BigDecimal("6.39"), "", "USD")
         ));
     }
 

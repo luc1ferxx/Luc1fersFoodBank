@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.entity;
 
 
+import com.laioffer.onlineorder.money.Money;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.PersistenceCreator;
 import org.springframework.data.relational.core.mapping.Column;
@@ -13,6 +14,8 @@ import java.time.LocalDateTime;
 
 /**
  * @param updatedAt when the order last changed status; its creation time until the first transition
+ * @param currency  the ISO 4217 currency of the total and of every item: the currency of the cart it was checked out
+ *                  from
  */
 @Table("orders")
 public record OrderEntity(
@@ -32,7 +35,9 @@ public record OrderEntity(
         @Column("cancel_reason")
         String cancelReason,
         @Column("updated_at")
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        @Column("currency")
+        String currency
 ) {
 
     @PersistenceCreator
@@ -46,21 +51,26 @@ public record OrderEntity(
     public OrderEntity(
             Long id,
             Long customerId,
-            BigDecimal totalPrice,
+            Money total,
             String status,
             LocalDateTime createdAt,
             Long restaurantId,
             String cancelReason
     ) {
-        this(id, customerId, totalPrice, status, createdAt, restaurantId, cancelReason, createdAt);
+        this(id, customerId, total.amount(), status, createdAt, restaurantId, cancelReason, createdAt, total.currencyCode());
     }
 
 
     /**
      * An order without a restaurant (placed before single-restaurant carts) and without a cancel reason.
      */
-    public OrderEntity(Long id, Long customerId, BigDecimal totalPrice, String status, LocalDateTime createdAt) {
-        this(id, customerId, totalPrice, status, createdAt, null, null);
+    public OrderEntity(Long id, Long customerId, Money total, String status, LocalDateTime createdAt) {
+        this(id, customerId, total, status, createdAt, null, null);
+    }
+
+
+    public Money total() {
+        return Money.of(totalPrice, currency);
     }
 
 
@@ -76,7 +86,8 @@ public record OrderEntity(
                 createdAt,
                 restaurantId,
                 cancelReason,
-                changedAt
+                changedAt,
+                currency
         );
     }
 }

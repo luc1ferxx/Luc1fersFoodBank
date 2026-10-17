@@ -5,6 +5,7 @@ import com.laioffer.onlineorder.entity.CustomerEntity;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
+import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.repository.CustomerRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
 import com.laioffer.onlineorder.service.OrderNotificationService;
@@ -107,7 +108,7 @@ class OrderNotificationDedupIntegrationTests {
                 now,
                 now
         ));
-        OrderEntity order = orderRepository.save(new OrderEntity(null, customer.id(), amount("22.0"), status, now));
+        OrderEntity order = orderRepository.save(new OrderEntity(null, customer.id(), Money.of("22.0", "USD"), status, now));
         return new SeededOrder(customer.id(), order.id());
     }
 

@@ -6,6 +6,9 @@ import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
 
 
+import com.laioffer.onlineorder.money.Money;
+
+
 import java.math.BigDecimal;
 
 
@@ -21,6 +24,21 @@ public record OrderItemEntity(
         @Column("price")
         BigDecimal price,
         @Column("quantity")
-        Integer quantity
+        Integer quantity,
+        @Column("currency")
+        String currency
 ) {
+
+
+    /**
+     * The price snapshot taken when the item was added to the cart.
+     */
+    public Money unitPrice() {
+        return Money.of(price, currency);
+    }
+
+
+    public Money lineTotal() {
+        return unitPrice().times(quantity);
+    }
 }

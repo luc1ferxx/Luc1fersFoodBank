@@ -22,14 +22,15 @@ public interface OrderItemRepository extends ListCrudRepository<OrderItemEntity,
 
     @Modifying
     @Query("""
-            INSERT INTO order_items (menu_item_id, cart_id, price, quantity)
-            VALUES (:menuItemId, :cartId, :price, 1)
+            INSERT INTO order_items (menu_item_id, cart_id, price, currency, quantity)
+            VALUES (:menuItemId, :cartId, :price, :currency, 1)
             ON CONFLICT (cart_id, menu_item_id)
             DO UPDATE SET
                 price = EXCLUDED.price,
+                currency = EXCLUDED.currency,
                 quantity = order_items.quantity + 1
             """)
-    void incrementQuantity(Long cartId, Long menuItemId, BigDecimal price);
+    void incrementQuantity(Long cartId, Long menuItemId, BigDecimal price, String currency);
 
 
     /**
@@ -45,14 +46,6 @@ public interface OrderItemRepository extends ListCrudRepository<OrderItemEntity,
             LIMIT 1
             """)
     List<Long> findOtherRestaurantIdsInCart(Long cartId, Long restaurantId);
-
-
-    @Query("""
-            SELECT CAST(COALESCE(SUM(price * quantity), 0) AS DOUBLE PRECISION)
-            FROM order_items
-            WHERE cart_id = :cartId
-            """)
-    BigDecimal getTotalPriceByCartId(Long cartId);
 
 
     @Modifying

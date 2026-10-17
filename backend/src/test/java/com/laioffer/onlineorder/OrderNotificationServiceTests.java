@@ -190,7 +190,7 @@ class OrderNotificationServiceTests {
                         status,
                         amount("22.0"),
                         occurredAt,
-                        List.of(new OrderHistoryItemDto(1L, orderId, 2L, amount("10.0"), 1, "Burger", "Classic", "image"))
+                        List.of(new OrderHistoryItemDto(1L, orderId, 2L, amount("10.0"), "USD", 1, "Burger", "Classic", "image"))
                 )
         );
     }

@@ -6,6 +6,9 @@ import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
 
 
+import com.laioffer.onlineorder.money.Money;
+
+
 import java.math.BigDecimal;
 
 
@@ -29,6 +32,13 @@ public record OrderHistoryItemEntity(
         @Column("menu_item_description")
         String menuItemDescription,
         @Column("menu_item_image_url")
-        String menuItemImageUrl
+        String menuItemImageUrl,
+        @Column("currency")
+        String currency
 ) {
+
+
+    public Money unitPrice() {
+        return Money.of(price, currency);
+    }
 }

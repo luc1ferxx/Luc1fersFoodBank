@@ -6,7 +6,7 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 
-import java.math.BigDecimal;
+import com.laioffer.onlineorder.money.Money;
 
 
 @Service
@@ -22,7 +22,7 @@ public class PostgresCartItemQuantityUpdater implements CartItemQuantityUpdater 
 
 
     @Override
-    public void incrementQuantity(Long cartId, Long menuItemId, BigDecimal price) {
-        orderItemRepository.incrementQuantity(cartId, menuItemId, price);
+    public void incrementQuantity(Long cartId, Long menuItemId, Money unitPrice) {
+        orderItemRepository.incrementQuantity(cartId, menuItemId, unitPrice.amount(), unitPrice.currencyCode());
     }
 }

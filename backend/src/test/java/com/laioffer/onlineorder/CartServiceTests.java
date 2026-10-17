@@ -7,11 +7,14 @@ import com.laioffer.onlineorder.entity.MenuItemEntity;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.entity.OrderItemEntity;
+import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.model.CartDto;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
+import com.laioffer.onlineorder.money.CurrencyMismatchException;
+import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.CartRepository;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
@@ -107,17 +110,18 @@ public class CartServiceTests {
         long customerId = 1L;
         long menuItemId = 2L;
         long cartId = 3L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("0.0"));
-        MenuItemEntity menuItem = new MenuItemEntity(menuItemId, 1L, "Name", "", amount("10.0"), "");
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("0.0"), "USD");
+        MenuItemEntity menuItem = new MenuItemEntity(menuItemId, 1L, "Name", "", amount("10.0"), "", "USD");
 
         Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
         Mockito.when(menuItemRepository.findById(menuItemId)).thenReturn(Optional.of(menuItem));
-        Mockito.when(orderItemRepository.getTotalPriceByCartId(cartId)).thenReturn(amount("10.0"));
+        Mockito.when(orderItemRepository.getAllByCartId(cartId))
+                .thenReturn(List.of(new OrderItemEntity(7L, menuItemId, cartId, amount("10.0"), 1, "USD")));
 
         cartService.addMenuItemToCart(customerId, menuItemId);
 
-        Mockito.verify(cartItemQuantityUpdater).incrementQuantity(cartId, menuItemId, amount("10.0"));
-        Mockito.verify(cartRepository).updateTotalPrice(cartId, amount("10.0"));
+        Mockito.verify(cartItemQuantityUpdater).incrementQuantity(cartId, menuItemId, usd("10.00"));
+        Mockito.verify(cartRepository).updateTotal(cartId, amount("10.00"), "USD");
     }
 
 
@@ -126,8 +130,8 @@ public class CartServiceTests {
         long customerId = 1L;
         long menuItemId = 2L;
         long cartId = 3L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.0"));
-        MenuItemEntity otherRestaurantItem = new MenuItemEntity(menuItemId, 7L, "Tofu", "", amount("17.0"), "");
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.0"), "USD");
+        MenuItemEntity otherRestaurantItem = new MenuItemEntity(menuItemId, 7L, "Tofu", "", amount("17.0"), "", "USD");
 
         Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
         Mockito.when(menuItemRepository.findById(menuItemId)).thenReturn(Optional.of(otherRestaurantItem));
@@ -140,7 +144,7 @@ public class CartServiceTests {
 
         Assertions.assertEquals(CartService.CART_RESTAURANT_CONFLICT, conflict.getCode());
         Mockito.verifyNoInteractions(cartItemQuantityUpdater);
-        Mockito.verify(cartRepository, Mockito.never()).updateTotalPrice(Mockito.anyLong(), Mockito.any());
+        Mockito.verify(cartRepository, Mockito.never()).updateTotal(Mockito.anyLong(), Mockito.any(), Mockito.any());
     }
 
 
@@ -149,18 +153,21 @@ public class CartServiceTests {
         long customerId = 1L;
         long menuItemId = 2L;
         long cartId = 3L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.0"));
-        MenuItemEntity sameRestaurantItem = new MenuItemEntity(menuItemId, 1L, "Fries", "", amount("4.0"), "");
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.0"), "USD");
+        MenuItemEntity sameRestaurantItem = new MenuItemEntity(menuItemId, 1L, "Fries", "", amount("4.0"), "", "USD");
 
         Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
         Mockito.when(menuItemRepository.findById(menuItemId)).thenReturn(Optional.of(sameRestaurantItem));
         Mockito.when(orderItemRepository.findOtherRestaurantIdsInCart(cartId, 1L)).thenReturn(List.of());
-        Mockito.when(orderItemRepository.getTotalPriceByCartId(cartId)).thenReturn(amount("14.0"));
+        Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(List.of(
+                new OrderItemEntity(6L, 1L, cartId, amount("10.0"), 1, "USD"),
+                new OrderItemEntity(7L, menuItemId, cartId, amount("4.0"), 1, "USD")
+        ));
 
         cartService.addMenuItemToCart(customerId, menuItemId);
 
-        Mockito.verify(cartItemQuantityUpdater).incrementQuantity(cartId, menuItemId, amount("4.0"));
-        Mockito.verify(cartRepository).updateTotalPrice(cartId, amount("14.0"));
+        Mockito.verify(cartItemQuantityUpdater).incrementQuantity(cartId, menuItemId, usd("4.00"));
+        Mockito.verify(cartRepository).updateTotal(cartId, amount("14.00"), "USD");
     }
 
 
@@ -169,19 +176,17 @@ public class CartServiceTests {
         long customerId = 1L;
         long cartId = 2L;
         long menuItemId = 3L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.0"));
-        OrderItemEntity cartItem = new OrderItemEntity(5L, menuItemId, cartId, amount("10.0"), 1);
-        MenuItemEntity menuItem = new MenuItemEntity(menuItemId, 9L, "Burger", "Classic burger", amount("10.0"), "image");
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.0"), "USD");
+        OrderItemEntity cartItem = new OrderItemEntity(5L, menuItemId, cartId, amount("10.0"), 1, "USD");
+        MenuItemEntity menuItem = new MenuItemEntity(menuItemId, 9L, "Burger", "Classic burger", amount("10.0"), "image", "USD");
 
         Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
-        Mockito.when(cartRepository.getByCustomerId(customerId)).thenReturn(cartEntity);
         Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(List.of(cartItem));
-        Mockito.when(orderItemRepository.getTotalPriceByCartId(cartId)).thenReturn(amount("10.0"));
         Mockito.when(menuItemRepository.findAllById(List.of(menuItemId))).thenReturn(List.of(menuItem));
         Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class)))
                 .thenAnswer(invocation -> {
                     OrderEntity order = invocation.getArgument(0);
-                    return new OrderEntity(4L, order.customerId(), order.totalPrice(), order.status(),
+                    return new OrderEntity(4L, order.customerId(), order.total(), order.status(),
                             order.createdAt(), order.restaurantId(), order.cancelReason());
                 });
         Mockito.when(orderHistoryItemRepository.saveAll(Mockito.anyIterable())).thenReturn(List.of());
@@ -216,20 +221,18 @@ public class CartServiceTests {
     void checkout_whenCartMixesRestaurants_shouldRejectWithoutCreatingAnOrder() {
         long customerId = 1L;
         long cartId = 2L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("27.0"));
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("27.0"), "USD");
         List<OrderItemEntity> cartItems = List.of(
-                new OrderItemEntity(5L, 3L, cartId, amount("10.0"), 1),
-                new OrderItemEntity(6L, 4L, cartId, amount("17.0"), 1)
+                new OrderItemEntity(5L, 3L, cartId, amount("10.0"), 1, "USD"),
+                new OrderItemEntity(6L, 4L, cartId, amount("17.0"), 1, "USD")
         );
         List<MenuItemEntity> menuItems = List.of(
-                new MenuItemEntity(3L, 1L, "Burger", "", amount("10.0"), ""),
-                new MenuItemEntity(4L, 2L, "Tofu", "", amount("17.0"), "")
+                new MenuItemEntity(3L, 1L, "Burger", "", amount("10.0"), "", "USD"),
+                new MenuItemEntity(4L, 2L, "Tofu", "", amount("17.0"), "", "USD")
         );
 
         Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
-        Mockito.when(cartRepository.getByCustomerId(customerId)).thenReturn(cartEntity);
         Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(cartItems);
-        Mockito.when(orderItemRepository.getTotalPriceByCartId(cartId)).thenReturn(amount("27.0"));
         Mockito.when(menuItemRepository.findAllById(List.of(3L, 4L))).thenReturn(menuItems);
 
         ConflictException conflict = Assertions.assertThrows(
@@ -249,14 +252,14 @@ public class CartServiceTests {
     void getCart_shouldReturnCartDto() {
         long customerId = 1L;
         long cartId = 3L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("21.0"));
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("21.0"), "USD");
         List<OrderItemEntity> orderItems = List.of(
-                new OrderItemEntity(1L, 1L, cartId, amount("1.0"), 1),
-                new OrderItemEntity(2L, 2L, cartId, amount("10.0"), 2)
+                new OrderItemEntity(1L, 1L, cartId, amount("1.0"), 1, "USD"),
+                new OrderItemEntity(2L, 2L, cartId, amount("10.0"), 2, "USD")
         );
         List<MenuItemEntity> menuItems = List.of(
-                new MenuItemEntity(1L, 1L, "Name1", "", amount("1.0"), ""),
-                new MenuItemEntity(2L, 1L, "Name2", "", amount("10.0"), "")
+                new MenuItemEntity(1L, 1L, "Name1", "", amount("1.0"), "", "USD"),
+                new MenuItemEntity(2L, 1L, "Name2", "", amount("10.0"), "", "USD")
         );
 
         Mockito.when(cartRepository.getByCustomerId(customerId)).thenReturn(cartEntity);
@@ -267,7 +270,9 @@ public class CartServiceTests {
 
         Assertions.assertEquals(cartId, cartDto.id());
         Assertions.assertEquals(cartEntity.totalPrice(), cartDto.totalPrice());
+        Assertions.assertEquals("USD", cartDto.currency());
         Assertions.assertEquals(orderItems.size(), cartDto.orderItems().size());
+        Assertions.assertEquals("USD", cartDto.orderItems().get(1).currency());
     }
 
 
@@ -275,19 +280,20 @@ public class CartServiceTests {
     void clearCart_shouldRemoveAllItemsAndResetTotalPrice() {
         long customerId = 1L;
         long cartId = 2L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("21.0"));
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("21.0"), "USD");
 
         Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
-        Mockito.when(orderItemRepository.getTotalPriceByCartId(cartId)).thenReturn(BigDecimal.ZERO);
+        Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(List.of());
 
         cartService.clearCart(customerId);
 
-        // Locked before anything is deleted, and the total recomputed from the (now empty) cart lines.
+        // Locked before anything is deleted, and the total recomputed from the (now empty) cart lines, in the
+        // currency the cart keeps.
         InOrder inOrder = Mockito.inOrder(cartRepository, orderItemRepository);
         inOrder.verify(cartRepository).lockByCustomerId(customerId);
         inOrder.verify(orderItemRepository).deleteByCartId(cartId);
-        inOrder.verify(orderItemRepository).getTotalPriceByCartId(cartId);
-        inOrder.verify(cartRepository).updateTotalPrice(cartId, BigDecimal.ZERO);
+        inOrder.verify(orderItemRepository).getAllByCartId(cartId);
+        inOrder.verify(cartRepository).updateTotal(cartId, amount("0.00"), "USD");
     }
 
 
@@ -297,7 +303,7 @@ public class CartServiceTests {
 
         Assertions.assertDoesNotThrow(() -> cartService.clearCart(1L));
         Mockito.verifyNoInteractions(orderItemRepository);
-        Mockito.verify(cartRepository, Mockito.never()).updateTotalPrice(Mockito.anyLong(), Mockito.any());
+        Mockito.verify(cartRepository, Mockito.never()).updateTotal(Mockito.anyLong(), Mockito.any(), Mockito.any());
     }
 
 
@@ -305,16 +311,16 @@ public class CartServiceTests {
     void updateOrderItemQuantity_whenDeletingMissingItem_shouldBeIdempotent() {
         long customerId = 1L;
         long cartId = 2L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("21.0"));
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("21.0"), "USD");
 
         Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
         Mockito.when(orderItemRepository.findById(99L)).thenReturn(Optional.empty());
-        Mockito.when(orderItemRepository.getTotalPriceByCartId(cartId)).thenReturn(BigDecimal.ZERO);
+        Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(List.of());
 
         cartService.updateOrderItemQuantity(customerId, 99L, 0);
 
         Mockito.verify(orderItemRepository, Mockito.never()).deleteByIdAndCartId(Mockito.anyLong(), Mockito.anyLong());
-        Mockito.verify(cartRepository).updateTotalPrice(cartId, BigDecimal.ZERO);
+        Mockito.verify(cartRepository).updateTotal(cartId, amount("0.00"), "USD");
     }
 
 
@@ -324,10 +330,10 @@ public class CartServiceTests {
         long cartId = 2L;
         long menuItemId = 3L;
         long orderId = 4L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.0"));
-        OrderItemEntity cartItem = new OrderItemEntity(5L, menuItemId, cartId, amount("10.0"), 1);
-        MenuItemEntity menuItem = new MenuItemEntity(menuItemId, 9L, "Burger", "Classic burger", amount("10.0"), "image");
-        OrderEntity savedOrder = new OrderEntity(orderId, customerId, amount("10.0"), "PLACED", LocalDateTime.of(2026, 4, 4, 12, 0));
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.0"), "USD");
+        OrderItemEntity cartItem = new OrderItemEntity(5L, menuItemId, cartId, amount("10.0"), 1, "USD");
+        MenuItemEntity menuItem = new MenuItemEntity(menuItemId, 9L, "Burger", "Classic burger", amount("10.0"), "image", "USD");
+        OrderEntity savedOrder = new OrderEntity(orderId, customerId, usd("10.0"), "PLACED", LocalDateTime.of(2026, 4, 4, 12, 0));
         OrderHistoryItemEntity savedHistoryItem = new OrderHistoryItemEntity(
                 6L,
                 orderId,
@@ -337,13 +343,12 @@ public class CartServiceTests {
                 1,
                 "Burger",
                 "Classic burger",
-                "image"
+                "image",
+                "USD"
         );
 
         Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
-        Mockito.when(cartRepository.getByCustomerId(customerId)).thenReturn(cartEntity);
         Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(List.of(cartItem));
-        Mockito.when(orderItemRepository.getTotalPriceByCartId(cartId)).thenReturn(amount("10.0"));
         Mockito.when(menuItemRepository.findAllById(List.of(menuItemId))).thenReturn(List.of(menuItem));
         Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class))).thenReturn(savedOrder);
         Mockito.when(orderHistoryItemRepository.saveAll(Mockito.anyIterable())).thenReturn(List.of(savedHistoryItem));
@@ -356,7 +361,7 @@ public class CartServiceTests {
         Mockito.verify(orderEventOutboxService).enqueueOrderEvent(savedOrder, orderDto.items(), null, savedOrder.createdAt());
         Mockito.verify(metricsService).recordCheckoutSuccess("PLACED");
         Mockito.verify(orderItemRepository).deleteByCartId(cartId);
-        Mockito.verify(cartRepository).updateTotalPrice(cartId, BigDecimal.ZERO);
+        Mockito.verify(cartRepository).updateTotal(cartId, amount("0.00"), "USD");
     }
 
 
@@ -364,7 +369,7 @@ public class CartServiceTests {
     void checkout_whenCartIsEmpty_shouldRecordCheckoutFailure() {
         long customerId = 1L;
         long cartId = 2L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, BigDecimal.ZERO);
+        CartEntity cartEntity = new CartEntity(cartId, customerId, BigDecimal.ZERO, "USD");
 
         Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
         Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(List.of());
@@ -385,8 +390,8 @@ public class CartServiceTests {
         long orderId = 4L;
         long cartId = 2L;
         long menuItemId = 3L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.0"));
-        OrderItemEntity cartItem = new OrderItemEntity(5L, menuItemId, cartId, amount("10.0"), 1);
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.0"), "USD");
+        OrderItemEntity cartItem = new OrderItemEntity(5L, menuItemId, cartId, amount("10.0"), 1, "USD");
         IdempotencyRequestEntity request = new IdempotencyRequestEntity(
                 10L,
                 customerId,
@@ -398,7 +403,7 @@ public class CartServiceTests {
                 LocalDateTime.of(2026, 4, 4, 12, 0),
                 LocalDateTime.of(2026, 4, 4, 12, 1)
         );
-        OrderEntity savedOrder = new OrderEntity(orderId, customerId, amount("10.0"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
+        OrderEntity savedOrder = new OrderEntity(orderId, customerId, usd("10.0"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
         OrderHistoryItemEntity savedHistoryItem = new OrderHistoryItemEntity(
                 6L,
                 orderId,
@@ -408,7 +413,8 @@ public class CartServiceTests {
                 1,
                 "Burger",
                 "Classic burger",
-                "image"
+                "image",
+                "USD"
         );
 
         Mockito.lenient().when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
@@ -440,8 +446,8 @@ public class CartServiceTests {
         long orderId = 4L;
         long cartId = 2L;
         long menuItemId = 3L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, BigDecimal.ZERO);
-        OrderItemEntity originalCartItem = new OrderItemEntity(5L, menuItemId, cartId, amount("10.0"), 1);
+        CartEntity cartEntity = new CartEntity(cartId, customerId, BigDecimal.ZERO, "USD");
+        OrderItemEntity originalCartItem = new OrderItemEntity(5L, menuItemId, cartId, amount("10.0"), 1, "USD");
         IdempotencyRequestEntity request = new IdempotencyRequestEntity(
                 10L,
                 customerId,
@@ -453,7 +459,7 @@ public class CartServiceTests {
                 LocalDateTime.of(2026, 4, 4, 12, 0),
                 LocalDateTime.of(2026, 4, 4, 12, 1)
         );
-        OrderEntity savedOrder = new OrderEntity(orderId, customerId, amount("10.0"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
+        OrderEntity savedOrder = new OrderEntity(orderId, customerId, usd("10.0"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
         OrderHistoryItemEntity savedHistoryItem = new OrderHistoryItemEntity(
                 6L,
                 orderId,
@@ -463,7 +469,8 @@ public class CartServiceTests {
                 1,
                 "Burger",
                 "Classic burger",
-                "image"
+                "image",
+                "USD"
         );
 
         Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
@@ -486,8 +493,8 @@ public class CartServiceTests {
         long customerId = 1L;
         long orderId = 4L;
         long cartId = 2L;
-        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("20.0"));
-        OrderItemEntity changedCartItem = new OrderItemEntity(5L, 7L, cartId, amount("20.0"), 1);
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("20.0"), "USD");
+        OrderItemEntity changedCartItem = new OrderItemEntity(5L, 7L, cartId, amount("20.0"), 1, "USD");
         IdempotencyRequestEntity request = new IdempotencyRequestEntity(
                 10L,
                 customerId,
@@ -511,6 +518,146 @@ public class CartServiceTests {
         );
         Mockito.verify(orderRepository, Mockito.never()).findById(Mockito.anyLong());
         Mockito.verifyNoInteractions(orderEventOutboxService);
+    }
+
+
+    @Test
+    void addMenuItemToCart_whenTheEmptyCartIsInAnotherCurrency_shouldMoveTheCartToTheItemsCurrencyFirst() {
+        long customerId = 1L;
+        long menuItemId = 2L;
+        long cartId = 3L;
+        CartEntity emptyUsdCart = new CartEntity(cartId, customerId, amount("0.00"), "USD");
+        MenuItemEntity croissant = new MenuItemEntity(menuItemId, 8L, "Croissant", "", amount("3.50"), "", "EUR");
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(emptyUsdCart);
+        Mockito.when(menuItemRepository.findById(menuItemId)).thenReturn(Optional.of(croissant));
+        Mockito.when(orderItemRepository.findOtherRestaurantIdsInCart(cartId, 8L)).thenReturn(List.of());
+        Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(
+                List.of(),
+                List.of(new OrderItemEntity(7L, menuItemId, cartId, amount("3.50"), 1, "EUR"))
+        );
+
+        cartService.addMenuItemToCart(customerId, menuItemId);
+
+        // The cart's currency changes while it is empty, before the line that the database ties to it is added.
+        InOrder inOrder = Mockito.inOrder(cartRepository, cartItemQuantityUpdater);
+        inOrder.verify(cartRepository).updateTotal(cartId, amount("0.00"), "EUR");
+        inOrder.verify(cartItemQuantityUpdater).incrementQuantity(cartId, menuItemId, Money.of("3.50", "EUR"));
+        inOrder.verify(cartRepository).updateTotal(cartId, amount("3.50"), "EUR");
+    }
+
+
+    @Test
+    void addMenuItemToCart_whenTheCartHoldsLinesInAnotherCurrency_shouldRejectWithCartCurrencyConflict() {
+        long customerId = 1L;
+        long menuItemId = 2L;
+        long cartId = 3L;
+        CartEntity usdCart = new CartEntity(cartId, customerId, amount("10.00"), "USD");
+        MenuItemEntity croissant = new MenuItemEntity(menuItemId, 8L, "Croissant", "", amount("3.50"), "", "EUR");
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(usdCart);
+        Mockito.when(menuItemRepository.findById(menuItemId)).thenReturn(Optional.of(croissant));
+        Mockito.when(orderItemRepository.findOtherRestaurantIdsInCart(cartId, 8L)).thenReturn(List.of());
+        Mockito.when(orderItemRepository.getAllByCartId(cartId))
+                .thenReturn(List.of(new OrderItemEntity(6L, 5L, cartId, amount("10.00"), 1, "USD")));
+
+        ConflictException conflict = Assertions.assertThrows(
+                ConflictException.class,
+                () -> cartService.addMenuItemToCart(customerId, menuItemId)
+        );
+
+        Assertions.assertEquals(CartService.CART_CURRENCY_CONFLICT, conflict.getCode());
+        Mockito.verifyNoInteractions(cartItemQuantityUpdater);
+        Mockito.verify(cartRepository, Mockito.never()).updateTotal(Mockito.anyLong(), Mockito.any(), Mockito.any());
+    }
+
+
+    @Test
+    void checkout_shouldTotalTheLinesExactlyInTheCartsCurrency() {
+        long customerId = 1L;
+        long cartId = 2L;
+        CartEntity eurCart = new CartEntity(cartId, customerId, amount("0.50"), "EUR");
+        // 3 x 0.10 + 0.20: 0.5000000000000001 in binary floating point, exactly 0.50 here.
+        List<OrderItemEntity> cartItems = List.of(
+                new OrderItemEntity(5L, 3L, cartId, amount("0.10"), 3, "EUR"),
+                new OrderItemEntity(6L, 4L, cartId, amount("0.20"), 1, "EUR")
+        );
+        List<MenuItemEntity> menuItems = List.of(
+                new MenuItemEntity(3L, 8L, "Mint", "", amount("0.10"), "", "EUR"),
+                new MenuItemEntity(4L, 8L, "Sugar", "", amount("0.20"), "", "EUR")
+        );
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(eurCart);
+        Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(cartItems);
+        Mockito.when(menuItemRepository.findAllById(List.of(3L, 4L))).thenReturn(menuItems);
+        Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class)))
+                .thenAnswer(invocation -> {
+                    OrderEntity order = invocation.getArgument(0);
+                    return new OrderEntity(9L, order.customerId(), order.total(), order.status(),
+                            order.createdAt(), order.restaurantId(), order.cancelReason());
+                });
+        Mockito.when(orderHistoryItemRepository.saveAll(Mockito.anyIterable()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        OrderDto order = cartService.checkout(customerId, "PAID");
+
+        Assertions.assertEquals(new BigDecimal("0.50"), order.totalPrice());
+        Assertions.assertEquals("EUR", order.currency());
+        Assertions.assertEquals(List.of("EUR", "EUR"), order.items().stream().map(item -> item.currency()).toList());
+        Assertions.assertEquals(
+                List.of(new BigDecimal("0.10"), new BigDecimal("0.20")),
+                order.items().stream().map(item -> item.price()).toList()
+        );
+        // The emptied cart keeps its currency.
+        Mockito.verify(cartRepository).updateTotal(cartId, amount("0.00"), "EUR");
+    }
+
+
+    @Test
+    void checkout_whenALineIsInAnotherCurrencyThanItsCart_shouldFailWithoutCreatingAnOrder() {
+        long customerId = 1L;
+        long cartId = 2L;
+        CartEntity usdCart = new CartEntity(cartId, customerId, amount("10.00"), "USD");
+        List<OrderItemEntity> cartItems = List.of(
+                new OrderItemEntity(5L, 3L, cartId, amount("10.00"), 1, "USD"),
+                new OrderItemEntity(6L, 4L, cartId, amount("2.00"), 1, "EUR")
+        );
+        List<MenuItemEntity> menuItems = List.of(
+                new MenuItemEntity(3L, 8L, "Burger", "", amount("10.00"), "", "USD"),
+                new MenuItemEntity(4L, 8L, "Fries", "", amount("2.00"), "", "EUR")
+        );
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(usdCart);
+        Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(cartItems);
+        Mockito.when(menuItemRepository.findAllById(List.of(3L, 4L))).thenReturn(menuItems);
+
+        Assertions.assertThrows(CurrencyMismatchException.class, () -> cartService.checkout(customerId));
+
+        Mockito.verify(orderRepository, Mockito.never()).save(Mockito.any());
+        Mockito.verifyNoInteractions(orderEventOutboxService);
+        Mockito.verify(orderItemRepository, Mockito.never()).deleteByCartId(Mockito.anyLong());
+    }
+
+
+    @Test
+    void updateOrderItemQuantity_whenTheTotalWouldExceedTheLargestAmount_shouldRejectWithCartTotalTooLarge() {
+        long customerId = 1L;
+        long cartId = 2L;
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.00"), "USD");
+        OrderItemEntity line = new OrderItemEntity(5L, 3L, cartId, amount("10.00"), 1, "USD");
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(orderItemRepository.findById(5L)).thenReturn(Optional.of(line));
+        Mockito.when(orderItemRepository.getAllByCartId(cartId))
+                .thenReturn(List.of(new OrderItemEntity(5L, 3L, cartId, amount("10.00"), 2_000_000_000, "USD")));
+
+        BadRequestException rejected = Assertions.assertThrows(
+                BadRequestException.class,
+                () -> cartService.updateOrderItemQuantity(customerId, 5L, 2_000_000_000)
+        );
+
+        Assertions.assertEquals(CartService.CART_TOTAL_TOO_LARGE, rejected.getCode());
+        Mockito.verify(cartRepository, Mockito.never()).updateTotal(Mockito.anyLong(), Mockito.any(), Mockito.any());
     }
 
 
@@ -541,5 +688,10 @@ public class CartServiceTests {
 
     private BigDecimal amount(String value) {
         return new BigDecimal(value);
+    }
+
+
+    private static Money usd(String value) {
+        return Money.of(value, "USD");
     }
 }

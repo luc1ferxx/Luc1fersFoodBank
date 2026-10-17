@@ -13,16 +13,25 @@ public record RestaurantDto(
         String address,
         String phone,
         String imageUrl,
+        String currency,
         List<MenuItemDto> menuItems
 ) {
 
 
     public RestaurantDto(RestaurantEntity entity, List<MenuItemDto> menuItems) {
-        this(entity.id(), entity.name(), entity.address(), entity.phone(), entity.imageUrl(), menuItems);
+        this(entity.id(), entity.name(), entity.address(), entity.phone(), entity.imageUrl(), entity.currency(), menuItems);
     }
 
 
     public RestaurantDto(CatalogRestaurantDto restaurant, List<MenuItemDto> menuItems) {
-        this(restaurant.id(), restaurant.name(), restaurant.address(), restaurant.phone(), restaurant.imageUrl(), menuItems);
+        this(
+                restaurant.id(),
+                restaurant.name(),
+                restaurant.address(),
+                restaurant.phone(),
+                restaurant.imageUrl(),
+                restaurant.currency(),
+                menuItems
+        );
     }
 }

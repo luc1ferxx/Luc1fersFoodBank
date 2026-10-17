@@ -27,8 +27,8 @@ public final class CatalogCaches {
     public static final String MENU = "menu";
     public static final String ALL_RESTAURANTS_KEY = "all";
 
-    static final String RESTAURANTS_KEY_VERSION = "v1";
-    static final String MENU_KEY_VERSION = "v1";
+    static final String RESTAURANTS_KEY_VERSION = "v2";
+    static final String MENU_KEY_VERSION = "v2";
 
     private static final long RESTAURANTS_LOCAL_MAXIMUM_SIZE = 16;
 

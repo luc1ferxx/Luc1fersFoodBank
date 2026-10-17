@@ -5,6 +5,7 @@ import com.laioffer.onlineorder.entity.CartEntity;
 import com.laioffer.onlineorder.entity.CustomerEntity;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.repository.CartRepository;
 import com.laioffer.onlineorder.repository.CustomerRepository;
 import org.springframework.security.core.userdetails.User;
@@ -16,7 +17,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DataIntegrityViolationException;
 
 
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 
@@ -63,8 +63,8 @@ public class CustomerService {
             if (savedCustomer == null) {
                 throw new ConflictException("Unable to create customer profile");
             }
-            CartEntity cart = new CartEntity(null, savedCustomer.id(), BigDecimal.ZERO);
-            cartRepository.save(cart);
+            Money emptyTotal = Money.zero(Money.LEGACY_CURRENCY);
+            cartRepository.save(new CartEntity(null, savedCustomer.id(), emptyTotal.amount(), emptyTotal.currencyCode()));
         } catch (DataIntegrityViolationException ex) {
             throw new ConflictException("Email already exists");
         }

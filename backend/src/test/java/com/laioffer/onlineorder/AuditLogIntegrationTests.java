@@ -174,6 +174,7 @@ class AuditLogIntegrationTests {
         JsonNode menuDetails = objectMapper.readTree((String) menuEntry.get("details"));
         Assertions.assertEquals(restaurantId, menuDetails.get("restaurant_id").asLong());
         Assertions.assertEquals("12.34", menuDetails.get("changes").get("price").asString());
+        Assertions.assertEquals("USD", menuDetails.get("changes").get("currency").asString(), "a price names its currency");
         Assertions.assertFalse(menuDetails.get("changes").has("name"), "only the fields the request set");
 
         Map<String, Object> restaurantEntry = entriesFor("RESTAURANT", restaurantId).get(0);

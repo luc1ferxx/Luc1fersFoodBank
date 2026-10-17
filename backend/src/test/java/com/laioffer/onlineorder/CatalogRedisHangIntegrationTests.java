@@ -112,7 +112,7 @@ class CatalogRedisHangIntegrationTests {
         insertRestaurants();
         List<Long> restaurantIds = jdbcTemplate.queryForList("SELECT id FROM restaurants ORDER BY id", Long.class);
         long restaurantId = restaurantIds.get(restaurantIds.size() - 1); // one of ours, with two menu items
-        String menuKey = "onlineorder:cache:v1:menu::" + restaurantId;
+        String menuKey = "onlineorder:cache:v2:menu::" + restaurantId;
         Assertions.assertEquals(restaurantIds.size(), getCatalog().getBody().size(), "healthy Redis: both levels filled");
         Assertions.assertTrue(redis.hasKey(menuKey));
         Assertions.assertFalse(breaker().isOpen());

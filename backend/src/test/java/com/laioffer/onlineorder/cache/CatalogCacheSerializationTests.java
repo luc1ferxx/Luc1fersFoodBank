@@ -16,51 +16,55 @@ import java.util.List;
 
 
 /**
- * The catalog cache's Redis values and invalidation messages keep the exact JSON that the Spring Boot 3 (Jackson 2)
- * instances wrote, so the {@code v1} keys stay shared across the Spring Boot 4 upgrade. The expected strings below
- * were produced by Jackson 2.21 with the previous {@code JsonMapper.builder().build()} mapper.
+ * The catalog cache's Redis values and invalidation messages. The entries kept the exact JSON of the Spring Boot 3
+ * (Jackson 2) instances across the Spring Boot 4 upgrade (key version v1: field order and number format as Jackson
+ * 2.21 wrote them). v2 adds the currency of the prices after them, so v1 and v2 instances never read each other's
+ * entries during a rollout.
  */
 class CatalogCacheSerializationTests {
 
-    private static final String JACKSON2_MENU = "[{\"id\":10,\"restaurantId\":5,\"name\":\"Whopper\","
-            + "\"description\":\"Flame grilled\",\"price\":6.39,\"imageUrl\":\"w.png\"},"
-            + "{\"id\":11,\"restaurantId\":5,\"name\":\"Fries\",\"description\":null,\"price\":2.10,\"imageUrl\":null}]";
-    private static final String JACKSON2_RESTAURANTS =
-            "[{\"id\":1,\"name\":\"Burger King\",\"address\":\"Main St\",\"phone\":\"123\",\"imageUrl\":\"bk.png\"}]";
+    private static final String V2_MENU = "[{\"id\":10,\"restaurantId\":5,\"name\":\"Whopper\","
+            + "\"description\":\"Flame grilled\",\"price\":6.39,\"currency\":\"USD\",\"imageUrl\":\"w.png\"},"
+            + "{\"id\":11,\"restaurantId\":5,\"name\":\"Fries\",\"description\":null,\"price\":2.10,"
+            + "\"currency\":\"USD\",\"imageUrl\":null}]";
+    private static final String V2_RESTAURANTS = "[{\"id\":1,\"name\":\"Burger King\",\"address\":\"Main St\","
+            + "\"phone\":\"123\",\"imageUrl\":\"bk.png\",\"currency\":\"USD\"}]";
     private static final String JACKSON2_INVALIDATION = "{\"origin\":\"instance-a\",\"cache\":\"menu\",\"key\":\"5\"}";
 
     private final ObjectMapper objectMapper = TwoLevelCaches.objectMapper();
 
 
     @Test
-    void keyVersions_shouldStayAtV1BecauseTheStoredShapeIsUnchanged() {
-        Assertions.assertEquals("v1", CatalogCaches.MENU_KEY_VERSION);
-        Assertions.assertEquals("v1", CatalogCaches.RESTAURANTS_KEY_VERSION);
+    void keyVersions_shouldBeV2SinceTheEntriesCarryTheCurrency() {
+        Assertions.assertEquals("v2", CatalogCaches.MENU_KEY_VERSION);
+        Assertions.assertEquals("v2", CatalogCaches.RESTAURANTS_KEY_VERSION);
     }
 
 
     @Test
-    void menuEntries_shouldBeWrittenAndReadExactlyAsJackson2DidIt() {
+    void menuEntries_shouldKeepTheJackson2FormatPlusTheCurrency() {
         JacksonJsonRedisSerializer<Object> serializer = serializer(CatalogCaches.MENU);
         List<CatalogMenuItemDto> menu = List.of(
-                new CatalogMenuItemDto(10L, 5L, "Whopper", "Flame grilled", new BigDecimal("6.39"), "w.png"),
-                new CatalogMenuItemDto(11L, 5L, "Fries", null, new BigDecimal("2.10"), null)
+                new CatalogMenuItemDto(10L, 5L, "Whopper", "Flame grilled", new BigDecimal("6.39"), "USD", "w.png"),
+                new CatalogMenuItemDto(11L, 5L, "Fries", null, new BigDecimal("2.10"), "USD", null)
         );
 
-        Assertions.assertEquals(JACKSON2_MENU, new String(serializer.serialize(menu), StandardCharsets.UTF_8));
-        Object read = serializer.deserialize(JACKSON2_MENU.getBytes(StandardCharsets.UTF_8));
+        Assertions.assertEquals(V2_MENU, new String(serializer.serialize(menu), StandardCharsets.UTF_8));
+        Object read = serializer.deserialize(V2_MENU.getBytes(StandardCharsets.UTF_8));
         Assertions.assertEquals(menu, read);
         Assertions.assertEquals(new BigDecimal("2.10"), ((CatalogMenuItemDto) ((List<?>) read).get(1)).price());
     }
 
 
     @Test
-    void restaurantEntries_shouldBeWrittenAndReadExactlyAsJackson2DidIt() {
+    void restaurantEntries_shouldKeepTheJackson2FormatPlusTheCurrency() {
         JacksonJsonRedisSerializer<Object> serializer = serializer(CatalogCaches.RESTAURANTS);
-        List<CatalogRestaurantDto> restaurants = List.of(new CatalogRestaurantDto(1L, "Burger King", "Main St", "123", "bk.png"));
+        List<CatalogRestaurantDto> restaurants = List.of(
+                new CatalogRestaurantDto(1L, "Burger King", "Main St", "123", "bk.png", "USD")
+        );
 
-        Assertions.assertEquals(JACKSON2_RESTAURANTS, new String(serializer.serialize(restaurants), StandardCharsets.UTF_8));
-        Assertions.assertEquals(restaurants, serializer.deserialize(JACKSON2_RESTAURANTS.getBytes(StandardCharsets.UTF_8)));
+        Assertions.assertEquals(V2_RESTAURANTS, new String(serializer.serialize(restaurants), StandardCharsets.UTF_8));
+        Assertions.assertEquals(restaurants, serializer.deserialize(V2_RESTAURANTS.getBytes(StandardCharsets.UTF_8)));
     }
 
 

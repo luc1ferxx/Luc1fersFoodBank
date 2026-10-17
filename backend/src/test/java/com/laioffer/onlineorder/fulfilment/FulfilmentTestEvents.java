@@ -45,10 +45,41 @@ public final class FulfilmentTestEvents {
                         status,
                         new BigDecimal("10.59"),
                         occurredAt,
+                        // Like the outbox: the lines carry no currency, the payload does.
                         List.of(new OrderHistoryItemDto(
-                                1L, 2L, restaurantId, new BigDecimal("10.59"), 1, "Whopper Meal", "Meal", null)),
+                                1L, 2L, restaurantId, new BigDecimal("10.59"), null, 1, "Whopper Meal", "Meal", null)),
                         restaurantId,
-                        reason
+                        reason,
+                        "USD"
+                )
+        );
+    }
+
+
+    /**
+     * {@code event} as published in {@code currency}, or without a currency (null) like events published before
+     * orders carried one.
+     */
+    public static OrderEventEnvelope inCurrency(OrderEventEnvelope event, String currency) {
+        OrderEventPayload data = event.data();
+        return new OrderEventEnvelope(
+                event.eventId(),
+                event.eventVersion(),
+                event.eventType(),
+                event.aggregateType(),
+                event.aggregateId(),
+                event.occurredAt(),
+                event.correlationId(),
+                event.idempotencyKey(),
+                new OrderEventPayload(
+                        data.customerId(),
+                        data.status(),
+                        data.totalPrice(),
+                        data.createdAt(),
+                        data.items(),
+                        data.restaurantId(),
+                        data.reason(),
+                        currency
                 )
         );
     }

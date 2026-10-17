@@ -7,7 +7,7 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 
-import java.math.BigDecimal;
+import com.laioffer.onlineorder.money.Money;
 
 
 @Service
@@ -23,11 +23,18 @@ public class H2CartItemQuantityUpdater implements CartItemQuantityUpdater {
 
 
     @Override
-    public void incrementQuantity(Long cartId, Long menuItemId, BigDecimal price) {
+    public void incrementQuantity(Long cartId, Long menuItemId, Money unitPrice) {
         OrderItemEntity existingItem = orderItemRepository.findByCartIdAndMenuItemId(cartId, menuItemId);
 
         if (existingItem == null) {
-            orderItemRepository.save(new OrderItemEntity(null, menuItemId, cartId, price, 1));
+            orderItemRepository.save(new OrderItemEntity(
+                    null,
+                    menuItemId,
+                    cartId,
+                    unitPrice.amount(),
+                    1,
+                    unitPrice.currencyCode()
+            ));
             return;
         }
 
@@ -35,8 +42,9 @@ public class H2CartItemQuantityUpdater implements CartItemQuantityUpdater {
                 existingItem.id(),
                 existingItem.menuItemId(),
                 existingItem.cartId(),
-                price,
-                existingItem.quantity() + 1
+                unitPrice.amount(),
+                existingItem.quantity() + 1,
+                unitPrice.currencyCode()
         ));
     }
 }

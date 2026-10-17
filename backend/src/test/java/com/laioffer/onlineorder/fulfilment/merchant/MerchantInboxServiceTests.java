@@ -21,8 +21,10 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 
+import static com.laioffer.onlineorder.fulfilment.FulfilmentTestEvents.inCurrency;
 import static com.laioffer.onlineorder.fulfilment.FulfilmentTestEvents.orderEvent;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 
@@ -67,7 +69,7 @@ class MerchantInboxServiceTests {
         Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
         Mockito.when(merchantOrderRepository.insertPaidOrderIfAbsent(
                 Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(), Mockito.anyString(),
-                Mockito.any(), Mockito.any())).thenReturn(1);
+                Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
 
         service.handle(paid);
 
@@ -77,6 +79,7 @@ class MerchantInboxServiceTests {
                 Mockito.eq(2L),
                 Mockito.eq(3L),
                 Mockito.eq(new BigDecimal("10.59")),
+                Mockito.eq("USD"),
                 items.capture(),
                 Mockito.eq(LocalDateTime.of(2026, 4, 4, 12, 0)),
                 Mockito.any(LocalDateTime.class)
@@ -111,7 +114,7 @@ class MerchantInboxServiceTests {
         Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", cancelled)).thenReturn(true);
         Mockito.when(merchantOrderRepository.insertUnpaidOrderIfAbsent(
                 Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyString(), Mockito.any(),
-                Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
+                Mockito.anyString(), Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
 
         service.handle(cancelled);
 
@@ -121,12 +124,62 @@ class MerchantInboxServiceTests {
                 Mockito.eq(3L),
                 Mockito.eq("CANCELLED"),
                 Mockito.eq(new BigDecimal("10.59")),
+                Mockito.eq("USD"),
                 Mockito.contains("Whopper Meal"),
                 Mockito.eq("CUSTOMER_CANCELLED"),
                 Mockito.any(LocalDateTime.class)
         );
         Mockito.verify(merchantOrderRepository, Mockito.never())
                 .cancel(Mockito.anyLong(), Mockito.anyCollection(), Mockito.any(), Mockito.any());
+    }
+
+
+    @Test
+    void orderPaid_shouldKeepTheOrdersCurrencyWithItsAmounts() {
+        OrderEventEnvelope paid = inCurrency(orderEvent("order.paid", 10L, 2L, "PAID"), "EUR");
+        Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
+
+        service.handle(paid);
+
+        ArgumentCaptor<String> items = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(merchantOrderRepository).insertPaidOrderIfAbsent(
+                Mockito.eq(10L),
+                Mockito.eq(2L),
+                Mockito.eq(3L),
+                Mockito.eq(new BigDecimal("10.59")),
+                Mockito.eq("EUR"),
+                items.capture(),
+                Mockito.any(),
+                Mockito.any()
+        );
+        // The stored lines are priced in the row's currency and carry none of their own.
+        assertTrue(!items.getValue().contains("currency"), items.getValue());
+    }
+
+
+    @Test
+    void orderPaid_publishedBeforeOrdersCarriedACurrency_shouldBeStoredAsUsd() {
+        OrderEventEnvelope legacyPaid = inCurrency(orderEvent("order.paid", 10L, 2L, "PAID"), null);
+        Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", legacyPaid)).thenReturn(true);
+
+        service.handle(legacyPaid);
+
+        Mockito.verify(merchantOrderRepository).insertPaidOrderIfAbsent(
+                Mockito.eq(10L), Mockito.eq(2L), Mockito.eq(3L), Mockito.eq(new BigDecimal("10.59")), Mockito.eq("USD"),
+                Mockito.anyString(), Mockito.any(), Mockito.any());
+    }
+
+
+    @Test
+    void orderPaid_withAnUnknownCurrency_shouldFailForTheDeadLetterTopic() {
+        OrderEventEnvelope paid = inCurrency(orderEvent("order.paid", 10L, 2L, "PAID"), "usd");
+        Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
+
+        assertThrows(IllegalArgumentException.class, () -> service.handle(paid));
+
+        Mockito.verify(merchantOrderRepository, Mockito.never()).insertPaidOrderIfAbsent(
+                Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(), Mockito.anyString(),
+                Mockito.anyString(), Mockito.any(), Mockito.any());
     }
 
 
@@ -170,7 +223,7 @@ class MerchantInboxServiceTests {
         for (String status : List.of("ACCEPTED", "PREPARING", "COMPLETED")) {
             Mockito.verify(merchantOrderRepository).insertUnpaidOrderIfAbsent(
                     Mockito.eq(10L), Mockito.eq(2L), Mockito.eq(3L), Mockito.eq(status), Mockito.any(),
-                    Mockito.anyString(), Mockito.isNull(), Mockito.any());
+                    Mockito.eq("USD"), Mockito.anyString(), Mockito.isNull(), Mockito.any());
         }
 
         Mockito.verify(merchantOrderRepository).advanceStatus(
@@ -205,7 +258,7 @@ class MerchantInboxServiceTests {
         Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
         Mockito.when(merchantOrderRepository.insertPaidOrderIfAbsent(
                 Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(), Mockito.anyString(),
-                Mockito.any(), Mockito.any())).thenReturn(1);
+                Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
         Mockito.when(merchantAccountRepository.countActiveByRestaurantId(2L)).thenReturn(2);
 
         service.handle(paid);
@@ -240,7 +293,7 @@ class MerchantInboxServiceTests {
         Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
         Mockito.when(merchantOrderRepository.insertPaidOrderIfAbsent(
                 Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(), Mockito.anyString(),
-                Mockito.any(), Mockito.any())).thenReturn(1);
+                Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
         Mockito.when(merchantAccountRepository.countActiveByRestaurantId(2L)).thenReturn(0);
 
         service.handle(paid);
