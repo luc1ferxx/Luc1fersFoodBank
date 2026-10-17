@@ -6,18 +6,19 @@ import java.util.Iterator;
 
 
 /**
- * The primary's WAL positions as the lag monitor saw them over time, used to turn a replica's replay position into a
- * lag in seconds on this instance's clock.
+ * The primary's WAL positions as the lag monitor saw them over time, used to turn a replica's replay position into how
+ * old its data may be, on this instance's clock.
  *
- * <p>Each sample says "the primary had written up to this LSN at this time". A replica that has replayed at least the
- * newest position is caught up (lag 0). Otherwise the first sample beyond its replay position is the oldest moment the
- * replica is known to be missing: its data is older than that sample, so {@code now - sample time} is a lower bound
- * of its lag, short of the true lag by at most one check interval.
+ * <p>Each sample says "the primary was at this LSN when the monitor asked", with the time taken just before asking:
+ * every transaction committed before that time has its commit record at or below that LSN. A replica that has replayed
+ * up to some LSN therefore has every transaction committed before the last time the primary was seen at or below that
+ * LSN ({@link Freshness#bounded() bounded} freshness). Its data is at most {@code now - that time} old, whatever the
+ * monitor does afterwards: the time does not move unless the replica replays more.
  *
  * <p>This avoids the usual {@code now() - pg_last_xact_replay_timestamp()}, which needs the two servers' clocks in
  * step and reports an idle primary's replica as minutes behind whenever some WAL without a commit (vacuum, checkpoint)
- * has not been replayed yet. A replica behind every remembered sample has no upper bound on its lag and is never
- * routable; the samples go back {@code capacity} changes of the primary's position.
+ * has not been replayed yet. A replica behind every remembered sample has no bound at all and is never routable; the
+ * samples go back {@code capacity} changes of the primary's position.
  */
 final class WalPositionHistory {
 
@@ -31,12 +32,16 @@ final class WalPositionHistory {
 
 
     /**
-     * Records the primary's position. An unchanged position keeps the time it was first seen; a position lower than
-     * the last one (the database was replaced or restored) starts the history over.
+     * Records the primary's position. An unchanged position keeps the time it was first seen and moves the time it was
+     * last seen; a position lower than the last one (the database was replaced or restored) starts the history over.
+     * Callers record in time order.
+     *
+     * @param nanoTime {@link System#nanoTime()} taken just before the position was queried
      */
     synchronized void record(long nanoTime, long lsn) {
         Sample last = samples.peekLast();
         if (last != null && lsn == last.lsn()) {
+            last.lastSeen = nanoTime;
             return;
         }
         if (last != null && lsn < last.lsn()) {
@@ -50,41 +55,60 @@ final class WalPositionHistory {
 
 
     /**
-     * @return the replica's lag at {@code nowNanos}, or null before the primary's position was ever recorded
+     * How old a replica's data may be, given its replay position.
+     *
+     * @return null before the primary's position was ever recorded
      */
-    synchronized Lag lag(long replayLsn, long nowNanos) {
+    synchronized Freshness freshness(long replayLsn) {
         Sample newest = samples.peekLast();
         if (newest == null) {
             return null;
         }
-        if (replayLsn >= newest.lsn()) {
-            return new Lag(0.0, true);
-        }
-        // Walk back from the newest sample to the oldest one the replica is still missing.
+        // Walk back from the newest sample to the newest one the replica has replayed.
         Iterator<Sample> newestFirst = samples.descendingIterator();
-        Sample oldestMissing = newestFirst.next();
-        boolean bounded = false;
+        Sample oldest = newest;
         while (newestFirst.hasNext()) {
             Sample sample = newestFirst.next();
             if (sample.lsn() <= replayLsn) {
-                bounded = true;
-                break;
+                return new Freshness(sample.lastSeen, true);
             }
-            oldestMissing = sample;
+            oldest = sample;
         }
-        double seconds = Math.max(0L, nowNanos - oldestMissing.nanoTime()) / 1_000_000_000.0;
-        return new Lag(seconds, bounded);
+        // Behind everything remembered: older than the oldest sample, by an unknown amount.
+        return new Freshness(oldest.firstSeen, false);
     }
 
 
-    private record Sample(long nanoTime, long lsn) {
+    private static final class Sample {
+
+        private final long firstSeen;
+        private final long lsn;
+        private long lastSeen;
+
+
+        private Sample(long nanoTime, long lsn) {
+            this.firstSeen = nanoTime;
+            this.lastSeen = nanoTime;
+            this.lsn = lsn;
+        }
+
+
+        private long lsn() {
+            return lsn;
+        }
     }
 
 
     /**
-     * @param seconds the lag, or a lower bound of it when {@code bounded} is false
-     * @param bounded false when the replica is behind every remembered sample
+     * @param asOfNanos when {@code bounded}, a {@link System#nanoTime()} before which every transaction the primary
+     *                  committed is on the replica, so its data is at most {@code now - asOfNanos} old; otherwise the
+     *                  replica's data is older than {@code asOfNanos} by an unknown amount
+     * @param bounded   false when the replica is behind every remembered sample
      */
-    record Lag(double seconds, boolean bounded) {
+    record Freshness(long asOfNanos, boolean bounded) {
+
+        double ageSeconds(long nowNanos) {
+            return Math.max(0L, nowNanos - asOfNanos) / 1_000_000_000.0;
+        }
     }
 }

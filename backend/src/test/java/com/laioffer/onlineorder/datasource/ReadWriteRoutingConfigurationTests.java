@@ -165,17 +165,42 @@ class ReadWriteRoutingConfigurationTests {
 
 
     @Test
-    void aStickyWindowShorterThanTheReplicasStalenessIsReported(CapturedOutput output) {
+    void aStickyWindowNotAboveMaxLagAndAMaxLagNotAboveTwoCheckIntervalsAreReported(CapturedOutput output) {
         contextRunner
                 .withPropertyValues(
                         "DATABASE_REPLICA_URLS=" + UNREACHABLE + "replica1",
-                        "DATABASE_REPLICA_STICKY_WINDOW=1s",
+                        "DATABASE_REPLICA_STICKY_WINDOW=2s",
                         "app.datasource.replica.lag-check-interval=1s"
                 )
                 .run(context -> {
                     Assertions.assertNotNull(context.getBean(ReadYourWritesTracker.class));
-                    Assertions.assertTrue(output.getOut().contains("app.datasource.replica.sticky-window (PT1S) is shorter"),
+                    Assertions.assertTrue(output.getOut().contains(
+                            "app.datasource.replica.sticky-window (PT2S) is not longer than max-lag (PT2S)"), output.getOut());
+                    Assertions.assertTrue(output.getOut().contains(
+                            "app.datasource.replica.max-lag (PT2S) is not above twice lag-check-interval (PT1S)"),
                             output.getOut());
+                });
+    }
+
+
+    @Test
+    void theDefaultsAreConsistent(CapturedOutput output) {
+        new ApplicationContextRunner()
+                .withInitializer(new ConfigDataApplicationContextInitializer())
+                .withConfiguration(AutoConfigurations.of(DataSourceAutoConfiguration.class))
+                .withUserConfiguration(ReadWriteRoutingConfiguration.class)
+                .withPropertyValues(
+                        "spring.datasource.url=" + UNREACHABLE + "onlineorder",
+                        "DATABASE_REPLICA_URLS=" + UNREACHABLE + "replica1"
+                )
+                .run(context -> {
+                    ReplicaRoutingProperties properties = context.getBean(ReplicaRoutingProperties.class);
+                    Assertions.assertEquals(Duration.ofSeconds(5), properties.stickyWindow());
+                    Assertions.assertEquals(Duration.ofSeconds(2), properties.maxLag());
+                    Assertions.assertEquals(Duration.ofSeconds(2), properties.maxStaleness(), "max-lag bounds every read");
+                    Assertions.assertEquals(Duration.ofMillis(500), properties.lagCheckInterval());
+                    Assertions.assertFalse(output.getOut().contains("is not longer than max-lag"), output.getOut());
+                    Assertions.assertFalse(output.getOut().contains("is not above twice"), output.getOut());
                 });
     }
 

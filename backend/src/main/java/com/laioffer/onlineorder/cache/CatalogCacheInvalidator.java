@@ -29,9 +29,9 @@ import java.time.Instant;
  * entry; set it to 0 to disable.
  * <p>
  * With read replicas (catalog loads read a replica) a reader can load the old row from a replica that has not replayed
- * the write yet, for as long as the replica may lag. The second delete then waits at least that long
- * ({@link ReplicaRoutingProperties#maxStaleness()}: max-lag plus one lag-check interval), so the stale entry is gone
- * once every routable replica has the write.
+ * the write yet. Such a load starts less than {@link ReplicaRoutingProperties#maxStaleness()} (max-lag) after the
+ * commit, since a replica's routing deadline expires then, and can write its stale entry back as late as the primary
+ * reader above. The second delete therefore waits max-lag plus the configured delay.
  */
 @Component
 public final class CatalogCacheInvalidator {
@@ -68,15 +68,14 @@ public final class CatalogCacheInvalidator {
 
 
     /**
-     * The configured delay, raised to the replicas' maximum staleness when read replicas are configured; a disabled
-     * second delete (0) stays disabled.
+     * The configured delay, plus the replicas' maximum staleness when read replicas are configured; a disabled second
+     * delete (0) stays disabled.
      */
     static Duration effectiveSecondDeleteDelay(Duration configured, ReplicaRoutingProperties replicaRouting) {
         if (replicaRouting == null || configured.isZero() || configured.isNegative()) {
             return configured;
         }
-        Duration replicaStaleness = replicaRouting.maxStaleness();
-        return replicaStaleness.compareTo(configured) > 0 ? replicaStaleness : configured;
+        return configured.plus(replicaRouting.maxStaleness());
     }
 
 

@@ -124,7 +124,8 @@ class CatalogCacheInvalidatorTests {
     @Test
     @SuppressWarnings("unchecked")
     void withReadReplicas_theSecondDeleteWaitsOutTheReplicasMaximumStaleness() {
-        // max-lag 2s + lag-check-interval 1s: a reader can load the old row from a replica for up to 3s.
+        // max-lag 2s: a reader can start loading the old row from a replica up to 2s after the commit, and then needs
+        // as long to write it back as a reader of the primary (the configured delay).
         ReplicaRoutingProperties replicas = new ReplicaRoutingProperties(
                 List.of("jdbc:postgresql://replica/onlineorder"),
                 null,
@@ -142,7 +143,7 @@ class CatalogCacheInvalidatorTests {
         CacheManager cacheManager = Mockito.mock(CacheManager.class);
         Assertions.assertEquals(Duration.ofSeconds(3), new CatalogCacheInvalidator(
                 cacheManager, providerOf(taskScheduler), Duration.ofSeconds(1), configured).secondDeleteDelay());
-        Assertions.assertEquals(Duration.ofSeconds(10), new CatalogCacheInvalidator(
+        Assertions.assertEquals(Duration.ofSeconds(12), new CatalogCacheInvalidator(
                 cacheManager, providerOf(taskScheduler), Duration.ofSeconds(10), configured).secondDeleteDelay());
         Assertions.assertEquals(Duration.ZERO, new CatalogCacheInvalidator(
                 cacheManager, providerOf(taskScheduler), Duration.ZERO, configured).secondDeleteDelay(),

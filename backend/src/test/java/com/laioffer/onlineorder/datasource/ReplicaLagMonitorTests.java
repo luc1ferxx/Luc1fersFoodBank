@@ -62,7 +62,8 @@ class ReplicaLagMonitorTests {
     @Test
     void withoutThePrimarysPositionNoReplicaIsRoutable() {
         ReplicaTarget replica = target("replica-1");
-        replica.lagMeasured(0.0, true, 1.0);
+        replica.measured(new WalPositionHistory.Freshness(System.nanoTime(), true));
+        Assertions.assertTrue(replica.isRoutable());
         ReplicaLagMonitor monitor = monitor(settings("primary", REFUSED), replica, POSTGRES.getJdbcUrl());
 
         monitor.checkNow();
@@ -78,8 +79,7 @@ class ReplicaLagMonitorTests {
         ReplicaLagMonitor monitor = new ReplicaLagMonitor(
                 settings("primary", POSTGRES.getJdbcUrl()),
                 List.of(new ReplicaLagMonitor.MonitoredReplica(notAStandby, settings("replica-1", POSTGRES.getJdbcUrl()))),
-                Duration.ofMillis(50),
-                Duration.ofSeconds(1)
+                Duration.ofMillis(50)
         );
 
         monitor.start();
@@ -118,8 +118,7 @@ class ReplicaLagMonitorTests {
         return new ReplicaLagMonitor(
                 primary,
                 List.of(new ReplicaLagMonitor.MonitoredReplica(replica, settings(replica.name(), url))),
-                Duration.ofHours(1),
-                Duration.ofSeconds(1)
+                Duration.ofHours(1)
         );
     }
 
@@ -130,6 +129,6 @@ class ReplicaLagMonitorTests {
 
 
     private static ReplicaTarget target(String name) {
-        return new ReplicaTarget(name, "unused", Mockito.mock(DataSource.class));
+        return new ReplicaTarget(name, "unused", Mockito.mock(DataSource.class), Duration.ofSeconds(1));
     }
 }

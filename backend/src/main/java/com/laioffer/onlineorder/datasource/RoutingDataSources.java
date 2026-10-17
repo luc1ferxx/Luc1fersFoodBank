@@ -60,7 +60,7 @@ public final class RoutingDataSources implements AutoCloseable {
                 HikariConfig config = replicaConfig(binder, primary, primaryProperties, replicaProperties, name, urls.get(i));
                 HikariDataSource pool = new HikariDataSource(config);
                 replicaPools.add(pool);
-                replicas.add(new ReplicaTarget(name, urls.get(i), pool));
+                replicas.add(new ReplicaTarget(name, urls.get(i), pool, replicaProperties.maxLag()));
             }
         } catch (RuntimeException ex) {
             replicaPools.forEach(HikariDataSource::close);

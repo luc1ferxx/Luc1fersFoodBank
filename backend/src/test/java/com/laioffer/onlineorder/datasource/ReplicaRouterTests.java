@@ -15,6 +15,7 @@ import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.SQLTransientConnectionException;
+import java.time.Duration;
 import java.util.List;
 
 
@@ -24,12 +25,15 @@ import java.util.List;
  */
 class ReplicaRouterTests {
 
+    /** A max-lag no test outlives: a replica found fresh stays routable. */
+    private static final Duration LONG = Duration.ofHours(1);
+
     private final ReadYourWritesTracker readYourWrites = Mockito.mock(ReadYourWritesTracker.class);
     private final DataSource primary = Mockito.mock(DataSource.class);
     private final DataSource replicaPool1 = Mockito.mock(DataSource.class);
     private final DataSource replicaPool2 = Mockito.mock(DataSource.class);
-    private final ReplicaTarget replica1 = new ReplicaTarget("replica-1", "jdbc:postgresql://r1/db", replicaPool1);
-    private final ReplicaTarget replica2 = new ReplicaTarget("replica-2", "jdbc:postgresql://r2/db", replicaPool2);
+    private final ReplicaTarget replica1 = new ReplicaTarget("replica-1", "jdbc:postgresql://r1/db", replicaPool1, LONG);
+    private final ReplicaTarget replica2 = new ReplicaTarget("replica-2", "jdbc:postgresql://r2/db", replicaPool2, LONG);
     private final MeterRegistry registry = new SimpleMeterRegistry();
     private ReplicaRouter router;
     private ReadWriteRoutingDataSource dataSource;
@@ -40,8 +44,8 @@ class ReplicaRouterTests {
         router = new ReplicaRouter(List.of(replica1, replica2), readYourWrites);
         router.bindTo(registry);
         dataSource = new ReadWriteRoutingDataSource(primary, router);
-        replica1.lagMeasured(0.0, true, 1.0);
-        replica2.lagMeasured(0.0, true, 1.0);
+        replica1.measured(fresh());
+        replica2.measured(fresh());
     }
 
 
@@ -118,7 +122,7 @@ class ReplicaRouterTests {
     @Test
     void readsGoToThePrimaryWhileNoReplicaIsRoutable_andSkipAnUnroutableOne() throws SQLException {
         inTransaction(true, "com.example.Service.read");
-        replica1.lagMeasured(5.0, true, 1.0);
+        replica1.measured(new WalPositionHistory.Freshness(System.nanoTime(), false));
         Connection replicaConnection = Mockito.mock(Connection.class);
         Mockito.when(replicaPool2.getConnection()).thenReturn(replicaConnection);
 
@@ -206,31 +210,8 @@ class ReplicaRouterTests {
     }
 
 
-    @Test
-    void replicaStatesCarryTheirLagAndReason() {
-        ReplicaTarget replica = new ReplicaTarget("replica-9", "jdbc:postgresql://r9/db", replicaPool1);
-        Assertions.assertEquals(ReplicaTarget.State.UNKNOWN, replica.state());
-        Assertions.assertFalse(replica.isRoutable());
-        Assertions.assertTrue(Double.isNaN(replica.lagSeconds()));
-
-        replica.lagMeasured(0.2, true, 1.0);
-        Assertions.assertTrue(replica.isRoutable());
-        replica.lagMeasured(0.3, true, 1.0);
-        Assertions.assertEquals(0.3, replica.lagSeconds());
-        replica.lagMeasured(0.5, false, 1.0);
-        Assertions.assertEquals(ReplicaTarget.State.LAGGING, replica.state(), "an unbounded lag is never routable");
-        replica.lagMeasured(3.0, true, 1.0);
-        Assertions.assertEquals(ReplicaTarget.State.LAGGING, replica.state());
-        replica.notStandby();
-        Assertions.assertEquals(ReplicaTarget.State.NOT_STANDBY, replica.state());
-        replica.primaryPositionUnknown("primary down");
-        Assertions.assertEquals(ReplicaTarget.State.PRIMARY_UNKNOWN, replica.state());
-        replica.noWalReplayedYet();
-        Assertions.assertEquals(ReplicaTarget.State.LAGGING, replica.state());
-        Assertions.assertTrue(Double.isNaN(replica.lagSeconds()));
-        Assertions.assertEquals("replica-9[LAGGING]", replica.toString());
-        Assertions.assertSame(replicaPool1, replica.dataSource());
-        Assertions.assertEquals("jdbc:postgresql://r9/db", replica.url());
+    private static WalPositionHistory.Freshness fresh() {
+        return new WalPositionHistory.Freshness(System.nanoTime(), true);
     }
 
 

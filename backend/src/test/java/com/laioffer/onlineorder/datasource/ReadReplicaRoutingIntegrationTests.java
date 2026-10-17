@@ -12,6 +12,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.jdbc.health.DataSourceHealthIndicator;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -35,8 +36,14 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 
 import javax.sql.DataSource;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
@@ -71,6 +78,7 @@ class ReadReplicaRoutingIntegrationTests {
     private static final String MERCHANT = "merchant.burgerking@laifood.com";
     private static final String RIDER = "rider.alice@laifood.com";
     private static final Duration STICKY_WINDOW = Duration.ofSeconds(2);
+    private static final Duration MAX_LAG = Duration.ofSeconds(1);
     private static final Duration WAIT = Duration.ofSeconds(30);
 
     @Container
@@ -88,7 +96,7 @@ class ReadReplicaRoutingIntegrationTests {
         registry.add("app.cleanup.enabled", () -> "false");
         registry.add("app.security.rate-limit.enabled", () -> "false");
         registry.add("app.datasource.replica.sticky-window", () -> STICKY_WINDOW.toMillis() + "ms");
-        registry.add("app.datasource.replica.max-lag", () -> "1s");
+        registry.add("app.datasource.replica.max-lag", () -> MAX_LAG.toMillis() + "ms");
         registry.add("app.datasource.replica.lag-check-interval", () -> "200ms");
     }
 
@@ -226,11 +234,23 @@ class ReadReplicaRoutingIntegrationTests {
 
     @Test
     void aLaggingReplicaGetsNoReadsUntilItCatchesUp() throws Exception {
-        DATABASES.pauseReplay();
+        DATABASES.pauseReplayAndAwaitPaused();
         try {
             // The primary moves on; the paused replica does not.
             jdbcTemplate.update("UPDATE restaurants SET phone = phone WHERE id = ?", firstRestaurantId());
-            await("the replica to be marked lagging", () -> replica().state() == ReplicaTarget.State.LAGGING);
+            long written = System.nanoTime();
+            // Reads keep coming while the replica falls behind: none that starts once the write is max-lag old reaches
+            // the replica, which lacks it.
+            long lastReplicaRead = Long.MIN_VALUE;
+            long until = written + MAX_LAG.toNanos() + Duration.ofMillis(500).toNanos();
+            for (long started = System.nanoTime(); started < until; started = System.nanoTime()) {
+                if (inReadOnlyTransaction(this::inRecovery)) {
+                    lastReplicaRead = started;
+                }
+            }
+            Assertions.assertTrue(lastReplicaRead < written + MAX_LAG.toNanos(),
+                    "a replica read started " + (lastReplicaRead - written) / 1_000_000 + "ms after the write");
+            Assertions.assertEquals(ReplicaTarget.State.LAGGING, replica().state());
             Assertions.assertTrue(lagGauge() > 1.0, "lag " + lagGauge());
             Assertions.assertEquals(0.0, routableGauge());
 
@@ -243,6 +263,58 @@ class ReadReplicaRoutingIntegrationTests {
         await("the replica to catch up", () -> replica().isRoutable());
         Assertions.assertEquals(1.0, routableGauge());
         Assertions.assertTrue(inReadOnlyTransaction(this::inRecovery));
+    }
+
+
+    /**
+     * The replica stops replaying right after a write, next to a second replica that hangs (every check of it waits
+     * for the check timeout). The monitor checks each replica on its own thread, and the replica's routability is a
+     * deadline: it gets no read once the write is max-lag old, whatever the monitor is busy with.
+     */
+    @Test
+    void aReplicaThatStopsReplayingGetsNoReadOnceTheWriteItLacksIsMaxLagOld_evenNextToAHungReplica() throws Exception {
+        try (Blackhole hung = new Blackhole()) {
+            ReplicaTarget stalled = new ReplicaTarget(
+                    "replica-1", DATABASES.replicaJdbcUrl(), Mockito.mock(DataSource.class), MAX_LAG);
+            ReplicaTarget slow = new ReplicaTarget("replica-2", hung.jdbcUrl(), Mockito.mock(DataSource.class), MAX_LAG);
+            ReplicaLagMonitor monitor = new ReplicaLagMonitor(
+                    monitorSettings("primary", DATABASES.primaryJdbcUrl()),
+                    List.of(
+                            new ReplicaLagMonitor.MonitoredReplica(stalled, monitorSettings("replica-1", DATABASES.replicaJdbcUrl())),
+                            new ReplicaLagMonitor.MonitoredReplica(slow, monitorSettings("replica-2", hung.jdbcUrl()))
+                    ),
+                    Duration.ofMillis(200)
+            );
+            monitor.start();
+            try {
+                await("the replica to be routable", stalled::isRoutable);
+                await("the hung replica's first check to time out", () -> slow.state() == ReplicaTarget.State.UNREACHABLE);
+                Assertions.assertTrue(stalled.isRoutable(), "the hung replica does not hold up the other one");
+
+                DATABASES.pauseReplayAndAwaitPaused();
+                jdbcTemplate.update("UPDATE restaurants SET phone = phone WHERE id = ?", firstRestaurantId());
+                long written = System.nanoTime();
+                Long behind = jdbcTemplate.queryForObject("SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), ?::pg_lsn)",
+                        Long.class, DATABASES.queryReplica("SELECT pg_last_wal_replay_lsn()::text", String.class));
+                Assertions.assertTrue(behind != null && behind > 0, "the replica lacks the write");
+
+                long lastRoutable = Long.MIN_VALUE;
+                long until = written + MAX_LAG.toNanos() + Duration.ofSeconds(1).toNanos();
+                for (long now = System.nanoTime(); now < until; now = System.nanoTime()) {
+                    if (stalled.isRoutable()) {
+                        lastRoutable = now;
+                    }
+                    Thread.onSpinWait();
+                }
+                Assertions.assertTrue(lastRoutable < written + MAX_LAG.toNanos(),
+                        "routable " + (lastRoutable - written) / 1_000_000 + "ms after the write");
+                Assertions.assertFalse(stalled.isRoutable());
+                Assertions.assertFalse(slow.isRoutable());
+            } finally {
+                monitor.stop();
+                DATABASES.resumeReplay();
+            }
+        }
     }
 
 
@@ -328,6 +400,51 @@ class ReadReplicaRoutingIntegrationTests {
                 "the login's write started the window");
         session.removeAttribute(ReadYourWritesTracker.LAST_WRITE_ATTRIBUTE);
         return session;
+    }
+
+
+    private static ReplicaLagMonitor.ConnectionSettings monitorSettings(String key, String url) {
+        return ReplicaLagMonitor.ConnectionSettings.of(
+                key, url, PostgresReplicationContainers.USERNAME, PostgresReplicationContainers.PASSWORD, Duration.ofSeconds(1));
+    }
+
+
+    /**
+     * A server that accepts connections and never answers: every check of it waits for the check timeout.
+     */
+    private static final class Blackhole implements AutoCloseable {
+
+        private final ServerSocket server = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
+        private final List<Socket> accepted = new CopyOnWriteArrayList<>();
+
+
+        Blackhole() throws IOException {
+            Thread acceptor = new Thread(() -> {
+                while (!server.isClosed()) {
+                    try {
+                        accepted.add(server.accept());
+                    } catch (IOException closed) {
+                        return;
+                    }
+                }
+            }, "blackhole-postgres");
+            acceptor.setDaemon(true);
+            acceptor.start();
+        }
+
+
+        String jdbcUrl() {
+            return "jdbc:postgresql://127.0.0.1:" + server.getLocalPort() + "/onlineorder";
+        }
+
+
+        @Override
+        public void close() throws IOException {
+            server.close();
+            for (Socket socket : accepted) {
+                socket.close();
+            }
+        }
     }
 
 

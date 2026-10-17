@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.datasource;
 
 
+import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -48,12 +49,14 @@ public class ReadWriteRoutingConfiguration {
     ) {
         RoutingDataSources dataSources = RoutingDataSources.create(dataSourceProperties, replicaProperties, environment);
         LOGGER.info(
-                "Read/write splitting on: primary pool {}, {} read replica pool(s) {}; sticky window {}, max lag {}",
+                "Read/write splitting on: primary pool {}, {} read replica pool(s) {}; sticky window {}, max lag {}, "
+                        + "lag check every {}",
                 dataSources.primary().getPoolName(),
                 dataSources.replicas().size(),
                 dataSources.replicas().stream().map(ReplicaTarget::name).toList(),
                 replicaProperties.stickyWindow(),
-                replicaProperties.maxLag()
+                replicaProperties.maxLag(),
+                replicaProperties.lagCheckInterval()
         );
         return dataSources;
     }
@@ -61,10 +64,11 @@ public class ReadWriteRoutingConfiguration {
 
     @Bean
     ReadYourWritesTracker readYourWritesTracker(ReplicaRoutingProperties replicaProperties) {
-        if (replicaProperties.stickyWindow().compareTo(replicaProperties.maxStaleness()) < 0) {
+        if (replicaProperties.stickyWindow().compareTo(replicaProperties.maxStaleness()) <= 0) {
             LOGGER.warn(
-                    "app.datasource.replica.sticky-window ({}) is shorter than max-lag + lag-check-interval ({}): a "
-                            + "user's read soon after their own write can reach a replica that has not replayed it yet",
+                    "app.datasource.replica.sticky-window ({}) is not longer than max-lag ({}), the most a replica "
+                            + "read can lag: a user's read soon after their own write can reach a replica that has not "
+                            + "replayed it yet (keep a margin for clock differences between instances)",
                     replicaProperties.stickyWindow(),
                     replicaProperties.maxStaleness()
             );
@@ -153,25 +157,36 @@ public class ReadWriteRoutingConfiguration {
 
     @Bean
     ReplicaLagMonitor replicaLagMonitor(ReplicaRoutingProperties replicaProperties, RoutingDataSources dataSources) {
+        if (replicaProperties.maxLag().compareTo(replicaProperties.lagCheckInterval().multipliedBy(2)) <= 0) {
+            LOGGER.warn(
+                    "app.datasource.replica.max-lag ({}) is not above twice lag-check-interval ({}): a replica "
+                            + "whose data is only known as of the previous check drops out before the next one, so "
+                            + "replicas under write load get few reads",
+                    replicaProperties.maxLag(),
+                    replicaProperties.lagCheckInterval()
+            );
+        }
+        HikariDataSource primaryPool = dataSources.primary();
         ReplicaLagMonitor.ConnectionSettings primary = ReplicaLagMonitor.ConnectionSettings.of(
                 ReplicaRouter.PRIMARY,
-                dataSources.primary().getJdbcUrl(),
-                dataSources.primary().getUsername(),
-                dataSources.primary().getPassword(),
+                primaryPool.getJdbcUrl(),
+                primaryPool.getUsername(),
+                primaryPool.getPassword(),
                 replicaProperties.lagCheckTimeout()
         );
         List<ReplicaLagMonitor.MonitoredReplica> replicas = new ArrayList<>();
         for (int i = 0; i < dataSources.replicas().size(); i++) {
             ReplicaTarget replica = dataSources.replicas().get(i);
+            HikariDataSource replicaPool = dataSources.replicaPools().get(i);
             replicas.add(new ReplicaLagMonitor.MonitoredReplica(replica, ReplicaLagMonitor.ConnectionSettings.of(
                     replica.name(),
                     replica.url(),
-                    dataSources.replicaPools().get(i).getUsername(),
-                    dataSources.replicaPools().get(i).getPassword(),
+                    replicaPool.getUsername(),
+                    replicaPool.getPassword(),
                     replicaProperties.lagCheckTimeout()
             )));
         }
-        return new ReplicaLagMonitor(primary, replicas, replicaProperties.lagCheckInterval(), replicaProperties.maxLag());
+        return new ReplicaLagMonitor(primary, replicas, replicaProperties.lagCheckInterval());
     }
 
 

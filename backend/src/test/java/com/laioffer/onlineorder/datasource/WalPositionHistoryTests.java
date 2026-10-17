@@ -11,51 +11,54 @@ class WalPositionHistoryTests {
 
 
     @Test
-    void noLagIsKnownBeforeThePrimarysPositionWasRecorded() {
-        Assertions.assertNull(new WalPositionHistory(10).lag(100, 0));
+    void nothingIsKnownBeforeThePrimarysPositionWasRecorded() {
+        Assertions.assertNull(new WalPositionHistory(10).freshness(100));
     }
 
 
     @Test
-    void aReplicaAtOrPastTheNewestPositionIsCaughtUp() {
+    void aReplicaAtOrPastTheNewestPositionHasEverythingCommittedBeforeTheNewestSample() {
         WalPositionHistory history = new WalPositionHistory(10);
         history.record(0, 100);
         history.record(SECOND, 200);
 
-        Assertions.assertEquals(new WalPositionHistory.Lag(0.0, true), history.lag(200, 5 * SECOND));
-        Assertions.assertEquals(new WalPositionHistory.Lag(0.0, true), history.lag(250, 5 * SECOND));
+        Assertions.assertEquals(new WalPositionHistory.Freshness(SECOND, true), history.freshness(200));
+        Assertions.assertEquals(new WalPositionHistory.Freshness(SECOND, true), history.freshness(250));
+        Assertions.assertEquals(4.0, history.freshness(200).ageSeconds(5 * SECOND));
     }
 
 
     @Test
-    void aReplicaBehindIsAsOldAsTheFirstPositionItIsMissing() {
+    void aReplicaBehindIsAsFreshAsTheNewestSampleItHasReplayed() {
         WalPositionHistory history = new WalPositionHistory(10);
         history.record(0, 100);
         history.record(SECOND, 200);
         history.record(2 * SECOND, 300);
 
-        // Has 200 but not 300: missing what the primary had at 2s.
-        Assertions.assertEquals(new WalPositionHistory.Lag(0.5, true), history.lag(250, 2 * SECOND + SECOND / 2));
-        // Has 100 but not 200 (nor 300): missing what the primary had at 1s.
-        Assertions.assertEquals(new WalPositionHistory.Lag(4.0, true), history.lag(150, 5 * SECOND));
+        // Has 200 but not 300: it has everything committed before 1s.
+        Assertions.assertEquals(new WalPositionHistory.Freshness(SECOND, true), history.freshness(250));
+        // Has 100 but not 200: everything committed before 0s.
+        Assertions.assertEquals(new WalPositionHistory.Freshness(0, true), history.freshness(150));
+        Assertions.assertEquals(5.0, history.freshness(150).ageSeconds(5 * SECOND));
     }
 
 
     @Test
-    void aReplicaBehindEveryRememberedPositionHasNoUpperBound() {
+    void aReplicaBehindEveryRememberedPositionIsOlderThanTheOldestSample() {
         WalPositionHistory history = new WalPositionHistory(10);
         history.record(SECOND, 100);
         history.record(2 * SECOND, 200);
 
-        WalPositionHistory.Lag lag = history.lag(50, 3 * SECOND);
+        WalPositionHistory.Freshness freshness = history.freshness(50);
 
-        Assertions.assertFalse(lag.bounded());
-        Assertions.assertEquals(2.0, lag.seconds());
+        Assertions.assertFalse(freshness.bounded());
+        Assertions.assertEquals(SECOND, freshness.asOfNanos());
+        Assertions.assertEquals(2.0, freshness.ageSeconds(3 * SECOND), "a lower bound");
     }
 
 
     @Test
-    void anUnchangedPositionKeepsTheTimeItWasFirstSeen() {
+    void anUnchangedPositionMovesTheTimeItWasLastSeen() {
         WalPositionHistory history = new WalPositionHistory(10);
         history.record(0, 100);
         history.record(SECOND, 200);
@@ -63,8 +66,12 @@ class WalPositionHistoryTests {
         history.record(5 * SECOND, 200);
         history.record(9 * SECOND, 200);
 
-        // A replica that stopped replaying at 100 has been missing 200 since 1s, not since 9s.
-        Assertions.assertEquals(new WalPositionHistory.Lag(9.0, true), history.lag(100, 10 * SECOND));
+        // A caught-up replica has everything committed before the last time the primary was still at 200.
+        Assertions.assertEquals(new WalPositionHistory.Freshness(9 * SECOND, true), history.freshness(200));
+        // A replica that stopped at 100 has been missing 200 since 1s; it has everything up to 0s.
+        Assertions.assertEquals(new WalPositionHistory.Freshness(0, true), history.freshness(100));
+        history.record(10 * SECOND, 300);
+        Assertions.assertEquals(new WalPositionHistory.Freshness(9 * SECOND, true), history.freshness(299));
     }
 
 
@@ -76,8 +83,8 @@ class WalPositionHistoryTests {
         history.record(2 * SECOND, 300);
 
         // 100 was dropped: a replica at 150 is behind everything remembered.
-        Assertions.assertFalse(history.lag(150, 3 * SECOND).bounded());
-        Assertions.assertTrue(history.lag(200, 3 * SECOND).bounded());
+        Assertions.assertFalse(history.freshness(150).bounded());
+        Assertions.assertTrue(history.freshness(200).bounded());
     }
 
 
@@ -89,17 +96,16 @@ class WalPositionHistoryTests {
         // The database behind the URL was replaced.
         history.record(2 * SECOND, 50);
 
-        Assertions.assertEquals(new WalPositionHistory.Lag(0.0, true), history.lag(50, 3 * SECOND));
-        Assertions.assertFalse(history.lag(40, 3 * SECOND).bounded());
+        Assertions.assertEquals(new WalPositionHistory.Freshness(2 * SECOND, true), history.freshness(50));
+        Assertions.assertFalse(history.freshness(40).bounded());
     }
 
 
     @Test
-    void aClockThatSeemsToGoBackReportsNoNegativeLag() {
+    void aClockThatSeemsToGoBackReportsNoNegativeAge() {
         WalPositionHistory history = new WalPositionHistory(1);
         history.record(5 * SECOND, 100);
-        history.record(6 * SECOND, 200);
 
-        Assertions.assertEquals(0.0, history.lag(150, 4 * SECOND).seconds());
+        Assertions.assertEquals(0.0, history.freshness(100).ageSeconds(4 * SECOND));
     }
 }

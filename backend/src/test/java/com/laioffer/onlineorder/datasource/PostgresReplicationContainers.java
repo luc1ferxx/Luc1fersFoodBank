@@ -137,13 +137,36 @@ public final class PostgresReplicationContainers implements Startable {
     }
 
 
+    /**
+     * {@link #pauseReplay()}, then waits until replay has actually stopped: a pause request takes effect before the
+     * next WAL record, so until then the replica may still replay a write made after the request.
+     */
+    public void pauseReplayAndAwaitPaused() throws SQLException, InterruptedException {
+        pauseReplay();
+        long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        while (!"paused".equals(queryReplica("SELECT pg_get_wal_replay_pause_state()", String.class))) {
+            if (System.nanoTime() > deadline) {
+                throw new IllegalStateException("WAL replay did not pause");
+            }
+            // Recovery checks the request before it replays a record: give it one (a commit with an xid).
+            executeOn(primaryJdbcUrl(), "SELECT txid_current()");
+            Thread.sleep(20);
+        }
+    }
+
+
     public void resumeReplay() throws SQLException {
         executeOnReplica("SELECT pg_wal_replay_resume()");
     }
 
 
     private void executeOnReplica(String sql) throws SQLException {
-        try (Connection connection = DriverManager.getConnection(replicaJdbcUrl(), USERNAME, PASSWORD);
+        executeOn(replicaJdbcUrl(), sql);
+    }
+
+
+    private static void executeOn(String url, String sql) throws SQLException {
+        try (Connection connection = DriverManager.getConnection(url, USERNAME, PASSWORD);
              Statement statement = connection.createStatement()) {
             statement.execute(sql);
         }

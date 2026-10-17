@@ -12,29 +12,33 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
-import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 
 /**
- * Measures every replica's lag every {@code app.datasource.replica.lag-check-interval} and marks it routable or not
- * (see {@link ReplicaTarget}). Runs on a thread of its own ("db-replica-lag-monitor"), like the deadline poller, and
- * is not a TaskScheduler bean.
+ * Checks every replica every {@code app.datasource.replica.lag-check-interval} and records how old its data may be
+ * (see {@link ReplicaTarget}, whose routing deadline bounds a routed read's staleness by {@code max-lag} whatever this
+ * monitor does). Each replica is checked on a thread of its own ("db-replica-lag-monitor-replica-N"), like the deadline
+ * poller and not a TaskScheduler bean, so a slow or hung replica delays only its own checks.
  *
- * <p>Each check reads the primary's WAL position ({@code pg_current_wal_lsn()}), then every replica's
- * {@code pg_is_in_recovery()} and {@code pg_last_wal_replay_lsn()}; {@link WalPositionHistory} turns the replay position
- * into seconds. A replica is routable while it is a standby, reachable and at most {@code max-lag} behind.
+ * <p>A check reads the primary's WAL position ({@code pg_current_wal_lsn()}), taking the time just before, then the
+ * replica's {@code pg_is_in_recovery()} and {@code pg_last_wal_replay_lsn()}; {@link WalPositionHistory} turns the
+ * replay position into the time before which the replica has every committed transaction. The primary is sampled
+ * before every replica check, over one connection shared by the replicas' threads.
  *
  * <p>The monitor has its own connections (one to the primary, one per replica), outside the pools: a saturated primary
  * pool must not stop the measurement and push every read onto that same primary, and a hung replica must not hold a
  * pooled connection. Their connect and socket timeouts are {@code lag-check-timeout}, so a hung server fails the check
- * within that time. If the primary's position cannot be read, no lag can be measured and every replica is taken out of
- * rotation until it can (reads then go to the primary, which is down or unreachable from here as well).
+ * within that time. If the primary's position cannot
+ * be read, no lag can be measured and the replica is taken out of rotation until it can (reads then go to the primary,
+ * which is down or unreachable from here as well).
  */
 public class ReplicaLagMonitor implements SmartLifecycle {
 
@@ -45,88 +49,78 @@ public class ReplicaLagMonitor implements SmartLifecycle {
     private static final String PRIMARY_POSITION_SQL = "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::bigint";
     private static final String REPLICA_POSITION_SQL =
             "SELECT pg_is_in_recovery(), pg_wal_lsn_diff(pg_last_wal_replay_lsn(), '0/0')::bigint";
-    /** About an hour of a busy primary at a 1s interval; an idle primary adds no samples. */
-    private static final int HISTORY_CAPACITY = 3600;
+    /** About an hour of a busy primary sampled twice a second per replica; an idle primary adds no samples. */
+    private static final int HISTORY_CAPACITY = 7200;
 
     private final ConnectionSettings primary;
     private final List<MonitoredReplica> replicas;
     private final Duration interval;
-    private final double maxLagSeconds;
     private final WalPositionHistory history = new WalPositionHistory(HISTORY_CAPACITY);
-    // Only touched by the monitor thread, and by stop() after that thread has ended.
-    private final Map<String, Connection> connections = new HashMap<>();
-    private ScheduledExecutorService executor;
+    /** Guards the primary's connection and keeps the samples in time order. */
+    private final Object primaryLock = new Object();
+    // The primary's connection is used under primaryLock; each replica's only by that replica's thread (or checkNow()
+    // before start()), and all of them by stop() once those threads have ended.
+    private final Map<String, Connection> connections = new ConcurrentHashMap<>();
+    private List<ScheduledExecutorService> executors;
 
 
-    ReplicaLagMonitor(
-            ConnectionSettings primary,
-            List<MonitoredReplica> replicas,
-            Duration interval,
-            Duration maxLag
-    ) {
+    ReplicaLagMonitor(ConnectionSettings primary, List<MonitoredReplica> replicas, Duration interval) {
         this.primary = primary;
         this.replicas = List.copyOf(replicas);
         this.interval = interval;
-        this.maxLagSeconds = maxLag.toNanos() / 1_000_000_000.0;
     }
 
 
     @Override
     public synchronized void start() {
-        if (executor != null) {
+        if (executors != null) {
             return;
         }
-        executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
-            Thread thread = new Thread(runnable, THREAD_NAME);
-            thread.setDaemon(true);
-            return thread;
-        });
         long intervalMillis = Math.max(1L, interval.toMillis());
-        executor.scheduleWithFixedDelay(this::checkNow, 0L, intervalMillis, TimeUnit.MILLISECONDS);
+        List<ScheduledExecutorService> started = new ArrayList<>();
+        for (MonitoredReplica replica : replicas) {
+            ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, THREAD_NAME + "-" + replica.target().name());
+                thread.setDaemon(true);
+                return thread;
+            });
+            executor.scheduleWithFixedDelay(() -> check(replica), 0L, intervalMillis, TimeUnit.MILLISECONDS);
+            started.add(executor);
+        }
+        executors = List.copyOf(started);
     }
 
 
     /**
-     * One round of checks. Never throws: an exception would cancel all later runs of a ScheduledExecutorService task.
+     * One check of every replica, one after the other on the calling thread (tests).
      */
     void checkNow() {
+        replicas.forEach(this::check);
+    }
+
+
+    /**
+     * One check of one replica. Never throws: an exception would cancel all later runs of a ScheduledExecutorService
+     * task.
+     */
+    private void check(MonitoredReplica replica) {
         try {
-            check();
+            checkReplica(replica);
         } catch (RuntimeException ex) {
-            LOGGER.warn("Replica lag check failed", ex);
+            LOGGER.warn("Replica lag check of {} failed", replica.target().name(), ex);
         }
     }
 
 
-    private void check() {
-        Long primaryLsn = queryPrimaryPosition();
-        if (primaryLsn == null) {
+    private void checkReplica(MonitoredReplica monitored) {
+        ReplicaTarget replica = monitored.target();
+        try {
+            samplePrimaryPosition();
+        } catch (SQLException ex) {
+            replica.primaryPositionUnknown("primary WAL position unavailable: " + ex.getMessage());
             return;
         }
-        history.record(System.nanoTime(), primaryLsn);
-        for (MonitoredReplica replica : replicas) {
-            checkReplica(replica.target(), replica.settings());
-        }
-    }
-
-
-    private Long queryPrimaryPosition() {
-        try (Statement statement = connection(primary).createStatement();
-             ResultSet result = statement.executeQuery(PRIMARY_POSITION_SQL)) {
-            requireRow(result);
-            return result.getLong(1);
-        } catch (SQLException ex) {
-            closeConnection(primary.key());
-            String reason = "primary WAL position unavailable: " + ex.getMessage();
-            for (MonitoredReplica replica : replicas) {
-                replica.target().primaryPositionUnknown(reason);
-            }
-            return null;
-        }
-    }
-
-
-    private void checkReplica(ReplicaTarget replica, ConnectionSettings settings) {
+        ConnectionSettings settings = monitored.settings();
         boolean inRecovery;
         long replayLsn;
         boolean replayed;
@@ -149,8 +143,26 @@ public class ReplicaLagMonitor implements SmartLifecycle {
             replica.noWalReplayedYet();
             return;
         }
-        WalPositionHistory.Lag lag = history.lag(replayLsn, System.nanoTime());
-        replica.lagMeasured(lag.seconds(), lag.bounded(), maxLagSeconds);
+        replica.measured(history.freshness(replayLsn));
+    }
+
+
+    /**
+     * Records where the primary is now. The time is taken before the query, so every transaction committed before it
+     * has its commit record at or below the position returned.
+     */
+    private void samplePrimaryPosition() throws SQLException {
+        synchronized (primaryLock) {
+            long sampledAt = System.nanoTime();
+            try (Statement statement = connection(primary).createStatement();
+                 ResultSet result = statement.executeQuery(PRIMARY_POSITION_SQL)) {
+                requireRow(result);
+                history.record(sampledAt, result.getLong(1));
+            } catch (SQLException ex) {
+                closeConnection(primary.key());
+                throw ex;
+            }
+        }
     }
 
 
@@ -185,20 +197,22 @@ public class ReplicaLagMonitor implements SmartLifecycle {
 
 
     /**
-     * Stops the checks and closes the monitor's connections once the monitor thread has ended.
+     * Stops the checks and closes the monitor's connections once the monitor threads have ended.
      */
     @Override
     public synchronized void stop() {
-        if (executor != null) {
-            executor.shutdownNow();
+        if (executors != null) {
+            executors.forEach(ScheduledExecutorService::shutdownNow);
             try {
-                if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
-                    LOGGER.warn("Replica lag monitor did not stop within 10s");
+                for (ScheduledExecutorService executor : executors) {
+                    if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+                        LOGGER.warn("Replica lag monitor did not stop within 10s");
+                    }
                 }
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
             } finally {
-                executor = null;
+                executors = null;
             }
         }
         for (String key : List.copyOf(connections.keySet())) {
@@ -209,7 +223,7 @@ public class ReplicaLagMonitor implements SmartLifecycle {
 
     @Override
     public synchronized boolean isRunning() {
-        return executor != null;
+        return executors != null;
     }
 
 
