@@ -26,8 +26,12 @@ events plus one synchronous seam, `OrderLifecycleCommands`.
 | Outbox claim query with 1M published rows ahead of a 100k backlog | 115-225 ms per claim without the partial index, 0.1 ms with it (V3) | `V3__Add_outbox_unpublished_index` |
 | Cached catalog reads (`load-tests/catalog-read.js`, 50 VUs) | 52-56k req/s, p99 2.3-2.8 ms, no database connection | README "Catalog Caching" |
 
-Connection budget: the HorizontalPodAutoscaler allows 3 replicas x 30 pooled connections = 90 against PostgreSQL's
-default `max_connections` of 100.
+Connection budget (`deploy/k8s`): the base manifests allow 3 replicas x 30 pooled connections = 90 and staging
+2 x 30 = 60, under PostgreSQL's default `max_connections` of 100; production allows 6 replicas x 20 = 120, already
+above that default, so the production database runs with a raised `max_connections` (at least 120 plus room for
+migrations, operators and replication). Each further replica adds 20 connections. This is the first limit the
+deployment approaches, and it is solved by PgBouncer (transaction mode) long before by sharding (see the triggers
+below).
 
 The bottleneck every measurement hit first was the connection pool and the relay's batch size, not the database's
 CPU, I/O or WAL. At ~1,000 orders/s a checkout writes roughly 8-10 rows (order, 1-3 item snapshots, history row,
