@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.partition;
 
 
+import com.laioffer.onlineorder.repository.ProcessedEventRepository;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Assertions;
@@ -21,6 +22,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 
 import java.sql.Timestamp;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -33,8 +35,15 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * processed_events deduplication on the partitioned table (V10): no unique constraint spans the monthly partitions,
- * so ProcessedEventDedupImpl serializes marks of one key with an advisory lock and checks every partition. These
- * cases fail with a plain per-partition unique index alone.
+ * so ProcessedEventDedupImpl serializes marks of one key with an advisory lock and checks every partition.
+ * <ul>
+ *     <li>A mark in an earlier month's partition: needs the check across partitions; a per-partition unique index
+ *     alone accepts the key again.</li>
+ *     <li>Two concurrent marks of one key that fall into different months: needs the advisory lock; without it neither
+ *     transaction sees the other's uncommitted row, and the two partitions' unique indexes do not see each other.</li>
+ *     <li>Concurrent marks within one month, and waiting for the first transaction's outcome: the per-partition unique
+ *     index with ON CONFLICT DO NOTHING would also serialize these; they pin the behaviour callers rely on.</li>
+ * </ul>
  */
 @SpringBootTest
 @Testcontainers(disabledWithoutDocker = true)
@@ -62,6 +71,9 @@ class ProcessedEventDedupAcrossPartitionsPostgresTests {
 
     @Autowired
     private ProcessedEventService processedEventService;
+
+    @Autowired
+    private ProcessedEventRepository processedEventRepository;
 
     @Autowired
     private PartitionCatalog catalog;
@@ -94,6 +106,53 @@ class ProcessedEventDedupAcrossPartitionsPostgresTests {
                 SELECT COUNT(*) FROM processed_events
                 WHERE consumer_name = 'replay-consumer' AND dedup_key = 'evt-replayed'
                 """, Integer.class));
+    }
+
+
+    @Test
+    void insertIfAbsent_fromConcurrentTransactionsInDifferentMonths_shouldLetExactlyOneThrough() throws Exception {
+        // The same event marked twice at the turn of a month (or a DLT replay racing the original delivery): the two
+        // rows would land in two partitions, whose unique indexes do not see each other.
+        LocalDateTime nextMonth = LocalDate.now().withDayOfMonth(1).plusMonths(1).atStartOfDay();
+        LocalDateTime endOfThisMonth = nextMonth.minusNanos(1_000_000);
+        LocalDateTime startOfNextMonth = nextMonth.plusNanos(1_000_000);
+        new PartitionMaintenanceService(true, false, 3, Duration.ofSeconds(5), Duration.ofDays(14), Duration.ZERO,
+                Duration.ZERO, 1000, catalog, jdbcTemplate, transactionManager, new SimpleMeterRegistry())
+                .maintainPartitions(LocalDateTime.now());
+        Assertions.assertTrue(catalog.relationExists(PartitionedTable.PROCESSED_EVENTS.partitionName(
+                endOfThisMonth.toLocalDate())));
+        Assertions.assertTrue(catalog.relationExists(PartitionedTable.PROCESSED_EVENTS.partitionName(
+                startOfNextMonth.toLocalDate())));
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        try {
+            CountDownLatch firstMarked = new CountDownLatch(1);
+            CountDownLatch releaseFirst = new CountDownLatch(1);
+            Future<Integer> first = executor.submit(() -> transaction.execute(status -> {
+                int inserted = insertIfAbsent("month-race-consumer", "evt-month-race", endOfThisMonth);
+                firstMarked.countDown();
+                // The consumer's work: the transaction, and its uncommitted mark, stay open.
+                await(releaseFirst);
+                return inserted;
+            }));
+            Assertions.assertTrue(firstMarked.await(10, TimeUnit.SECONDS));
+            Future<Integer> second = executor.submit(() -> transaction.execute(status ->
+                    insertIfAbsent("month-race-consumer", "evt-month-race", startOfNextMonth)));
+            Thread.sleep(300);
+            Assertions.assertFalse(second.isDone(), "the second mark waits for the first transaction");
+            releaseFirst.countDown();
+
+            Assertions.assertEquals(1, first.get(10, TimeUnit.SECONDS));
+            Assertions.assertEquals(0, second.get(10, TimeUnit.SECONDS), "the event was already marked");
+        } finally {
+            executor.shutdownNow();
+        }
+        Assertions.assertEquals(List.of(PartitionedTable.PROCESSED_EVENTS.partitionName(endOfThisMonth.toLocalDate())),
+                jdbcTemplate.queryForList("""
+                        SELECT tableoid::regclass::text FROM processed_events
+                        WHERE consumer_name = 'month-race-consumer' AND dedup_key = 'evt-month-race'
+                        """, String.class));
     }
 
 
@@ -198,6 +257,12 @@ class ProcessedEventDedupAcrossPartitionsPostgresTests {
                 INSERT INTO processed_events (consumer_name, dedup_key, event_type, processed_at)
                 VALUES ('raw-consumer', 'evt-raw', 'order.paid', LOCALTIMESTAMP)
                 """));
+    }
+
+
+    private int insertIfAbsent(String consumer, String dedupKey, LocalDateTime processedAt) {
+        return processedEventRepository.insertIfAbsent(consumer, dedupKey, dedupKey, "order.paid", "ORDER", 1L,
+                processedAt);
     }
 
 
