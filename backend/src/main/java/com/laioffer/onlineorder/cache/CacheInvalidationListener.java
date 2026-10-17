@@ -57,15 +57,22 @@ public class CacheInvalidationListener implements MessageListener, SubscriptionL
     }
 
 
+    /**
+     * Clears L1 first and counts the subscription last, so a subscription that {@link #subscriptionCount()}
+     * reports has already dropped every entry cached before it.
+     */
     @Override
     public void onChannelSubscribed(byte[] channel, long count) {
-        subscriptions.increment();
         LOGGER.info("Subscribed to cache invalidation channel {}; clearing local L1 caches",
                 new String(channel, StandardCharsets.UTF_8));
         cacheManager.clearLocal();
+        subscriptions.increment();
     }
 
 
+    /**
+     * Confirmed (re)subscriptions whose L1 clear has completed.
+     */
     long subscriptionCount() {
         return subscriptions.sum();
     }

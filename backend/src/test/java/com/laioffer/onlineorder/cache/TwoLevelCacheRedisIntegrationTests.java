@@ -210,14 +210,22 @@ class TwoLevelCacheRedisIntegrationTests {
     @Test
     void subscription_whenRedisDropsTheConnection_shouldResubscribeAndClearL1() throws Exception {
         Instance instance = newInstance("instance");
-        awaitSubscribed(instance);
+        Instance other = newInstance("other");
+        awaitSubscribed(instance, other);
         instance.menu().get(5L, () -> List.of());
         long subscriptionsBefore = instance.listener().subscriptionCount();
 
         REDIS.execInContainer("redis-cli", "CLIENT", "KILL", "TYPE", "pubsub");
 
+        // The listener counts a subscription only after it has cleared L1 for it.
         await(() -> instance.listener().subscriptionCount() > subscriptionsBefore, "re-subscribed after the connection was killed");
         Assertions.assertFalse(instance.menu().isCachedLocally(5L), "L1 is cleared because messages may have been missed");
+
+        // The new subscription delivers invalidations from other instances again.
+        instance.menu().get(5L, () -> Assertions.fail("served from Redis"));
+        other.menu().evict(5L);
+        await(() -> instance.menu().remoteInvalidationsReceivedCount() == 1, "the other instance's eviction arrives after the reconnect");
+        Assertions.assertFalse(instance.menu().isCachedLocally(5L));
     }
 
 
