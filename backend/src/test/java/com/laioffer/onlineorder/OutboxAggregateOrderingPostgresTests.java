@@ -1,7 +1,9 @@
 package com.laioffer.onlineorder;
 
 
+import com.laioffer.onlineorder.audit.AuditActor;
 import com.laioffer.onlineorder.entity.OutboxEventEntity;
+import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
 import com.laioffer.onlineorder.messaging.DeliveryEventPayload;
 import com.laioffer.onlineorder.messaging.EventEnvelope;
@@ -12,6 +14,9 @@ import com.laioffer.onlineorder.messaging.OutboxEventPublisher;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.OutboxEventRepository;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
+import com.laioffer.onlineorder.service.OutboxAdminService;
+import com.laioffer.onlineorder.service.OutboxSequenceAllocator;
+import com.laioffer.onlineorder.service.PostgresOutboxSequenceAllocator;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.common.errors.TimeoutException;
@@ -94,6 +99,12 @@ class OutboxAggregateOrderingPostgresTests {
 
     @Autowired
     private OrderEventOutboxService outboxService;
+
+    @Autowired
+    private OutboxAdminService outboxAdminService;
+
+    @Autowired
+    private OutboxSequenceAllocator sequenceAllocator;
 
     @Autowired
     private OutboxEventRepository outboxEventRepository;
@@ -247,6 +258,82 @@ class OutboxAggregateOrderingPostgresTests {
 
 
     @Test
+    void abandoningAFailedHead_shouldReleaseTheLaterEventsOfItsAggregateWithoutEverPublishingIt() {
+        long blockedOrder = uniqueAggregateId();
+        for (int step = 0; step < 3; step++) {
+            enqueueInOwnTransaction("order-events", blockedOrder, orderEvent(blockedOrder, step));
+        }
+        Long poisonedHead = eventsOf("ORDER", blockedOrder).get(0).id();
+        Set<String> poisoned = ConcurrentHashMap.newKeySet();
+        poisoned.add("ORDER:" + blockedOrder + ":1");
+        AtomicInteger acks = new AtomicInteger();
+        OutboxEventPublisher publisher = publisher(kafka(acks, event -> false,
+                event -> poisoned.contains(aggregateKey(event) + ":" + sequence(event)), false));
+        for (int run = 0; run < MAX_ATTEMPTS; run++) {
+            publisher.publishPendingEvents();
+        }
+        Assertions.assertEquals("FAILED", outboxEventRepository.findById(poisonedHead).orElseThrow().status());
+        Assertions.assertEquals(1L, outboxEventRepository.countBlockedAggregates());
+        Assertions.assertThrows(BadRequestException.class,
+                () -> outboxAdminService.abandonFailedEvent(eventsOf("ORDER", blockedOrder).get(1).id(), "not failed",
+                        AuditActor.system()),
+                "only a FAILED event can be abandoned");
+
+        outboxAdminService.abandonFailedEvent(poisonedHead, "broker rejects the record for good", AuditActor.system());
+        publisher.publishPendingEvents();
+
+        OutboxEventEntity abandoned = outboxEventRepository.findById(poisonedHead).orElseThrow();
+        Assertions.assertEquals("ABANDONED", abandoned.status());
+        Assertions.assertNotNull(abandoned.lastError(), "the cause is kept");
+        Assertions.assertNull(abandoned.publishedAt());
+        Assertions.assertEquals(List.of(2L, 3L), acknowledged.get("ORDER:" + blockedOrder),
+                "the held-back events follow in order, without the abandoned one");
+        Assertions.assertEquals(0L, outboxEventRepository.countBlockedAggregates());
+        Assertions.assertEquals(1.0, meterRegistry.get("onlineorder.outbox.events").tag("status", "abandoned").gauge().value());
+        Assertions.assertThrows(BadRequestException.class, () -> outboxService.retryFailedEvent(poisonedHead),
+                "an abandoned event is never sent: it would now overtake its successors");
+
+        Map<String, Object> audit = jdbcTemplate.queryForMap("""
+                SELECT action, actor_role, details FROM audit_log
+                WHERE target_type = 'OUTBOX_EVENT' AND target_id = ?
+                """, String.valueOf(poisonedHead));
+        Assertions.assertEquals("outbox_event.abandon", audit.get("action"));
+        Assertions.assertEquals("SYSTEM", audit.get("actor_role"));
+        var details = objectMapper.readTree((String) audit.get("details"));
+        Assertions.assertEquals("broker rejects the record for good", details.get("reason").asString());
+        Assertions.assertEquals(2, details.get("released_events").asInt());
+        Assertions.assertEquals(1, details.get("aggregate_sequence").asInt());
+        Assertions.assertEquals("order.created", details.get("event_type").asString());
+    }
+
+
+    /**
+     * The claim returns one event per aggregate, so draining an aggregate's backlog takes one claim per event; the
+     * publisher does that within one run instead of one event per publish interval.
+     */
+    @Test
+    void anAggregateWithSeveralWaitingEvents_shouldBeDrainedInOneRunInSequenceOrder() {
+        long busyOrder = uniqueAggregateId();
+        long otherOrder = busyOrder + 1;
+        for (int step = 0; step < ORDER_LIFECYCLE.length; step++) {
+            enqueueInOwnTransaction("order-events", busyOrder, orderEvent(busyOrder, step));
+        }
+        for (int step = 0; step < 2; step++) {
+            enqueueInOwnTransaction("order-events", otherOrder, orderEvent(otherOrder, step));
+        }
+        OutboxEventPublisher publisher = publisher(kafka(new AtomicInteger(), event -> false, event -> false, false));
+
+        publisher.publishPendingEvents();
+
+        Assertions.assertEquals(List.of(1L, 2L, 3L, 4L, 5L), acknowledged.get("ORDER:" + busyOrder));
+        Assertions.assertEquals(List.of(1L, 2L), acknowledged.get("ORDER:" + otherOrder));
+        Assertions.assertEquals(0L, countUnpublished());
+        Assertions.assertFalse(outboxService.hasPendingSuccessor(eventsOf("ORDER", busyOrder).stream()
+                .map(OutboxEventEntity::id).toList()));
+    }
+
+
+    @Test
     void concurrentWritersOfOneAggregate_shouldGetUniqueGaplessSequencesInCommitOrder() throws Exception {
         long orderId = uniqueAggregateId();
         int writers = 8;
@@ -322,6 +409,12 @@ class OutboxAggregateOrderingPostgresTests {
                 LongStream.rangeClosed(1, writers + 1).boxed().toList(),
                 eventsOf("DELIVERY", deliveryId).stream().map(OutboxEventEntity::aggregateSequence).toList()
         );
+    }
+
+
+    @Test
+    void onPostgreSQL_theUpsertAllocatorShouldBeUsed() {
+        Assertions.assertInstanceOf(PostgresOutboxSequenceAllocator.class, sequenceAllocator);
     }
 
 
@@ -413,11 +506,24 @@ class OutboxAggregateOrderingPostgresTests {
      * @param sendFailure  events whose send fails after it was accepted (an attempt is used); any other send may time
      *                     out instead (transient: no attempt is used)
      */
-    @SuppressWarnings("unchecked")
     private KafkaTemplate<String, String> kafka(
             AtomicInteger acks,
             Predicate<String> recordError,
             Predicate<String> sendFailure
+    ) {
+        return kafka(acks, recordError, sendFailure, true);
+    }
+
+
+    /**
+     * @param randomTimeouts whether a send that neither predicate fails may still time out at random
+     */
+    @SuppressWarnings("unchecked")
+    private KafkaTemplate<String, String> kafka(
+            AtomicInteger acks,
+            Predicate<String> recordError,
+            Predicate<String> sendFailure,
+            boolean randomTimeouts
     ) {
         KafkaTemplate<String, String> kafka = Mockito.mock(KafkaTemplate.class);
         Mockito.when(kafka.send(Mockito.anyString(), Mockito.anyString(), Mockito.anyString())).thenAnswer(invocation -> {
@@ -426,7 +532,7 @@ class OutboxAggregateOrderingPostgresTests {
                 throw new SerializationException("induced record error");
             }
             boolean fail = sendFailure.test(payload);
-            boolean timeOut = !fail && ThreadLocalRandom.current().nextInt(8) == 0;
+            boolean timeOut = randomTimeouts && !fail && ThreadLocalRandom.current().nextInt(8) == 0;
             return CompletableFuture.supplyAsync(() -> {
                 sleepQuietly(ThreadLocalRandom.current().nextInt(5));
                 if (fail) {

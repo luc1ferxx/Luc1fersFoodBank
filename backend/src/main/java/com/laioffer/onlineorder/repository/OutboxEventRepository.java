@@ -57,7 +57,9 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
 
     /**
      * Aggregates whose later events are held back by a FAILED event: the publisher claims nothing of such an aggregate
-     * until the FAILED event is retried (POST /admin/outbox/events/{id}/retry) and published. An aggregate whose only
+     * until the FAILED event is retried (POST /admin/outbox/events/{id}/retry) and published, or abandoned
+     * (POST /admin/outbox/events/{id}/abandon). A FAILED row without a sequence (failed before V9) holds nothing back
+     * and is not counted. An aggregate whose only
      * unpublished event is the FAILED one is not counted; onlineorder.outbox.failed covers it.
      */
     @Query("""
@@ -245,6 +247,58 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
               AND status = :failedStatus
             """)
     int resetFailedForRetry(Long id, String failedStatus, String pendingStatus, LocalDateTime updatedAt);
+
+
+    /**
+     * Gives up on a FAILED event for good: ABANDONED is outside the statuses the head-of-line claim waits for, so the
+     * later events of its aggregate become claimable, and the event itself is never published. last_error is kept.
+     */
+    @Modifying
+    @Query("""
+            UPDATE outbox_events
+            SET status = :abandonedStatus,
+                updated_at = :updatedAt
+            WHERE id = :id
+              AND status = :failedStatus
+            """)
+    int markFailedAbandoned(Long id, String failedStatus, String abandonedStatus, LocalDateTime updatedAt);
+
+
+    /**
+     * Unpublished events of the aggregate after {@code sequence}: what an event with that sequence holds back while it
+     * is FAILED.
+     */
+    @Query("""
+            SELECT COUNT(*)
+            FROM outbox_events
+            WHERE aggregate_type = :aggregateType
+              AND aggregate_id = :aggregateId
+              AND aggregate_sequence > :sequence
+              AND status IN ('PENDING', 'PROCESSING', 'FAILED')
+            """)
+    long countUnpublishedAfter(String aggregateType, Long aggregateId, Long sequence);
+
+
+    /**
+     * Whether one of the given (just published) events has a PENDING successor in its aggregate, which the head-of-line
+     * claim held back until now: the publisher then claims again in the same run instead of waiting for the next one.
+     * The literal status lies inside the predicate of the head index (V9_1), which answers each probe.
+     */
+    @Query("""
+            SELECT COUNT(*)
+            FROM outbox_events published
+            WHERE published.id IN (:publishedIds)
+              AND published.aggregate_sequence IS NOT NULL
+              AND EXISTS (
+                    SELECT 1
+                    FROM outbox_events later
+                    WHERE later.aggregate_type = published.aggregate_type
+                      AND later.aggregate_id = published.aggregate_id
+                      AND later.aggregate_sequence > published.aggregate_sequence
+                      AND later.status = 'PENDING'
+              )
+            """)
+    long countWithPendingSuccessor(List<Long> publishedIds);
 
 
     @Modifying

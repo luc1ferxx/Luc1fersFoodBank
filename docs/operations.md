@@ -88,7 +88,7 @@ Application metrics on top of Spring Boot's (HTTP, Hikari, Tomcat, JVM, Kafka cl
 | Metric (Prometheus name) | Meaning |
 | --- | --- |
 | `onlineorder_outbox_oldest_pending_age_seconds` | Age of the oldest PENDING/PROCESSING outbox event, 0 when none. One index entry of the V3 partial index per scrape |
-| `onlineorder_outbox_backlog`, `onlineorder_outbox_events{status}`, `onlineorder_outbox_failed` | Outbox rows by status |
+| `onlineorder_outbox_backlog`, `onlineorder_outbox_events{status}`, `onlineorder_outbox_failed` | Outbox rows by status (`abandoned`: FAILED events an operator gave up on, section 8) |
 | `onlineorder_outbox_publish_total{result}` | Publisher results |
 | `onlineorder_outbox_blocked_aggregates`, `onlineorder_outbox_blocked_events` | Aggregates (orders, deliveries) whose later events wait behind a FAILED event of theirs, and those events (section 8) |
 | `onlineorder_events_schema_violations_total{side,topic,event_type}` | Events that broke their published schema: `producer` (transaction rolled back, a bug) or `consumer` (dead-lettered without retries) |
@@ -169,7 +169,7 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 | `OnlineOrderLatencySLOSlowBurn` | > 6% slower than 500ms over 6h and 30m, for 15m | warning |
 | `OnlineOrderOutboxBacklogStale` / `...Critical` | oldest unpublished event > 2 min / > 15 min, for 5m | warning / critical |
 | `OnlineOrderOutboxEventsFailed` | any FAILED outbox event for 1m; retry with `POST /admin/outbox/events/{id}/retry` | warning |
-| `OnlineOrderOutboxAggregatesBlocked` | an aggregate has later events held back behind a FAILED one, for 5m (section 8) | warning |
+| `OnlineOrderOutboxAggregatesBlocked` | an aggregate has later events held back behind a FAILED one, for 5m; retry it, or abandon it if it can never be published (section 8) | warning |
 | `OnlineOrderEventSchemaViolations` | an event broke its schema in the last 15m, per side, including the first one after a start | warning |
 | `OnlineOrderDeadLettersGrowing` | a dead letter stored in the last 15m, including the first one after a start (the counter series appears at 1); replay with `POST /dead-letters/{id}/replay` | warning |
 | `OnlineOrderHikariPendingSustained` | threads waiting for a connection for 5m | warning |
@@ -497,8 +497,12 @@ side.
 
 **Migrations.** V9 adds `outbox_events.aggregate_sequence` (nullable, no default: catalog only on PostgreSQL) and
 `outbox_aggregate_sequences` (one counter per order, delivery and merchant order, kept for good), numbers the events
-that are still `PENDING`, `PROCESSING` or `FAILED` per aggregate in id order with one `MERGE` and starts each counter
-after them; published rows keep `NULL` until the outbox cleanup deletes them. V9_1 builds the unique partial index
+that are still `PENDING` or `PROCESSING` per aggregate in id order with one `MERGE` and starts each counter after them;
+published rows keep `NULL` until the outbox cleanup deletes them. `FAILED` rows from before the upgrade keep `NULL` as
+well: they stay what they were, terminal events that hold nothing back (the blocked-aggregate gauges ignore them), so the
+upgrade does not stall the orders they belong to. Triage them before or after the upgrade as before
+(`GET /admin/outbox/events/failed`, rows with `aggregate_sequence` null); a retry publishes such a row unordered, as
+before V9, and its consumers apply it under the out-of-order rules (README "Out-of-order events"). V9_1 builds the unique partial index
 `idx_outbox_events_unpublished_aggregate (aggregate_type, aggregate_id, aggregate_sequence) WHERE status IN ('PENDING',
 'PROCESSING', 'FAILED')` on PostgreSQL (H2 only records the version). Like V3 it is a plain `CREATE INDEX` in Flyway's
 transaction: it scans the table and blocks outbox writes (checkouts, status changes) meanwhile, about a second per
@@ -509,10 +513,11 @@ consumers ignore the new field).
 
 **A blocked aggregate** (`OnlineOrderOutboxAggregatesBlocked`): the publisher only claims the head of each aggregate,
 so a `FAILED` event holds back the later events of its order or delivery, on every topic it writes to, until it is
-published. Find it with `GET /admin/outbox/events/failed` (`aggregate_type`, `aggregate_id`, `aggregate_sequence`,
-`last_error`), fix the cause (a record too large, a broker ACL, ...), then `POST /admin/outbox/events/{id}/retry`: it
-goes back to `PENDING` with its attempts reset, and the held-back events follow in order once it is published. To see
-what waits behind it:
+published or abandoned. Find it with `GET /admin/outbox/events/failed` (`aggregate_type`, `aggregate_id`,
+`aggregate_sequence`, `last_error`), fix the cause (a broker ACL, a topic that was missing, ...), then
+`POST /admin/outbox/events/{id}/retry`: it goes back to `PENDING` with its attempts reset, and the held-back events
+follow in order once it is published (within the same publisher run: the publisher claims an aggregate's next event
+as soon as the previous one is acknowledged). To see what waits behind it:
 
 ```sql
 SELECT id, event_type, aggregate_sequence, status
@@ -523,6 +528,28 @@ ORDER BY aggregate_sequence;
 
 Never set a held-back event to `PUBLISHED` by hand to skip the failed one: its consumers would then apply the order's
 later events without the earlier one.
+
+**An event that can never be published** (the broker will always reject the record, for example one over its size
+limit): abandon it as a last resort, with the reason and how its effect is reconciled:
+
+```sh
+curl -sf -X POST "$BASE_URL/admin/outbox/events/<id>/abandon" -b "$ADMIN_COOKIE" \
+  -H 'Content-Type: application/json' -d '{"reason": "record over the broker limit; order 42 cancelled by hand"}'
+```
+
+Only a `FAILED` event can be abandoned. It becomes `ABANDONED` (`onlineorder_outbox_events{status="abandoned"}`): never
+published, never retried, never deleted by the outbox cleanup, `last_error` kept, and the audit log has
+`outbox_event.abandon` with the reason, the attempts, the error and how many held-back events it released. `ABANDONED`
+is outside the statuses the claim waits for, so the aggregate's later events are published next, in order. Its
+consumers never receive it: what it would have caused does not happen (a merchant inbox entry for `order.paid`, a
+dispatch for `order.accepted`, a completion for `delivery.delivered`, ...), the later events are applied without it,
+and the consumers that track sequences only see a gap, which they accept. Reconcile that by hand, typically by
+cancelling or completing the order through the admin API. The list of abandoned events:
+
+```sql
+SELECT id, aggregate_type, aggregate_id, aggregate_sequence, event_type, last_error, updated_at
+FROM outbox_events WHERE status = 'ABANDONED' ORDER BY updated_at;
+```
 
 **Schema violations** (`OnlineOrderEventSchemaViolations`):
 
@@ -539,6 +566,15 @@ later events without the earlier one.
 the replayed event was older than what the merchant inbox, dispatch or timeout consumer already applied for the order.
 Their positions live in `consumer_aggregate_sequences` and are deleted with `processed_events`
 (`app.cleanup.processed-event-retention`).
+
+**Sequence counters.** `outbox_aggregate_sequences` keeps one row per aggregate that ever had an event (about three per
+order: the order, its delivery, its merchant order), so it grows with `orders` and nothing deletes it. Its id is drawn
+from a sequence on every event (the upsert draws one even when it updates), so ids grow with the number of events;
+`BIGINT` leaves ample room. A counter may only be deleted when restarting it at 1 cannot make a consumer skip new events
+as stale: the aggregate has no outbox row left that is not `PUBLISHED`, no consumer position in
+`consumer_aggregate_sequences`, no stored dead letter, and its last event is older than the longest of
+`app.cleanup.outbox-retention`, `app.cleanup.processed-event-retention` and `app.cleanup.dead-letter-retention`. There
+is no cleanup job for it yet; archive or partition it together with `orders` when that becomes necessary.
 
 **Mirroring the schemas into a schema registry.** The application validates against the schemas it ships and needs no
 registry. To make them discoverable for other teams, publish each file under a subject per event type, for example

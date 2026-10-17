@@ -154,7 +154,7 @@ tests:
               severity: warning
             exp_annotations:
               summary: Outbox events are held back behind a FAILED event of their aggregate
-              description: '2 aggregate(s) have later outbox events waiting behind a FAILED one (onlineorder_outbox_blocked_events counts them). Fix the cause, then retry the FAILED event with POST /admin/outbox/events/{id}/retry; the held-back events follow in order.'
+              description: '2 aggregate(s) have later outbox events waiting behind a FAILED one (onlineorder_outbox_blocked_events counts them). Fix the cause, then retry the FAILED event with POST /admin/outbox/events/{id}/retry; the held-back events follow in order. Only an event that can never be published is abandoned instead (POST /admin/outbox/events/{id}/abandon, docs/operations.md section 8).'
       - eval_time: 11m
         alertname: OnlineOrderOutboxAggregatesBlocked
         exp_alerts: []

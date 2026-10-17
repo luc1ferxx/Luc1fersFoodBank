@@ -65,6 +65,10 @@ class OutboxAggregateSequenceMigrationTests {
             .withPassword("secret");
 
 
+    /**
+     * The backlog waiting to be published is numbered per aggregate in id order. A FAILED row from before the upgrade
+     * keeps NULL: it was terminal and held nothing back, and it still holds nothing back.
+     */
     @Test
     void v9_shouldNumberTheUnpublishedBacklogPerAggregateAndStartTheCountersAfterIt() throws SQLException {
         Flyway flyway = flyway("8");
@@ -84,8 +88,8 @@ class OutboxAggregateSequenceMigrationTests {
 
         try (Connection connection = connect()) {
             Assertions.assertEquals(
-                    List.of("ORDER:1:PUBLISHED:null", "ORDER:2:PENDING:1", "ORDER:1:PENDING:1", "ORDER:1:FAILED:2",
-                            "DELIVERY:1:PROCESSING:1", "ORDER:1:PENDING:3", "ORDER:3:PUBLISHED:null"),
+                    List.of("ORDER:1:PUBLISHED:null", "ORDER:2:PENDING:1", "ORDER:1:PENDING:1", "ORDER:1:FAILED:null",
+                            "DELIVERY:1:PROCESSING:1", "ORDER:1:PENDING:2", "ORDER:3:PUBLISHED:null"),
                     rows(connection, """
                             SELECT aggregate_type || ':' || aggregate_id || ':' || status || ':'
                                    || COALESCE(CAST(aggregate_sequence AS TEXT), 'null')
@@ -93,13 +97,48 @@ class OutboxAggregateSequenceMigrationTests {
                             """)
             );
             Assertions.assertEquals(
-                    List.of("DELIVERY:1:1", "ORDER:1:3", "ORDER:2:1"),
+                    List.of("DELIVERY:1:1", "ORDER:1:2", "ORDER:2:1"),
                     rows(connection, """
                             SELECT aggregate_type || ':' || aggregate_id || ':' || last_sequence
                             FROM outbox_aggregate_sequences ORDER BY aggregate_type, aggregate_id
                             """)
             );
+
+            // The heads are claimable; order 1's second PENDING event waits for its first, not for the old FAILED one.
+            Assertions.assertEquals(List.of("ORDER:2:1", "ORDER:1:1"), claimable(connection));
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate("""
+                        UPDATE outbox_events SET status = 'PUBLISHED', published_at = now()
+                        WHERE aggregate_type = 'ORDER' AND aggregate_sequence = 1
+                        """);
+            }
+            Assertions.assertEquals(List.of("ORDER:1:2"), claimable(connection));
+
+            // Retried, the old FAILED row is claimable at once (published unordered, as before V9).
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate("UPDATE outbox_events SET status = 'PENDING' WHERE status = 'FAILED'");
+            }
+            Assertions.assertEquals(List.of("ORDER:1:null", "ORDER:1:2"), claimable(connection));
         }
+    }
+
+
+    private static List<String> claimable(Connection connection) throws SQLException {
+        List<String> claimed = new ArrayList<>();
+        connection.setAutoCommit(false);
+        try (PreparedStatement claim = connection.prepareStatement(CLAIM)) {
+            bindClaim(claim);
+            try (ResultSet result = claim.executeQuery()) {
+                while (result.next()) {
+                    Object sequence = result.getObject("aggregate_sequence");
+                    claimed.add(result.getString("aggregate_type") + ":" + result.getLong("aggregate_id") + ":" + sequence);
+                }
+            }
+        } finally {
+            connection.rollback();
+            connection.setAutoCommit(true);
+        }
+        return claimed;
     }
 
 
@@ -198,8 +237,49 @@ class OutboxAggregateSequenceMigrationTests {
             connection.rollback();
             Assertions.assertEquals(200, claimed.size());
             Assertions.assertTrue(claimed.stream().allMatch(row -> row.endsWith(":6")), claimed::toString);
+
+            // The publisher's successor check after a batch (OutboxEventRepository.countWithPendingSuccessor) probes the
+            // head index for each published event instead of scanning the table.
+            List<String> successorPlan = new ArrayList<>();
+            try (PreparedStatement explain = connection.prepareStatement("EXPLAIN " + SUCCESSOR_CHECK.formatted(
+                    "SELECT id FROM outbox_events WHERE aggregate_id BETWEEN 4001 AND 4005 AND aggregate_sequence = 6"));
+                 ResultSet result = explain.executeQuery()) {
+                while (result.next()) {
+                    successorPlan.add(result.getString(1));
+                }
+            }
+            connection.rollback();
+            String successorPlanText = String.join("\n", successorPlan);
+            Assertions.assertFalse(successorPlanText.contains("Seq Scan on outbox_events later"), successorPlanText);
+            Assertions.assertTrue(successorPlanText.contains(INDEX_NAME), successorPlanText);
+            try (PreparedStatement count = connection.prepareStatement(SUCCESSOR_CHECK.formatted(
+                    "SELECT id FROM outbox_events WHERE aggregate_id BETWEEN 4001 AND 4005 AND aggregate_sequence = 6"));
+                 ResultSet result = count.executeQuery()) {
+                Assertions.assertTrue(result.next());
+                Assertions.assertEquals(5, result.getLong(1), "each of the five heads has its sequence-7 event waiting");
+            }
+            connection.rollback();
         }
     }
+
+
+    /**
+     * OutboxEventRepository.countWithPendingSuccessor with the id list replaced by {@code %s}.
+     */
+    private static final String SUCCESSOR_CHECK = """
+            SELECT COUNT(*)
+            FROM outbox_events published
+            WHERE published.id IN (%s)
+              AND published.aggregate_sequence IS NOT NULL
+              AND EXISTS (
+                    SELECT 1
+                    FROM outbox_events later
+                    WHERE later.aggregate_type = published.aggregate_type
+                      AND later.aggregate_id = published.aggregate_id
+                      AND later.aggregate_sequence > published.aggregate_sequence
+                      AND later.status = 'PENDING'
+              )
+            """;
 
 
     private static String explainClaim(Connection connection) throws SQLException {

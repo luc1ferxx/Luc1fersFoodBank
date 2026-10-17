@@ -251,6 +251,7 @@ class RateLimitingFilterTests {
             "PATCH, /admin//restaurants/3/, admin-catalog",
             "POST, /dead-letters/%31%32/replay, dead-letter-replay",
             "POST, /admin/outbox/events/7/%72etry, outbox-retry",
+            "POST, /admin/outbox/events/7/%61bandon, outbox-abandon",
             "PATCH, /orders/%34%32/status, order-status",
             "POST, /admin/%6Derchants, admin-provisioning",
             "POST, /admin//riders/, admin-provisioning",

@@ -141,6 +141,48 @@ class OutboxEventPublisherTests {
     }
 
 
+    /**
+     * The claim returns only the head of each aggregate, so a partial batch does not mean the backlog is drained: a
+     * published head whose successor is PENDING lets the run claim that successor right away.
+     */
+    @Test
+    void publishPendingEvents_whenAPublishedHeadHasAPendingSuccessor_shouldClaimAgainInTheSameRun() {
+        List<OutboxEventEntity> heads = List.of(event(1L, "1"), event(2L, "2"));
+        List<OutboxEventEntity> successors = List.of(event(3L, "1"));
+        OutboxEventPublisher publisher = newPublisher(20, Duration.ofSeconds(5));
+        Mockito.when(orderEventOutboxService.claimNextBatch()).thenReturn(heads, successors, List.of());
+        Mockito.when(orderEventOutboxService.hasPendingSuccessor(List.of(1L, 2L))).thenReturn(true);
+        Mockito.when(orderEventOutboxService.hasPendingSuccessor(List.of(3L))).thenReturn(false);
+        Mockito.when(kafkaTemplate.send(Mockito.anyString(), Mockito.anyString(), Mockito.anyString()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        publisher.publishPendingEvents();
+
+        Mockito.verify(orderEventOutboxService, Mockito.times(2)).claimNextBatch();
+        Mockito.verify(orderEventOutboxService).markPublished(List.of(1L, 2L));
+        Mockito.verify(orderEventOutboxService).markPublished(List.of(3L));
+        Mockito.verify(orderEventOutboxService).hasPendingSuccessor(List.of(3L));
+    }
+
+
+    @Test
+    void publishPendingEvents_whenAnEventOfTheBatchFailed_shouldEndTheRunWithoutLookingForSuccessors() {
+        OutboxEventEntity sent = event(1L, "1");
+        OutboxEventEntity rejected = event(2L, "2");
+        OutboxEventPublisher publisher = newPublisher(20, Duration.ofSeconds(5));
+        Mockito.when(orderEventOutboxService.claimNextBatch()).thenReturn(List.of(sent, rejected));
+        Mockito.when(kafkaTemplate.send(sent.topic(), sent.eventKey(), sent.payload()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        Mockito.when(kafkaTemplate.send(rejected.topic(), rejected.eventKey(), rejected.payload()))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("broker rejected it")));
+
+        publisher.publishPendingEvents();
+
+        Mockito.verify(orderEventOutboxService).claimNextBatch();
+        Mockito.verify(orderEventOutboxService, Mockito.never()).hasPendingSuccessor(Mockito.anyList());
+    }
+
+
     @Test
     void publishPendingEvents_whenNothingIsPending_shouldNotSend() {
         OutboxEventPublisher publisher = newPublisher(2, Duration.ofSeconds(5));

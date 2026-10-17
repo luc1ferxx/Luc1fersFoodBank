@@ -3,6 +3,7 @@ package com.laioffer.onlineorder;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OutboxEventEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
+import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
 import com.laioffer.onlineorder.messaging.DeliveryEventPayload;
@@ -427,6 +428,63 @@ class OrderEventOutboxServiceTests {
         Mockito.when(repository.lockById(1L)).thenReturn(null);
 
         Assertions.assertThrows(ResourceNotFoundException.class, () -> service.retryFailedEvent(1L));
+    }
+
+
+    @Test
+    void abandonFailedEvent_whenEventIsFailed_shouldMarkItAbandonedKeepingItsError() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        Mockito.when(repository.lockById(1L)).thenReturn(eventWithStatus("FAILED", 10, "RecordTooLargeException"));
+        Mockito.when(repository.markFailedAbandoned(
+                Mockito.eq(1L),
+                Mockito.eq("FAILED"),
+                Mockito.eq("ABANDONED"),
+                Mockito.any(LocalDateTime.class)
+        )).thenReturn(1);
+        Mockito.when(repository.findById(1L))
+                .thenReturn(Optional.of(eventWithStatus("ABANDONED", 10, "RecordTooLargeException")));
+
+        OutboxEventDto dto = service.abandonFailedEvent(1L);
+
+        Assertions.assertEquals("ABANDONED", dto.status());
+        Assertions.assertEquals("RecordTooLargeException", dto.lastError());
+    }
+
+
+    @Test
+    void abandonFailedEvent_whenEventIsNotFailed_shouldRejectWithoutChangingIt() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        Mockito.when(repository.lockById(1L)).thenReturn(eventWithStatus("PENDING", 0, null));
+        Mockito.when(repository.lockById(2L)).thenReturn(null);
+
+        Assertions.assertThrows(BadRequestException.class, () -> service.abandonFailedEvent(1L));
+        Assertions.assertThrows(ResourceNotFoundException.class, () -> service.abandonFailedEvent(2L));
+        Mockito.verify(repository, Mockito.never()).markFailedAbandoned(
+                Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(), Mockito.any(LocalDateTime.class));
+    }
+
+
+    @Test
+    void abandonFailedEvent_whenTheRowChangedMeanwhile_shouldConflict() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        Mockito.when(repository.lockById(1L)).thenReturn(eventWithStatus("FAILED", 10, "boom"));
+
+        Assertions.assertThrows(ConflictException.class, () -> service.abandonFailedEvent(1L));
+    }
+
+
+    @Test
+    void hasPendingSuccessor_shouldAskOnlyForPublishedEvents() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        Mockito.when(repository.countWithPendingSuccessor(List.of(4L, 5L))).thenReturn(1L);
+
+        Assertions.assertFalse(service.hasPendingSuccessor(List.of()));
+        Assertions.assertTrue(service.hasPendingSuccessor(List.of(4L, 5L)));
+        Mockito.verify(repository, Mockito.times(1)).countWithPendingSuccessor(Mockito.anyList());
     }
 
 

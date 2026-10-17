@@ -224,6 +224,7 @@ The `h2` profile runs Flyway migrations and includes the demo seed callback by d
 | `PATCH` | `/orders/{orderId}/status` | Move order through the status state machine |
 | `GET` | `/admin/outbox/events/failed?limit=50` | Inspect failed outbox events |
 | `POST` | `/admin/outbox/events/{eventId}/retry` | Reset failed outbox event to `PENDING` |
+| `POST` | `/admin/outbox/events/{eventId}/abandon` | Give up on a failed event that can never be published (`{"reason": ...}`, audited), releasing the later events of its aggregate |
 | `PATCH` | `/admin/menu-items/{menuItemId}` | Update a menu item's `name`, `description` or `price`; evicts that restaurant's cached menu after commit |
 | `PATCH` | `/admin/restaurants/{restaurantId}` | Update a restaurant's `name`, `address`, `phone` or `image_url`; evicts the cached restaurant list after commit |
 | `POST` | `/dead-letters/{deadLetterEventId}/replay` | Replay a stored dead-letter event |
@@ -327,6 +328,10 @@ migrations, which must not run next to pods of an older version.
 - Retryable failures return to `PENDING` until `app.outbox.max-attempts`.
 - Max-attempt failures become `FAILED` and require admin retry after the root cause is fixed; until then the later
   events of the same aggregate wait (`onlineorder_outbox_blocked_aggregates`, alert `OnlineOrderOutboxAggregatesBlocked`).
+  An event that can never be published is abandoned instead (`ABANDONED`, audited): its consumers never receive it and
+  the later events go out ([docs/operations.md](docs/operations.md) section 8).
+- After publishing a head the publisher claims again in the same run when its aggregate has a next event waiting, so a
+  backlog of k events of one order goes out in one run rather than one per publish interval.
 - Consumers use `processed_events` to deduplicate at-least-once Kafka delivery, and the consumers that keep
   per-aggregate state skip events older than the last one they applied ("Out-of-order events").
 - Notification creation also has a database uniqueness safety net.
@@ -754,8 +759,8 @@ The test suite covers:
   and `BACKWARD` versions compatible both ways with the versions before (`EventSchemaContractTests`, with fixture sets
   that break each rule); producer and consumer validation, including dead-lettering on the first attempt end to end
   (`ContainerizedOrderFlowTests`); two publishers with induced failures never publishing an aggregate's events out of
-  order, a `FAILED` head blocking its aggregate until retried, and sequences under concurrent writers
-  (`OutboxAggregateOrderingPostgresTests`); the V9 backlog numbering and head index (`OutboxAggregateSequenceMigration*Tests`);
+  order, a `FAILED` head blocking its aggregate until retried or abandoned, a backlog drained in one run, and
+  sequences under concurrent writers (`OutboxAggregateOrderingPostgresTests`, on H2 `OutboxSequenceAllocatorH2Tests`); the V9 backlog numbering and head index (`OutboxAggregateSequenceMigration*Tests`);
   consumers skipping stale events (`StaleEventPostgresIntegrationTests`)
 - staff accounts: provisioning, `GET /me`, the role matrix, deactivation on the next request, dispatch to active
   on-duty riders only, and a rider never reaching another rider's delivery (`StaffAccountsPostgresIntegrationTests`)
@@ -823,7 +828,7 @@ This project is intentionally strong on backend correctness patterns, but it is 
 - The merchant and rider consoles poll every 15 seconds instead of receiving pushed updates, and the rider console has no map, location, or ETA.
 - Kafka delivery is treated as at-least-once with consumer-side idempotency, not end-to-end exactly-once delivery. The
   outbox keeps each aggregate's events in order on their way to Kafka, so one `FAILED` event stops its order until an
-  operator retries it.
+  operator retries it, or abandons it and reconciles what its consumers missed.
 - Event schemas live in the repository (`event-schemas/`); there is no schema registry service.
 - Failed outbox rows require explicit admin retry after the underlying cause is fixed.
 - H2 is a lightweight local fallback, not the production-shaped runtime.

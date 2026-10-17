@@ -45,6 +45,7 @@ public class OrderEventOutboxService {
     private static final String OUTBOX_STATUS_PROCESSING = "PROCESSING";
     private static final String OUTBOX_STATUS_PUBLISHED = "PUBLISHED";
     private static final String OUTBOX_STATUS_FAILED = "FAILED";
+    private static final String OUTBOX_STATUS_ABANDONED = "ABANDONED";
 
     private final int batchSize;
     private final Duration claimTimeout;
@@ -165,7 +166,7 @@ public class OrderEventOutboxService {
      * aggregate, so no earlier event of the same aggregate is still PENDING, PROCESSING or FAILED
      * ({@link OutboxEventRepository#lockNextBatchReadyToPublish}). An aggregate's next event is only claimed once Kafka
      * acknowledged the previous one, whichever instance published it, and a FAILED event holds back the later events of
-     * its aggregate until an operator retries it.
+     * its aggregate until an operator retries ({@link #retryFailedEvent}) or abandons ({@link #abandonFailedEvent}) it.
      */
     @Transactional
     public List<OutboxEventEntity> claimNextBatch() {
@@ -297,6 +298,62 @@ public class OrderEventOutboxService {
         return outboxEventRepository.findById(eventId)
                 .map(OutboxEventDto::new)
                 .orElseThrow(() -> new ResourceNotFoundException("Outbox event not found"));
+    }
+
+
+    /**
+     * Gives up on a FAILED event that can never be published (for example a record the broker will always reject), so
+     * that the later events of its aggregate, which the head-of-line claim holds back behind it, are published. The
+     * event becomes ABANDONED: never published, never retried, never deleted by the cleanup, with its last_error kept.
+     * Its consumers never receive it, so whatever it would have caused there does not happen; the operator reconciles
+     * that by hand (docs/operations.md section 8). Prefer {@link #retryFailedEvent} whenever the cause can be fixed.
+     *
+     * @return the abandoned event
+     */
+    @Transactional
+    public OutboxEventDto abandonFailedEvent(Long eventId) {
+        OutboxEventEntity event = outboxEventRepository.lockById(eventId);
+        if (event == null) {
+            throw new ResourceNotFoundException("Outbox event not found");
+        }
+        if (!OUTBOX_STATUS_FAILED.equals(event.status())) {
+            throw new BadRequestException("Only FAILED outbox events can be abandoned");
+        }
+
+        int updated = outboxEventRepository.markFailedAbandoned(
+                eventId,
+                OUTBOX_STATUS_FAILED,
+                OUTBOX_STATUS_ABANDONED,
+                LocalDateTime.now()
+        );
+        if (updated != 1) {
+            throw new ConflictException("Unable to abandon outbox event");
+        }
+        LOGGER.warn(
+                "Failed outbox event {} abandoned; it will never be published: aggregate_type={}, aggregate_id={}, "
+                        + "sequence={}, event_type={}, last_error={}",
+                event.id(),
+                event.aggregateType(),
+                event.aggregateId(),
+                event.aggregateSequence(),
+                event.eventType(),
+                event.lastError()
+        );
+        return outboxEventRepository.findById(eventId)
+                .map(OutboxEventDto::new)
+                .orElseThrow(() -> new ResourceNotFoundException("Outbox event not found"));
+    }
+
+
+    /**
+     * @return whether one of the given published events has a PENDING successor in its aggregate that the head-of-line
+     * claim can return now
+     */
+    public boolean hasPendingSuccessor(List<Long> publishedIds) {
+        if (publishedIds.isEmpty()) {
+            return false;
+        }
+        return outboxEventRepository.countWithPendingSuccessor(publishedIds) > 0;
     }
 
 

@@ -8,6 +8,7 @@ public final class AuditActions {
 
     public static final String ORDER_STATUS_UPDATE = "order.status.update";
     public static final String OUTBOX_EVENT_RETRY = "outbox_event.retry";
+    public static final String OUTBOX_EVENT_ABANDON = "outbox_event.abandon";
     public static final String DEAD_LETTER_REPLAY = "dead_letter.replay";
     public static final String MENU_ITEM_UPDATE = "menu_item.update";
     public static final String RESTAURANT_UPDATE = "restaurant.update";

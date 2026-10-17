@@ -54,8 +54,9 @@ import java.util.concurrent.TimeoutException;
  *     <li>Per-aggregate order across instances: every event carries its aggregate's sequence, and the claim only
  *     returns the head of each aggregate, an event with no earlier PENDING, PROCESSING or FAILED event of the same
  *     aggregate ({@link OrderEventOutboxService#claimNextBatch}). An aggregate's next event is therefore claimed,
- *     by whichever instance, only after Kafka acknowledged the previous one and it was marked PUBLISHED. A FAILED
- *     event holds back the later events of its aggregate until it is retried (onlineorder.outbox.blocked_aggregates).
+ *     by whichever instance, only after Kafka acknowledged the previous one and it was marked PUBLISHED; a run claims
+ *     again while a published event has a PENDING successor. A FAILED event holds back the later events of its
+ *     aggregate until it is retried or abandoned (onlineorder.outbox.blocked_aggregates).
  *     Within a batch, events of the same key (the order id: an order's ORDER, DELIVERY and MERCHANT_ORDER events)
  *     are still sent one after another, and the idempotent producer (acks=all, enable.idempotence,
  *     max.in.flight.requests.per.connection &lt;= 5) keeps the sends in flight in order within each partition.</li>
@@ -191,6 +192,11 @@ public class OutboxEventPublisher {
 
 
     /**
+     * Claims and publishes batches until the backlog is drained. A full batch may have more behind it. A shorter batch
+     * drained the claimable events, but the claim returns only the head of each aggregate, so publishing a head may
+     * have made the aggregate's next event claimable: the run claims again when one of the published events has a
+     * PENDING successor, so that an aggregate with k waiting events needs one run, not k publish intervals.
+     *
      * @return whether the run failed in a way that calls for a backoff
      */
     private boolean drainPendingEvents() {
@@ -204,7 +210,10 @@ public class OutboxEventPublisher {
             if (result.failed()) {
                 return result.backOff();
             }
-            if (result.publishedCount() < events.size() || events.size() < batchSize) {
+            if (result.publishedIds().size() < events.size()) {
+                return false;
+            }
+            if (events.size() < batchSize && !orderEventOutboxService.hasPendingSuccessor(result.publishedIds())) {
                 return false;
             }
         }
@@ -438,7 +447,7 @@ public class OutboxEventPublisher {
             }
             boolean backOff = !failed.isEmpty() && (published.isEmpty() || failed.stream()
                     .anyMatch(failure -> failure.kind() != FailureKind.RECORD));
-            return new BatchResult(published.size(), !failed.isEmpty(), backOff);
+            return new BatchResult(published.stream().map(OutboxEventEntity::id).toList(), !failed.isEmpty(), backOff);
         }
 
 
@@ -718,6 +727,6 @@ public class OutboxEventPublisher {
     }
 
 
-    private record BatchResult(int publishedCount, boolean failed, boolean backOff) {
+    private record BatchResult(List<Long> publishedIds, boolean failed, boolean backOff) {
     }
 }

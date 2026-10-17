@@ -22,6 +22,7 @@ public class OperationalMetricsBinder implements MeterBinder {
     private static final String OUTBOX_STATUS_PROCESSING = "PROCESSING";
     private static final String OUTBOX_STATUS_FAILED = "FAILED";
     private static final String OUTBOX_STATUS_PUBLISHED = "PUBLISHED";
+    private static final String OUTBOX_STATUS_ABANDONED = "ABANDONED";
 
     private static final String REPLAY_STATUS_PENDING = "PENDING";
     private static final String REPLAY_STATUS_REPLAYING = "REPLAYING";
@@ -47,6 +48,7 @@ public class OperationalMetricsBinder implements MeterBinder {
         bindOutboxStatus(registry, OUTBOX_STATUS_PROCESSING, "processing");
         bindOutboxStatus(registry, OUTBOX_STATUS_FAILED, "failed");
         bindOutboxStatus(registry, OUTBOX_STATUS_PUBLISHED, "published");
+        bindOutboxStatus(registry, OUTBOX_STATUS_ABANDONED, "abandoned");
 
         Gauge.builder("onlineorder.outbox.backlog", this::countOutboxBacklog)
                 .description("Outbox events waiting for publish or currently claimed by the publisher")
