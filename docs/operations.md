@@ -8,10 +8,12 @@ How OnlineOrder is observed, packaged, deployed and gated. Paths are relative to
 | Local observability stack | `deploy/observability/` |
 | Dashboards and alert rules | `deploy/observability/grafana/dashboards/`, `deploy/observability/prometheus/alerts.yml` |
 | Kubernetes | `deploy/k8s/` (kustomize base + `staging` and `prod` overlays) |
-| Read replicas (read/write splitting) | `backend/src/main/java/com/laioffer/onlineorder/datasource/`, section 8 |
+| Read replicas (read/write splitting) | `backend/src/main/java/com/laioffer/onlineorder/datasource/`, section 11 |
 | Image | `Dockerfile` |
 | CI and CD | `.github/workflows/`, `.github/dependabot.yml`, `.trivyignore` |
+| Event contracts, per-aggregate order | section 8 |
 | Partitions, order numbers, worker ids | section 9; the sharding plan in `docs/adr/0001-order-sharding.md` |
+| Money and currencies | section 10 |
 
 ## 1. Telemetry in the application
 
@@ -285,7 +287,7 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
 | --- | --- | --- |
 | `DATABASE_URL`, `DATABASE_USERNAME`, `DATABASE_PASSWORD` | local PostgreSQL on 5433 | ConfigMap / Secret |
 | `DATABASE_POOL_MAX_SIZE` | 30 | ConfigMap (prod 20) |
-| `DATABASE_REPLICA_URLS`, `DATABASE_REPLICA_POOL_MAX_SIZE` | empty (no replicas), 20 | overlays (staging 1 replica, prod 2 with 15 each); section 8 |
+| `DATABASE_REPLICA_URLS`, `DATABASE_REPLICA_POOL_MAX_SIZE` | empty (no replicas), 20 | overlays (staging 1 replica, prod 2 with 15 each); section 11 |
 | `DATABASE_REPLICA_USERNAME`, `DATABASE_REPLICA_PASSWORD` | the primary's login | Secret, only for a separate replica login |
 | `REDIS_HOST`, `REDIS_PORT`, `SPRING_DATA_REDIS_PASSWORD` | localhost:6379 | ConfigMap / Secret |
 | `REDIS_SESSION_NAMESPACE` | `onlineorder:session` (the session format version `:v2` is always appended) | - |
