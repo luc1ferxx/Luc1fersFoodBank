@@ -285,8 +285,12 @@ API errors use a consistent JSON shape and include the OpenTelemetry trace id, w
   lines).
 - **Storage (V11).** Every amount is `NUMERIC(12,2)` with a non-negative check (largest 9,999,999,999.99) and has a
   `currency CHAR(3)` next to it, checked to be three upper-case letters: `restaurants`, `menu_items`, `carts`,
-  `order_items`, `orders`, `order_history_items`, `merchant_orders`. Supported currencies have 0 to 2 minor digits
-  (USD, EUR, JPY, ...; not BHD or KWD). Existing rows became USD.
+  `order_items`, `orders`, `order_history_items`, `merchant_orders`. The supported currencies are the rows of the
+  `currencies` table (code and ISO 4217 minor units: USD, EUR, GBP and 20 more with 2, JPY and KRW with 0; never BHD,
+  KWD or XXX, which `Money` rejects), and `restaurants.currency` references it; a JPY or KRW menu price must be whole.
+  So the database holds no amount or currency that `Money` would refuse. Existing rows became USD; V11 stops, naming
+  the rows, rather than round an existing amount with sub-cent digits (`docs/operations.md` section 8, which also has
+  the rollout: no pods of the previous release next to it).
 - **One currency per restaurant, cart and order.** A restaurant prices its menu in one currency, and composite keys
   make the database enforce the rest: a menu item has its restaurant's currency, a cart line its menu item's and its
   cart's. A cart is single-restaurant, so it is single-currency; an empty cart takes the currency of the next item
