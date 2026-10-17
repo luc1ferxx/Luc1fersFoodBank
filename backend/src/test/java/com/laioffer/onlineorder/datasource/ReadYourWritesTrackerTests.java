@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.datasource;
 
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
@@ -99,6 +100,39 @@ class ReadYourWritesTrackerTests {
 
 
     @Test
+    void aSessionStoreThatFailsSendsTheRequestsReadsToThePrimary_andIsAskedOnlyOnce() {
+        // Spring Session looks the session up in Redis on getSession(false); Redis is down or hung.
+        HttpServletRequest request = Mockito.spy(new MockHttpServletRequest());
+        Mockito.doThrow(new IllegalStateException("Redis command timed out")).when(request).getSession(false);
+        bind(request);
+
+        Assertions.assertTrue(tracker.readsMustUsePrimary());
+        Assertions.assertTrue(tracker.readsMustUsePrimary());
+        Mockito.verify(request, Mockito.times(1)).getSession(false);
+    }
+
+
+    @Test
+    void aCommittedWriteSurvivesASessionStoreThatFails() {
+        HttpServletRequest request = Mockito.spy(new MockHttpServletRequest());
+        Mockito.doThrow(new RuntimeException("Redis command timed out")).when(request).getSession(false);
+        bind(request);
+
+        Assertions.assertDoesNotThrow(() -> tracker.afterCommit(execution(false), null));
+        Assertions.assertTrue(tracker.readsMustUsePrimary(), "the request itself remembers the write");
+
+        // A session whose store fails on the write itself.
+        HttpSession failing = Mockito.mock(HttpSession.class);
+        Mockito.doThrow(new RuntimeException("Redis down")).when(failing).setAttribute(Mockito.anyString(), Mockito.any());
+        MockHttpServletRequest next = new MockHttpServletRequest();
+        next.setSession(failing);
+        bind(next);
+        Assertions.assertDoesNotThrow(() -> tracker.afterCommit(execution(false), null));
+        Assertions.assertTrue(tracker.readsMustUsePrimary());
+    }
+
+
+    @Test
     void aZeroWindowTurnsReadYourWritesOff() {
         ReadYourWritesTracker off = new ReadYourWritesTracker(Duration.ZERO, now::get);
         bind(requestWith(new MockHttpSession()));
@@ -126,7 +160,7 @@ class ReadYourWritesTrackerTests {
     }
 
 
-    private static void bind(MockHttpServletRequest request) {
+    private static void bind(HttpServletRequest request) {
         RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
     }
 
