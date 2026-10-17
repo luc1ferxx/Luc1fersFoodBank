@@ -44,12 +44,18 @@ public record OutboxEventEntity(
         // relays the event to Kafka. Filled in on insert by OutboxTraceContextCallback; null for rows written
         // before V6 or outside a traced request.
         @Column("trace_parent")
-        String traceParent
+        String traceParent,
+        // Position of the event among the events of its aggregate (aggregate_type, aggregate_id): 1, 2, 3, ... in
+        // commit order, assigned by OrderEventOutboxService.enqueueEvent from outbox_aggregate_sequences (V9) and
+        // carried in the envelope as "sequence". The publisher only claims an event when no earlier event of its
+        // aggregate is still unpublished. Null only for rows written before V9 that were already published.
+        @Column("aggregate_sequence")
+        Long aggregateSequence
 ) {
 
     /**
-     * Event without a captured trace context. The trace context is added on insert, so callers that build new
-     * events do not deal with it.
+     * Event without a captured trace context or an aggregate sequence. The trace context is added on insert, so
+     * callers that build new events do not deal with it.
      */
     public OutboxEventEntity(
             Long id,
@@ -82,6 +88,7 @@ public record OutboxEventEntity(
                 createdAt,
                 updatedAt,
                 publishedAt,
+                null,
                 null
         );
     }
@@ -103,7 +110,8 @@ public record OutboxEventEntity(
                 createdAt,
                 updatedAt,
                 publishedAt,
-                traceParent
+                traceParent,
+                aggregateSequence
         );
     }
 }

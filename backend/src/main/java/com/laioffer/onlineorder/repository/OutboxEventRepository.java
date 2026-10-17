@@ -55,6 +55,47 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
     Optional<LocalDateTime> findOldestUnpublishedCreatedAt();
 
 
+    /**
+     * Aggregates whose later events are held back by a FAILED event: the publisher claims nothing of such an aggregate
+     * until the FAILED event is retried (POST /admin/outbox/events/{id}/retry) and published. An aggregate whose only
+     * unpublished event is the FAILED one is not counted; onlineorder.outbox.failed covers it.
+     */
+    @Query("""
+            SELECT COUNT(*)
+            FROM (
+                SELECT DISTINCT failed.aggregate_type, failed.aggregate_id
+                FROM outbox_events failed
+                WHERE failed.status = 'FAILED'
+                  AND EXISTS (
+                        SELECT 1
+                        FROM outbox_events later
+                        WHERE later.aggregate_type = failed.aggregate_type
+                          AND later.aggregate_id = failed.aggregate_id
+                          AND later.aggregate_sequence > failed.aggregate_sequence
+                          AND later.status IN ('PENDING', 'PROCESSING', 'FAILED')
+                  )
+            ) blocked
+            """)
+    long countBlockedAggregates();
+
+
+    /**
+     * Unpublished events held back behind a FAILED event of their aggregate. Driven from the (few) FAILED rows, so a
+     * large PENDING backlog is not scanned on every scrape.
+     */
+    @Query("""
+            SELECT COUNT(DISTINCT held.id)
+            FROM outbox_events failed
+            JOIN outbox_events held
+              ON held.aggregate_type = failed.aggregate_type
+             AND held.aggregate_id = failed.aggregate_id
+             AND held.aggregate_sequence > failed.aggregate_sequence
+             AND held.status IN ('PENDING', 'PROCESSING', 'FAILED')
+            WHERE failed.status = 'FAILED'
+            """)
+    long countBlockedEvents();
+
+
     @Query("""
             SELECT *
             FROM outbox_events
@@ -64,15 +105,38 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
     OutboxEventEntity lockById(Long id);
 
 
+    /**
+     * Locks the next events to publish: PENDING, or PROCESSING whose claim is older than {@code staleBefore}, that are
+     * the head of their aggregate. An event is held back while an earlier event of its aggregate (a lower
+     * aggregate_sequence) is still PENDING, PROCESSING or FAILED, so an aggregate's events reach Kafka one at a time in
+     * sequence order, across publisher instances: the next one only becomes claimable once the previous one is
+     * PUBLISHED, which happens after Kafka acknowledged it. SKIP LOCKED lets instances claim disjoint batches; an
+     * instance never sees the next event of an aggregate whose head another instance holds, because the head is still
+     * unpublished.
+     *
+     * <p>The statuses in the NOT EXISTS are literals so that PostgreSQL can prove the partial index
+     * idx_outbox_events_unpublished_aggregate (V9_1) applies: each probe reads the aggregate's few unpublished index
+     * entries. Rows without a sequence (published before V9) are never an earlier event of anything.
+     */
     @Query("""
             SELECT *
-            FROM outbox_events
-            WHERE status = :pendingStatus
-               OR (
-                    status = :processingStatus
-                AND updated_at <= :staleBefore
-               )
-            ORDER BY id
+            FROM outbox_events e
+            WHERE (
+                    e.status = :pendingStatus
+                 OR (
+                        e.status = :processingStatus
+                    AND e.updated_at <= :staleBefore
+                 )
+              )
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM outbox_events earlier
+                    WHERE earlier.aggregate_type = e.aggregate_type
+                      AND earlier.aggregate_id = e.aggregate_id
+                      AND earlier.aggregate_sequence < e.aggregate_sequence
+                      AND earlier.status IN ('PENDING', 'PROCESSING', 'FAILED')
+              )
+            ORDER BY e.id
             LIMIT :batchSize
             FOR UPDATE SKIP LOCKED
             """)

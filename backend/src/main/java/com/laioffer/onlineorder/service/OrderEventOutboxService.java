@@ -52,6 +52,7 @@ public class OrderEventOutboxService {
     private final ObjectMapper objectMapper;
     private final String orderTopic;
     private final OutboxEventRepository outboxEventRepository;
+    private final OutboxSequenceAllocator sequenceAllocator;
     private final EventContracts eventContracts;
 
 
@@ -62,6 +63,7 @@ public class OrderEventOutboxService {
             @Value("${app.kafka.order-topic}") String orderTopic,
             ObjectMapper objectMapper,
             OutboxEventRepository outboxEventRepository,
+            OutboxSequenceAllocator sequenceAllocator,
             EventContracts eventContracts
     ) {
         this.batchSize = batchSize;
@@ -70,6 +72,7 @@ public class OrderEventOutboxService {
         this.objectMapper = objectMapper;
         this.orderTopic = orderTopic;
         this.outboxEventRepository = outboxEventRepository;
+        this.sequenceAllocator = sequenceAllocator;
         this.eventContracts = eventContracts;
     }
 
@@ -116,41 +119,54 @@ public class OrderEventOutboxService {
      * Stores an event of any aggregate in the outbox, in the caller's transaction (required), for the publisher to
      * relay to {@code topic}. Every outbox write, order events included, goes through this method:
      * <ol>
-     *     <li>the envelope is serialized and checked against the published schema of its event type and version
-     *     ({@link EventContracts#serialize}); an event that breaks its contract fails the caller's transaction with
-     *     {@code EventSchemaViolationException};</li>
-     *     <li>the row is inserted with the aggregate, event id and event type of the envelope.</li>
+     *     <li>the event gets the next sequence of its aggregate ({@link OutboxSequenceAllocator}; the aggregate's
+     *     counter row stays locked until the caller's transaction ends, so its events commit in sequence order);</li>
+     *     <li>the envelope, with that sequence, is serialized and checked against the published schema of its event
+     *     type and version ({@link EventContracts#serialize}); an event that breaks its contract fails the caller's
+     *     transaction with {@code EventSchemaViolationException};</li>
+     *     <li>the row is inserted with the aggregate, event id, event type and sequence of the envelope.</li>
      * </ol>
      *
      * @param topic    the Kafka topic name (app.kafka.order-topic, app.fulfilment.delivery-topic or
      *                 app.fulfilment.merchant-topic)
      * @param eventKey the Kafka record key: events with the same key keep their order. Use the order id, so that
      *                 all events about one order land on the same partition of each topic.
-     * @param envelope the event; serialized to JSON (snake_case) as the record value
+     * @param envelope the event without a sequence; serialized to JSON (snake_case) as the record value
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public void enqueueEvent(String topic, String eventKey, EventEnvelope envelope) {
-        String payload = eventContracts.serialize(topic, envelope);
+        long sequence = sequenceAllocator.next(envelope.aggregateType(), envelope.aggregateId());
+        EventEnvelope sequenced = envelope.withSequence(sequence);
+        String payload = eventContracts.serialize(topic, sequenced);
         LocalDateTime now = LocalDateTime.now();
         outboxEventRepository.save(new OutboxEventEntity(
                 null,
-                envelope.aggregateType(),
-                envelope.aggregateId(),
-                envelope.eventId(),
+                sequenced.aggregateType(),
+                sequenced.aggregateId(),
+                sequenced.eventId(),
                 topic,
                 eventKey,
-                envelope.eventType(),
+                sequenced.eventType(),
                 payload,
                 OUTBOX_STATUS_PENDING,
                 0,
                 null,
                 now,
                 now,
-                null
+                null,
+                null,
+                sequence
         ));
     }
 
 
+    /**
+     * Claims up to batch-size events that are ready: PENDING, or PROCESSING with an expired claim, and the head of their
+     * aggregate, so no earlier event of the same aggregate is still PENDING, PROCESSING or FAILED
+     * ({@link OutboxEventRepository#lockNextBatchReadyToPublish}). An aggregate's next event is only claimed once Kafka
+     * acknowledged the previous one, whichever instance published it, and a FAILED event holds back the later events of
+     * its aggregate until an operator retries it.
+     */
     @Transactional
     public List<OutboxEventEntity> claimNextBatch() {
         LocalDateTime now = LocalDateTime.now();

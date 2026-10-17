@@ -25,7 +25,9 @@ import tools.jackson.databind.JsonNode;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @ExtendWith(MockitoExtension.class)
@@ -95,6 +97,8 @@ class OrderEventOutboxServiceTests {
         OutboxEventEntity stored = savedOutboxEvent(repository);
         JsonNode payload = EventTestSupport.mapper().readTree(stored.payload());
         Assertions.assertEquals(1, payload.get("event_version").asInt());
+        Assertions.assertEquals(1L, payload.get("sequence").asLong());
+        Assertions.assertEquals(1L, stored.aggregateSequence());
         JsonNode item = payload.get("data").get("items").get(0);
         Assertions.assertEquals(5L, item.get("id").asLong());
         Assertions.assertEquals(7L, item.get("menu_item_id").asLong());
@@ -109,15 +113,17 @@ class OrderEventOutboxServiceTests {
 
 
     @Test
-    void enqueueEvent_shouldStoreAnEventOfAnyAggregateOnItsOwnTopic() throws Exception {
+    void enqueueEvent_shouldStoreAnEventOfAnyAggregateWithTheNextSequenceOfThatAggregate() throws Exception {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
         OrderEventOutboxService service = newService(repository);
 
         service.enqueueEvent("delivery-events", "10", deliveryEvent("evt-7", 7L, "ASSIGNED"));
+        service.enqueueEvent("delivery-events", "10", deliveryEvent("evt-8", 7L, "PICKED_UP"));
+        service.enqueueEvent("delivery-events", "11", deliveryEvent("evt-9", 8L, "ASSIGNED"));
 
         ArgumentCaptor<OutboxEventEntity> captor = ArgumentCaptor.forClass(OutboxEventEntity.class);
-        Mockito.verify(repository).save(captor.capture());
-        OutboxEventEntity first = captor.getValue();
+        Mockito.verify(repository, Mockito.times(3)).save(captor.capture());
+        OutboxEventEntity first = captor.getAllValues().get(0);
         Assertions.assertEquals("DELIVERY", first.aggregateType());
         Assertions.assertEquals(7L, first.aggregateId());
         Assertions.assertEquals("delivery-events", first.topic());
@@ -126,9 +132,15 @@ class OrderEventOutboxServiceTests {
         Assertions.assertEquals("evt-7", first.eventId());
         Assertions.assertEquals("PENDING", first.status());
         Assertions.assertEquals(0, first.attempts());
-        JsonNode payload = EventTestSupport.mapper().readTree(first.payload());
-        Assertions.assertEquals("evt-7", payload.get("event_id").asString());
-        Assertions.assertEquals("delivery.assigned", payload.get("event_type").asString());
+        Assertions.assertEquals(
+                List.of(1L, 2L, 1L),
+                captor.getAllValues().stream().map(OutboxEventEntity::aggregateSequence).toList()
+        );
+        for (OutboxEventEntity stored : captor.getAllValues()) {
+            JsonNode payload = EventTestSupport.mapper().readTree(stored.payload());
+            Assertions.assertEquals(stored.aggregateSequence(), payload.get("sequence").asLong());
+            Assertions.assertEquals(stored.eventId(), payload.get("event_id").asString());
+        }
     }
 
 
@@ -424,9 +436,10 @@ class OrderEventOutboxServiceTests {
 
 
     /**
-     * The application's JSON mapper and event contracts.
+     * The application's JSON mapper and event contracts, and an in-memory sequence counter per aggregate.
      */
     private OrderEventOutboxService newService(OutboxEventRepository repository, SimpleMeterRegistry meterRegistry) {
+        Map<String, Long> sequences = new HashMap<>();
         return new OrderEventOutboxService(
                 20,
                 Duration.ofSeconds(30),
@@ -434,6 +447,7 @@ class OrderEventOutboxServiceTests {
                 "order-events",
                 EventTestSupport.mapper(),
                 repository,
+                (aggregateType, aggregateId) -> sequences.merge(aggregateType + ":" + aggregateId, 1L, Long::sum),
                 EventTestSupport.contracts(meterRegistry)
         );
     }

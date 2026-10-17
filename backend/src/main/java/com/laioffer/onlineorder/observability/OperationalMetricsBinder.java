@@ -57,6 +57,13 @@ public class OperationalMetricsBinder implements MeterBinder {
         TimeGauge.builder("onlineorder.outbox.oldest_pending_age", this::oldestPendingAgeSeconds, TimeUnit.SECONDS)
                 .description("Age of the oldest outbox event not yet published (PENDING or PROCESSING), 0 when none")
                 .register(registry);
+        Gauge.builder("onlineorder.outbox.blocked_aggregates", outboxEventRepository::countBlockedAggregates)
+                .description("Aggregates whose later outbox events wait behind a FAILED event of the same aggregate "
+                        + "(the publisher keeps each aggregate's events in order)")
+                .register(registry);
+        Gauge.builder("onlineorder.outbox.blocked_events", outboxEventRepository::countBlockedEvents)
+                .description("Unpublished outbox events held back behind a FAILED event of their aggregate")
+                .register(registry);
 
         Gauge.builder("onlineorder.dead_letter.total", this::countDeadLetterTotal)
                 .description("Total persisted Kafka dead-letter events")

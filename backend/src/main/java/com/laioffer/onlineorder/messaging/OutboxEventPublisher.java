@@ -51,16 +51,21 @@ import java.util.concurrent.TimeoutException;
  * <ul>
  *     <li>At-least-once: an event is marked PUBLISHED only after Kafka acknowledged it. A failed, timed-out or
  *     unrecorded send is sent again later, so consumers deduplicate by event id.</li>
- *     <li>Per-key order within one publisher: events are claimed in id order and the next event of a key (the
- *     order id) is sent only after Kafka acknowledged the previous one. When an event fails, the later events of
- *     its key are not sent in that batch. The idempotent producer (acks=all, enable.idempotence,
+ *     <li>Per-aggregate order across instances: every event carries its aggregate's sequence, and the claim only
+ *     returns the head of each aggregate, an event with no earlier PENDING, PROCESSING or FAILED event of the same
+ *     aggregate ({@link OrderEventOutboxService#claimNextBatch}). An aggregate's next event is therefore claimed,
+ *     by whichever instance, only after Kafka acknowledged the previous one and it was marked PUBLISHED. A FAILED
+ *     event holds back the later events of its aggregate until it is retried (onlineorder.outbox.blocked_aggregates).
+ *     Within a batch, events of the same key (the order id: an order's ORDER, DELIVERY and MERCHANT_ORDER events)
+ *     are still sent one after another, and the idempotent producer (acks=all, enable.idempotence,
  *     max.in.flight.requests.per.connection &lt;= 5) keeps the sends in flight in order within each partition.</li>
  *     <li>Lease-based recovery: claimed events are PROCESSING. When the publisher is interrupted, the events
  *     still in flight stay PROCESSING and the events it never sent are released. Events left PROCESSING for
  *     longer than app.outbox.claim-timeout, for example after a crash or a shutdown mid-batch, are claimed
- *     again; if Kafka never received such an event, the later events of its key can overtake it.</li>
+ *     again; the later events of their aggregates wait for them. Such an event may reach Kafka twice (at least
+ *     once), but nothing of its aggregate overtakes it as long as the claim timeout exceeds the longest send.</li>
  *     <li>Multi-instance safety: claiming uses SELECT ... FOR UPDATE SKIP LOCKED, so publishers in several
- *     instances claim disjoint batches. Per-key order is not guaranteed across instances.</li>
+ *     instances claim disjoint batches.</li>
  * </ul>
  *
  * <p>Failures: a transient failure (a Kafka RetriableException such as a metadata or delivery timeout, or no
