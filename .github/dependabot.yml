@@ -32,6 +32,9 @@ updates:
       # @types/node follows the Node major used by CI and the Dockerfile (Node 24); bump them together.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # typescript-eslint supports TypeScript < 6.1; move to the next major once it does.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
