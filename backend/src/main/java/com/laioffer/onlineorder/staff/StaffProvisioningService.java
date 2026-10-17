@@ -96,6 +96,7 @@ public class StaffProvisioningService {
     }
 
 
+    @Transactional(readOnly = true)
     public List<AdminMerchantDto> getMerchants() {
         List<MerchantAccountEntity> accounts = merchantAccountService.findAll();
         Map<Long, CustomerEntity> logins = loginsById(accounts.stream().map(MerchantAccountEntity::customerId));
@@ -130,6 +131,7 @@ public class StaffProvisioningService {
     }
 
 
+    @Transactional(readOnly = true)
     public List<AdminRiderDto> getRiders() {
         List<RiderEntity> riders = riderService.findAll();
         Map<Long, CustomerEntity> logins = loginsById(riders.stream().map(RiderEntity::customerId));

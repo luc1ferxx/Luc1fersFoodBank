@@ -24,6 +24,9 @@ configMapGenerator:
     literals:
       - APP_ENV=staging
       - DATABASE_URL=jdbc:postgresql://postgres.staging.example.internal:5432/onlineorder?sslmode=require
+      # One streaming replica takes the read-only endpoints (docs/operations.md "Read replicas"). Remove the line to
+      # send every statement to the primary.
+      - DATABASE_REPLICA_URLS=jdbc:postgresql://postgres-replica.staging.example.internal:5432/onlineorder?sslmode=require
       - REDIS_HOST=redis.staging.example.internal
       - KAFKA_BOOTSTRAP_SERVERS=kafka.staging.example.internal:9092
       # Every trace is kept in staging.

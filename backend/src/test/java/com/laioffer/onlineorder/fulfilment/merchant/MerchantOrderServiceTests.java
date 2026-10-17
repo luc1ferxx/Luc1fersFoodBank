@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.fulfilment.merchant;
 
 
+import com.laioffer.onlineorder.datasource.ReadOnlyTransactions;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.fulfilment.order.OrderActor;
@@ -18,6 +19,7 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.transaction.PlatformTransactionManager;
 import tools.jackson.databind.json.JsonMapper;
 
 
@@ -56,7 +58,8 @@ class MerchantOrderServiceTests {
                 merchantOrderRepository,
                 orderLifecycleCommands,
                 metricsService,
-                JsonMapper.builder().build()
+                JsonMapper.builder().build(),
+                new ReadOnlyTransactions(Mockito.mock(PlatformTransactionManager.class))
         );
     }
 

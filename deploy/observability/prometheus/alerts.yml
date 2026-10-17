@@ -229,3 +229,26 @@ groups:
         annotations:
           summary: Rows of {{ $labels.table }} fall outside every monthly partition
           description: '{{ $value }} row(s) sit in {{ $labels.table }}_default. The job moves them into their month when it creates that partition and deletes them once past the retention; rows far in the future or past point at a wrong clock.'
+
+      # Read replicas (docs/operations.md "Read replicas"); the series exist only where DATABASE_REPLICA_URLS is set.
+      # A replica beyond app.datasource.replica.max-lag (2s by default; keep the threshold below in step) already gets
+      # no reads, they go to the primary. These alerts say it has stayed that way, so the primary carries the replica's
+      # read load. The lag is NaN while the replica cannot be measured (unreachable, not a standby); the second alert
+      # covers those.
+      - alert: OnlineOrderDbReplicaLagging
+        expr: max by (instance, replica) (onlineorder_db_replica_lag_seconds{application="OnlineOrder"}) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Read replica {{ $labels.replica }} is behind the primary on {{ $labels.instance }}
+          description: '{{ $labels.replica }} has been more than 2s behind the primary for 5 minutes ({{ $value | humanizeDuration }} now) and gets no reads. Check its replay (pg_stat_replication on the primary, long queries or I/O on the replica).'
+
+      - alert: OnlineOrderDbReplicaUnavailable
+        expr: max by (instance, replica) (onlineorder_db_replica_routable{application="OnlineOrder"}) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Read replica {{ $labels.replica }} gets no reads on {{ $labels.instance }}
+          description: For 5 minutes {{ $labels.replica }} has been lagging, unreachable or not a standby (the instance logs "Read replica ... gets no reads" with the reason). Its reads go to the primary.

@@ -34,6 +34,9 @@ configMapGenerator:
       # Managed PostgreSQL. DATABASE_USERNAME and DATABASE_PASSWORD come from the Secret.
       - DATABASE_URL=jdbc:postgresql://postgres.example.internal:5432/onlineorder?sslmode=require
       - DATABASE_POOL_MAX_SIZE=30
+      # Read replicas (docs/operations.md "Read replicas") are off here; an overlay turns them on with
+      # DATABASE_REPLICA_URLS (comma-separated JDBC URLs of streaming replicas). Their login defaults to the primary's;
+      # a separate one goes in the Secret as DATABASE_REPLICA_USERNAME and DATABASE_REPLICA_PASSWORD.
       # Managed Redis (sessions, cache, rate limits). A password goes in the Secret as SPRING_DATA_REDIS_PASSWORD.
       - REDIS_HOST=redis.example.internal
       - REDIS_PORT=6379

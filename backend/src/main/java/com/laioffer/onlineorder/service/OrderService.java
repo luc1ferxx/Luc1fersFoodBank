@@ -95,11 +95,17 @@ public class OrderService implements OrderLifecycleCommands {
     }
 
 
+    @Transactional(readOnly = true)
     public List<OrderDto> getOrdersByCustomerId(Long customerId) {
         return getOrdersByCustomerId(customerId, 50);
     }
 
 
+    /**
+     * The customer's newest orders with their items (GET /orders). Read-only: a replica read when replicas are
+     * configured, except within the customer's read-your-writes window after their own checkout or cancel.
+     */
+    @Transactional(readOnly = true)
     public List<OrderDto> getOrdersByCustomerId(Long customerId, int limit) {
         List<OrderEntity> orders = orderRepository.findPageByCustomerIdOrderByCreatedAtDesc(customerId, normalizeLimit(limit));
         Map<Long, List<OrderHistoryItemDto>> itemsByOrderId = getOrderItemsByOrderId(orders);
@@ -118,8 +124,9 @@ public class OrderService implements OrderLifecycleCommands {
 
     /**
      * The status changes of an order, oldest first, for its owner or an admin. Anyone else gets 404, the same as for
-     * an order that does not exist, so order ids cannot be probed.
+     * an order that does not exist, so order ids cannot be probed. Read-only (a replica read when replicas are configured).
      */
+    @Transactional(readOnly = true)
     public List<OrderStatusHistoryDto> getStatusHistory(Long orderId, Long readerCustomerId, boolean readerIsAdmin) {
         OrderEntity order = (readerIsAdmin
                 ? orderRepository.findById(orderId)

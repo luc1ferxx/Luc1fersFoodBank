@@ -5,6 +5,7 @@ import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.cache.CatalogCacheInvalidator;
 import com.laioffer.onlineorder.cache.CatalogCaches;
 import com.laioffer.onlineorder.cache.TwoLevelCacheManager;
+import com.laioffer.onlineorder.datasource.ReadOnlyTransactions;
 import com.laioffer.onlineorder.entity.MenuItemEntity;
 import com.laioffer.onlineorder.entity.RestaurantEntity;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
@@ -35,6 +36,7 @@ import org.springframework.data.redis.connection.lettuce.LettuceClientConfigurat
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
+import org.springframework.transaction.PlatformTransactionManager;
 
 
 import java.io.IOException;
@@ -193,6 +195,15 @@ class RestaurantCacheFallbackTests {
         @Bean
         RestaurantRepository restaurantRepository() {
             return Mockito.mock(RestaurantRepository.class);
+        }
+
+
+        /**
+         * Runs the catalog loads without a real transaction (the repositories are mocks).
+         */
+        @Bean
+        ReadOnlyTransactions readOnlyTransactions() {
+            return new ReadOnlyTransactions(Mockito.mock(PlatformTransactionManager.class));
         }
 
 

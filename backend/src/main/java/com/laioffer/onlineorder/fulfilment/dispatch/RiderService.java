@@ -4,6 +4,7 @@ package com.laioffer.onlineorder.fulfilment.dispatch;
 import com.laioffer.onlineorder.audit.AuditActions;
 import com.laioffer.onlineorder.audit.AuditActor;
 import com.laioffer.onlineorder.audit.AuditLogService;
+import com.laioffer.onlineorder.datasource.ReadOnlyTransactions;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import org.slf4j.Logger;
@@ -46,18 +47,21 @@ public class RiderService {
     private final DeliveryRepository deliveryRepository;
     private final DispatchService dispatchService;
     private final AuditLogService auditLogService;
+    private final ReadOnlyTransactions readOnlyTransactions;
 
 
     public RiderService(
             RiderRepository riderRepository,
             DeliveryRepository deliveryRepository,
             DispatchService dispatchService,
-            AuditLogService auditLogService
+            AuditLogService auditLogService,
+            ReadOnlyTransactions readOnlyTransactions
     ) {
         this.riderRepository = riderRepository;
         this.deliveryRepository = deliveryRepository;
         this.dispatchService = dispatchService;
         this.auditLogService = auditLogService;
+        this.readOnlyTransactions = readOnlyTransactions;
     }
 
 
@@ -188,10 +192,17 @@ public class RiderService {
     }
 
 
+    /**
+     * The rider's own deliveries. The active check runs first, outside any transaction, so it reads the primary and a
+     * deactivation takes effect on the next request whatever the replica lag; the list itself is a read-only
+     * transaction (a replica read when replicas are configured).
+     */
     public List<DeliveryEntity> getDeliveries(Long customerId, Collection<DeliveryStatus> statuses, int limit) {
         RiderEntity rider = requireActiveRider(customerId);
         List<String> statusNames = statuses.stream().map(DeliveryStatus::name).toList();
-        return deliveryRepository.findByRiderIdAndStatuses(rider.id(), statusNames, Math.max(1, Math.min(limit, 100)));
+        int boundedLimit = Math.max(1, Math.min(limit, 100));
+        return readOnlyTransactions.read("RiderService.getDeliveries", () ->
+                deliveryRepository.findByRiderIdAndStatuses(rider.id(), statusNames, boundedLimit));
     }
 
 

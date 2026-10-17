@@ -78,6 +78,7 @@ public class AuditLogService {
      * @param beforeId only entries with a smaller id; null for the newest entries
      * @param limit    page size, clamped to 1..200
      */
+    @Transactional(readOnly = true)
     public List<AuditLogDto> getEntries(Long beforeId, int limit) {
         int normalizedLimit = Math.max(1, Math.min(limit, MAX_LIMIT));
         List<AuditLogEntity> entries = beforeId == null

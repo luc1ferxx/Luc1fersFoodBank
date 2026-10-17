@@ -29,6 +29,10 @@ configMapGenerator:
       - TRACING_SAMPLING_PROBABILITY=0.1
       # 6 replicas x 20 connections = 120; keep below the database's max_connections.
       - DATABASE_POOL_MAX_SIZE=20
+      # Two streaming replicas take the read-only endpoints (docs/operations.md "Read replicas"). Each gets its own
+      # pool per pod: 6 pods x 15 = 90 connections per replica, below its max_connections.
+      - DATABASE_REPLICA_URLS=jdbc:postgresql://postgres-replica-1.prod.example.internal:5432/onlineorder?sslmode=require,jdbc:postgresql://postgres-replica-2.prod.example.internal:5432/onlineorder?sslmode=require
+      - DATABASE_REPLICA_POOL_MAX_SIZE=15
 
 patches:
   - target:

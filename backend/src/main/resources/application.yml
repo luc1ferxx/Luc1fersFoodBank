@@ -137,6 +137,34 @@ spring:
       thread-name-prefix: scheduling-
 
 app:
+  # Read/write splitting (docs/operations.md "Read replicas"). Off unless replica URLs are given: then
+  # @Transactional(readOnly = true) service methods read a PostgreSQL streaming replica and everything else, including
+  # every statement outside a transaction, uses the primary pool above (spring.datasource.*).
+  datasource:
+    replica:
+      # Comma-separated JDBC URLs of hot standbys of the primary (a URL that itself has commas goes in
+      # APP_DATASOURCE_REPLICA_URLS_0, _1, ...). Credentials default to the primary's.
+      urls: ${DATABASE_REPLICA_URLS:}
+      username: ${DATABASE_REPLICA_USERNAME:${spring.datasource.username}}
+      password: ${DATABASE_REPLICA_PASSWORD:${spring.datasource.password}}
+      pool:
+        # Per replica and instance, on top of the primary's DATABASE_POOL_MAX_SIZE.
+        maximum-size: ${DATABASE_REPLICA_POOL_MAX_SIZE:20}
+        # A read that waits this long for a replica connection runs on the primary instead.
+        connection-timeout: ${DATABASE_REPLICA_POOL_CONNECTION_TIMEOUT:1s}
+        # Bounds one network read on a replica (a hung replica); above DATABASE_STATEMENT_TIMEOUT_MS.
+        socket-timeout: ${DATABASE_REPLICA_SOCKET_TIMEOUT:15s}
+      # After a session commits a write, its reads use the primary this long (read-your-writes). Keep it above
+      # max-lag, with a margin for clock differences between instances.
+      sticky-window: ${DATABASE_REPLICA_STICKY_WINDOW:5s}
+      # A replica gets reads only while its data is less than this old (a deadline checked at routing time, so it
+      # holds even when the monitor is slow): the most a replica read can lag behind the primary.
+      max-lag: ${DATABASE_REPLICA_MAX_LAG:2s}
+      # Each replica is checked this often on a thread of its own. Keep it below max-lag / 2: a replica under write
+      # load stays routable while it replays less than max-lag - 2 x this behind.
+      lag-check-interval: ${DATABASE_REPLICA_LAG_CHECK_INTERVAL:500ms}
+      # Connect and socket timeout of the lag monitor's own connections (whole seconds).
+      lag-check-timeout: ${DATABASE_REPLICA_LAG_CHECK_TIMEOUT:1s}
   kafka:
     enabled: ${KAFKA_ENABLED:true}
     order-topic: ${KAFKA_ORDER_TOPIC:order-events}

@@ -6,6 +6,7 @@ import com.laioffer.onlineorder.audit.AuditActor;
 import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.cache.CatalogCacheInvalidator;
 import com.laioffer.onlineorder.cache.CatalogCaches;
+import com.laioffer.onlineorder.datasource.ReadOnlyTransactions;
 import com.laioffer.onlineorder.entity.RestaurantEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
@@ -32,33 +33,39 @@ public class RestaurantService {
     private final RestaurantRepository restaurantRepository;
     private final CatalogCacheInvalidator cacheInvalidator;
     private final AuditLogService auditLogService;
+    private final ReadOnlyTransactions readOnlyTransactions;
 
 
     public RestaurantService(
             RestaurantRepository restaurantRepository,
             CatalogCacheInvalidator cacheInvalidator,
-            AuditLogService auditLogService) {
+            AuditLogService auditLogService,
+            ReadOnlyTransactions readOnlyTransactions) {
         this.restaurantRepository = restaurantRepository;
         this.cacheInvalidator = cacheInvalidator;
         this.auditLogService = auditLogService;
+        this.readOnlyTransactions = readOnlyTransactions;
     }
 
 
     /**
      * The restaurant list without menus. The returned list is shared by every caller that hits the cache and
-     * must not be modified.
+     * must not be modified. A cache miss loads it in a read-only transaction (a replica read with replicas
+     * configured); a hit opens none.
      */
     @Cacheable(cacheNames = CatalogCaches.RESTAURANTS, key = "'" + CatalogCaches.ALL_RESTAURANTS_KEY + "'", sync = true)
     public List<CatalogRestaurantDto> getRestaurantList() {
-        return restaurantRepository.findAllOrderById().stream()
-                .map(CatalogRestaurantDto::new)
-                .toList();
+        return readOnlyTransactions.read("RestaurantService.getRestaurantList", () ->
+                restaurantRepository.findAllOrderById().stream()
+                        .map(CatalogRestaurantDto::new)
+                        .toList());
     }
 
 
     /**
      * Uncached primary-key lookup, for ids the cached restaurant list does not know.
      */
+    @Transactional(readOnly = true)
     public boolean restaurantExists(long restaurantId) {
         return restaurantRepository.existsById(restaurantId);
     }
@@ -67,6 +74,7 @@ public class RestaurantService {
     /**
      * Uncached names of the given restaurants, for the staff and rider views; ids without a restaurant are absent.
      */
+    @Transactional(readOnly = true)
     public Map<Long, String> findNames(Collection<Long> restaurantIds) {
         if (restaurantIds.isEmpty()) {
             return Map.of();

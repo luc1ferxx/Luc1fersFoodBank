@@ -62,6 +62,8 @@ flowchart LR
   API --> Session[(Redis sessions)]
   API --> Cache[(Redis cache and rate limits)]
   API --> DB[(PostgreSQL)]
+  API -. read-only transactions .-> Replica[(PostgreSQL read replicas, optional)]
+  DB -. streaming replication .-> Replica
   API --> Outbox[(outbox_events)]
   Outbox --> Publisher[Scheduled outbox publisher]
   Publisher --> Kafka[Kafka order-events]
@@ -453,7 +455,7 @@ The public catalog reads (`GET /restaurants/menu`, `GET /restaurant/{restaurantI
 - **Why cache-aside with delete-after-commit, not write-through.** Writing the new value into the cache from the write path means rebuilding the cached view (a whole menu) in the transaction, and two concurrent writers can store their snapshots out of order so the older one wins until the TTL. Deleting lets the next read rebuild from committed data. Deleting before the commit would let a reader cache the old row again. The remaining race is a reader that loaded the old row just before the commit and stores it just after the delete; a delayed double delete (`app.cache.delayed-double-delete`, 1s, `0` disables) removes that entry.
 - **Redis failures.** A failed Redis read is a miss and a failed write, delete or publish is skipped; each is logged and counted in `onlineorder.cache.errors`, and requests are served from the database and L1. Startup does not need Redis: the invalidation subscription is retried in the background.
 - **Hung or slow Redis.** A Redis that hangs instead of refusing connections makes every call wait for the 500ms command timeout (`spring.data.redis.timeout`). Without protection, every L1 miss would pay it twice (read and write-back), so a cold `GET /restaurants/menu`, composed of N+1 entries, would wait about (N+1) x 1s. A circuit breaker shared by the caches (`RemoteCacheCircuitBreaker`) therefore makes reads and write-backs skip Redis for `app.cache.l2.circuit-breaker.open-duration` (5s) after any Redis error, or after 3 consecutive calls slower than `slow-call-threshold` (200ms). Then one request probes Redis while the others keep skipping it, and a successful probe closes the breaker. An entry that cannot be deserialized does not count, since Redis answered. Deletes and invalidation broadcasts always go to Redis, because they keep it consistent with the database. A loaded value is written back after the single-flight section, so callers waiting for the same key are not held for the Redis write. `CatalogRedisHangIntegrationTests` pauses its Redis container and holds cold catalog reads of 43 restaurants to a 2.5s budget. Measured numbers are below the read benchmark: 0.53s instead of 44.6s.
-- **What an outage still breaks.** Sessions also live in Redis, so during an outage authenticated requests (cart, checkout, admin catalog writes) fail in the session filter. Anonymous catalog reads never touch the session store.
+- **What an outage still breaks.** Sessions also live in Redis, so during an outage authenticated requests (cart, checkout, admin catalog writes) fail in the session filter. Anonymous catalog reads (no session cookie) never touch the session store, with read replicas on as well.
 - **HTTP caching.** Both endpoints send `Cache-Control: max-age=30, public` (`app.catalog.http-max-age`) and a strong `ETag` (SHA-256 of the JSON body), and answer a matching `If-None-Match` with `304`. Only these responses override Spring Security's `no-store`; CSP and the other security headers are unchanged.
 - **Staleness budget after an admin write.** The writing instance serves the new data once the request returns (the rare reader race above lasts until the delayed second delete). Other instances drop their L1 copy when the pub/sub message arrives, or after the L1 TTL if it is lost. Browsers and shared caches may reuse a response for up to `max-age`.
 - **Prices and checkout.** The cache only serves the catalog. Adding to the cart reads the menu item from the database and snapshots its price on the cart line (adding the same item again re-snapshots it), and checkout charges the cart-line snapshots. A price change therefore never reprices existing cart lines, and a client showing a cached menu for up to `max-age` still gets the current price when it adds the item.
@@ -484,6 +486,28 @@ Hung Redis, same setup with 40 extra restaurants (43 in all): `docker pause` on 
 | Two-level cache with the circuit breaker | 0.53s (3 concurrent: 0.54s each) | 0.003s (L1 hit) | 0.52s |
 
 With the breaker, a cold request pays one 500ms command timeout per open period (the first Redis read times out and opens the breaker), then loads from PostgreSQL. `master` paid none on the menu endpoint because that endpoint was uncached.
+
+### Read Replicas
+
+Optional read/write splitting onto PostgreSQL streaming replicas, off unless `DATABASE_REPLICA_URLS` is set (details,
+settings and failure modes: [docs/operations.md](docs/operations.md), section 8):
+
+- **Opt-in per service method.** Only read-only transactions declared by the application (`@Transactional(readOnly =
+  true)` or `ReadOnlyTransactions`) read a replica: catalog loads behind the cache, order and notification lists, the
+  merchant inbox, the rider's deliveries and the admin lists. Writes, locks, idempotency checks, outbox claims,
+  consumers, Flyway, login and Spring Data's implicit CRUD transactions stay on the primary. The routing decision waits
+  for the first statement (`LazyConnectionDataSourceProxy`), when Spring has marked the transaction read-only.
+- **Read-your-writes.** After a session commits a write, its reads use the primary for `sticky-window` (5s); the
+  timestamp lives in the Redis-backed HTTP session, so it holds on every instance. A request keeps the replica its
+  first read used (or the primary, once it had to read it), and a session picks its replica by its cookie, so reads do
+  not go backwards within a request, nor across a session's requests while its replica stays routable.
+- **Lag guard.** A monitor compares each replica's replayed WAL position with the primary's twice a second, on a thread
+  per replica. Routability is a deadline checked on every read: a replica gets reads only while its data is less than
+  `max-lag` (2s) old, so a replica whose replay stalls drops out at that deadline however slow the monitor is; an
+  unreachable, hung or promoted one drops out at its next check. Its reads fall back to the primary until it recovers.
+  Gauges and alerts for lag and routability, and a counter of reads per pool and reason.
+- **Merchant and rider authorization stays fresh.** Their active check reads the primary before the replica read, so a
+  deactivation still takes effect on the next request.
 
 ### Security and Abuse Controls
 
@@ -830,6 +854,10 @@ The test suite covers:
   consumers skipping stale events (`StaleEventPostgresIntegrationTests`)
 - staff accounts: provisioning, `GET /me`, the role matrix, deactivation on the next request, dispatch to active
   on-duty riders only, and a rider never reaching another rider's delivery (`StaffAccountsPostgresIntegrationTests`)
+- read replicas, on a real primary and streaming replica (official image, `pg_basebackup`): which transactions read
+  the replica, read-your-writes after a session's own write, lagging, stopped and hung replicas falling back to the
+  primary (`ReadReplicaRoutingIntegrationTests`), and the whole order flow with routing on
+  (`FulfilmentReplicaRoutingContainerTests`)
 - 64-bit keys and the audit trails: an order with ids past 2^31 through checkout and fulfilment on PostgreSQL and H2
   (`LargeId*IntegrationTests`), upgrading a populated V6 database (`KeyWideningMigration*Tests`), the online key swap
   and history repair runbook (`SchemaRolloutPostgresTests`), order status history and its actors
@@ -912,6 +940,7 @@ This project is intentionally strong on backend correctness patterns, but it is 
 - Event schemas live in the repository (`event-schemas/`); there is no schema registry service.
 - Failed outbox rows require explicit admin retry after the underlying cause is fixed.
 - H2 is a lightweight local fallback, not the production-shaped runtime.
+- With read replicas on, a user sees other users' changes (a merchant's accept, a notification) up to `max-lag` (2s) late, a session's reads can go back by up to that much when its replica drops out and it moves to another, and a read that is running on a replica when it dies fails instead of being retried on the primary.
 - Catalog edits are limited to admin updates of existing restaurants and menu items. There is no create or delete API, so rows changed directly in the database show up once the cached entries expire. One exception: `GET /restaurant/{id}/menu` serves a directly inserted restaurant at once and evicts the stale list, because an id missing from the cached list is checked in the database (rate-limited) before the `404`. The demo seed matches rows by name, so renaming a demo restaurant or item makes the next startup with `db/demo` insert the original again.
 - The architecture is a deliberate monolith. Service decomposition is deferred until the core transaction is correct and observable.
 - The order data lives in one PostgreSQL database; sharding is planned ([ADR 0001](docs/adr/0001-order-sharding.md)), not built. Customers see only the public `order_no` (order history, checkout confirmation, notifications; the admin order tool shows both), but the merchant and rider consoles still name orders by the internal `id`: the order events do not carry `order_no` yet, so the merchant and dispatch projections cannot show it.
