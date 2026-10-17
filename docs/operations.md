@@ -90,6 +90,9 @@ Application metrics on top of Spring Boot's (HTTP, Hikari, Tomcat, JVM, Kafka cl
 | `onlineorder_outbox_oldest_pending_age_seconds` | Age of the oldest PENDING/PROCESSING outbox event, 0 when none. One index entry of the V3 partial index per scrape |
 | `onlineorder_outbox_backlog`, `onlineorder_outbox_events{status}`, `onlineorder_outbox_failed` | Outbox rows by status |
 | `onlineorder_outbox_publish_total{result}` | Publisher results |
+| `onlineorder_outbox_blocked_aggregates`, `onlineorder_outbox_blocked_events` | Aggregates (orders, deliveries) whose later events wait behind a FAILED event of theirs, and those events (section 8) |
+| `onlineorder_events_schema_violations_total{side,topic,event_type}` | Events that broke their published schema: `producer` (transaction rolled back, a bug) or `consumer` (dead-lettered without retries) |
+| `onlineorder_events_stale_skipped_total{consumer,event_type}` | Events a consumer skipped because it already applied a later event of the same order |
 | `onlineorder_outbox_relay_seconds` | Time from relay start until the publisher has the Kafka acknowledgement or the failure |
 | `onlineorder_dead_letter_stored_total`, `onlineorder_dead_letter_events{replay_status}`, `onlineorder_dead_letter_replay_total` | Dead letters |
 | `onlineorder_checkout_requests_total{result}` | Checkout results |
@@ -166,6 +169,8 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 | `OnlineOrderLatencySLOSlowBurn` | > 6% slower than 500ms over 6h and 30m, for 15m | warning |
 | `OnlineOrderOutboxBacklogStale` / `...Critical` | oldest unpublished event > 2 min / > 15 min, for 5m | warning / critical |
 | `OnlineOrderOutboxEventsFailed` | any FAILED outbox event for 1m; retry with `POST /admin/outbox/events/{id}/retry` | warning |
+| `OnlineOrderOutboxAggregatesBlocked` | an aggregate has later events held back behind a FAILED one, for 5m (section 8) | warning |
+| `OnlineOrderEventSchemaViolations` | an event broke its schema in the last 15m, per side, including the first one after a start | warning |
 | `OnlineOrderDeadLettersGrowing` | a dead letter stored in the last 15m, including the first one after a start (the counter series appears at 1); replay with `POST /dead-letters/{id}/replay` | warning |
 | `OnlineOrderHikariPendingSustained` | threads waiting for a connection for 5m | warning |
 | `OnlineOrderHikariConnectionTimeouts` | connection requests timed out (503) in the last 5m | warning |
@@ -484,3 +489,74 @@ runs the procedure for `orders` (a key other tables reference) and `idempotency_
 4. `ALTER TABLE ... VALIDATE CONSTRAINT` each of those foreign keys (no write lock). Run the inventory again into
    `after.txt`: `diff before.txt after.txt` must print nothing, which also proves that the `ON CONFLICT` targets are
    back. Then drop the old columns.
+
+## 8. Event contracts and per-aggregate order (V9-V9_2)
+
+README "Event contracts" describes the schemas, the validation and the evolution rules; this section is the operator's
+side.
+
+**Migrations.** V9 adds `outbox_events.aggregate_sequence` (nullable, no default: catalog only on PostgreSQL) and
+`outbox_aggregate_sequences` (one counter per order, delivery and merchant order, kept for good), numbers the events
+that are still `PENDING`, `PROCESSING` or `FAILED` per aggregate in id order with one `MERGE` and starts each counter
+after them; published rows keep `NULL` until the outbox cleanup deletes them. V9_1 builds the unique partial index
+`idx_outbox_events_unpublished_aggregate (aggregate_type, aggregate_id, aggregate_sequence) WHERE status IN ('PENDING',
+'PROCESSING', 'FAILED')` on PostgreSQL (H2 only records the version). Like V3 it is a plain `CREATE INDEX` in Flyway's
+transaction: it scans the table and blocks outbox writes (checkouts, status changes) meanwhile, about a second per
+million rows. V9_2 adds `consumer_aggregate_sequences`, empty. Roll the release out without pods of an older version
+(section 7's procedure): an older pod writes events without a sequence (the claim publishes them unordered) and without
+schema validation. Pods of this release read events written by older pods (no `sequence`) and the reverse (older
+consumers ignore the new field).
+
+**A blocked aggregate** (`OnlineOrderOutboxAggregatesBlocked`): the publisher only claims the head of each aggregate,
+so a `FAILED` event holds back the later events of its order or delivery, on every topic it writes to, until it is
+published. Find it with `GET /admin/outbox/events/failed` (`aggregate_type`, `aggregate_id`, `aggregate_sequence`,
+`last_error`), fix the cause (a record too large, a broker ACL, ...), then `POST /admin/outbox/events/{id}/retry`: it
+goes back to `PENDING` with its attempts reset, and the held-back events follow in order once it is published. To see
+what waits behind it:
+
+```sql
+SELECT id, event_type, aggregate_sequence, status
+FROM outbox_events
+WHERE aggregate_type = 'ORDER' AND aggregate_id = <id> AND status <> 'PUBLISHED'
+ORDER BY aggregate_sequence;
+```
+
+Never set a held-back event to `PUBLISHED` by hand to skip the failed one: its consumers would then apply the order's
+later events without the earlier one.
+
+**Schema violations** (`OnlineOrderEventSchemaViolations`):
+
+- `side="producer"`: the application built an event its contract does not allow; the transaction that wrote it was
+  rolled back and the request answered 500. The ERROR log line has the event id, type, version and the violations. It
+  is a bug in the producer or a schema change that was not published (`event-schemas/catalog.json`).
+- `side="consumer"`: a record on the topic does not match its contract (a producer outside this application, a
+  hand-made record, a version this instance cannot read). Each consumer group dead-lettered it on the first attempt;
+  its `dead_letter_events` row (by `event_id`) has the violations in `error_message`. Replaying it
+  (`POST /dead-letters/{id}/replay`) fails the same way until the consumers know its version: deploy them first, then
+  replay.
+
+**Stale events.** `onlineorder_events_stale_skipped_total{consumer}` rising after a dead-letter replay is expected:
+the replayed event was older than what the merchant inbox, dispatch or timeout consumer already applied for the order.
+Their positions live in `consumer_aggregate_sequences` and are deleted with `processed_events`
+(`app.cleanup.processed-event-retention`).
+
+**Mirroring the schemas into a schema registry.** The application validates against the schemas it ships and needs no
+registry. To make them discoverable for other teams, publish each file under a subject per event type, for example
+`order-events-order.paid`, with its `$id` as the reference name, from CI after the release:
+
+```sh
+# Confluent Schema Registry (JSON Schema support)
+curl -sf -X POST "$REGISTRY/subjects/order-events-order.paid/versions" \
+  -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
+  -d "$(jq -n --rawfile s backend/src/main/resources/event-schemas/order-events/order.paid/v1.json \
+        '{schemaType: "JSON", schema: $s}')"
+# Apicurio Registry 3
+curl -sf -X POST "$REGISTRY/apis/registry/v3/groups/onlineorder/artifacts" -H 'Content-Type: application/json' \
+  -d "$(jq -n --rawfile s backend/src/main/resources/event-schemas/order-events/order.paid/v1.json \
+        '{artifactId: "order-events-order.paid", artifactType: "JSON", firstVersion: {content: {content: $s, contentType: "application/json"}}}')"
+```
+
+Publish `common/` first (the event schemas `$ref` it; register it as a reference) and set the subject's compatibility
+to `BACKWARD` (Confluent) or the `COMPATIBILITY` rule (Apicurio), so the registry enforces the same rule as
+`EventSchemaContractTests`. Records stay plain JSON without a registry schema id, so consumers keep working whether or
+not a registry is there.
