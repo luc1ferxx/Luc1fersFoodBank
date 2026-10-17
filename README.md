@@ -376,11 +376,14 @@ are append-only" step of `config-lint` on pull requests):
 
 - A published schema file never changes and is never deleted: `SHA256SUMS` lists its checksum. Change a contract by
   adding the next version file, `v<N+1>.json`, with its line in `SHA256SUMS` and its entry in `catalog.json`.
-- `BACKWARD` versions only add optional properties (or relax a constraint). The test keeps sample events of every
-  version under `backend/src/test/resources/event-samples/<topic>/<event_type>/v<N>/` and fails when a `BACKWARD`
-  version rejects a sample of the versions before it (back to the last `BREAKING` one). Producers may move to a
-  `BACKWARD` version before every consumer knows it.
-- Anything else (a removed, renamed or newly required property, a changed type or meaning) is `BREAKING`, a new major
+- `BACKWARD` versions only add optional properties. The test keeps sample events of every version under
+  `backend/src/test/resources/event-samples/<topic>/<event_type>/v<N>/` and checks a `BACKWARD` version both ways
+  against the versions before it (back to the last `BREAKING` one): it must accept their samples (new consumers read
+  old events), and they must accept its samples, because a consumer that does not know the new version yet checks its
+  events against the latest version it knows. That is what lets producers move to a `BACKWARD` version before every
+  consumer knows it.
+- Anything else (a removed, renamed or newly required property, a changed type or meaning, and also a relaxed
+  constraint such as a lower minimum or a wider enum, which older consumers would reject) is `BREAKING`, a new major
   version: consumers must accept N and N-1, so ship consumers that handle N first, then switch the producer, and keep
   N-1 in the catalog (the test enforces it) until no N-1 event can still arrive. Retiring a version means removing it
   from `catalog.json` once no event of it can be in flight (outbox retention, stored dead letters); its file stays.
@@ -748,8 +751,8 @@ The test suite covers:
   `PREPARING`, once through the rider API (`FulfilmentFlowContainerTests`), and the accept timeout at a staffed and an
   unstaffed restaurant and the payment timeout (`FulfilmentTimeoutContainerTests`)
 - event contracts and order: every published schema unchanged, valid and listed, every version accepting its samples
-  and `BACKWARD` versions those of the versions before (`EventSchemaContractTests`, with fixture sets that break each
-  rule); producer and consumer validation, including dead-lettering on the first attempt end to end
+  and `BACKWARD` versions compatible both ways with the versions before (`EventSchemaContractTests`, with fixture sets
+  that break each rule); producer and consumer validation, including dead-lettering on the first attempt end to end
   (`ContainerizedOrderFlowTests`); two publishers with induced failures never publishing an aggregate's events out of
   order, a `FAILED` head blocking its aggregate until retried, and sequences under concurrent writers
   (`OutboxAggregateOrderingPostgresTests`); the V9 backlog numbering and head index (`OutboxAggregateSequenceMigration*Tests`);

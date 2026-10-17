@@ -15,8 +15,8 @@ import java.util.List;
 /**
  * The CI check of the event contracts (README "Event contracts"): the published schemas are unchanged (SHA256SUMS), the
  * catalog matches the schema files, every version has sample events that it accepts, and every BACKWARD version accepts
- * the samples of the versions before it. The fixture sets under event-contract-fixtures show that each rule fails
- * when it is broken.
+ * the samples of the versions before it while those versions accept its samples. The fixture sets under
+ * event-contract-fixtures show that each rule fails when it is broken.
  */
 class EventSchemaContractTests {
 
@@ -37,7 +37,7 @@ class EventSchemaContractTests {
 
 
     @Test
-    void everyPublishedVersion_shouldAcceptItsSamplesAndBackwardVersionsTheSamplesOfTheVersionsBefore() {
+    void everyPublishedVersion_shouldAcceptItsSamplesAndBackwardVersionsBeCompatibleBothWays() {
         assertNoProblems(published().sampleProblems(EventSchemaRegistry.published()));
     }
 
@@ -82,6 +82,27 @@ class EventSchemaContractTests {
         Assertions.assertTrue(problems.get(0).startsWith("order.paid v2 is marked BACKWARD but rejects"), problems::toString);
         Assertions.assertTrue(problems.get(0).contains("order.paid/v1/sample.json"), problems::toString);
         Assertions.assertTrue(problems.get(0).contains("tip"), problems::toString);
+    }
+
+
+    /**
+     * v2 lowers data.quantity's minimum from 1 to 0. Every v1 event is still a valid v2 event, but a consumer that only
+     * knows v1 checks a v2 event against v1 and dead-letters one with quantity 0, so producers could not switch first.
+     */
+    @Test
+    void aBackwardVersionThatRelaxesAConstraint_shouldBeReportedBecauseOlderConsumersRejectItsEvents() {
+        EventContractChecker checker = fixture("backward-relaxed");
+        EventSchemaRegistry registry = fixtureRegistry("backward-relaxed");
+
+        assertNoProblems(checker.manifestProblems());
+        assertNoProblems(checker.catalogProblems(registry.catalog()));
+        List<String> problems = checker.sampleProblems(registry);
+
+        Assertions.assertEquals(1, problems.size(), problems::toString);
+        Assertions.assertTrue(problems.get(0).startsWith("order.paid v2 is marked BACKWARD but v1 rejects "),
+                problems::toString);
+        Assertions.assertTrue(problems.get(0).contains("order.paid/v2/sample.json"), problems::toString);
+        Assertions.assertTrue(problems.get(0).contains("quantity"), problems::toString);
     }
 
 

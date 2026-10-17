@@ -30,14 +30,17 @@ public record EventSchemaCatalog(String envelopePath, Map<String, EventTypeContr
         INITIAL,
 
         /**
-         * Only adds optional properties (or relaxes a constraint): it accepts every event of the versions before it,
-         * back to the last {@link #BREAKING} one, so producers may move to it before consumers know it.
+         * Only adds optional properties. It is compatible both ways with the versions before it, back to the last
+         * {@link #BREAKING} one: it accepts their events, and they accept its events (the schemas are open), so
+         * producers may move to it before consumers know it, since a consumer checks an event of a version it does not
+         * know against the latest version it knows. A relaxed constraint (a lower minimum, a wider enum) is not
+         * BACKWARD: older consumers would reject the events it newly allows.
          */
         BACKWARD,
 
         /**
-         * A new major version (a removed, renamed or newly required property, a changed type or meaning). Consumers
-         * must accept it and the version before it before any producer writes it.
+         * A new major version (a removed, renamed or newly required property, a changed type or meaning, a relaxed
+         * constraint). Consumers must accept it and the version before it before any producer writes it.
          */
         BREAKING
     }

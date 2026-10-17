@@ -106,7 +106,9 @@ public final class EventSchemaRegistry {
      *     <li>a published event type and version: against that version's schema, and the type must belong to the
      *     topic;</li>
      *     <li>a version newer than any this instance knows: against the latest known version. Schemas are open and a
-     *     BACKWARD version only adds optional properties, so such an event passes unless it broke the contract;</li>
+     *     BACKWARD version only adds optional properties (EventSchemaContractTests checks that the versions before it
+     *     accept its sample events), so such an event passes unless it broke the contract. A BREAKING version fails
+     *     here, which is why consumers learn it before producers write it;</li>
      *     <li>a version older than the oldest one still listed: rejected;</li>
      *     <li>an unknown event type: against the envelope only, so a consumer can skip a type it does not handle.</li>
      * </ul>

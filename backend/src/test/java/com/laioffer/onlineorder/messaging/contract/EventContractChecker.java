@@ -46,7 +46,9 @@ import java.util.regex.Pattern;
  *     draft 2020-12 schema, and the version before the last BREAKING version of a type is still listed (consumers
  *     accept N and N-1);</li>
  *     <li>{@link #sampleProblems}: every listed version has sample events, every sample is valid for its own version,
- *     and a BACKWARD version accepts every sample of the versions before it, back to the last BREAKING one.</li>
+ *     and a BACKWARD version is compatible both ways with every version before it, back to the last BREAKING one: it
+ *     accepts their samples (a new consumer reads old events), and they accept its samples (a consumer that does not
+ *     know it yet checks its events against the latest version it knows, so producers may switch first).</li>
  * </ul>
  */
 final class EventContractChecker {
@@ -176,8 +178,17 @@ final class EventContractChecker {
 
 
     /**
-     * A BACKWARD version must accept every sample of every earlier version back to (and including) the last BREAKING
-     * one, or the oldest listed version.
+     * A BACKWARD version must be compatible both ways with every earlier version back to (and including) the last
+     * BREAKING one, or the oldest listed version:
+     * <ul>
+     *     <li>it accepts every sample of those versions: a consumer that knows it reads the events of the older ones
+     *     (outbox backlog, stored dead letters);</li>
+     *     <li>each of those versions accepts every sample of it: a consumer that does not know it yet validates its
+     *     events against the latest version it knows ({@link EventSchemaRegistry#validate(EventTopic, JsonNode)}), so
+     *     an event that only a relaxed constraint lets through would go to the DLT without retries there.</li>
+     * </ul>
+     * Adding an optional property passes both (the schemas are open); relaxing a constraint, such as a lower minimum or
+     * a wider enum, fails the second and has to be published as BREAKING (consumers first).
      */
     private List<String> backwardProblems(
             EventSchemaRegistry registry,
@@ -198,6 +209,22 @@ final class EventContractChecker {
                     problems.add(contract.eventType() + " v" + version + " is marked BACKWARD but rejects "
                             + sample.getKey() + " (a v" + earlier.getKey() + " event): " + violations + ". A compatible"
                             + " version may only add optional properties; publish a breaking change as BREAKING");
+                }
+            }
+        }
+        Map<String, JsonNode> ofVersion = byVersion.getOrDefault(version, Map.of());
+        for (int earlier = from; earlier < version; earlier++) {
+            if (!contract.versions().containsKey(earlier)) {
+                continue;
+            }
+            for (Map.Entry<String, JsonNode> sample : ofVersion.entrySet()) {
+                List<String> violations = registry.validate(contract.eventType(), earlier, sample.getValue());
+                if (!violations.isEmpty()) {
+                    problems.add(contract.eventType() + " v" + version + " is marked BACKWARD but v" + earlier
+                            + " rejects " + sample.getKey() + ": " + violations + ". A consumer that only knows v"
+                            + earlier + " checks v" + version + " events against v" + earlier + " and would dead-letter"
+                            + " this one. A compatible version may only add optional properties; a relaxed constraint"
+                            + " is BREAKING (consumers first)");
                 }
             }
         }

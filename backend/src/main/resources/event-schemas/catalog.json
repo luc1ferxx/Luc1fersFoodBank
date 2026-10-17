@@ -1,5 +1,5 @@
 {
-  "description": "Index of the published event contracts (README \"Event contracts\"). Every event type lists its topic and its schema versions, event-schemas/<topic>/<event_type>/v<N>.json, each marked INITIAL (the first version), BACKWARD (only adds optional properties: it accepts every event of the versions before it, back to the last BREAKING one) or BREAKING (a new major version: consumers accept it and the version before it). Published schema files never change (SHA256SUMS); this index and SHA256SUMS only grow.",
+  "description": "Index of the published event contracts (README \"Event contracts\"). Every event type lists its topic and its schema versions, event-schemas/<topic>/<event_type>/v<N>.json, each marked INITIAL (the first version), BACKWARD (only adds optional properties: compatible both ways with the versions before it, back to the last BREAKING one, so producers may switch first) or BREAKING (a new major version, a relaxed constraint included: consumers accept it and the version before it, and ship first). Published schema files never change (SHA256SUMS); this index and SHA256SUMS only grow.",
   "envelope": "common/envelope/v1.json",
   "event_types": {
     "order.created": {

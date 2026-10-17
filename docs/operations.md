@@ -557,6 +557,8 @@ curl -sf -X POST "$REGISTRY/apis/registry/v3/groups/onlineorder/artifacts" -H 'C
 ```
 
 Publish `common/` first (the event schemas `$ref` it; register it as a reference) and set the subject's compatibility
-to `BACKWARD` (Confluent) or the `COMPATIBILITY` rule (Apicurio), so the registry enforces the same rule as
-`EventSchemaContractTests`. Records stay plain JSON without a registry schema id, so consumers keep working whether or
+to `FULL_TRANSITIVE` (Confluent) or the `COMPATIBILITY` rule `FULL_TRANSITIVE` (Apicurio): a `BACKWARD` version here is
+compatible both ways with the earlier versions of its major line, as `EventSchemaContractTests` checks. A `BREAKING`
+version starts a new major line, so register it under a new subject (`order-events-order.paid-v2`) instead of
+loosening the rule. Records stay plain JSON without a registry schema id, so consumers keep working whether or
 not a registry is there.
