@@ -28,7 +28,8 @@ import java.util.function.Supplier;
  *     <li>creates the partitions of the current month and of the next app.partitions.months-ahead months (default 3),
  *     so inserts never fall into the DEFAULT partition. Rows that did land there for a month that now gets its
  *     partition are moved into it in the same transaction (PostgreSQL refuses to create a partition whose rows sit in
- *     the default partition);</li>
+ *     the default partition), with one DELETE ... RETURNING / INSERT statement while writers of the table wait, so a
+ *     row written meanwhile is neither lost nor left behind;</li>
  *     <li>gives every processed_events partition its UNIQUE (consumer_name, dedup_key) index, also one created by
  *     hand;</li>
  *     <li>when app.cleanup.enabled, drops whole partitions whose upper bound is older than the table's retention
@@ -39,9 +40,11 @@ import java.util.function.Supplier;
  *
  * <p>Several instances run the job. Each DDL step runs in its own transaction that first takes
  * {@code pg_try_advisory_xact_lock(namespace, hashtext(table))}: an instance that does not get it skips the table
- * until the next run, and every step re-reads the catalog under the lock, so steps are idempotent. DDL takes an ACCESS
- * EXCLUSIVE lock on the parent table for a moment; a {@code lock_timeout} (app.partitions.lock-timeout) makes the step
- * give up instead of queueing every insert behind a long-running query, and the next run retries. On H2 nothing is
+ * until the next run, and every step re-reads the catalog under the lock, so steps are idempotent. A DDL step takes
+ * the table locks it needs before any DDL, in the order application transactions take them (see lockForDdl): ACCESS
+ * EXCLUSIVE on the parent table and its default partition for a moment (for a move, while the rows move); a
+ * {@code lock_timeout} (app.partitions.lock-timeout) makes the step give up instead of queueing every insert behind a
+ * long-running query, and the next run retries. On H2 nothing is
  * partitioned and the job does nothing; MaintenanceCleanupService deletes rows there.
  *
  * <p>Meters: {@code onlineorder.partitions.created}, {@code onlineorder.partitions.dropped} and
@@ -187,16 +190,18 @@ public class PartitionMaintenanceService {
         String bounds = "FOR VALUES FROM ('" + from.toLocalDate() + " 00:00:00') TO ('" + to.toLocalDate()
                 + " 00:00:00')";
         Optional<TablePartition> defaultPartition = partitions.stream().filter(TablePartition::isDefault).findFirst();
+        lockForDdl(table, defaultPartition, true);
         if (defaultPartition.isPresent() && defaultHasRowsIn(table, defaultPartition.get().name(), from, to)) {
             // PostgreSQL refuses CREATE ... PARTITION OF while the default partition holds rows of the new range:
-            // build the partition as a plain table, move those rows over, then attach it.
+            // build the partition as a plain table, move those rows over, then attach it. Nobody can write to the
+            // table until this transaction ends (lockForDdl), so no row of the month can reach the default partition
+            // after the move; the move is one statement besides, so a row is never deleted without being copied.
             String defaultName = defaultPartition.get().name();
-            String range = table.partitionColumn() + " >= ? AND " + table.partitionColumn() + " < ?";
             jdbcTemplate.execute("CREATE TABLE " + name + " (LIKE " + table.tableName()
                     + " INCLUDING DEFAULTS INCLUDING CONSTRAINTS)");
-            int moved = jdbcTemplate.update("INSERT INTO " + name + " SELECT * FROM " + defaultName + " WHERE " + range,
-                    Timestamp.valueOf(from), Timestamp.valueOf(to));
-            jdbcTemplate.update("DELETE FROM " + defaultName + " WHERE " + range,
+            int moved = jdbcTemplate.update("WITH moved AS (DELETE FROM " + defaultName + " WHERE "
+                            + table.partitionColumn() + " >= ? AND " + table.partitionColumn() + " < ? RETURNING *) "
+                            + "INSERT INTO " + name + " SELECT * FROM moved",
                     Timestamp.valueOf(from), Timestamp.valueOf(to));
             jdbcTemplate.execute("ALTER TABLE " + table.tableName() + " ATTACH PARTITION " + name + " " + bounds);
             LOGGER.warn("Created partition {} and moved {} row(s) of its month out of {}", name, moved, defaultName);
@@ -235,7 +240,8 @@ public class PartitionMaintenanceService {
      * Drops the partition if it still exists and still ends at or before {@code cutoff} (re-read under the lock).
      */
     private boolean dropPartition(PartitionedTable table, String name, LocalDateTime cutoff) {
-        boolean expired = catalog.partitions(table).stream()
+        List<TablePartition> partitions = catalog.partitions(table);
+        boolean expired = partitions.stream()
                 .anyMatch(partition -> partition.name().equals(name)
                         && !partition.isDefault()
                         && partition.to() != null
@@ -243,6 +249,7 @@ public class PartitionMaintenanceService {
         if (!expired) {
             return false;
         }
+        lockForDdl(table, partitions.stream().filter(TablePartition::isDefault).findFirst(), false);
         jdbcTemplate.execute("DROP TABLE " + name);
         meterRegistry.counter("onlineorder.partitions.dropped", "table", table.tableName()).increment();
         LOGGER.info("Dropped partition {}: every row in it is older than the retention", name);
@@ -272,6 +279,44 @@ public class PartitionMaintenanceService {
         if (purged > 0) {
             LOGGER.info("Deleted {} expired row(s) from {}", purged, defaultName);
         }
+    }
+
+
+    /**
+     * Takes, up front and in the order the application's transactions take them, every table lock that creating,
+     * attaching or dropping a partition of {@code table} needs, so that the DDL never waits for a lock while holding
+     * one an application transaction waits for (a deadlock):
+     * <ol>
+     *     <li>for a new partition, SHARE ROW EXCLUSIVE on each table a foreign key of {@code table} references
+     *     (order_status_history: orders), which PostgreSQL takes to give the partition the foreign key. The
+     *     application writes an order before its history row; taking orders last would deadlock with a status change
+     *     that has updated the order and waits to insert its history row;</li>
+     *     <li>ACCESS EXCLUSIVE on the partitioned table alone ({@code ONLY}). Writers wait before they pick a
+     *     partition, so after the commit they route into the new layout, and none is caught between the old and the
+     *     new one. Readers of the table wait as well, as they do for CREATE ... PARTITION OF and DROP;</li>
+     *     <li>ACCESS EXCLUSIVE on the default partition, which ATTACH, CREATE ... PARTITION OF and DROP of a partition
+     *     need to re-check or change its range. It also keeps writes addressed to the default partition by name out
+     *     during a move.</li>
+     * </ol>
+     * Each wait is bounded by app.partitions.lock-timeout; a step that times out fails and the next run retries it.
+     */
+    private void lockForDdl(PartitionedTable table, Optional<TablePartition> defaultPartition, boolean newPartition) {
+        if (newPartition) {
+            List<String> referenced = jdbcTemplate.queryForList("""
+                    SELECT DISTINCT confrelid::regclass::text
+                    FROM pg_constraint
+                    WHERE conrelid = to_regclass(?)
+                      AND contype = 'f'
+                      AND confrelid <> conrelid
+                    ORDER BY 1
+                    """, String.class, table.tableName());
+            for (String referencedTable : referenced) {
+                jdbcTemplate.execute("LOCK TABLE " + referencedTable + " IN SHARE ROW EXCLUSIVE MODE");
+            }
+        }
+        jdbcTemplate.execute("LOCK TABLE ONLY " + table.tableName() + " IN ACCESS EXCLUSIVE MODE");
+        defaultPartition.ifPresent(partition ->
+                jdbcTemplate.execute("LOCK TABLE " + partition.name() + " IN ACCESS EXCLUSIVE MODE"));
     }
 
 

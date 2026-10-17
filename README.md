@@ -712,9 +712,10 @@ The test suite covers:
   (`OrderLifecycleCommandsTests`, `FulfilmentPostgresIntegrationTests`), the audit log of admin and staff actions
   (`AuditLogIntegrationTests`, `StaffAuditIntegrationTests`), and `DELETE /cart` (`CartClearIntegrationTests`)
 - the data tier: upgrading a populated V8 database to monthly partitions and numbered orders on PostgreSQL and H2
-  (`ScaleMigration*Tests`), partition creation, row moves out of the default partition, retention drops, the
-  maintenance lock and metrics (`PartitionMaintenancePostgresIntegrationTests`), deduplication across partitions under
-  concurrency (`ProcessedEventDedupAcrossPartitionsPostgresTests`), the Snowflake generator's uniqueness, monotonicity,
+  (`ScaleMigration*Tests`), partition creation, row moves out of the default partition (also with a writer racing the
+  move), the lock order against a status change, retention drops, the maintenance lock and metrics
+  (`PartitionMaintenancePostgresIntegrationTests`), deduplication across partitions under concurrency, including two
+  marks of one key racing into different months (`ProcessedEventDedupAcrossPartitionsPostgresTests`), the Snowflake generator's uniqueness, monotonicity,
   clock steps and worker-id bounds (`SnowflakeIdGeneratorTests`), leased worker ids with takeovers and clock skew
   (`WorkerIdLeasePostgresTests`), and order numbers through checkout and notifications (`OrderNumber*IntegrationTests`)
 

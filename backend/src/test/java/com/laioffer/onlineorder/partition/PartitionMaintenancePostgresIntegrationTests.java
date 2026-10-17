@@ -25,6 +25,10 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 
@@ -153,6 +157,94 @@ class PartitionMaintenancePostgresIntegrationTests {
                 VALUES ('move-consumer', 'move-key', 'order.paid', ?)
                 ON CONFLICT DO NOTHING
                 """, Timestamp.valueOf(fiveYearsAhead.plusDays(1))));
+    }
+
+
+    @Test
+    void maintain_shouldKeepARowWrittenWhileItMovesRowsOutOfTheDefaultPartition() throws Exception {
+        LocalDateTime twentyYearsAhead = LocalDateTime.now().plusYears(20).withDayOfMonth(10);
+        String partition = PartitionedTable.PROCESSED_EVENTS.partitionName(twentyYearsAhead.toLocalDate());
+        insertProcessedEvent("move-race", "before-move", twentyYearsAhead);
+        ExecutorService writer = Executors.newSingleThreadExecutor();
+        AtomicReference<Future<Integer>> concurrentInsert = new AtomicReference<>();
+        // The job's own statements, with a pause right after the one that fills the new partition: there another
+        // transaction writes a row of the same month (a consumer marking an event while the job catches up).
+        JdbcTemplate pausing = new JdbcTemplate(jdbcTemplate.getDataSource()) {
+            @Override
+            public int update(String sql, Object... args) {
+                int result = super.update(sql, args);
+                if (sql.contains("INSERT INTO " + partition) && concurrentInsert.get() == null) {
+                    concurrentInsert.set(writer.submit(() -> jdbcTemplate.update("""
+                            INSERT INTO processed_events (consumer_name, event_id, dedup_key, event_type, processed_at)
+                            VALUES ('move-race', 'concurrent', 'concurrent', 'order.paid', ?)
+                            """, Timestamp.valueOf(twentyYearsAhead.plusDays(1)))));
+                    awaitDoneOrWaitingForALock(this, concurrentInsert.get(), "processed_events",
+                            "processed_events_default");
+                }
+                return result;
+            }
+        };
+        MeterRegistry registry = new SimpleMeterRegistry();
+        try {
+            new PartitionMaintenanceService(true, false, 3, Duration.ofSeconds(5), Duration.ofDays(14),
+                    Duration.ZERO, Duration.ZERO, 1000, catalog, pausing, transactionManager, registry)
+                    .maintainPartitions(twentyYearsAhead.minusMonths(1));
+
+            Assertions.assertNotNull(concurrentInsert.get(), "the job moved rows");
+            Assertions.assertEquals(1, concurrentInsert.get().get(30, TimeUnit.SECONDS),
+                    "the concurrent insert waits for the move and then succeeds");
+        } finally {
+            writer.shutdownNow();
+        }
+
+        Assertions.assertEquals(0.0, registry.counter("onlineorder.partitions.maintenance.failures", "table",
+                "processed_events").count());
+        Assertions.assertEquals(List.of("before-move", "concurrent"), jdbcTemplate.queryForList(
+                "SELECT dedup_key FROM processed_events WHERE consumer_name = 'move-race' ORDER BY dedup_key",
+                String.class), "no row is lost");
+        Assertions.assertEquals(partition, partitionOf("before-move"));
+        Assertions.assertEquals(partition, partitionOf("concurrent"));
+    }
+
+
+    @Test
+    void maintain_shouldNotDeadlockWithAStatusChangeThatHasUpdatedItsOrder() throws Exception {
+        LocalDateTime twentyTwoYearsAhead = LocalDateTime.now().plusYears(22);
+        String partition = PartitionedTable.ORDER_STATUS_HISTORY.partitionName(twentyTwoYearsAhead.toLocalDate());
+        long orderId = insertOrder(LocalDateTime.now());
+        MeterRegistry registry = new SimpleMeterRegistry();
+        ExecutorService job = Executors.newSingleThreadExecutor();
+        try (Connection statusChange = dataSource.getConnection()) {
+            statusChange.setAutoCommit(false);
+            // A status change writes the order first ...
+            try (PreparedStatement update = statusChange.prepareStatement(
+                    "UPDATE orders SET status = 'PAID' WHERE id = ?")) {
+                update.setLong(1, orderId);
+                update.executeUpdate();
+            }
+            Future<?> run = job.submit(() -> withoutCleanup(registry).maintainPartitions(twentyTwoYearsAhead));
+            // The new partition needs the foreign key to orders: the job waits for the status change.
+            awaitDoneOrWaitingForALock(jdbcTemplate, run, "orders");
+            Assertions.assertFalse(run.isDone());
+            // ... then its history row, which must not wait for the job.
+            try (PreparedStatement history = statusChange.prepareStatement("""
+                    INSERT INTO order_status_history (order_id, from_status, to_status, actor_type, occurred_at)
+                    VALUES (?, 'PLACED', 'PAID', 'SYSTEM', LOCALTIMESTAMP)
+                    """)) {
+                history.setLong(1, orderId);
+                history.executeUpdate();
+            }
+            statusChange.commit();
+            run.get(30, TimeUnit.SECONDS);
+        } finally {
+            job.shutdownNow();
+        }
+
+        Assertions.assertEquals(0.0, registry.counter("onlineorder.partitions.maintenance.failures", "table",
+                "order_status_history").count(), "no deadlock");
+        Assertions.assertTrue(catalog.relationExists(partition));
+        Assertions.assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM order_status_history WHERE order_id = ?", Integer.class, orderId));
     }
 
 
@@ -297,6 +389,35 @@ class PartitionMaintenancePostgresIntegrationTests {
         Assertions.assertEquals(defaultRows + 1, registry.get("onlineorder.partitions.default_rows")
                 .tag("table", "audit_log").gauge().value());
         jdbcTemplate.update("DELETE FROM audit_log WHERE action = 'metrics.test'");
+    }
+
+
+    /**
+     * Waits until {@code work} has finished or a lock request on one of {@code relations} is waiting.
+     */
+    private static void awaitDoneOrWaitingForALock(JdbcTemplate jdbc, Future<?> work, String... relations) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        while (!work.isDone()) {
+            Boolean waiting = jdbc.queryForObject("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM pg_locks
+                        WHERE NOT granted
+                          AND relation = ANY (CAST(? AS regclass[]))
+                    )
+                    """, Boolean.class, "{" + String.join(",", relations) + "}");
+            if (Boolean.TRUE.equals(waiting)) {
+                return;
+            }
+            if (System.nanoTime() > deadline) {
+                throw new IllegalStateException("neither done nor waiting for a lock on " + List.of(relations));
+            }
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(ex);
+            }
+        }
     }
 
 

@@ -529,7 +529,8 @@ partition column:
   second delivery waits for the first transaction and then sees its row, as with a unique index. Each partition also
   has `UNIQUE (consumer_name, dedup_key)` (`<partition>_dedup_key`), which serves that lookup and rejects a duplicate
   within a month at the database level. `ProcessedEventDedupAcrossPartitionsPostgresTests` covers replays across
-  months, concurrent deliveries, waiting and rollback.
+  months, concurrent deliveries (also two that fall into different months, which only the advisory lock keeps apart),
+  waiting and rollback.
 - Queries that do not filter on the partition column probe every partition. `GET /orders/{id}/history` filters on the
   order's creation time (minus a day of clock skew), so it skips the months before the order.
 
@@ -539,9 +540,13 @@ skip. It keeps the current month and `PARTITIONS_MONTHS_AHEAD` (3, at least 2) m
 sit in the default partition into a new month's partition; gives every `processed_events` partition its dedup index;
 and, when `CLEANUP_ENABLED=true`, drops every partition whose upper bound is older than the table's retention and
 deletes expired rows from the default partition in batches. A row is kept for at least its retention and at most a
-month longer. Creating or dropping a partition locks the parent table for a moment (for `order_status_history` also
-`orders`, which its foreign key references); `PARTITIONS_LOCK_TIMEOUT` (5s) makes the step give up instead of
-queueing every insert behind a long-running query, and the next run retries.
+month longer. Creating or dropping a partition takes its table locks before any DDL, in the order the application
+takes them: for a new `order_status_history` partition first `orders` (SHARE ROW EXCLUSIVE, for the foreign key),
+then the parent table alone and its default partition (ACCESS EXCLUSIVE). Reads and writes of the table wait for a
+moment; when rows move out of the default partition they wait until the move commits, then go to the new partition,
+so a row written meanwhile is neither lost nor left in the default partition, and the job cannot deadlock with a
+status change that holds its order. `PARTITIONS_LOCK_TIMEOUT` (5s) makes the step give up instead of queueing every
+insert behind a long-running query, and the next run retries.
 `MaintenanceCleanupService` skips the partitioned tables. Turning `PARTITIONS_MAINTENANCE_ENABLED` off also stops
 retention for them.
 
@@ -561,10 +566,27 @@ Alerts and what to do:
 
 - `OnlineOrderPartitionDefaultRows`: rows outside every partition, usually from a wrong clock (far past or future) or
   a month the job missed. The job moves them when it creates their month; rows of a month it will not create (the
-  past) stay until the retention deletes them. To give a past month its partition by hand, do what the job does: in
-  one transaction `CREATE TABLE <partition> (LIKE <table> INCLUDING DEFAULTS INCLUDING CONSTRAINTS)`, copy the month's
-  rows from `<table>_default`, delete them there, then `ALTER TABLE <table> ATTACH PARTITION <partition> FOR VALUES
-  FROM (...) TO (...)`.
+  past) stay until the retention deletes them. To give a past month its partition by hand, do what the job does, in
+  one transaction and in this order (a copy followed by a separate delete, without the locks, deletes rows that other
+  transactions commit in between):
+
+  ```sql
+  BEGIN;
+  SET LOCAL lock_timeout = '5s';
+  LOCK TABLE orders IN SHARE ROW EXCLUSIVE MODE;          -- order_status_history only
+  LOCK TABLE ONLY audit_log IN ACCESS EXCLUSIVE MODE;
+  LOCK TABLE audit_log_default IN ACCESS EXCLUSIVE MODE;
+  CREATE TABLE audit_log_p2026_01 (LIKE audit_log INCLUDING DEFAULTS INCLUDING CONSTRAINTS);
+  WITH moved AS (
+      DELETE FROM audit_log_default
+      WHERE occurred_at >= '2026-01-01 00:00:00' AND occurred_at < '2026-02-01 00:00:00'
+      RETURNING *
+  )
+  INSERT INTO audit_log_p2026_01 SELECT * FROM moved;
+  ALTER TABLE audit_log ATTACH PARTITION audit_log_p2026_01
+      FOR VALUES FROM ('2026-01-01 00:00:00') TO ('2026-02-01 00:00:00');
+  COMMIT;
+  ```
 
 Rollout and large tables: V10 copies the three tables inside Flyway's transaction and holds an ACCESS EXCLUSIVE lock
 on each until the migration commits, so checkouts, status changes and consumers wait for it. Measured on PostgreSQL 16
