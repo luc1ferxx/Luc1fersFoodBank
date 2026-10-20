@@ -28,6 +28,38 @@ public interface OrderRepository extends ListCrudRepository<OrderEntity, Long> {
     Optional<OrderEntity> findByIdAndCustomerId(Long id, Long customerId);
 
     /**
+     * The customer's orders that can get an after-sales request now, latest completed first (ADR 0002 sections 6, 20
+     * and D16): COMPLETED since {@code completedSince} (orders.updated_at is the completion time), with a restaurant
+     * and a captured payment, and without a customer request other than a withdrawn first one. The open command checks
+     * the same rules under the order's row lock.
+     */
+    @Query("""
+            SELECT *
+            FROM orders
+            WHERE customer_id = :customerId
+              AND status = 'COMPLETED'
+              AND restaurant_id IS NOT NULL
+              AND updated_at >= :completedSince
+              AND EXISTS (
+                  SELECT 1
+                  FROM order_payments
+                  WHERE order_payments.order_id = orders.id
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM after_sales_cases
+                  WHERE after_sales_cases.order_id = orders.id
+                    AND after_sales_cases.kind = 'CUSTOMER_REQUEST'
+                    AND NOT (after_sales_cases.attempt_no = 1
+                        AND after_sales_cases.status = 'CLOSED'
+                        AND after_sales_cases.close_reason = 'WITHDRAWN')
+              )
+            ORDER BY updated_at DESC, id DESC
+            LIMIT :limit
+            """)
+    List<OrderEntity> findPageOpenToAfterSales(Long customerId, LocalDateTime completedSince, int limit);
+
+    /**
      * @return the public order number of the order; empty when there is no such order
      */
     @Query("""

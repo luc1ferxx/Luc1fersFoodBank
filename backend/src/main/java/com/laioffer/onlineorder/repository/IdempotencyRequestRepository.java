@@ -73,6 +73,21 @@ public interface IdempotencyRequestRepository extends ListCrudRepository<Idempot
     void markSucceeded(Long id, String status, Long orderId, LocalDateTime updatedAt);
 
 
+    /**
+     * Marks an after-sales request done, bound to the case it opened or changed: its replays answer with that case.
+     */
+    @Modifying
+    @Query("""
+            UPDATE idempotency_requests
+            SET status = :status,
+                order_id = :orderId,
+                case_id = :caseId,
+                updated_at = :updatedAt
+            WHERE id = :id
+            """)
+    void markSucceededWithCase(Long id, String status, Long orderId, Long caseId, LocalDateTime updatedAt);
+
+
     @Modifying
     @Query("""
             DELETE FROM idempotency_requests
