@@ -1538,3 +1538,29 @@ P1 只加测试，全量门禁通过（873 个测试，0 失败，0 跳过）。
 6. **竞态测试改成强制串行顺序。** 竞态测试用 `T/PostgresRowLocks.java` 先持有订单行锁，按固定顺序让两个命令排队，再放锁，每轮交替顺序，所以两种结局每次都会跑到。它依赖连接池的 `lock_timeout`（3000 ms，`application.yml`）。
 7. **骑手负载递减有下限保护。** `RiderRepository.decrementLoad` 带 `AND active_deliveries > 0`，重复释放会被截在 0。负载总和断言（`assertEveryRiderLoadMatchesTheirOpenDeliveries`）能发现重复释放，P2 不能删这个断言。
 8. **13.2、13.3、14 节的行号已漂移**，以 `grep` 为准。
+
+---
+
+## 22. P2 实施记录（提交 7d1204a、64fc095、292e931、d804199；P3 开始前必读）
+
+对抗审查结论：通过，没有必须修复的问题。每个生产调用方都自己传入触发器和允许的 actor；与 P2 之前（cbdab99）的代码逐个分支对比，409 的错误码和文案、no-op 结果、历史原因、cancel_reason、事件、审计、幂等行、骑手负载和 tombstone 都保持一致。P1 测试只做了允许范围内的调整：`save`、`updateStatus`、`updateRider` 换成 CAS 方法，原有的顺序断言和"不写库"断言都保留。
+
+**与前文的偏差**
+1. `OrderTrigger`、`OrderTransitionContext` 和 `OrderStateMachine` 都放在 `com.laioffer.onlineorder.model`，没有按 4.1 标题放在 service 包。私有的 `cancelReasonCode` 移到了 `OrderTransitionContext.cancelReasonCode`（public static）。
+2. `restaurantTrigger` 和 `timeoutTrigger` 在加锁**之前**选定触发器：在同一族（`MERCHANT_*` 或 `*_TIMEOUT`）里取第一个 from 集合和目标都匹配的。三种商家命令以外的组合，以及 PLACED、PAID 以外的等待状态，直接抛 `IllegalArgumentException`，不加锁。旧代码会接受任何合法边，但没有调用方会传这些参数。
+3. `decide()` 最先检查 actor：表里不允许的 actor 会得到 `IllegalStateException`（500），例如用 CUSTOMER 调 `transitionRestaurantOrder`。生产代码里没有这种调用。
+4. 配送用 `DeliveryStateMachine.advanceTrigger` 把目标状态映射成触发器；目标不是 PICKED_UP 或 DELIVERED 时，在加锁之后、写入之前抛 `IllegalArgumentException`。
+5. CAS 失败的文案：`"Compare-and-set of <aggregate> <id> from <expected> changed <rows> rows instead of 1"`；配送的 expected 写成 `"<from> with rider <riderId>"`。
+6. 新增两个 PostgreSQL 级 CAS 测试：订单 `orderCompareAndSet_shouldOnlyChangeARowThatIsStillInTheExpectedStatus`，配送一个对应的。只有它们在真实数据库上验证了 0 行的情况。
+7. "上下文里恰好一个 `TaskScheduler`"的断言在 `FulfilmentFlowContainerTests` 里。它需要 Docker，没有 Docker 的机器上会被跳过；CI 有 Docker。
+8. `OrderStatus.CHECKOUT_INITIAL_STATES` 改为包级可见的不可变集合，供测试断言它等于 `DEFINITION.initialStates()`。
+
+**P3 需要知道的**
+- 处理 `Decision` 用 `instanceof` 模式匹配（`Decision.Apply` / `AlreadyDone` / `Rejected`），不要用 switch 模式匹配。`decide()` 的顺序是 actor → alreadyDoneWhen → from 状态 → 守卫。
+- 机器定义是 `static final DEFINITION`，集合都是不可变副本；`canMove` 和 `targets` 不包含 stay 转换和 from 为空的转换。
+- **包循环**：`model.OrderStateMachine` 引用 `fulfilment.order.OrderActor`，而 `fulfilment.order.OrderLifecycleCommands` 本来就引用 `model`。售后状态机放在 `aftersales` 包，不要加深这个循环；以后可以考虑把 `OrderActor` 移到中立的包。
+- P3 要扩展 `OrderLifecycleCommands`。届时在它的 Javadoc 里写清楚状态机在运行时强制的规则（每个方法允许的 actor 和状态），审查指出现在没写。
+- 留给后续的小问题：
+  - `completeDeliveredOrder` 忽略了第一步的 `TransitionOutcome`。如果将来声明变化导致 `DELIVERY_PREPARE` 被拒，第二步会拿到旧订单。
+  - `firingOnlyFrom` 在同一族里出现两个 from 和目标都相同的触发器时会有歧义。
+  - `DispatchService` 里 `from.holdsRider()` 为假的分支不可达，是一个永久的 JaCoCo 未覆盖分支。
