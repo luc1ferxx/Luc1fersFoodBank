@@ -8,6 +8,7 @@ import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.fulfilment.dispatch.DeliveryAdminService;
 import com.laioffer.onlineorder.fulfilment.dispatch.DeliveryDto;
+import com.laioffer.onlineorder.fulfilment.dispatch.DeliveryRepository;
 import com.laioffer.onlineorder.fulfilment.dispatch.DispatchService;
 import com.laioffer.onlineorder.fulfilment.dispatch.RiderService;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantInboxService;
@@ -150,6 +151,9 @@ class FulfilmentPostgresIntegrationTests {
 
     @Autowired
     private DeliveryAdminService deliveryAdminService;
+
+    @Autowired
+    private DeliveryRepository deliveryRepository;
 
     @Autowired
     private OrderService orderService;
@@ -1024,6 +1028,43 @@ class FulfilmentPostgresIntegrationTests {
         Assertions.assertEquals(stillAssigned.cancelled(cancelledBeforeThePickUp.updatedAt()), cancelledBeforeThePickUp);
         Assertions.assertNull(cancelledBeforeThePickUp.pickedUpAt());
         assertUpdatedAtOnlyMovesForward(List.of(stillAssigned, cancelledBeforeThePickUp));
+        assertEveryRiderLoadMatchesTheirOpenDeliveries();
+    }
+
+
+    /**
+     * ADR 0002 section 4.2 on the stored row: the compare-and-set writes change a delivery only while it still has the
+     * status and rider the caller read under the lock. A write from a stale read changes nothing and returns 0, which
+     * DispatchService turns into a rolled-back StaleTransitionException.
+     */
+    @Test
+    void deliveryCompareAndSet_shouldOnlyChangeARowThatStillHasTheExpectedStatusAndRider() {
+        Long aliceId = riderIdOf(ALICE_RIDER);
+        Long bobId = riderIdOf(BOB_RIDER);
+        Long deliveryId = dispatchTo(paidOrderAt("Burger King"), aliceId);
+        DeliveryTimes assigned = deliveryTimes(deliveryId);
+        LocalDateTime now = LocalDateTime.now();
+
+        Assertions.assertEquals(0, deliveryRepository.compareAndSetStatus(
+                deliveryId, "PICKED_UP", aliceId, "DELIVERED", assigned.assignedAt(), now, null, now),
+                "another status");
+        Assertions.assertEquals(0, deliveryRepository.compareAndSetStatus(
+                deliveryId, "ASSIGNED", bobId, "PICKED_UP", now, null, null, now),
+                "another rider");
+        Assertions.assertEquals(0, deliveryRepository.compareAndSetRider(deliveryId, bobId, aliceId, now),
+                "another rider");
+        Assertions.assertEquals("ASSIGNED|" + aliceId, deliveryState(deliveryId));
+        Assertions.assertEquals(assigned, deliveryTimes(deliveryId));
+
+        // Through the service each write changes exactly one row (it throws otherwise).
+        dispatchService.markPickedUp(deliveryId);
+        dispatchService.markDelivered(deliveryId);
+        DeliveryTimes delivered = deliveryTimes(deliveryId);
+
+        Assertions.assertEquals(0, deliveryRepository.compareAndSetRider(deliveryId, aliceId, bobId, now),
+                "a finished delivery keeps its rider");
+        Assertions.assertEquals("DELIVERED|" + aliceId, deliveryState(deliveryId));
+        Assertions.assertEquals(delivered, deliveryTimes(deliveryId));
         assertEveryRiderLoadMatchesTheirOpenDeliveries();
     }
 

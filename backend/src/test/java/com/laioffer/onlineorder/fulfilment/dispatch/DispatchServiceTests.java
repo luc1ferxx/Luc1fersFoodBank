@@ -10,12 +10,14 @@ import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
+import com.laioffer.onlineorder.statemachine.StaleTransitionException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
@@ -211,11 +213,15 @@ class DispatchServiceTests {
         openDispatchOrder();
         Mockito.when(deliveryRepository.lockByOrderId(ORDER_ID)).thenReturn(delivery(7L, "ASSIGNED"));
         Mockito.when(riderRepository.findById(3L)).thenReturn(Optional.of(rider(3L, "Alice")));
+        Mockito.when(deliveryRepository.compareAndSetStatus(
+                Mockito.eq(7L), Mockito.eq("ASSIGNED"), Mockito.eq(3L), Mockito.eq("CANCELLED"),
+                Mockito.isNull(), Mockito.isNull(), Mockito.any(), Mockito.any())).thenReturn(1);
 
         service.handle(cancelled);
 
-        Mockito.verify(deliveryRepository).updateStatus(
-                Mockito.eq(7L), Mockito.eq("CANCELLED"), Mockito.isNull(), Mockito.isNull(), Mockito.any(), Mockito.any());
+        Mockito.verify(deliveryRepository).compareAndSetStatus(
+                Mockito.eq(7L), Mockito.eq("ASSIGNED"), Mockito.eq(3L), Mockito.eq("CANCELLED"),
+                Mockito.isNull(), Mockito.isNull(), Mockito.any(), Mockito.any());
         Mockito.verify(riderRepository).decrementLoad(Mockito.eq(3L), Mockito.any());
         Mockito.verify(outboxService).enqueueEvent(
                 Mockito.eq("delivery-events"), Mockito.eq("10"), Mockito.argThat(event -> "DELIVERY".equals(event.aggregateType())
@@ -244,6 +250,38 @@ class DispatchServiceTests {
 
 
     @Test
+    void orderCancelled_forAPickedUpDelivery_shouldWriteThenReleaseTheConfirmedRiderThenPublish() {
+        OrderEventEnvelope cancelled = orderEvent("order.cancelled", ORDER_ID, 2L, "CANCELLED");
+        Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", cancelled)).thenReturn(true);
+        openDispatchOrder();
+        DeliveryEntity pickedUp = delivery(7L, "PICKED_UP", 8L);
+        Mockito.when(deliveryRepository.lockByOrderId(ORDER_ID)).thenReturn(pickedUp);
+        Mockito.when(riderRepository.findById(8L)).thenReturn(Optional.of(rider(8L, "Erin")));
+        Mockito.when(deliveryRepository.compareAndSetStatus(
+                Mockito.eq(7L), Mockito.eq("PICKED_UP"), Mockito.eq(8L), Mockito.eq("CANCELLED"),
+                Mockito.eq(pickedUp.pickedUpAt()), Mockito.isNull(), Mockito.any(), Mockito.any())).thenReturn(1);
+
+        service.handle(cancelled);
+
+        // The compare-and-set expects the status and rider read under the lock; that rider is released, once, after
+        // the write and before the event. The cancellation time is the write's time, and picked_up_at stays.
+        ArgumentCaptor<LocalDateTime> cancelledAt = ArgumentCaptor.forClass(LocalDateTime.class);
+        ArgumentCaptor<LocalDateTime> updatedAt = ArgumentCaptor.forClass(LocalDateTime.class);
+        org.mockito.InOrder writeOrder = Mockito.inOrder(deliveryRepository, riderRepository, outboxService);
+        writeOrder.verify(deliveryRepository).compareAndSetStatus(
+                Mockito.eq(7L), Mockito.eq("PICKED_UP"), Mockito.eq(8L), Mockito.eq("CANCELLED"),
+                Mockito.eq(pickedUp.pickedUpAt()), Mockito.isNull(), cancelledAt.capture(), updatedAt.capture());
+        writeOrder.verify(riderRepository).decrementLoad(Mockito.eq(8L), Mockito.eq(updatedAt.getValue()));
+        writeOrder.verify(outboxService).enqueueEvent(
+                Mockito.eq("delivery-events"), Mockito.eq("10"), Mockito.argThat(event -> "delivery.cancelled".equals(event.eventType())
+                        && Long.valueOf(8L).equals(((DeliveryEventEnvelope) event).data().riderId())));
+        Assertions.assertNotNull(cancelledAt.getValue());
+        Assertions.assertEquals(updatedAt.getValue(), cancelledAt.getValue());
+        Mockito.verify(riderRepository).decrementLoad(Mockito.anyLong(), Mockito.any());
+    }
+
+
+    @Test
     void markDelivered_shouldRequirePickUpFirst() {
         Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "ASSIGNED"));
 
@@ -258,6 +296,9 @@ class DispatchServiceTests {
     void markDelivered_afterPickUp_shouldReleaseTheRiderAndPublishDeliveryDelivered() {
         Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "PICKED_UP"));
         Mockito.when(riderRepository.findById(3L)).thenReturn(Optional.of(rider(3L, "Alice")));
+        Mockito.when(deliveryRepository.compareAndSetStatus(
+                Mockito.eq(7L), Mockito.eq("PICKED_UP"), Mockito.eq(3L), Mockito.eq("DELIVERED"),
+                Mockito.any(), Mockito.any(), Mockito.isNull(), Mockito.any())).thenReturn(1);
 
         DeliveryDto delivered = service.markDelivered(7L);
 
@@ -278,9 +319,30 @@ class DispatchServiceTests {
         Assertions.assertEquals("DELIVERED", service.markDelivered(7L).status());
 
         Mockito.verify(deliveryRepository, Mockito.never())
-                .updateStatus(Mockito.anyLong(), Mockito.anyString(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+                .compareAndSetStatus(Mockito.anyLong(), Mockito.anyString(), Mockito.any(), Mockito.anyString(),
+                        Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
         Mockito.verify(riderRepository, Mockito.never()).decrementLoad(Mockito.anyLong(), Mockito.any());
         Mockito.verifyNoInteractions(outboxService);
+    }
+
+
+    @Test
+    void markDelivered_whenTheCompareAndSetChangesNoRow_shouldThrowBeforeReleasingTheRiderOrPublishing() {
+        // The row no longer has the status or rider read under the lock: only a write that bypassed the lock can do
+        // that, and the transaction rolls back instead of releasing the rider a second time.
+        Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "PICKED_UP"));
+        Mockito.when(deliveryRepository.compareAndSetStatus(
+                Mockito.eq(7L), Mockito.eq("PICKED_UP"), Mockito.eq(3L), Mockito.eq("DELIVERED"),
+                Mockito.any(), Mockito.any(), Mockito.isNull(), Mockito.any())).thenReturn(0);
+
+        StaleTransitionException stale = Assertions.assertThrows(
+                StaleTransitionException.class, () -> service.markDelivered(7L));
+
+        Assertions.assertEquals(
+                "Compare-and-set of delivery 7 from PICKED_UP with rider 3 changed 0 rows instead of 1",
+                stale.getMessage()
+        );
+        Mockito.verifyNoInteractions(riderRepository, outboxService);
     }
 
 
@@ -294,6 +356,9 @@ class DispatchServiceTests {
     void advanceForRider_onTheRidersOwnDelivery_shouldMakeTheSameGuardedTransition() {
         Mockito.when(deliveryRepository.lockByIdAndRiderId(7L, 3L)).thenReturn(delivery(7L, "ASSIGNED"));
         Mockito.when(riderRepository.findById(3L)).thenReturn(Optional.of(rider(3L, "Alice")));
+        Mockito.when(deliveryRepository.compareAndSetStatus(
+                Mockito.eq(7L), Mockito.eq("ASSIGNED"), Mockito.eq(3L), Mockito.eq("PICKED_UP"),
+                Mockito.any(), Mockito.isNull(), Mockito.isNull(), Mockito.any())).thenReturn(1);
 
         DeliveryEntity pickedUp = service.advanceForRider(3L, 7L, DeliveryStatus.PICKED_UP);
 
@@ -314,7 +379,8 @@ class DispatchServiceTests {
                 ResourceNotFoundException.class, () -> service.advanceForRider(4L, 7L, DeliveryStatus.PICKED_UP));
 
         Mockito.verify(deliveryRepository, Mockito.never())
-                .updateStatus(Mockito.anyLong(), Mockito.anyString(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+                .compareAndSetStatus(Mockito.anyLong(), Mockito.anyString(), Mockito.any(), Mockito.anyString(),
+                        Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
         Mockito.verifyNoInteractions(outboxService, riderRepository);
     }
 
@@ -330,6 +396,22 @@ class DispatchServiceTests {
 
         Assertions.assertEquals("DELIVERY_STATUS_CONFLICT", conflict.getCode());
         Mockito.verifyNoInteractions(outboxService);
+    }
+
+
+    @ParameterizedTest
+    @EnumSource(value = DeliveryStatus.class, names = {"ASSIGNED", "CANCELLED"})
+    void advanceForRider_toAStatusNoRiderMoveReaches_shouldThrowWithoutWriting(DeliveryStatus target) {
+        // A rider only picks up and delivers; cancelling is the order.cancelled consumer's (a programming error here).
+        Mockito.when(deliveryRepository.lockByIdAndRiderId(7L, 3L)).thenReturn(delivery(7L, "ASSIGNED"));
+
+        IllegalArgumentException refused = Assertions.assertThrows(
+                IllegalArgumentException.class, () -> service.advanceForRider(3L, 7L, target));
+
+        Assertions.assertEquals("A rider cannot move a delivery to " + target, refused.getMessage());
+        Mockito.verify(deliveryRepository).lockByIdAndRiderId(7L, 3L);
+        Mockito.verifyNoMoreInteractions(deliveryRepository);
+        Mockito.verifyNoInteractions(riderRepository, outboxService);
     }
 
 
@@ -363,7 +445,8 @@ class DispatchServiceTests {
             Assertions.assertEquals(expectedMessage, conflict.getMessage());
         }
         Mockito.verify(deliveryRepository, Mockito.never())
-                .updateStatus(Mockito.anyLong(), Mockito.anyString(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+                .compareAndSetStatus(Mockito.anyLong(), Mockito.anyString(), Mockito.any(), Mockito.anyString(),
+                        Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
         Mockito.verifyNoInteractions(riderRepository, outboxService);
     }
 
@@ -373,6 +456,8 @@ class DispatchServiceTests {
         Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "PICKED_UP"));
         Mockito.when(riderRepository.lockById(3L)).thenReturn(rider(3L, "Alice"));
         Mockito.when(riderRepository.lockById(4L)).thenReturn(rider(4L, "Bob"));
+        Mockito.when(deliveryRepository.compareAndSetRider(
+                Mockito.eq(7L), Mockito.eq(3L), Mockito.eq(4L), Mockito.any())).thenReturn(1);
 
         DeliveryDto reassigned = service.reassign(7L, 4L);
 
@@ -385,11 +470,13 @@ class DispatchServiceTests {
         lockOrder.verify(deliveryRepository).lockById(7L);
         lockOrder.verify(riderRepository).lockById(3L);
         lockOrder.verify(riderRepository).lockById(4L);
-        Mockito.verify(deliveryRepository).updateRider(Mockito.eq(7L), Mockito.eq(4L), Mockito.any());
+        Mockito.verify(deliveryRepository)
+                .compareAndSetRider(Mockito.eq(7L), Mockito.eq(3L), Mockito.eq(4L), Mockito.any());
         Mockito.verify(riderRepository).decrementLoad(Mockito.eq(3L), Mockito.any());
         Mockito.verify(riderRepository).incrementLoad(Mockito.eq(4L), Mockito.any());
         Mockito.verify(deliveryRepository, Mockito.never())
-                .updateStatus(Mockito.anyLong(), Mockito.anyString(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+                .compareAndSetStatus(Mockito.anyLong(), Mockito.anyString(), Mockito.any(), Mockito.anyString(),
+                        Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
         ArgumentCaptor<EventEnvelope> envelope = ArgumentCaptor.forClass(EventEnvelope.class);
         Mockito.verify(outboxService).enqueueEvent(
                 Mockito.eq("delivery-events"),
@@ -410,6 +497,8 @@ class DispatchServiceTests {
     void reassign_toALowerRiderId_shouldStillLockTheRidersInIdOrder() {
         Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "ASSIGNED"));
         Mockito.when(riderRepository.lockById(2L)).thenReturn(rider(2L, "Carol"));
+        Mockito.when(deliveryRepository.compareAndSetRider(
+                Mockito.eq(7L), Mockito.eq(3L), Mockito.eq(2L), Mockito.any())).thenReturn(1);
 
         Assertions.assertEquals(2L, service.reassign(7L, 2L).riderId());
 
@@ -422,6 +511,27 @@ class DispatchServiceTests {
 
 
     @Test
+    void reassign_whenTheCompareAndSetChangesNoRow_shouldThrowBeforeMovingTheLoadOrPublishing() {
+        Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "ASSIGNED"));
+        Mockito.when(riderRepository.lockById(3L)).thenReturn(rider(3L, "Alice"));
+        Mockito.when(riderRepository.lockById(4L)).thenReturn(rider(4L, "Bob"));
+        Mockito.when(deliveryRepository.compareAndSetRider(
+                Mockito.eq(7L), Mockito.eq(3L), Mockito.eq(4L), Mockito.any())).thenReturn(0);
+
+        StaleTransitionException stale = Assertions.assertThrows(
+                StaleTransitionException.class, () -> service.reassign(7L, 4L));
+
+        Assertions.assertEquals(
+                "Compare-and-set of delivery 7 from ASSIGNED with rider 3 changed 0 rows instead of 1",
+                stale.getMessage()
+        );
+        Mockito.verify(riderRepository, Mockito.never()).decrementLoad(Mockito.anyLong(), Mockito.any());
+        Mockito.verify(riderRepository, Mockito.never()).incrementLoad(Mockito.anyLong(), Mockito.any());
+        Mockito.verifyNoInteractions(outboxService);
+    }
+
+
+    @Test
     void reassign_toTheCurrentRider_shouldReturnTheDeliveryUnchanged() {
         Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "ASSIGNED"));
         Mockito.when(riderRepository.findById(3L)).thenReturn(Optional.of(rider(3L, "Alice")));
@@ -429,7 +539,8 @@ class DispatchServiceTests {
         DeliveryDto unchanged = service.reassign(7L, 3L);
 
         Assertions.assertEquals(3L, unchanged.riderId());
-        Mockito.verify(deliveryRepository, Mockito.never()).updateRider(Mockito.anyLong(), Mockito.anyLong(), Mockito.any());
+        Mockito.verify(deliveryRepository, Mockito.never())
+                .compareAndSetRider(Mockito.anyLong(), Mockito.any(), Mockito.anyLong(), Mockito.any());
         Mockito.verify(riderRepository, Mockito.never()).lockById(Mockito.anyLong());
         Mockito.verifyNoInteractions(outboxService);
     }
@@ -533,7 +644,8 @@ class DispatchServiceTests {
         }
         Assertions.assertThrows(ResourceNotFoundException.class, () -> service.reassign(7L, 4L));
 
-        Mockito.verify(deliveryRepository, Mockito.never()).updateRider(Mockito.anyLong(), Mockito.anyLong(), Mockito.any());
+        Mockito.verify(deliveryRepository, Mockito.never())
+                .compareAndSetRider(Mockito.anyLong(), Mockito.any(), Mockito.anyLong(), Mockito.any());
         Mockito.verify(riderRepository, Mockito.never()).decrementLoad(Mockito.anyLong(), Mockito.any());
         Mockito.verify(riderRepository, Mockito.never()).incrementLoad(Mockito.anyLong(), Mockito.any());
         Mockito.verifyNoInteractions(outboxService);
@@ -600,6 +712,24 @@ class DispatchServiceTests {
     private RiderEntity rider(Long id, String name) {
         LocalDateTime now = LocalDateTime.now();
         return new RiderEntity(id, null, name, null, true, true, 0, now, now);
+    }
+
+
+    private DeliveryEntity delivery(Long id, String status, Long riderId) {
+        DeliveryEntity delivery = delivery(id, status);
+        return new DeliveryEntity(
+                delivery.id(),
+                delivery.orderId(),
+                delivery.customerId(),
+                delivery.restaurantId(),
+                riderId,
+                delivery.status(),
+                delivery.assignedAt(),
+                delivery.pickedUpAt(),
+                delivery.deliveredAt(),
+                delivery.cancelledAt(),
+                delivery.updatedAt()
+        );
     }
 
 
