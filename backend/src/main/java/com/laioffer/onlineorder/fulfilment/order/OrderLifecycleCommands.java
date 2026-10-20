@@ -13,11 +13,12 @@ import java.util.Optional;
  * owns the order state machine. Merchant and timeout use it for their commands; they never read or write the
  * orders table or call the order module's other services. Everything else between modules travels as events.
  *
- * <p>Every command locks the order row (SELECT ... FOR UPDATE), checks the transition against
- * {@link OrderStatus}, and writes the new status (with orders.updated_at), its order_status_history row and the order
- * event to the outbox in the caller's transaction. A merchant accept and a timeout cancel therefore race on the same
- * row lock and exactly one of them wins; the loser sees the winner's status. A command that changes nothing (a
- * repeat, or an order no longer in the expected status) writes no history row.
+ * <p>Every command locks the order row (SELECT ... FOR UPDATE), decides its own trigger with
+ * {@link com.laioffer.onlineorder.model.OrderStateMachine}, and writes the new status (with orders.updated_at, as a
+ * compare-and-set on the status it read), its order_status_history row and the order event to the outbox in the
+ * caller's transaction. A merchant accept and a timeout cancel therefore race on the same row lock and exactly one of
+ * them wins; the loser sees the winner's status. A command that changes nothing (a repeat, or an order no longer in
+ * the expected status) writes no history row.
  *
  * <p>Each command takes the {@link OrderActor} recorded in the order history, and there are deliberately no overloads
  * without one: a new caller has to name its actor ({@link OrderActor#system()} for jobs such as the deadline

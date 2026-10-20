@@ -24,10 +24,13 @@ import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.OrderService;
 import com.laioffer.onlineorder.service.OrderStatusHistoryService;
 import com.laioffer.onlineorder.audit.AuditLogService;
+import com.laioffer.onlineorder.statemachine.StaleTransitionException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
@@ -91,7 +94,6 @@ class OrderServiceTests {
     @Test
     void transitionOrderStatus_shouldAdvanceThroughAllowedState() {
         OrderEntity paidOrder = new OrderEntity(5L, 1L, Money.of("19.0", "USD"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
-        OrderEntity acceptedOrder = new OrderEntity(5L, 1L, Money.of("19.0", "USD"), "ACCEPTED", paidOrder.createdAt());
         OrderHistoryItemEntity historyItem = new OrderHistoryItemEntity(
                 6L,
                 5L,
@@ -106,7 +108,7 @@ class OrderServiceTests {
         );
 
         Mockito.when(orderRepository.lockById(5L)).thenReturn(paidOrder);
-        Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class))).thenReturn(acceptedOrder);
+        stubCompareAndSet();
         Mockito.when(orderHistoryItemRepository.findAllByOrderIdOrderByIdAsc(5L)).thenReturn(List.of(historyItem));
 
         LocalDateTime beforeTransition = LocalDateTime.now();
@@ -114,13 +116,17 @@ class OrderServiceTests {
         LocalDateTime afterTransition = LocalDateTime.now();
 
         Assertions.assertEquals("ACCEPTED", result.status());
+        ArgumentCaptor<OrderEntity> written = ArgumentCaptor.forClass(OrderEntity.class);
         ArgumentCaptor<LocalDateTime> occurredAt = ArgumentCaptor.forClass(LocalDateTime.class);
         Mockito.verify(orderEventOutboxService).enqueueOrderEvent(
-                Mockito.eq(acceptedOrder),
+                written.capture(),
                 Mockito.anyList(),
                 Mockito.isNull(),
                 occurredAt.capture()
         );
+        // The event carries the order as the compare-and-set wrote it.
+        Mockito.verify(orderRepository).compareAndSetStatus(5L, "PAID", "ACCEPTED", null, occurredAt.getValue());
+        Assertions.assertEquals(paidOrder.withStatus("ACCEPTED", null, occurredAt.getValue()), written.getValue());
         Assertions.assertNotEquals(paidOrder.createdAt(), occurredAt.getValue());
         Assertions.assertFalse(occurredAt.getValue().isBefore(beforeTransition));
         Assertions.assertFalse(occurredAt.getValue().isAfter(afterTransition));
@@ -135,7 +141,8 @@ class OrderServiceTests {
         Mockito.when(orderRepository.lockByIdAndCustomerId(5L, 1L)).thenReturn(completedOrder);
 
         Assertions.assertThrows(ConflictException.class, () -> orderService.cancelOrder(1L, 5L));
-        Mockito.verify(orderRepository, Mockito.never()).save(Mockito.any());
+        Mockito.verify(orderRepository, Mockito.never())
+                .compareAndSetStatus(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
     }
 
 
@@ -143,7 +150,7 @@ class OrderServiceTests {
     void transitionOrderStatus_withoutAnActor_shouldRecordSystemInTheHistory() {
         OrderEntity paidOrder = new OrderEntity(5L, 1L, Money.of("19.0", "USD"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
         Mockito.when(orderRepository.lockById(5L)).thenReturn(paidOrder);
-        Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        stubCompareAndSet();
 
         orderService.transitionOrderStatus(5L, "ACCEPTED");
 
@@ -164,7 +171,7 @@ class OrderServiceTests {
         OrderEntity paidOrder = new OrderEntity(5L, 1L, Money.of("19.0", "USD"), "PAID", LocalDateTime.of(2026, 4, 4, 12, 0));
         stubFirstIdempotentAttempt(9L, "admin-key");
         Mockito.when(orderRepository.lockById(5L)).thenReturn(paidOrder);
-        Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        stubCompareAndSet();
 
         OrderDto result = orderService.idempotentTransitionOrderStatus(9L, 5L, "ACCEPTED", "admin-key");
 
@@ -202,7 +209,8 @@ class OrderServiceTests {
         orderService.idempotentTransitionOrderStatus(9L, 5L, "ACCEPTED", "same-status-key");
 
         Mockito.verifyNoInteractions(orderStatusHistoryService);
-        Mockito.verify(orderRepository, Mockito.never()).save(Mockito.any());
+        Mockito.verify(orderRepository, Mockito.never())
+                .compareAndSetStatus(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
         Mockito.verify(auditLogService).record(
                 Mockito.eq(AuditActor.admin(9L)),
                 Mockito.eq(AuditActions.ORDER_STATUS_UPDATE),
@@ -309,17 +317,20 @@ class OrderServiceTests {
         OrderEntity paidOrder = order("PAID", null);
         stubFirstIdempotentAttempt(9L, "admin-cancel-key");
         Mockito.when(orderRepository.lockById(5L)).thenReturn(paidOrder);
-        Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        stubCompareAndSet();
 
         OrderDto result = orderService.idempotentTransitionOrderStatus(9L, 5L, "CANCELLED", "admin-cancel-key");
 
         Assertions.assertEquals("CANCELLED", result.status());
         Assertions.assertEquals(OrderLifecycleCommands.ADMIN_CANCELLED, result.cancelReason());
         // The order row, the history row and the order event all carry ADMIN_CANCELLED.
-        ArgumentCaptor<OrderEntity> saved = ArgumentCaptor.forClass(OrderEntity.class);
-        Mockito.verify(orderRepository).save(saved.capture());
-        Assertions.assertEquals("CANCELLED", saved.getValue().status());
-        Assertions.assertEquals(OrderLifecycleCommands.ADMIN_CANCELLED, saved.getValue().cancelReason());
+        Mockito.verify(orderRepository).compareAndSetStatus(
+                Mockito.eq(5L),
+                Mockito.eq("PAID"),
+                Mockito.eq("CANCELLED"),
+                Mockito.eq(OrderLifecycleCommands.ADMIN_CANCELLED),
+                Mockito.any(LocalDateTime.class)
+        );
         Mockito.verify(orderStatusHistoryService).record(
                 Mockito.eq(5L),
                 Mockito.eq(OrderStatus.PAID),
@@ -407,7 +418,7 @@ class OrderServiceTests {
     void adminPatch_shouldLockAndWriteInTheDocumentedOrder() {
         stubFirstIdempotentAttempt(9L, "ordered-key");
         Mockito.when(orderRepository.lockById(5L)).thenReturn(order("PAID", null));
-        Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        stubCompareAndSet();
 
         orderService.idempotentTransitionOrderStatus(9L, 5L, "ACCEPTED", "ordered-key");
 
@@ -425,7 +436,9 @@ class OrderServiceTests {
         steps.verify(idempotencyRequestRepository)
                 .lockByCustomerIdAndScopeAndIdempotencyKey(9L, "order-status:v1:5", "ordered-key");
         steps.verify(orderRepository).lockById(5L);
-        steps.verify(orderRepository).save(Mockito.any(OrderEntity.class));
+        steps.verify(orderRepository).compareAndSetStatus(
+                Mockito.eq(5L), Mockito.eq("PAID"), Mockito.eq("ACCEPTED"), Mockito.isNull(),
+                Mockito.any(LocalDateTime.class));
         steps.verify(orderStatusHistoryService).record(
                 Mockito.eq(5L), Mockito.eq(OrderStatus.PAID), Mockito.eq(OrderStatus.ACCEPTED),
                 Mockito.eq(OrderActor.admin(9L)), Mockito.isNull(), Mockito.any(LocalDateTime.class));
@@ -447,7 +460,7 @@ class OrderServiceTests {
     void customerCancel_shouldLockAndWriteInTheDocumentedOrder() {
         stubFirstIdempotentAttempt(1L, "ordered-cancel-key");
         Mockito.when(orderRepository.lockByIdAndCustomerId(5L, 1L)).thenReturn(order("PAID", null));
-        Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        stubCompareAndSet();
 
         orderService.idempotentCancelOrder(1L, 5L, "ordered-cancel-key");
 
@@ -464,7 +477,9 @@ class OrderServiceTests {
         steps.verify(idempotencyRequestRepository)
                 .lockByCustomerIdAndScopeAndIdempotencyKey(1L, "order-cancel:v1:5", "ordered-cancel-key");
         steps.verify(orderRepository).lockByIdAndCustomerId(5L, 1L);
-        steps.verify(orderRepository).save(Mockito.any(OrderEntity.class));
+        steps.verify(orderRepository).compareAndSetStatus(
+                Mockito.eq(5L), Mockito.eq("PAID"), Mockito.eq("CANCELLED"),
+                Mockito.eq(OrderLifecycleCommands.CUSTOMER_CANCELLED), Mockito.any(LocalDateTime.class));
         steps.verify(orderStatusHistoryService).record(
                 Mockito.eq(5L), Mockito.eq(OrderStatus.PAID), Mockito.eq(OrderStatus.CANCELLED),
                 Mockito.eq(OrderActor.customer(1L)), Mockito.eq(OrderLifecycleCommands.CUSTOMER_CANCELLED),
@@ -475,6 +490,72 @@ class OrderServiceTests {
                 .markSucceeded(Mockito.eq(77L), Mockito.eq("SUCCEEDED"), Mockito.eq(5L), Mockito.any(LocalDateTime.class));
         Mockito.verifyNoMoreInteractions(orderRepository, idempotencyRequestRepository, idempotencyRequestInitializer);
         Mockito.verifyNoInteractions(auditLogService);
+    }
+
+
+    /**
+     * Each target of the admin PATCH names its own ADMIN_* trigger, and together they make every move of the order
+     * table, each written with a compare-and-set on the status the order was locked in (ADR 0002 section 4.1).
+     */
+    @ParameterizedTest
+    @CsvSource(nullValues = "null", textBlock = """
+            PLACED,    PAID,      null
+            PLACED,    CANCELLED, ADMIN_CANCELLED
+            PAID,      ACCEPTED,  null
+            PAID,      CANCELLED, ADMIN_CANCELLED
+            ACCEPTED,  PREPARING, null
+            ACCEPTED,  CANCELLED, ADMIN_CANCELLED
+            PREPARING, COMPLETED, null
+            """)
+    void adminPatch_everyMoveOfTheTable_shouldBeWrittenWithACompareAndSetOnTheLockedStatus(
+            OrderStatus from,
+            OrderStatus to,
+            String reason
+    ) {
+        stubFirstIdempotentAttempt(9L, "move-key");
+        Mockito.when(orderRepository.lockById(5L)).thenReturn(order(from.name(), null));
+        stubCompareAndSet();
+
+        OrderDto result = orderService.idempotentTransitionOrderStatus(9L, 5L, to.name(), "move-key");
+
+        Assertions.assertEquals(to.name(), result.status());
+        Assertions.assertEquals(reason, result.cancelReason());
+        ArgumentCaptor<LocalDateTime> updatedAt = ArgumentCaptor.forClass(LocalDateTime.class);
+        Mockito.verify(orderRepository).compareAndSetStatus(
+                Mockito.eq(5L), Mockito.eq(from.name()), Mockito.eq(to.name()), Mockito.eq(reason), updatedAt.capture());
+        Mockito.verify(orderStatusHistoryService).record(
+                5L, from, to, OrderActor.admin(9L), reason, updatedAt.getValue());
+        Mockito.verify(orderEventOutboxService).enqueueOrderEvent(
+                Mockito.argThat(order -> to.name().equals(order.status())),
+                Mockito.anyList(),
+                Mockito.isNull(),
+                Mockito.eq(updatedAt.getValue())
+        );
+        Mockito.verify(metricsService).recordOrderTransition(from.name(), to.name());
+    }
+
+
+    /**
+     * A compare-and-set that changes no row means the row lock was not held: the command fails (and its transaction
+     * rolls back) before the history row, the event, the metric and the audit entry.
+     */
+    @Test
+    void adminPatch_whenTheCompareAndSetChangesNoRow_shouldThrowBeforeWritingAnythingElse() {
+        stubFirstIdempotentAttempt(9L, "stale-key");
+        Mockito.when(orderRepository.lockById(5L)).thenReturn(order("PAID", null));
+        Mockito.when(orderRepository.compareAndSetStatus(
+                Mockito.eq(5L), Mockito.eq("PAID"), Mockito.eq("ACCEPTED"), Mockito.isNull(), Mockito.any())
+        ).thenReturn(0);
+
+        StaleTransitionException stale = Assertions.assertThrows(
+                StaleTransitionException.class,
+                () -> orderService.idempotentTransitionOrderStatus(9L, 5L, "ACCEPTED", "stale-key")
+        );
+
+        Assertions.assertEquals("Compare-and-set of order 5 from PAID changed 0 rows instead of 1", stale.getMessage());
+        Mockito.verifyNoInteractions(orderStatusHistoryService, orderEventOutboxService, metricsService, auditLogService);
+        Mockito.verify(idempotencyRequestRepository, Mockito.never())
+                .markSucceeded(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
     }
 
 
@@ -516,6 +597,17 @@ class OrderServiceTests {
         )).thenAnswer(invocation -> new IdempotencyRequestEntity(
                 77L, actorCustomerId, invocation.getArgument(1), key, insertedHash.get(), "PROCESSING", null,
                 LocalDateTime.now(), LocalDateTime.now()));
+    }
+
+
+    /**
+     * Every compare-and-set of an order's status changes its one row, as it does under the row lock.
+     */
+    private void stubCompareAndSet() {
+        Mockito.when(orderRepository.compareAndSetStatus(
+                Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(), Mockito.any(),
+                Mockito.any(LocalDateTime.class)
+        )).thenReturn(1);
     }
 
 

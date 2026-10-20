@@ -2,10 +2,12 @@ package com.laioffer.onlineorder.repository;
 
 
 import com.laioffer.onlineorder.entity.OrderEntity;
+import org.springframework.data.jdbc.repository.query.Modifying;
 import org.springframework.data.jdbc.repository.query.Query;
 import org.springframework.data.repository.ListCrudRepository;
 
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -51,4 +53,22 @@ public interface OrderRepository extends ListCrudRepository<OrderEntity, Long> {
             FOR UPDATE
             """)
     OrderEntity lockByIdAndCustomerId(Long id, Long customerId);
+
+
+    /**
+     * Moves the order from {@code fromStatus} to {@code toStatus}: a compare-and-set on the status the caller read
+     * under the row lock. The cancel reason and updated_at are written as given. Returns the rows changed, 1, or 0
+     * when the order is no longer in {@code fromStatus} (checked with
+     * {@link com.laioffer.onlineorder.statemachine.CompareAndSet}).
+     */
+    @Modifying
+    @Query("""
+            UPDATE orders
+            SET status = :toStatus,
+                cancel_reason = :cancelReason,
+                updated_at = :updatedAt
+            WHERE id = :id
+              AND status = :fromStatus
+            """)
+    int compareAndSetStatus(Long id, String fromStatus, String toStatus, String cancelReason, LocalDateTime updatedAt);
 }

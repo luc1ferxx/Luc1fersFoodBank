@@ -24,6 +24,7 @@ import com.laioffer.onlineorder.messaging.MerchantEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
+import com.laioffer.onlineorder.repository.OrderRepository;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.CustomerService;
 import com.laioffer.onlineorder.service.OrderService;
@@ -54,6 +55,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -154,6 +156,9 @@ class FulfilmentPostgresIntegrationTests {
 
     @Autowired
     private DeliveryRepository deliveryRepository;
+
+    @Autowired
+    private OrderRepository orderRepository;
 
     @Autowired
     private OrderService orderService;
@@ -1066,6 +1071,40 @@ class FulfilmentPostgresIntegrationTests {
         Assertions.assertEquals("DELIVERED|" + aliceId, deliveryState(deliveryId));
         Assertions.assertEquals(delivered, deliveryTimes(deliveryId));
         assertEveryRiderLoadMatchesTheirOpenDeliveries();
+    }
+
+
+    /**
+     * ADR 0002 section 4.1 on the stored row: the compare-and-set write changes an order only while it is still in the
+     * status the caller read under the lock. A write from a stale read changes nothing (status, cancel reason,
+     * updated_at) and returns 0, which OrderService turns into a rolled-back StaleTransitionException.
+     */
+    @Test
+    void orderCompareAndSet_shouldOnlyChangeARowThatIsStillInTheExpectedStatus() {
+        PaidOrder order = paidOrderAt("Burger King");
+        Map<String, Object> paid = orderRow(order.orderId());
+        LocalDateTime later = LocalDateTime.now().plusHours(1);
+
+        Assertions.assertEquals(0, orderRepository.compareAndSetStatus(
+                order.orderId(), "PLACED", "CANCELLED", OrderLifecycleCommands.PAYMENT_TIMEOUT, later),
+                "another status");
+        Assertions.assertEquals(0, orderRepository.compareAndSetStatus(
+                order.orderId(), "ACCEPTED", "PREPARING", null, later),
+                "another status");
+        Assertions.assertEquals("PAID", paid.get("status"));
+        Assertions.assertEquals(paid, orderRow(order.orderId()));
+
+        // Through the service the write changes exactly one row (it throws otherwise).
+        orderService.cancelOrder(order.customerId(), order.orderId());
+        Map<String, Object> cancelled = orderRow(order.orderId());
+        Assertions.assertEquals("CANCELLED", cancelled.get("status"));
+        Assertions.assertEquals(OrderLifecycleCommands.CUSTOMER_CANCELLED, cancelled.get("cancel_reason"));
+        assertUpdatedAtIsTheLastStatusChange(order.orderId());
+
+        Assertions.assertEquals(0, orderRepository.compareAndSetStatus(
+                order.orderId(), "PAID", "ACCEPTED", null, later),
+                "a cancelled order");
+        Assertions.assertEquals(cancelled, orderRow(order.orderId()));
     }
 
 
@@ -2234,6 +2273,11 @@ class FulfilmentPostgresIntegrationTests {
                 restaurantId
         );
         return name;
+    }
+
+
+    Map<String, Object> orderRow(Long orderId) {
+        return jdbcTemplate.queryForMap("SELECT status, cancel_reason, updated_at FROM orders WHERE id = ?", orderId);
     }
 
 
