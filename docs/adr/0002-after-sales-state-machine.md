@@ -1564,3 +1564,51 @@ P1 只加测试，全量门禁通过（873 个测试，0 失败，0 跳过）。
   - `completeDeliveredOrder` 忽略了第一步的 `TransitionOutcome`。如果将来声明变化导致 `DELIVERY_PREPARE` 被拒，第二步会拿到旧订单。
   - `firingOnlyFrom` 在同一族里出现两个 from 和目标都相同的触发器时会有歧义。
   - `DispatchService` 里 `from.holdsRider()` 为假的分支不可达，是一个永久的 JaCoCo 未覆盖分支。
+
+---
+
+## 23. P3a 实施记录（提交 0bf521e 到 8ce1e60；P3b 开始前必读）
+
+对抗审查结论：通过，没有必须修复的问题。审查逐项尝试推翻以下几类问题，都没有成立：超退（单行、总额、跨两次申请）、H2 与 PostgreSQL 一致性、支付记录只写一次、守卫与 alreadyDone 语义、开单并发与第二次申请规则、幂等绑定、事件契约，以及订单与配送的既有行为。
+
+**已完成**
+- `Money` 增加 `minus`，以及 `compareTo`、`isPositive`、`isGreaterThan` 等比较方法，都会校验币种。
+- 迁移：
+  - V12 建出 P3 需要的全部表：售后单、行、历史、退款、`order_payments`、`merchant_after_sales_cases`，以及 `order_notifications.dedup_scope` 和新的唯一键。
+  - V12_1 加币种检查。
+  - V12_2 给 `idempotency_requests` 加 `case_id`，用来做售后的幂等绑定。
+- 付款下单时，在同一事务里写一条 `order_payments`（CAPTURED，`SIMPAY-…`）。重放和普通下单都不写。
+- 状态机：
+  - 售后和退款两个状态机放在 `aftersales` 包。
+  - 用新的 `AfterSalesActor` 枚举（CUSTOMER、MERCHANT、ADMIN、SYSTEM），不用 `OrderActor.Type`，以免加深包循环。服务层用 `AfterSalesActor.valueOf(orderActor.type().name())` 转换。
+  - 守卫按第 19.1 条只放在顾客和商家的响应上。`RECLAIM` 带 `leaseExpired` 和 `attemptsLeft` 两个守卫。
+- 新 topic `after-sales-events`，7 个事件类型，均为 INITIAL；附 schema、catalog、SHA256SUMS 和 13 个 samples。事件数据带 `attempt_no`；每行都带 currency；`lines` 至少一行。
+- 单一写入者 `AfterSalesTransitions`：
+  - `fire()` 覆盖第 5.2 节全部 15 个触发器，P3b 和 P3c 只需新增调用方。
+  - CAS 条件是 `id + status + version`，写入时 version + 1，并清空截止时间的重试字段。
+  - 每次进入新状态都重算 `deadline_at`。
+  - 指标 `onlineorder.aftersales.steps` 在提交后计数。
+- 顾客接口 `AfterSalesController`：开单、总览（`{cases, eligible_orders}`）、详情、接受还价、拒绝还价、申请平台介入、撤销。资格检查都在订单行锁内完成。
+
+**与前文的偏差**
+1. 不再定义 `AFTER_SALES_CASE_EXISTS`。按第 20 节，所有“已有售后单”的情况都返回 409 `AFTER_SALES_NOT_ELIGIBLE`。
+2. 申请金额超过“扣款金额减去本订单所有已批准金额”时，返回 409 `AFTER_SALES_NOT_ELIGIBLE`，文案是 `"A refund of X USD would exceed the Y USD left of the order's captured payment"`。
+3. `AfterSalesCaseDto` 在 `kind` 后面加了 `attempt_no`。`EligibleOrderDto` 的字段是 `(order_id, order_no, attempt_no, request_deadline)`。
+4. 约束比第 8.1 节多出几条：
+   - attempt 只能是 1 或 2，且 ORDER_CANCELLED 单固定为 1。
+   - 状态为 CLOSED 当且仅当填了 `close_reason`。
+   - 行金额 = 单价 × 数量。
+   - refunds 的几个状态一致性检查。
+   - `order_payments.provider_reference` 唯一。
+5. `rescheduleDeadline(id, version, retryAt, attempts)` 只在 version 匹配时更新（第 19.3 条）。
+6. `application-demo.yml` 还没有加。它需要打开轮询器，留给 P3b。
+
+**P3b 需要知道 / 待决定**
+- ORDER_CANCELLED 开单：在 `AfterSalesTransitions` 里增加一个开单方法，插入一张单：REFUNDING、attempt 1、`requested = approved = order_total`、resolution 为 ORDER_CANCELLED、包含全部订单行；历史由 SYSTEM 记为 ORDER_CANCELLED；同时插入 refund。没有支付记录或金额为 0 时，什么都不建（D12）。
+- **包循环**：`aftersales` 已经依赖 `service` 和 `model`，目前还没有人依赖 `aftersales`。P3b 让 `OrderService` 调用 `CancellationRefunds`、P3c 让 `OrderService` 委托商家命令之后，会形成 `service` ↔ `aftersales` 的循环。实现时要么接受并在文档里写明，要么用接口反转依赖。
+- 轮询器调用 `fire()` 时传入已 claim 的售后单，触发器用 `AfterSalesStateMachine.timeoutTrigger(status)`。退款执行器用 `RefundTransitionContext(lockedRefund, now, maxAttempts)`。
+- **待定**：`RefundDto.last_error` 目前会通过售后单详情返回给顾客。推荐只对管理员显示，P3b 实现退款执行器时一起改。
+
+**留给 P4 和 P5**
+- P4：在前端 `proxyPaths.ts` 加 `/after-sales`。第二次申请必须用**新的** Idempotency-Key：复用第一次的 key 和请求体，会重放第一张（已撤销的）单。
+- P5：V12 里替换 `order_notifications` 唯一键需要重建索引，**不是**在线安全的操作，第 15 节“可以在线执行”的说法要改。其他待写进文档的内容：V12_2 的外键检查、新指标、取消 `AFTER_SALES_CASE_EXISTS`、eligible 列表包含 0.00 的已付订单（`open()` 会返回 400）。
