@@ -2,6 +2,7 @@ package com.laioffer.onlineorder.aftersales;
 
 
 import com.laioffer.onlineorder.entity.OrderEntity;
+import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.entity.OrderPaymentEntity;
 import com.laioffer.onlineorder.entity.OutboxEventEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
@@ -26,6 +27,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -83,6 +85,16 @@ class AfterSalesTransitionsTests {
                     new BigDecimal("10.59"), "USD"),
             new AfterSalesCaseLineEntity(10L, CASE_ID, 42L, "Large Fries", new BigDecimal("2.75"), 2,
                     new BigDecimal("5.50"), "USD")
+    );
+
+    /**
+     * The order lines of {@link #cancelledOrder}: one Whopper Meal and two Large Fries.
+     */
+    static final List<OrderHistoryItemEntity> ORDER_ITEMS = List.of(
+            new OrderHistoryItemEntity(41L, ORDER_ID, 301L, 7L, new BigDecimal("10.59"), 1, "Whopper Meal",
+                    "Burger, fries and a drink", "whopper.png", "USD"),
+            new OrderHistoryItemEntity(42L, ORDER_ID, 302L, 7L, new BigDecimal("2.75"), 2, "Large Fries",
+                    "Salted", "fries.png", "USD")
     );
 
     @Mock
@@ -459,6 +471,111 @@ class AfterSalesTransitionsTests {
     }
 
 
+    /**
+     * ADR 0002 D12, sections 9 and 19.7: the cancel of a paid order opens a case of the whole order straight in
+     * REFUNDING, with its lines, its SYSTEM history row, its refund due at once against the captured payment and its
+     * case_opened event, in that order and at the time of the cancel.
+     */
+    @Test
+    void openOrderCancelled_shouldInsertTheWholeOrderInRefundingWithItsRefundHistoryAndEvent() {
+        OrderEntity order = cancelledOrder("USD");
+        stubCaseAndLineInserts();
+
+        AfterSalesCaseEntity opened = transitions.openOrderCancelled(new AfterSalesTransitions.OrderCancellation(
+                order, payment("16.09", "USD"), ORDER_ITEMS, NOW));
+
+        AfterSalesCaseEntity expected = new AfterSalesCaseEntity(CASE_ID, ORDER_ID, CUSTOMER_ID, 7L, "ORDER_CANCELLED",
+                1, "REFUNDING", null, null, new BigDecimal("16.09"), new BigDecimal("16.09"), null,
+                new BigDecimal("16.09"), null, "USD", null, null, "ORDER_CANCELLED", null, null, null, null, 0, 0L, NOW,
+                NOW);
+        Assertions.assertEquals(expected, opened);
+        InOrder writes = Mockito.inOrder(
+                caseRepository, lineRepository, historyRepository, refundRepository, outboxEventRepository);
+        writes.verify(caseRepository).save(withoutIdAndVersion(expected));
+        writes.verify(lineRepository).saveAll(List.of(
+                new AfterSalesCaseLineEntity(null, CASE_ID, 41L, "Whopper Meal", new BigDecimal("10.59"), 1,
+                        new BigDecimal("10.59"), "USD"),
+                new AfterSalesCaseLineEntity(null, CASE_ID, 42L, "Large Fries", new BigDecimal("2.75"), 2,
+                        new BigDecimal("5.50"), "USD")
+        ));
+        writes.verify(historyRepository).save(new AfterSalesCaseHistoryEntity(null, CASE_ID, null, "REFUNDING",
+                "ORDER_CANCELLED", "SYSTEM", null, new BigDecimal("16.09"), "USD", null, null, NOW));
+        writes.verify(refundRepository).save(new RefundEntity(null, CASE_ID, ORDER_ID, CUSTOMER_ID,
+                "after-sales-case:" + CASE_ID, "SIMPAY-0f3a", new BigDecimal("16.09"), "USD", "PENDING", 0, NOW, null,
+                null, null, null, NOW, NOW, null));
+        writes.verify(outboxEventRepository).save(Mockito.any());
+        AfterSalesEventEnvelope event = storedEvent();
+        Assertions.assertEquals("aftersales.case_opened", event.eventType());
+        Assertions.assertEquals(NOW, event.occurredAt());
+        Assertions.assertNull(event.idempotencyKey());
+        Assertions.assertEquals(event.eventId(), event.correlationId());
+        Assertions.assertEquals("ORDER_CANCELLED", event.data().kind());
+        Assertions.assertEquals(1, event.data().attemptNo());
+        Assertions.assertEquals("REFUNDING", event.data().status());
+        Assertions.assertEquals("ORDER_CANCELLED", event.data().action());
+        Assertions.assertEquals("SYSTEM", event.data().actorType());
+        Assertions.assertNull(event.data().actorId());
+        Assertions.assertEquals(0L, event.data().version());
+        Assertions.assertEquals(ORDER_NO, event.data().orderNo());
+        Assertions.assertEquals(0, new BigDecimal("16.09").compareTo(event.data().requestedAmount()));
+        Assertions.assertEquals(0, new BigDecimal("16.09").compareTo(event.data().approvedAmount()));
+        Assertions.assertEquals("USD", event.data().currency());
+        Assertions.assertEquals("ORDER_CANCELLED", event.data().resolution());
+        Assertions.assertNull(event.data().deadlineAt());
+        Assertions.assertEquals(List.of(1, 2), event.data().lines().stream().map(line -> line.quantity()).toList());
+        Mockito.verify(metricsService).recordAfterSalesStep("ORDER_CANCELLED", "none", "REFUNDING");
+        // The order and its payment come from the caller, which read them under the order's lock.
+        Mockito.verifyNoInteractions(orderRepository, orderPaymentRepository);
+        Assertions.assertEquals(0, clockReads.get(), "the opening runs at the time of the cancel");
+    }
+
+
+    @Test
+    void openOrderCancelled_shouldCountTheOpeningOnlyOnceItsTransactionCommits() {
+        stubCaseAndLineInserts();
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            transitions.openOrderCancelled(new AfterSalesTransitions.OrderCancellation(
+                    cancelledOrder("USD"), payment("16.09", "USD"), ORDER_ITEMS, NOW));
+            Mockito.verifyNoInteractions(metricsService);
+
+            TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
+            Mockito.verify(metricsService).recordAfterSalesStep("ORDER_CANCELLED", "none", "REFUNDING");
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+
+    @Test
+    void openOrderCancelled_withAPaymentInAnotherCurrency_shouldWriteNothing() {
+        Assertions.assertThrows(CurrencyMismatchException.class, () -> transitions.openOrderCancelled(
+                new AfterSalesTransitions.OrderCancellation(
+                        cancelledOrder("USD"), payment("16.09", "EUR"), ORDER_ITEMS, NOW)));
+        assertNothingWritten();
+    }
+
+
+    @Test
+    void orderCancellation_shouldRequireTheOrderItsPaymentAndTheTime() {
+        OrderEntity order = cancelledOrder("USD");
+        OrderPaymentEntity payment = payment("16.09", "USD");
+        Assertions.assertThrows(NullPointerException.class,
+                () -> new AfterSalesTransitions.OrderCancellation(null, payment, ORDER_ITEMS, NOW));
+        Assertions.assertThrows(NullPointerException.class,
+                () -> new AfterSalesTransitions.OrderCancellation(order, null, ORDER_ITEMS, NOW));
+        Assertions.assertThrows(NullPointerException.class,
+                () -> new AfterSalesTransitions.OrderCancellation(order, payment, null, NOW));
+        Assertions.assertThrows(NullPointerException.class,
+                () -> new AfterSalesTransitions.OrderCancellation(order, payment, ORDER_ITEMS, null));
+        OrderPaymentEntity anotherOrders = new OrderPaymentEntity(78L, ORDER_ID + 1, CUSTOMER_ID,
+                new BigDecimal("16.09"), "USD", "CAPTURED", "SIMPAY-1b2c", NOW.minusHours(3));
+        IllegalArgumentException mismatch = Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new AfterSalesTransitions.OrderCancellation(order, anotherOrders, ORDER_ITEMS, NOW));
+        Assertions.assertEquals("Payment 78 belongs to order 1002, not 1001", mismatch.getMessage());
+    }
+
+
     @Test
     void values_shouldRequireWhatEveryStepNeeds() {
         Assertions.assertThrows(NullPointerException.class,
@@ -576,6 +693,36 @@ class AfterSalesTransitionsTests {
     static OrderEntity completedOrder(String currency) {
         return new OrderEntity(ORDER_ID, ORDER_NO, CUSTOMER_ID, new BigDecimal("20.00"), "COMPLETED",
                 NOW.minusHours(3), 7L, null, NOW.minusHours(1), currency);
+    }
+
+
+    /**
+     * A paid order of 16.09 (the two {@link #ORDER_ITEMS}) that was just cancelled.
+     */
+    static OrderEntity cancelledOrder(String currency) {
+        return new OrderEntity(ORDER_ID, ORDER_NO, CUSTOMER_ID, new BigDecimal("16.09"), "CANCELLED",
+                NOW.minusHours(1), 7L, "CUSTOMER_CANCELLED", NOW, currency);
+    }
+
+
+    static OrderPaymentEntity payment(String amount, String currency) {
+        return new OrderPaymentEntity(77L, ORDER_ID, CUSTOMER_ID, new BigDecimal(amount), currency, "CAPTURED",
+                "SIMPAY-0f3a", NOW.minusHours(1));
+    }
+
+
+    /**
+     * The case's insert assigns the id and version 0, the lines' insert their ids.
+     */
+    private void stubCaseAndLineInserts() {
+        Mockito.when(caseRepository.save(Mockito.any(AfterSalesCaseEntity.class)))
+                .thenAnswer(invocation -> withIdAndVersion(invocation.getArgument(0)));
+        Mockito.when(lineRepository.saveAll(Mockito.anyList())).thenAnswer(invocation -> {
+            List<AfterSalesCaseLineEntity> rows = invocation.getArgument(0);
+            return rows.stream().map(line -> new AfterSalesCaseLineEntity(line.orderItemId() + 100, line.caseId(),
+                    line.orderItemId(), line.menuItemName(), line.unitPrice(), line.quantity(), line.amount(),
+                    line.currency())).toList();
+        });
     }
 
 

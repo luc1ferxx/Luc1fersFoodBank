@@ -3,6 +3,7 @@ package com.laioffer.onlineorder;
 
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderNotificationEntity;
+import com.laioffer.onlineorder.entity.OrderPaymentEntity;
 import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
 import com.laioffer.onlineorder.messaging.DeliveryEventPayload;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
@@ -11,11 +12,13 @@ import com.laioffer.onlineorder.messaging.OrderEventItem;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 import com.laioffer.onlineorder.model.OrderNotificationDto;
 import com.laioffer.onlineorder.repository.OrderNotificationRepository;
+import com.laioffer.onlineorder.repository.OrderPaymentRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
 import com.laioffer.onlineorder.service.OrderNotificationService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -37,10 +40,14 @@ class OrderNotificationServiceTests {
     @org.mockito.Mock
     private OrderRepository orderRepository;
 
+    // Unstubbed it knows no captured payments: a cancelled paid order points the customer to support.
+    @org.mockito.Mock
+    private OrderPaymentRepository orderPaymentRepository;
+
 
     @Test
     void recordOrderEvent_shouldInsertNotificationWithConflictSafeRepositoryMethod() {
-        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository);
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
         OrderEventEnvelope payload = buildEvent("evt-1", "order.created", 9L, 4L, "PLACED");
 
         Mockito.when(orderNotificationRepository.insertIfAbsent(
@@ -68,7 +75,7 @@ class OrderNotificationServiceTests {
 
     @Test
     void recordOrderEvent_whenDuplicateNotificationInsertIsSkipped_shouldNotThrow() {
-        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository);
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
         OrderEventEnvelope payload = buildEvent("evt-2", "order.paid", 9L, 4L, "PAID");
 
         Mockito.when(orderNotificationRepository.insertIfAbsent(
@@ -86,7 +93,7 @@ class OrderNotificationServiceTests {
 
     @Test
     void recordOrderEvent_whenRepositoryReportsNonDuplicateIntegrityFailure_shouldPropagate() {
-        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository);
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
         OrderEventEnvelope payload = buildEvent("evt-3", "order.paid", 9L, 4L, "PAID");
 
         Mockito.when(orderNotificationRepository.insertIfAbsent(
@@ -104,7 +111,7 @@ class OrderNotificationServiceTests {
 
     @Test
     void recordOrderEvent_whenTheMerchantTimedOut_shouldSaySoToTheCustomer() {
-        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository);
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
 
         service.recordOrderEvent(cancelledEvent("MERCHANT_TIMEOUT"));
 
@@ -121,7 +128,8 @@ class OrderNotificationServiceTests {
 
     @Test
     void recordOrderEvent_whenTheMerchantRejected_shouldPassOnTheirReason() {
-        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository);
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
+        Mockito.when(orderPaymentRepository.findByOrderId(9L)).thenReturn(Optional.of(payment("22.00")));
 
         service.recordOrderEvent(cancelledEvent("MERCHANT_REJECTED: Out of buns"));
 
@@ -130,15 +138,65 @@ class OrderNotificationServiceTests {
                 Mockito.eq(4L),
                 Mockito.eq("order.cancelled"),
                 Mockito.eq("Order rejected by the restaurant"),
-                Mockito.eq("The restaurant could not take order #9: Out of buns. Please contact support about your payment."),
+                Mockito.eq("The restaurant could not take order #9: Out of buns. Your payment will be refunded automatically."),
                 Mockito.any(LocalDateTime.class)
         );
     }
 
 
+    /**
+     * ADR 0002 D12: the cancel of a paid order refunds its captured payment automatically, which the notice of a
+     * reject or an accept timeout promises; an order without a capture above 0.00 gets no automatic refund, so its
+     * customer is still pointed to support.
+     */
+    @Test
+    void recordOrderEvent_whenAPaidOrderIsRejectedOrTimedOut_shouldPromiseTheRefundOnlyOfACapturedPayment() {
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
+        Mockito.when(orderPaymentRepository.findByOrderId(9L)).thenReturn(
+                Optional.of(payment("22.00")),
+                Optional.of(payment("0.00")),
+                Optional.empty()
+        );
+
+        service.recordOrderEvent(cancelledEvent("MERCHANT_TIMEOUT"));
+        service.recordOrderEvent(cancelledEvent("MERCHANT_TIMEOUT"));
+        service.recordOrderEvent(cancelledEvent("MERCHANT_REJECTED"));
+
+        ArgumentCaptor<String> messages = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(orderNotificationRepository, Mockito.times(3)).insertIfAbsent(
+                Mockito.eq(9L), Mockito.eq(4L), Mockito.eq("order.cancelled"), Mockito.anyString(), messages.capture(),
+                Mockito.any(LocalDateTime.class));
+        Assertions.assertEquals(List.of(
+                "Order #9 was cancelled because the restaurant did not accept it in time. "
+                        + "Your payment will be refunded automatically.",
+                "Order #9 was cancelled because the restaurant did not accept it in time. "
+                        + "Please contact support about your payment.",
+                "The restaurant could not take order #9. Please contact support about your payment."
+        ), messages.getAllValues());
+    }
+
+
+    @Test
+    void recordOrderEvent_whenTheCustomerCancelledOrThePaymentTimedOut_shouldNotLookAtThePayment() {
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
+
+        service.recordOrderEvent(cancelledEvent("CUSTOMER_CANCELLED"));
+        service.recordOrderEvent(cancelledEvent("PAYMENT_TIMEOUT"));
+
+        Mockito.verify(orderNotificationRepository).insertIfAbsent(
+                Mockito.eq(9L), Mockito.eq(4L), Mockito.eq("order.cancelled"), Mockito.eq("Order cancelled"),
+                Mockito.eq("Order #9 was cancelled."), Mockito.any(LocalDateTime.class));
+        Mockito.verify(orderNotificationRepository).insertIfAbsent(
+                Mockito.eq(9L), Mockito.eq(4L), Mockito.eq("order.cancelled"),
+                Mockito.eq("Order cancelled: payment not received"),
+                Mockito.eq("Order #9 was cancelled because it was not paid in time."), Mockito.any(LocalDateTime.class));
+        Mockito.verifyNoInteractions(orderPaymentRepository);
+    }
+
+
     @Test
     void recordOrderEvent_whenCancelledWithoutReason_shouldKeepTheGenericMessage() {
-        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository);
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
 
         service.recordOrderEvent(buildEvent("evt-c", "order.cancelled", 9L, 4L, "CANCELLED"));
 
@@ -150,7 +208,7 @@ class OrderNotificationServiceTests {
 
     @Test
     void recordDeliveryEvent_shouldTellTheCustomerAboutTheRiderAndTheDelivery() {
-        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository);
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
 
         service.recordDeliveryEvent(deliveryEvent("delivery.assigned"));
         service.recordDeliveryEvent(deliveryEvent("delivery.delivered"));
@@ -168,7 +226,7 @@ class OrderNotificationServiceTests {
 
     @Test
     void recordOrderAndDeliveryEvents_shouldNameTheOrderByItsPublicNumber() {
-        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository);
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
         Mockito.when(orderRepository.findOrderNoById(9L)).thenReturn(Optional.of(7_391_022_331_904_512_345L));
 
         service.recordOrderEvent(buildEvent("evt-n", "order.created", 9L, 4L, "PLACED"));
@@ -187,7 +245,7 @@ class OrderNotificationServiceTests {
 
     @Test
     void getNotificationsByCustomerId_shouldCarryEachOrdersPublicNumber() {
-        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository);
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
         LocalDateTime createdAt = LocalDateTime.of(2026, 4, 4, 12, 0);
         Mockito.when(orderNotificationRepository.findPageByCustomerIdOrderByCreatedAtDesc(4L, 50)).thenReturn(List.of(
                 new OrderNotificationEntity(2L, 9L, 4L, "order.paid", "Payment confirmed", "m", createdAt),
@@ -206,11 +264,17 @@ class OrderNotificationServiceTests {
 
     @Test
     void getNotificationsByCustomerId_withoutNotifications_shouldNotLookUpOrders() {
-        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository);
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
         Mockito.when(orderNotificationRepository.findPageByCustomerIdOrderByCreatedAtDesc(4L, 50)).thenReturn(List.of());
 
         Assertions.assertEquals(List.of(), service.getNotificationsByCustomerId(4L));
         Mockito.verifyNoInteractions(orderRepository);
+    }
+
+
+    private OrderPaymentEntity payment(String amount) {
+        return new OrderPaymentEntity(30L, 9L, 4L, amount(amount), "USD", OrderPaymentEntity.CAPTURED, "SIMPAY-9",
+                LocalDateTime.of(2026, 4, 4, 12, 0));
     }
 
 

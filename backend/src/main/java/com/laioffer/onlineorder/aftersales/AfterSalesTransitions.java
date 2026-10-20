@@ -2,6 +2,7 @@ package com.laioffer.onlineorder.aftersales;
 
 
 import com.laioffer.onlineorder.entity.OrderEntity;
+import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.entity.OrderPaymentEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.fulfilment.AfterCommit;
@@ -34,7 +35,9 @@ import java.util.function.Supplier;
 
 /**
  * The single writer of after-sales cases (ADR 0002 sections 5, 6, 9 and 19): the only class that inserts a case or
- * changes after_sales_cases.status. A step is decided by {@link AfterSalesStateMachine} on the case the caller locked
+ * changes after_sales_cases.status. A case is opened, in its caller's transaction and under the order's row lock, by
+ * a customer's request ({@link #open}) or by the cancel of a paid order ({@link #openOrderCancelled}, straight into
+ * REFUNDING with its refund). A step is decided by {@link AfterSalesStateMachine} on the case the caller locked
  * ({@code FOR UPDATE}, or claimed with SKIP LOCKED), with the time read after that lock. An applied step is written
  * with a compare-and-set on the status and version it was decided on, which raises the version and sets the deadline
  * of the status entered ({@link AfterSalesDeadlines}); then come, in the same transaction, the history row with its
@@ -42,7 +45,9 @@ import java.util.function.Supplier;
  * happened, or that the machine refuses, writes nothing; the caller maps it to its own answer
  * ({@link AfterSalesErrors#refused}).
  *
- * <p>Lock order: the case row, then (entering REFUNDING) a new refunds row, then the outbox sequence row of the case.
+ * <p>Lock order: the case row (for an opening, the order row its caller locked, then the new case), then (entering
+ * REFUNDING) a new refunds row, then the outbox sequence row of the case. The cancel of a paid order has already taken
+ * the outbox sequence row of the order before it opens the case.
  */
 @Service
 public class AfterSalesTransitions {
@@ -51,6 +56,11 @@ public class AfterSalesTransitions {
      * The action of a customer's request in the history and the event.
      */
     public static final String OPEN_ACTION = "OPEN";
+
+    /**
+     * The action of the automatic refund of a cancelled paid order in the history and the event.
+     */
+    public static final String ORDER_CANCELLED_ACTION = "ORDER_CANCELLED";
 
     /**
      * A refund's gateway key is this prefix and its case id: the same key for every attempt, so the gateway refunds a
@@ -204,6 +214,73 @@ public class AfterSalesTransitions {
 
 
     /**
+     * Opens the automatic refund of a paid order that was cancelled (ADR 0002 D5, D12, sections 9 and 19.7): an
+     * ORDER_CANCELLED case straight in REFUNDING, attempt 1, with the order total requested and approved (resolution
+     * ORDER_CANCELLED) and every order line in full; its ORDER_CANCELLED history row (SYSTEM); its refund, PENDING and
+     * due at once, against the order's captured payment; and its aftersales.case_opened event. The caller cancelled the
+     * order in this transaction under the order's row lock, after the order's own event, and checked that the order has
+     * a captured payment and a total above zero (an ORDER_CANCELLED case of 0.00 breaks chk_after_sales_case_amounts).
+     *
+     * @throws com.laioffer.onlineorder.money.CurrencyMismatchException when the payment was captured in another
+     *                                                                  currency than the order's
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public AfterSalesCaseEntity openOrderCancelled(OrderCancellation cancellation) {
+        OrderEntity order = cancellation.order();
+        LocalDateTime now = cancellation.cancelledAt();
+        Money total = order.total();
+        total.requireSameCurrency(cancellation.payment().captured());
+        AfterSalesStatus status = AfterSalesStatus.REFUNDING;
+        AfterSalesCaseEntity opened = caseRepository.save(new AfterSalesCaseEntity(
+                null,
+                order.id(),
+                order.customerId(),
+                order.restaurantId(),
+                AfterSalesKind.ORDER_CANCELLED.name(),
+                1,
+                status.name(),
+                null,
+                null,
+                order.totalPrice(),
+                total.amount(),
+                null,
+                total.amount(),
+                null,
+                order.currency(),
+                null,
+                null,
+                AfterSalesResolution.ORDER_CANCELLED.name(),
+                null,
+                null,
+                deadlines.deadlineAt(status, now),
+                null,
+                0,
+                null,
+                now,
+                now
+        ));
+        List<AfterSalesCaseLineEntity> lines = lineRepository.saveAll(cancellation.items().stream()
+                .map(item -> AfterSalesCaseLineEntity.of(opened.id(), item, item.quantity()))
+                .toList());
+        record(opened, null, status, ORDER_CANCELLED_ACTION, AfterSalesActor.SYSTEM, null, null, now);
+        createRefund(opened, cancellation.payment(), now);
+        publish(
+                opened,
+                lines,
+                order.orderNo(),
+                FulfilmentEvents.AFTER_SALES_CASE_OPENED,
+                ORDER_CANCELLED_ACTION,
+                AfterSalesActor.SYSTEM,
+                null,
+                now,
+                null
+        );
+        AfterCommit.run(() -> metricsService.recordAfterSalesStep(ORDER_CANCELLED_ACTION, NO_STATUS, status.name()));
+        return opened;
+    }
+
+
+    /**
      * Takes {@code command} on a case the caller locked in this transaction. The time of the step is read here, after
      * that lock (section 19.2), so a command that waited for the lock is judged at the time it got it. When the machine
      * applies the trigger, writes the fields of table 5.2 and the deadline of the status entered with a
@@ -252,7 +329,7 @@ public class AfterSalesTransitions {
         String action = command.trigger().name();
         record(moved, from, to, action, command.actor(), command.actorId(), command.note(), now);
         if (to == AfterSalesStatus.REFUNDING) {
-            createRefund(moved, now);
+            createRefund(moved, capturedPayment(moved.orderId()), now);
         }
         publish(
                 moved,
@@ -368,14 +445,17 @@ public class AfterSalesTransitions {
     }
 
 
+    private OrderPaymentEntity capturedPayment(Long orderId) {
+        return orderPaymentRepository.findByOrderId(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order " + orderId + " has no captured payment to refund"));
+    }
+
+
     /**
      * The refund of a case that entered REFUNDING (section 9): PENDING and due now, for the approved amount of the
      * order's captured payment. The composite key fk_refund_case_approved ties its amount and currency to the case.
      */
-    private void createRefund(AfterSalesCaseEntity refunding, LocalDateTime now) {
-        OrderPaymentEntity payment = orderPaymentRepository.findByOrderId(refunding.orderId())
-                .orElseThrow(() -> new IllegalStateException(
-                        "Order " + refunding.orderId() + " has no captured payment to refund"));
+    private void createRefund(AfterSalesCaseEntity refunding, OrderPaymentEntity payment, LocalDateTime now) {
         refundRepository.save(new RefundEntity(
                 null,
                 refunding.id(),
@@ -447,6 +527,35 @@ public class AfterSalesTransitions {
             lines = List.copyOf(lines);
             Objects.requireNonNull(requested, "requested");
             Objects.requireNonNull(now, "now");
+        }
+    }
+
+
+    /**
+     * A paid order the caller cancelled in this transaction, to refund in full.
+     *
+     * @param order       the order as the cancel wrote it, still locked
+     * @param payment     the order's captured payment, which the refund names
+     * @param items       every line of the order; the case asks for each in full
+     * @param cancelledAt the time of the cancel, read after the order's lock: the time of the opening and when the
+     *                    refund is due
+     */
+    public record OrderCancellation(
+            OrderEntity order,
+            OrderPaymentEntity payment,
+            List<OrderHistoryItemEntity> items,
+            LocalDateTime cancelledAt
+    ) {
+
+        public OrderCancellation {
+            Objects.requireNonNull(order, "order");
+            Objects.requireNonNull(payment, "payment");
+            if (!order.id().equals(payment.orderId())) {
+                throw new IllegalArgumentException(
+                        "Payment " + payment.id() + " belongs to order " + payment.orderId() + ", not " + order.id());
+            }
+            items = List.copyOf(items);
+            Objects.requireNonNull(cancelledAt, "cancelledAt");
         }
     }
 

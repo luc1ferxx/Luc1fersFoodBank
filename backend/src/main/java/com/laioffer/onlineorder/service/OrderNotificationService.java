@@ -10,6 +10,7 @@ import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.model.OrderNotificationDto;
 import com.laioffer.onlineorder.repository.OrderNotificationRepository;
+import com.laioffer.onlineorder.repository.OrderPaymentRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,18 +26,26 @@ import java.util.Map;
 @Service
 public class OrderNotificationService {
 
+    /**
+     * For a paid order without a captured payment to refund (ADR 0002 D16): its payment is refunded by hand.
+     */
     private static final String PAYMENT_SUPPORT_NOTE = "Please contact support about your payment.";
+
+    private static final String AUTOMATIC_REFUND_NOTE = "Your payment will be refunded automatically.";
 
     private final OrderNotificationRepository orderNotificationRepository;
     private final OrderRepository orderRepository;
+    private final OrderPaymentRepository orderPaymentRepository;
 
 
     public OrderNotificationService(
             OrderNotificationRepository orderNotificationRepository,
-            OrderRepository orderRepository
+            OrderRepository orderRepository,
+            OrderPaymentRepository orderPaymentRepository
     ) {
         this.orderNotificationRepository = orderNotificationRepository;
         this.orderRepository = orderRepository;
+        this.orderPaymentRepository = orderPaymentRepository;
     }
 
 
@@ -52,7 +61,7 @@ public class OrderNotificationService {
                 data.customerId(),
                 event.eventType(),
                 buildTitle(event),
-                buildMessage(event, orderNumber(event.aggregateId())),
+                buildMessage(event, orderNumber(event.aggregateId()), event.aggregateId()),
                 LocalDateTime.now()
         );
     }
@@ -181,28 +190,42 @@ public class OrderNotificationService {
 
 
     /**
-     * Refunds are not automated yet (README "Order fulfilment", follow-ups), so a cancelled paid order points the
-     * customer to support instead of promising a refund.
+     * A paid order the restaurant rejected or did not accept in time tells the customer what happens to their payment.
+     *
+     * @param orderNumber the number shown to the customer
+     * @param orderId     the order's internal id
      */
-    private String buildCancelledMessage(String orderId, String reason) {
+    private String buildCancelledMessage(String orderNumber, Long orderId, String reason) {
         if (reason != null && reason.startsWith(OrderLifecycleCommands.MERCHANT_REJECTED)) {
             String note = reason.substring(OrderLifecycleCommands.MERCHANT_REJECTED.length()).replaceFirst("^:\\s*", "");
-            return "The restaurant could not take order #" + orderId
+            return "The restaurant could not take order #" + orderNumber
                     + (note.isBlank() ? "" : ": " + note)
-                    + ". " + PAYMENT_SUPPORT_NOTE;
+                    + ". " + paymentNote(orderId);
         }
         if (OrderLifecycleCommands.MERCHANT_TIMEOUT.equals(reason)) {
-            return "Order #" + orderId + " was cancelled because the restaurant did not accept it in time. "
-                    + PAYMENT_SUPPORT_NOTE;
+            return "Order #" + orderNumber + " was cancelled because the restaurant did not accept it in time. "
+                    + paymentNote(orderId);
         }
         if (OrderLifecycleCommands.PAYMENT_TIMEOUT.equals(reason)) {
-            return "Order #" + orderId + " was cancelled because it was not paid in time.";
+            return "Order #" + orderNumber + " was cancelled because it was not paid in time.";
         }
-        return "Order #" + orderId + " was cancelled.";
+        return "Order #" + orderNumber + " was cancelled.";
     }
 
 
-    private String buildMessage(OrderEventEnvelope event, String orderNumber) {
+    /**
+     * A captured payment above 0.00 is refunded automatically when its order is cancelled (ADR 0002 D12); without one
+     * (an order an admin marked PAID, or one paid before payments were recorded), the customer is pointed to support.
+     */
+    private String paymentNote(Long orderId) {
+        boolean refunded = orderPaymentRepository.findByOrderId(orderId)
+                .map(payment -> payment.captured().isPositive())
+                .orElse(false);
+        return refunded ? AUTOMATIC_REFUND_NOTE : PAYMENT_SUPPORT_NOTE;
+    }
+
+
+    private String buildMessage(OrderEventEnvelope event, String orderNumber, Long orderId) {
         int itemCount = event.data().items() == null ? 0 : event.data().items().size();
         return switch (event.eventType()) {
             case "order.paid" -> "Order #" + orderNumber + " was paid successfully with " + itemCount + " item(s).";
@@ -210,7 +233,7 @@ public class OrderNotificationService {
             case "order.accepted" -> "Order #" + orderNumber + " was accepted by the restaurant.";
             case "order.preparing" -> "Order #" + orderNumber + " is now being prepared.";
             case "order.completed" -> "Order #" + orderNumber + " is completed and ready.";
-            case "order.cancelled" -> buildCancelledMessage(orderNumber, event.data().reason());
+            case "order.cancelled" -> buildCancelledMessage(orderNumber, orderId, event.data().reason());
             default -> "Order #" + orderNumber + " has a new event: " + event.eventType() + ".";
         };
     }

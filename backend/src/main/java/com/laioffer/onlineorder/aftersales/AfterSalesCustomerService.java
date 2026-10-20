@@ -326,7 +326,7 @@ public class AfterSalesCustomerService {
         List<AfterSalesCaseLineEntity> lines = new ArrayList<>();
         if (request.wholeOrder()) {
             for (OrderHistoryItemEntity item : items) {
-                lines.add(line(item, item.quantity()));
+                lines.add(AfterSalesCaseLineEntity.of(null, item, item.quantity()));
             }
             return lines;
         }
@@ -343,24 +343,9 @@ public class AfterSalesCustomerService {
                 throw new BadRequestException("Order item " + item.id() + " was ordered " + item.quantity()
                         + " times; at most that many can be refunded");
             }
-            lines.add(line(item, requested.getValue()));
+            lines.add(AfterSalesCaseLineEntity.of(null, item, requested.getValue()));
         }
         return lines;
-    }
-
-
-    private static AfterSalesCaseLineEntity line(OrderHistoryItemEntity item, int quantity) {
-        Money amount = item.unitPrice().times(quantity);
-        return new AfterSalesCaseLineEntity(
-                null,
-                null,
-                item.id(),
-                item.menuItemName(),
-                item.price(),
-                quantity,
-                amount.amount(),
-                amount.currencyCode()
-        );
     }
 
 

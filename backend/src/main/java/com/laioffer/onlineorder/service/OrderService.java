@@ -42,6 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
 
 
@@ -52,6 +53,9 @@ import java.util.function.Supplier;
  * status, the order_status_history row and the order event to the outbox, all in the caller's transaction. A write
  * that does not change exactly one row throws {@link StaleTransitionException} and rolls back; with the lock held it
  * cannot happen. Each caller maps a trigger that already happened or that the status does not allow to its own answer.
+ *
+ * <p>A move from PAID or ACCEPTED to CANCELLED also opens the order's automatic refund ({@link CancellationRefunds}),
+ * after the order's event and in the same transaction, so the cancel and its refund commit or roll back together.
  */
 @Service
 public class OrderService implements OrderLifecycleCommands {
@@ -65,6 +69,12 @@ public class OrderService implements OrderLifecycleCommands {
      * The row named in a {@link StaleTransitionException}.
      */
     private static final String ORDER_ROW = "order";
+
+    /**
+     * The statuses of a paid order that can be cancelled (ADR 0002 D12): a cancel from one of them is refunded. A
+     * PLACED order was never paid.
+     */
+    private static final Set<OrderStatus> REFUNDED_WHEN_CANCELLED = Set.of(OrderStatus.PAID, OrderStatus.ACCEPTED);
 
     private static final int IDEMPOTENCY_KEY_MAX_LENGTH = 255;
     private static final String IDEMPOTENCY_STATUS_PROCESSING = "PROCESSING";
@@ -86,6 +96,7 @@ public class OrderService implements OrderLifecycleCommands {
     private final OrderHistoryItemRepository orderHistoryItemRepository;
     private final OrderStatusHistoryService orderStatusHistoryService;
     private final AuditLogService auditLogService;
+    private final CancellationRefunds cancellationRefunds;
 
 
     public OrderService(
@@ -96,7 +107,8 @@ public class OrderService implements OrderLifecycleCommands {
             IdempotencyRequestRepository idempotencyRequestRepository,
             IdempotencyRequestInitializer idempotencyRequestInitializer,
             OrderStatusHistoryService orderStatusHistoryService,
-            AuditLogService auditLogService
+            AuditLogService auditLogService,
+            CancellationRefunds cancellationRefunds
     ) {
         this.orderRepository = orderRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
@@ -106,6 +118,7 @@ public class OrderService implements OrderLifecycleCommands {
         this.idempotencyRequestInitializer = idempotencyRequestInitializer;
         this.orderStatusHistoryService = orderStatusHistoryService;
         this.auditLogService = auditLogService;
+        this.cancellationRefunds = cancellationRefunds;
     }
 
 
@@ -445,7 +458,8 @@ public class OrderService implements OrderLifecycleCommands {
      * Decides {@code trigger} on a locked order with {@link OrderStateMachine}. When the machine applies it, writes the
      * new status (with its cancel reason and updated_at) with a compare-and-set on the status the order was read in,
      * then its order_status_history row and its order event to the outbox, in the same transaction and all with the
-     * same time. A trigger that already happened or that the status does not allow writes nothing.
+     * same time. A cancel of a paid order (PAID or ACCEPTED) then opens its refund, still in that transaction and at
+     * that time. A trigger that already happened or that the status does not allow writes nothing.
      *
      * @param context       what the trigger's checks read; null for the triggers that read none
      * @param cancelReason  stored on the order when the trigger cancels it; the order keeps its reason otherwise
@@ -491,6 +505,11 @@ public class OrderService implements OrderLifecycleCommands {
         );
         List<OrderHistoryItemDto> items = getOrderItems(updatedOrder.id());
         orderEventOutboxService.enqueueOrderEvent(updatedOrder, items, null, transitionedAt);
+        if (targetStatus == OrderStatus.CANCELLED && REFUNDED_WHEN_CANCELLED.contains(currentStatus)) {
+            // After the order's own event (ADR 0002 D12): the order row stays locked, and the refund commits with the
+            // cancel or rolls it back.
+            cancellationRefunds.refundCancelledOrder(updatedOrder, transitionedAt);
+        }
         // Counted once the transition commits: a later step of the caller (its audit entry, its idempotency record)
         // can still roll it back.
         AfterCommit.run(() -> metricsService.recordOrderTransition(currentStatus.name(), targetStatus.name()));

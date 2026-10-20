@@ -552,7 +552,11 @@ their events.
 > never gets its paid orders auto-cancelled: they stay `PAID` in its inbox until a merchant or an admin moves them, and
 > `onlineorder.fulfilment.merchant.orders_received{staffing="unstaffed"}` counts them. A deadline set while the
 > restaurant was staffed still fires if its merchant is deactivated afterwards. The payment timeout for unpaid `PLACED`
-> orders runs as before. Cancelled paid orders are not refunded automatically: the customer is told to contact support.
+> orders runs as before. A paid order (`PAID` or `ACCEPTED`) that is cancelled, by anyone, gets an automatic refund:
+> the cancel opens an `ORDER_CANCELLED` after-sales case and its refund of the order total in the same transaction
+> (ADR 0002 D12), and the cancellation notice after a reject or an accept timeout says the payment will be refunded. An
+> order without a captured payment (marked `PAID` by an admin, or paid before payments were recorded) or with a total
+> of 0.00 gets none; for the former that notice still asks the customer to contact support.
 
 ### Event flow
 

@@ -19,6 +19,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 
@@ -89,8 +90,19 @@ class FulfilmentTimeoutContainerTests extends FulfilmentContainerTestSupport {
                     ? cancelled
                     : null;
         });
-        // Refunds are not automated: the notification must not promise one.
-        Assertions.assertFalse(String.valueOf(notification.get("message")).contains("refunded"));
+        // ADR 0002 D12: the timeout opened the refund of the captured payment, which the notification promises.
+        Assertions.assertTrue(
+                String.valueOf(notification.get("message")).endsWith("Your payment will be refunded automatically."),
+                () -> String.valueOf(notification.get("message"))
+        );
+        Assertions.assertEquals(List.of("ORDER_CANCELLED|REFUNDING"), jdbcTemplate.query(
+                "SELECT kind, status FROM after_sales_cases WHERE order_id = ?",
+                (row, index) -> row.getString("kind") + "|" + row.getString("status"),
+                paidOrderId
+        ));
+        Assertions.assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM after_sales_cases WHERE order_id = ?", Integer.class, placedOrderId),
+                "the payment timeout cancelled an unpaid order");
         await("the merchant inbox to show the cancelled order", EVENT_WAIT, () ->
                 "CANCELLED".equals(inboxStatus(fashionWok, paidOrderId)));
         ResponseEntity<Map> lateAccept = post("/merchant/orders/" + paidOrderId + "/accept", fashionWok);

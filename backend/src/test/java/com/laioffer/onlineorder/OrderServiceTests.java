@@ -19,6 +19,7 @@ import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
+import com.laioffer.onlineorder.service.CancellationRefunds;
 import com.laioffer.onlineorder.service.IdempotencyRequestInitializer;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.OrderService;
@@ -73,6 +74,9 @@ class OrderServiceTests {
     @Mock
     private AuditLogService auditLogService;
 
+    @Mock
+    private CancellationRefunds cancellationRefunds;
+
     private OrderService orderService;
 
 
@@ -86,7 +90,8 @@ class OrderServiceTests {
                 idempotencyRequestRepository,
                 idempotencyRequestInitializer,
                 orderStatusHistoryService,
-                auditLogService
+                auditLogService,
+                cancellationRefunds
         );
     }
 
@@ -554,6 +559,144 @@ class OrderServiceTests {
 
         Assertions.assertEquals("Compare-and-set of order 5 from PAID changed 0 rows instead of 1", stale.getMessage());
         Mockito.verifyNoInteractions(orderStatusHistoryService, orderEventOutboxService, metricsService, auditLogService);
+        Mockito.verify(idempotencyRequestRepository, Mockito.never())
+                .markSucceeded(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+    }
+
+
+    /**
+     * ADR 0002 D12: the customer's cancel of a paid order (PAID or ACCEPTED) opens its refund in the cancel's
+     * transaction, after the order's event, with the order as written and the time of the cancel; the transition
+     * metric and the idempotency record come after it.
+     */
+    @ParameterizedTest
+    @CsvSource({"PAID", "ACCEPTED"})
+    void customerCancel_ofAPaidOrder_shouldOpenItsRefundAfterTheOrderEvent(OrderStatus from) {
+        stubFirstIdempotentAttempt(1L, "refund-cancel-key");
+        OrderEntity locked = order(from.name(), null);
+        Mockito.when(orderRepository.lockByIdAndCustomerId(5L, 1L)).thenReturn(locked);
+        stubCompareAndSet();
+
+        orderService.idempotentCancelOrder(1L, 5L, "refund-cancel-key");
+
+        InOrder steps = Mockito.inOrder(
+                orderRepository,
+                orderStatusHistoryService,
+                orderEventOutboxService,
+                cancellationRefunds,
+                metricsService,
+                idempotencyRequestRepository
+        );
+        ArgumentCaptor<LocalDateTime> cancelledAt = ArgumentCaptor.forClass(LocalDateTime.class);
+        steps.verify(orderRepository).compareAndSetStatus(
+                Mockito.eq(5L), Mockito.eq(from.name()), Mockito.eq("CANCELLED"),
+                Mockito.eq(OrderLifecycleCommands.CUSTOMER_CANCELLED), cancelledAt.capture());
+        steps.verify(orderStatusHistoryService).record(
+                5L, from, OrderStatus.CANCELLED, OrderActor.customer(1L), OrderLifecycleCommands.CUSTOMER_CANCELLED,
+                cancelledAt.getValue());
+        steps.verify(orderEventOutboxService).enqueueOrderEvent(
+                Mockito.any(), Mockito.anyList(), Mockito.isNull(), Mockito.eq(cancelledAt.getValue()));
+        steps.verify(cancellationRefunds).refundCancelledOrder(
+                locked.withStatus("CANCELLED", OrderLifecycleCommands.CUSTOMER_CANCELLED, cancelledAt.getValue()),
+                cancelledAt.getValue()
+        );
+        steps.verify(metricsService).recordOrderTransition(from.name(), "CANCELLED");
+        steps.verify(idempotencyRequestRepository)
+                .markSucceeded(Mockito.eq(77L), Mockito.eq("SUCCEEDED"), Mockito.eq(5L), Mockito.any(LocalDateTime.class));
+        Mockito.verifyNoMoreInteractions(cancellationRefunds);
+    }
+
+
+    /**
+     * An admin's cancel of a paid order opens the refund too, before the audit row of the PATCH.
+     */
+    @Test
+    void adminCancel_ofAnAcceptedOrder_shouldOpenItsRefundBeforeTheAuditRow() {
+        stubFirstIdempotentAttempt(9L, "refund-admin-key");
+        Mockito.when(orderRepository.lockById(5L)).thenReturn(order("ACCEPTED", null));
+        stubCompareAndSet();
+
+        orderService.idempotentTransitionOrderStatus(9L, 5L, "CANCELLED", "refund-admin-key");
+
+        InOrder steps = Mockito.inOrder(orderEventOutboxService, cancellationRefunds, auditLogService);
+        steps.verify(orderEventOutboxService).enqueueOrderEvent(
+                Mockito.any(), Mockito.anyList(), Mockito.isNull(), Mockito.any(LocalDateTime.class));
+        steps.verify(cancellationRefunds).refundCancelledOrder(
+                Mockito.argThat(order -> "CANCELLED".equals(order.status())
+                        && OrderLifecycleCommands.ADMIN_CANCELLED.equals(order.cancelReason())),
+                Mockito.any(LocalDateTime.class)
+        );
+        steps.verify(auditLogService).record(
+                Mockito.eq(AuditActor.admin(9L)), Mockito.eq(AuditActions.ORDER_STATUS_UPDATE),
+                Mockito.eq(AuditActions.TARGET_ORDER), Mockito.eq(5L), Mockito.any());
+    }
+
+
+    /**
+     * Only a move from PAID or ACCEPTED to CANCELLED opens a refund: a PLACED order was never paid, and no other move
+     * of the admin PATCH cancels an order.
+     */
+    @ParameterizedTest
+    @CsvSource(textBlock = """
+            PLACED,    PAID,      false
+            PLACED,    CANCELLED, false
+            PAID,      ACCEPTED,  false
+            PAID,      CANCELLED, true
+            ACCEPTED,  PREPARING, false
+            ACCEPTED,  CANCELLED, true
+            PREPARING, COMPLETED, false
+            """)
+    void adminPatch_shouldOpenARefundOnlyForTheCancelOfAPaidOrder(OrderStatus from, OrderStatus to, boolean refunded) {
+        Mockito.when(orderRepository.lockById(5L)).thenReturn(order(from.name(), null));
+        stubCompareAndSet();
+
+        orderService.transitionOrderStatus(5L, to.name(), OrderActor.admin(9L));
+
+        Mockito.verify(cancellationRefunds, Mockito.times(refunded ? 1 : 0))
+                .refundCancelledOrder(Mockito.any(), Mockito.any());
+    }
+
+
+    /**
+     * The customer's cancel of an unpaid order, and a repeated cancel of a cancelled one, open no refund.
+     */
+    @Test
+    void customerCancel_ofAPlacedOrOfACancelledOrder_shouldOpenNoRefund() {
+        Mockito.when(orderRepository.lockByIdAndCustomerId(5L, 1L)).thenReturn(
+                order("PLACED", null),
+                order("CANCELLED", OrderLifecycleCommands.MERCHANT_TIMEOUT)
+        );
+        stubCompareAndSet();
+
+        Assertions.assertEquals("CANCELLED", orderService.cancelOrder(1L, 5L).status());
+        Assertions.assertEquals(OrderLifecycleCommands.MERCHANT_TIMEOUT, orderService.cancelOrder(1L, 5L).cancelReason());
+
+        Mockito.verify(orderRepository).compareAndSetStatus(
+                Mockito.eq(5L), Mockito.eq("PLACED"), Mockito.eq("CANCELLED"),
+                Mockito.eq(OrderLifecycleCommands.CUSTOMER_CANCELLED), Mockito.any(LocalDateTime.class));
+        Mockito.verifyNoInteractions(cancellationRefunds);
+    }
+
+
+    /**
+     * A refund that cannot be opened fails the cancel (its transaction rolls back): the transition is not counted and
+     * the idempotency key is not completed, so a retry with the same key cancels again.
+     */
+    @Test
+    void customerCancel_whenTheRefundCannotBeOpened_shouldFailWithoutCountingOrCompletingTheKey() {
+        stubFirstIdempotentAttempt(1L, "failed-refund-key");
+        Mockito.when(orderRepository.lockByIdAndCustomerId(5L, 1L)).thenReturn(order("PAID", null));
+        stubCompareAndSet();
+        Mockito.doThrow(new IllegalStateException("forced refund failure"))
+                .when(cancellationRefunds).refundCancelledOrder(Mockito.any(), Mockito.any());
+
+        IllegalStateException failed = Assertions.assertThrows(IllegalStateException.class,
+                () -> orderService.idempotentCancelOrder(1L, 5L, "failed-refund-key"));
+
+        Assertions.assertEquals("forced refund failure", failed.getMessage());
+        Mockito.verify(orderEventOutboxService).enqueueOrderEvent(
+                Mockito.any(), Mockito.anyList(), Mockito.isNull(), Mockito.any(LocalDateTime.class));
+        Mockito.verifyNoInteractions(metricsService);
         Mockito.verify(idempotencyRequestRepository, Mockito.never())
                 .markSucceeded(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
     }

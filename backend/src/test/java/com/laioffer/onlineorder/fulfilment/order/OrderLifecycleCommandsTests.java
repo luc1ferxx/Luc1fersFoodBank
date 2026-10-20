@@ -16,6 +16,7 @@ import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
+import com.laioffer.onlineorder.service.CancellationRefunds;
 import com.laioffer.onlineorder.service.IdempotencyRequestInitializer;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.OrderService;
@@ -76,6 +77,9 @@ class OrderLifecycleCommandsTests {
     @Mock
     private AuditLogService auditLogService;
 
+    @Mock
+    private CancellationRefunds cancellationRefunds;
+
     private OrderService orderService;
 
 
@@ -89,7 +93,8 @@ class OrderLifecycleCommandsTests {
                 idempotencyRequestRepository,
                 idempotencyRequestInitializer,
                 orderStatusHistoryService,
-                auditLogService
+                auditLogService,
+                cancellationRefunds
         );
     }
 
@@ -735,6 +740,69 @@ class OrderLifecycleCommandsTests {
                 Mockito.eq(OrderLifecycleCommands.CUSTOMER_CANCELLED),
                 Mockito.any(LocalDateTime.class)
         );
+    }
+
+
+    /**
+     * ADR 0002 D12: the merchant's reject and the accept timeout cancel a paid order, and each opens its refund in the
+     * command's transaction with the order as written (its own cancel reason) at the time of the cancel.
+     */
+    @Test
+    void merchantRejectAndAcceptTimeout_shouldOpenTheRefundOfThePaidOrder() {
+        Mockito.when(orderRepository.lockById(ORDER_ID)).thenReturn(
+                order("PAID", RESTAURANT_ID),
+                order("PAID", RESTAURANT_ID)
+        );
+        stubCompareAndSet();
+
+        orderService.transitionRestaurantOrder(ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED,
+                "MERCHANT_REJECTED: sold out", OrderActor.merchant(40L));
+        orderService.cancelIfStillIn(
+                ORDER_ID, OrderStatus.PAID, OrderLifecycleCommands.MERCHANT_TIMEOUT, OrderActor.system());
+
+        ArgumentCaptor<LocalDateTime> cancelledAt = ArgumentCaptor.forClass(LocalDateTime.class);
+        Mockito.verify(orderRepository, Mockito.times(2)).compareAndSetStatus(
+                Mockito.eq(ORDER_ID), Mockito.eq("PAID"), Mockito.eq("CANCELLED"), Mockito.any(),
+                cancelledAt.capture());
+        InOrder refunds = Mockito.inOrder(cancellationRefunds);
+        refunds.verify(cancellationRefunds).refundCancelledOrder(
+                order("PAID", RESTAURANT_ID).withStatus(
+                        "CANCELLED", "MERCHANT_REJECTED: sold out", cancelledAt.getAllValues().get(0)),
+                cancelledAt.getAllValues().get(0)
+        );
+        refunds.verify(cancellationRefunds).refundCancelledOrder(
+                order("PAID", RESTAURANT_ID).withStatus(
+                        "CANCELLED", OrderLifecycleCommands.MERCHANT_TIMEOUT, cancelledAt.getAllValues().get(1)),
+                cancelledAt.getAllValues().get(1)
+        );
+        Mockito.verifyNoMoreInteractions(cancellationRefunds);
+    }
+
+
+    /**
+     * The commands that do not cancel a paid order open no refund: accept, preparing, the payment timeout of an unpaid
+     * order and the completion of a delivered one.
+     */
+    @Test
+    void commandsThatDoNotCancelAPaidOrder_shouldOpenNoRefund() {
+        Mockito.when(orderRepository.lockById(ORDER_ID)).thenReturn(
+                order("PAID", RESTAURANT_ID),
+                order("ACCEPTED", RESTAURANT_ID),
+                order("PLACED", RESTAURANT_ID),
+                order("ACCEPTED", RESTAURANT_ID)
+        );
+        stubCompareAndSet();
+
+        orderService.transitionRestaurantOrder(
+                ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null, OrderActor.merchant(40L));
+        orderService.transitionRestaurantOrder(
+                ORDER_ID, RESTAURANT_ID, OrderStatus.ACCEPTED, OrderStatus.PREPARING, null, OrderActor.merchant(40L));
+        Assertions.assertTrue(orderService.cancelIfStillIn(
+                ORDER_ID, OrderStatus.PLACED, OrderLifecycleCommands.PAYMENT_TIMEOUT, OrderActor.system()).isPresent());
+        Assertions.assertEquals(DeliveryCompletion.COMPLETED,
+                orderService.completeDeliveredOrder(ORDER_ID, OrderActor.rider(4L)));
+
+        Mockito.verifyNoInteractions(cancellationRefunds);
     }
 
 

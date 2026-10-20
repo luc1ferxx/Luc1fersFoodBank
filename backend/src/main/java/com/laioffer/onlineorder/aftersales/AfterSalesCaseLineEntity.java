@@ -1,6 +1,8 @@
 package com.laioffer.onlineorder.aftersales;
 
 
+import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
+import com.laioffer.onlineorder.money.Money;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
@@ -38,4 +40,23 @@ public record AfterSalesCaseLineEntity(
         @Column("currency")
         String currency
 ) {
+
+    /**
+     * A new (unsaved) line asking for {@code quantity} of an order line, at the order line's name and unit price.
+     *
+     * @param caseId the case it belongs to; null for a line whose case is not saved yet
+     */
+    public static AfterSalesCaseLineEntity of(Long caseId, OrderHistoryItemEntity item, int quantity) {
+        Money amount = item.unitPrice().times(quantity);
+        return new AfterSalesCaseLineEntity(
+                null,
+                caseId,
+                item.id(),
+                item.menuItemName(),
+                item.price(),
+                quantity,
+                amount.amount(),
+                amount.currencyCode()
+        );
+    }
 }

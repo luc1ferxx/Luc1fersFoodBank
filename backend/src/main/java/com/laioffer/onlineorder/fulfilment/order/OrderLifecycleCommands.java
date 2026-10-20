@@ -18,7 +18,8 @@ import java.util.Optional;
  * compare-and-set on the status it read), its order_status_history row and the order event to the outbox in the
  * caller's transaction. A merchant accept and a timeout cancel therefore race on the same row lock and exactly one of
  * them wins; the loser sees the winner's status. A command that changes nothing (a repeat, or an order no longer in
- * the expected status) writes no history row.
+ * the expected status) writes no history row. A command that cancels a PAID or ACCEPTED order also opens the order's
+ * automatic refund in that transaction (ADR 0002 D12), so a failure there fails the command.
  *
  * <p>Each command takes the {@link OrderActor} recorded in the order history, and there are deliberately no overloads
  * without one: a new caller has to name its actor ({@link OrderActor#system()} for jobs such as the deadline
