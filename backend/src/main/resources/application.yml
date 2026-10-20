@@ -247,6 +247,15 @@ app:
     # After-sales events (aftersales.*) published by the after-sales module, keyed by the order id (same partition
     # count as the order topic).
     topic: ${KAFKA_AFTER_SALES_TOPIC:after-sales-events}
+    # A customer can ask for a refund until request-window after the order completed (orders.updated_at), a second
+    # time only after withdrawing the first and within the same window. Each open step waits for its answer until a
+    # deadline set when the case enters it: the merchant's answer (merchant-response-timeout), the customer's answer to
+    # a counter-offer or a rejection (customer-response-timeout) and the platform's arbitration (arbitration-timeout).
+    # A changed value applies to the steps taken after the change.
+    request-window: ${AFTER_SALES_REQUEST_WINDOW:24h}
+    merchant-response-timeout: ${AFTER_SALES_MERCHANT_RESPONSE_TIMEOUT:24h}
+    customer-response-timeout: ${AFTER_SALES_CUSTOMER_RESPONSE_TIMEOUT:48h}
+    arbitration-timeout: ${AFTER_SALES_ARBITRATION_TIMEOUT:72h}
   cleanup:
     enabled: ${CLEANUP_ENABLED:true}
     fixed-delay-ms: ${CLEANUP_FIXED_DELAY_MS:3600000}

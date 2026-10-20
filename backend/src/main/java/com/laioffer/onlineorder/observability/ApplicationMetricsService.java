@@ -50,6 +50,23 @@ public class ApplicationMetricsService {
 
 
     /**
+     * A committed step of an after-sales case: its opening or a transition of the after-sales state machine.
+     *
+     * @param action     OPEN or ORDER_CANCELLED for an opening, otherwise the after-sales trigger
+     * @param fromStatus the status the case left; none for an opening
+     * @param toStatus   the status the case entered
+     */
+    public void recordAfterSalesStep(String action, String fromStatus, String toStatus) {
+        meterRegistry.counter(
+                "onlineorder.aftersales.steps",
+                "action", normalize(action),
+                "from", normalize(fromStatus),
+                "to", normalize(toStatus)
+        ).increment();
+    }
+
+
+    /**
      * @param decision accepted, rejected or timeout (the merchant did not answer within app.fulfilment.accept-timeout)
      */
     public void recordMerchantDecision(String decision) {

@@ -6,14 +6,16 @@ import org.springframework.data.jdbc.repository.query.Query;
 import org.springframework.data.repository.ListCrudRepository;
 
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 
 
 /**
- * Cases are inserted and changed with {@code save}, whose version check is the compare-and-set of every case write.
- * The lock queries are the decision points of the commands (ADR 0002 section 7); a missing row and another customer's
- * or restaurant's case are both null.
+ * Cases are inserted with {@code save}; every step after the opening is written with {@link #compareAndSetStep}, the
+ * compare-and-set of the single writer ({@code AfterSalesTransitions}). The lock queries are the decision points of the
+ * commands (ADR 0002 section 7); a missing row and another customer's or restaurant's case are both null.
  */
 public interface AfterSalesCaseRepository extends ListCrudRepository<AfterSalesCaseEntity, Long> {
 
@@ -56,6 +58,63 @@ public interface AfterSalesCaseRepository extends ListCrudRepository<AfterSalesC
             ORDER BY id
             """)
     List<AfterSalesCaseEntity> findAllByOrderId(Long orderId);
+
+
+    /**
+     * The cases of several orders, by order and then oldest first; {@code orderIds} must not be empty.
+     */
+    @Query("""
+            SELECT *
+            FROM after_sales_cases
+            WHERE order_id IN (:orderIds)
+            ORDER BY order_id, id
+            """)
+    List<AfterSalesCaseEntity> findAllByOrderIdIn(Collection<Long> orderIds);
+
+
+    /**
+     * Writes one step of a case (ADR 0002 section 5.2): a compare-and-set on the status and the version the single
+     * writer read under the row lock, which also raises the version by one and clears the deadline retry of the status
+     * left behind. Every other column of the step is written as given. Returns the rows changed, 1, or 0 when the case
+     * moved on (checked with {@link com.laioffer.onlineorder.statemachine.CompareAndSet}).
+     */
+    @Modifying
+    @Query("""
+            UPDATE after_sales_cases
+            SET status = :status,
+                offered_amount = :offeredAmount,
+                approved_amount = :approvedAmount,
+                refunded_amount = :refundedAmount,
+                merchant_decision = :merchantDecision,
+                merchant_note = :merchantNote,
+                resolution = :resolution,
+                close_reason = :closeReason,
+                admin_note = :adminNote,
+                deadline_at = :deadlineAt,
+                deadline_retry_at = NULL,
+                deadline_attempts = 0,
+                version = version + 1,
+                updated_at = :updatedAt
+            WHERE id = :id
+              AND status = :expectedStatus
+              AND version = :expectedVersion
+            """)
+    int compareAndSetStep(
+            Long id,
+            String expectedStatus,
+            Long expectedVersion,
+            String status,
+            BigDecimal offeredAmount,
+            BigDecimal approvedAmount,
+            BigDecimal refundedAmount,
+            String merchantDecision,
+            String merchantNote,
+            String resolution,
+            String closeReason,
+            String adminNote,
+            LocalDateTime deadlineAt,
+            LocalDateTime updatedAt
+    );
 
 
     @Query("""
