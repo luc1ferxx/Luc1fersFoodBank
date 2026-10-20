@@ -10,6 +10,7 @@ import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.fulfilment.AfterCommit;
 import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.model.OrderDto;
@@ -440,7 +441,9 @@ public class OrderService implements OrderLifecycleCommands {
         );
         List<OrderHistoryItemDto> items = getOrderItems(updatedOrder.id());
         orderEventOutboxService.enqueueOrderEvent(updatedOrder, items, null, transitionedAt);
-        metricsService.recordOrderTransition(currentStatus.name(), targetStatus.name());
+        // Counted once the transition commits: a later step of the caller (its audit entry, its idempotency record)
+        // can still roll it back.
+        AfterCommit.run(() -> metricsService.recordOrderTransition(currentStatus.name(), targetStatus.name()));
         return new AppliedTransition(updatedOrder, items);
     }
 
