@@ -22,6 +22,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
@@ -195,6 +197,46 @@ class OrderLifecycleCommandsTests {
     }
 
 
+    /**
+     * The merchant API's 409 text: the current status, the code of its cancel reason when it has one, the required
+     * status and the target.
+     */
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', textBlock = """
+            CANCELLED | CUSTOMER_CANCELLED             | PAID     | ACCEPTED  | Order is CANCELLED (CUSTOMER_CANCELLED); only PAID orders can move to ACCEPTED
+            ACCEPTED  |                                | PAID     | CANCELLED | Order is ACCEPTED; only PAID orders can move to CANCELLED
+            PAID      |                                | ACCEPTED | PREPARING | Order is PAID; only ACCEPTED orders can move to PREPARING
+            CANCELLED | CUSTOMER_CANCELLED             | PAID     | CANCELLED | Order is CANCELLED (CUSTOMER_CANCELLED); only PAID orders can move to CANCELLED
+            CANCELLED | MERCHANT_REJECTED: out of buns | PAID     | ACCEPTED  | Order is CANCELLED (MERCHANT_REJECTED); only PAID orders can move to ACCEPTED
+            CANCELLED |                                | PAID     | ACCEPTED  | Order is CANCELLED; only PAID orders can move to ACCEPTED
+            PREPARING |                                | PAID     | ACCEPTED  | Order is PREPARING; only PAID orders can move to ACCEPTED
+            COMPLETED |                                | ACCEPTED | PREPARING | Order is COMPLETED; only ACCEPTED orders can move to PREPARING
+            """)
+    void transitionRestaurantOrder_conflicts_shouldKeepTheirExactMessages(
+            String currentStatus,
+            String currentCancelReason,
+            OrderStatus requiredStatus,
+            OrderStatus targetStatus,
+            String expectedMessage
+    ) {
+        Mockito.when(orderRepository.lockById(ORDER_ID)).thenReturn(order(currentStatus, RESTAURANT_ID, currentCancelReason));
+        String cancelReason = targetStatus == OrderStatus.CANCELLED ? "MERCHANT_REJECTED: sold out" : null;
+
+        ConflictException conflict = Assertions.assertThrows(
+                ConflictException.class,
+                () -> orderService.transitionRestaurantOrder(
+                        ORDER_ID, RESTAURANT_ID, requiredStatus, targetStatus, cancelReason, OrderActor.merchant(40L))
+        );
+
+        Assertions.assertEquals(OrderLifecycleCommands.ORDER_STATUS_CONFLICT, conflict.getCode());
+        Assertions.assertEquals(expectedMessage, conflict.getMessage());
+        // Only the lock: no status write, whichever repository method would carry it.
+        Mockito.verify(orderRepository).lockById(ORDER_ID);
+        Mockito.verifyNoMoreInteractions(orderRepository);
+        Mockito.verifyNoInteractions(orderStatusHistoryService, orderEventOutboxService, metricsService);
+    }
+
+
     @Test
     void transitionRestaurantOrder_whenTheRejectIsRepeated_shouldReturnTheFirstRejectionUnchanged() {
         Mockito.when(orderRepository.lockById(ORDER_ID))
@@ -268,6 +310,22 @@ class OrderLifecycleCommandsTests {
 
 
     @Test
+    void cancelIfStillIn_forAMissingOrder_shouldBeEmpty() {
+        Mockito.when(orderRepository.lockById(ORDER_ID)).thenReturn(null);
+
+        // Neither timeout throws for an order that is gone; the deadline is then simply dropped.
+        Assertions.assertEquals(Optional.empty(), orderService.cancelIfStillIn(
+                ORDER_ID, OrderStatus.PLACED, OrderLifecycleCommands.PAYMENT_TIMEOUT, OrderActor.system()));
+        Assertions.assertEquals(Optional.empty(), orderService.cancelIfStillIn(
+                ORDER_ID, OrderStatus.PAID, OrderLifecycleCommands.MERCHANT_TIMEOUT, OrderActor.system()));
+
+        Mockito.verify(orderRepository, Mockito.times(2)).lockById(ORDER_ID);
+        Mockito.verifyNoMoreInteractions(orderRepository);
+        Mockito.verifyNoInteractions(orderStatusHistoryService, orderEventOutboxService, metricsService);
+    }
+
+
+    @Test
     void completeDeliveredOrder_fromPreparing_shouldComplete() {
         Mockito.when(orderRepository.lockById(ORDER_ID)).thenReturn(order("PREPARING", RESTAURANT_ID));
         Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
@@ -325,6 +383,36 @@ class OrderLifecycleCommandsTests {
         Assertions.assertEquals(DeliveryCompletion.IGNORED, orderService.completeDeliveredOrder(ORDER_ID, OrderActor.system()));
         Mockito.verify(orderRepository, Mockito.never()).save(Mockito.any());
         Mockito.verifyNoInteractions(orderEventOutboxService);
+    }
+
+
+    @Test
+    void completeDeliveredOrder_fromPlacedOrPaid_shouldBeIgnoredWithoutWrites() {
+        Mockito.when(orderRepository.lockById(ORDER_ID)).thenReturn(
+                order("PLACED", RESTAURANT_ID),
+                order("PAID", RESTAURANT_ID)
+        );
+
+        // An order that was never accepted is not completed by a delivery, and the call does not throw.
+        Assertions.assertEquals(DeliveryCompletion.IGNORED, orderService.completeDeliveredOrder(ORDER_ID, OrderActor.rider(4L)));
+        Assertions.assertEquals(DeliveryCompletion.IGNORED, orderService.completeDeliveredOrder(ORDER_ID, OrderActor.rider(4L)));
+
+        // Only the locks: no status write, whichever repository method would carry it.
+        Mockito.verify(orderRepository, Mockito.times(2)).lockById(ORDER_ID);
+        Mockito.verifyNoMoreInteractions(orderRepository);
+        Mockito.verifyNoInteractions(orderStatusHistoryService, orderEventOutboxService, metricsService);
+    }
+
+
+    @Test
+    void completeDeliveredOrder_forAMissingOrder_shouldBeNotFound() {
+        Mockito.when(orderRepository.lockById(ORDER_ID)).thenReturn(null);
+
+        Assertions.assertEquals(DeliveryCompletion.NOT_FOUND, orderService.completeDeliveredOrder(ORDER_ID, OrderActor.rider(4L)));
+
+        Mockito.verify(orderRepository).lockById(ORDER_ID);
+        Mockito.verifyNoMoreInteractions(orderRepository);
+        Mockito.verifyNoInteractions(orderStatusHistoryService, orderEventOutboxService, metricsService);
     }
 
 

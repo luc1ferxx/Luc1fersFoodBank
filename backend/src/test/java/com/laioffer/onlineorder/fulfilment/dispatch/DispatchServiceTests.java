@@ -14,6 +14,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
@@ -21,7 +23,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 
 import static com.laioffer.onlineorder.fulfilment.FulfilmentTestEvents.orderEvent;
@@ -221,19 +225,21 @@ class DispatchServiceTests {
 
     @Test
     void orderCancelled_whenThereIsNoDelivery_shouldOnlyLeaveTheTombstone() {
-        OrderEventEnvelope cancelled = orderEvent("order.cancelled", ORDER_ID, 2L, "CANCELLED");
-        Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", cancelled)).thenReturn(true);
-        openDispatchOrder();
+        assertOrderCancelledOnlySetsTheTombstone(null);
+    }
 
-        service.handle(cancelled);
 
-        org.mockito.InOrder tombstone = Mockito.inOrder(dispatchOrderRepository, deliveryRepository);
-        tombstone.verify(dispatchOrderRepository).insertIfAbsent(Mockito.eq(ORDER_ID), Mockito.any());
-        tombstone.verify(dispatchOrderRepository).lockByOrderId(ORDER_ID);
-        tombstone.verify(dispatchOrderRepository).markCancelled(Mockito.eq(ORDER_ID), Mockito.any());
-        tombstone.verify(deliveryRepository).lockByOrderId(ORDER_ID);
-        Mockito.verifyNoMoreInteractions(deliveryRepository);
-        Mockito.verifyNoInteractions(riderRepository, outboxService);
+    @Test
+    void orderCancelled_forADeliveredDelivery_shouldOnlySetTheTombstone() {
+        // The order was cancelled after the rider delivered it: the delivery stays DELIVERED (ADR 0002 I23, I24).
+        assertOrderCancelledOnlySetsTheTombstone(delivery(7L, "DELIVERED"));
+    }
+
+
+    @Test
+    void orderCancelled_forACancelledDelivery_shouldOnlySetTheTombstone() {
+        // A delivery that is already cancelled has released its rider once; it is not cancelled (or released) again.
+        assertOrderCancelledOnlySetsTheTombstone(delivery(7L, "CANCELLED"));
     }
 
 
@@ -327,6 +333,41 @@ class DispatchServiceTests {
     }
 
 
+    /**
+     * The 409 text of a refused delivery move, the same through the admin action and the rider API: the current status
+     * and the target.
+     */
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', textBlock = """
+            DELIVERED | PICKED_UP | Delivery is DELIVERED; it cannot move to PICKED_UP
+            ASSIGNED  | DELIVERED | Delivery is ASSIGNED; it cannot move to DELIVERED
+            CANCELLED | PICKED_UP | Delivery is CANCELLED; it cannot move to PICKED_UP
+            CANCELLED | DELIVERED | Delivery is CANCELLED; it cannot move to DELIVERED
+            """)
+    void advance_illegalMoves_shouldConflictWithTheExactMessage(
+            String currentStatus,
+            DeliveryStatus target,
+            String expectedMessage
+    ) {
+        Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, currentStatus));
+        Mockito.when(deliveryRepository.lockByIdAndRiderId(7L, 3L)).thenReturn(delivery(7L, currentStatus));
+        Function<Long, DeliveryDto> adminAction =
+                target == DeliveryStatus.PICKED_UP ? service::markPickedUp : service::markDelivered;
+
+        ConflictException admin = Assertions.assertThrows(ConflictException.class, () -> adminAction.apply(7L));
+        ConflictException rider = Assertions.assertThrows(
+                ConflictException.class, () -> service.advanceForRider(3L, 7L, target));
+
+        for (ConflictException conflict : List.of(admin, rider)) {
+            Assertions.assertEquals("DELIVERY_STATUS_CONFLICT", conflict.getCode());
+            Assertions.assertEquals(expectedMessage, conflict.getMessage());
+        }
+        Mockito.verify(deliveryRepository, Mockito.never())
+                .updateStatus(Mockito.anyLong(), Mockito.anyString(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+        Mockito.verifyNoInteractions(riderRepository, outboxService);
+    }
+
+
     @Test
     void reassign_shouldMoveTheOpenDeliveryAndItsLoadToTheNewRiderAndPublishDeliveryReassigned() {
         Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "PICKED_UP"));
@@ -395,6 +436,28 @@ class DispatchServiceTests {
 
 
     @Test
+    void reassign_toTheCurrentRiderOfADeliveredDelivery_shouldReturnItUnchanged() {
+        Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "DELIVERED"));
+        Mockito.when(riderRepository.findById(3L)).thenReturn(Optional.of(rider(3L, "Alice")));
+
+        // The same-rider check comes before the status check: a retried reassignment is answered even after the
+        // rider finished the delivery, where a reassignment to another rider would be refused.
+        DeliveryDto unchanged = service.reassign(7L, 3L);
+
+        Assertions.assertEquals(3L, unchanged.riderId());
+        Assertions.assertEquals("Alice", unchanged.riderName());
+        Assertions.assertEquals("DELIVERED", unchanged.status());
+        Assertions.assertNotNull(unchanged.deliveredAt());
+        Mockito.verify(deliveryRepository).lockById(7L);
+        Mockito.verifyNoMoreInteractions(deliveryRepository);
+        Mockito.verify(riderRepository, Mockito.never()).lockById(Mockito.anyLong());
+        Mockito.verify(riderRepository, Mockito.never()).decrementLoad(Mockito.anyLong(), Mockito.any());
+        Mockito.verify(riderRepository, Mockito.never()).incrementLoad(Mockito.anyLong(), Mockito.any());
+        Mockito.verifyNoInteractions(outboxService);
+    }
+
+
+    @Test
     void reassign_ofAFinishedDelivery_shouldConflict() {
         Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "DELIVERED"), delivery(7L, "CANCELLED"));
 
@@ -404,6 +467,52 @@ class DispatchServiceTests {
         }
 
         Mockito.verifyNoInteractions(riderRepository, outboxService);
+    }
+
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', textBlock = """
+            DELIVERED | Delivery is DELIVERED; only an open delivery can be reassigned
+            CANCELLED | Delivery is CANCELLED; only an open delivery can be reassigned
+            """)
+    void reassign_ofAFinishedDelivery_shouldConflictWithTheExactMessage(String status, String expectedMessage) {
+        Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, status));
+
+        ConflictException conflict = Assertions.assertThrows(ConflictException.class, () -> service.reassign(7L, 4L));
+
+        Assertions.assertEquals("DELIVERY_STATUS_CONFLICT", conflict.getCode());
+        Assertions.assertEquals(expectedMessage, conflict.getMessage());
+        Mockito.verify(deliveryRepository).lockById(7L);
+        Mockito.verifyNoMoreInteractions(deliveryRepository);
+        Mockito.verifyNoInteractions(riderRepository, outboxService);
+    }
+
+
+    /**
+     * Either flag makes the rider undispatchable; the text names the requested rider. Inactive and on duty does not occur
+     * in the riders table (an inactive rider is kept off duty) but is refused the same way.
+     */
+    @ParameterizedTest
+    @CsvSource({
+            "true, false",
+            "false, false",
+            "false, true"
+    })
+    void reassign_toARiderThatIsNotDispatchable_shouldConflictWithTheExactMessage(boolean active, boolean onDuty) {
+        LocalDateTime now = LocalDateTime.now();
+        Mockito.when(deliveryRepository.lockById(7L)).thenReturn(delivery(7L, "PICKED_UP"));
+        Mockito.when(riderRepository.lockById(3L)).thenReturn(rider(3L, "Alice"));
+        Mockito.when(riderRepository.lockById(9L)).thenReturn(new RiderEntity(9L, null, "Dan", null, active, onDuty, 0, now, now));
+
+        ConflictException conflict = Assertions.assertThrows(ConflictException.class, () -> service.reassign(7L, 9L));
+
+        Assertions.assertEquals("RIDER_NOT_DISPATCHABLE", conflict.getCode());
+        Assertions.assertEquals("Rider 9 is not active and on duty", conflict.getMessage());
+        Mockito.verify(deliveryRepository).lockById(7L);
+        Mockito.verifyNoMoreInteractions(deliveryRepository);
+        Mockito.verify(riderRepository, Mockito.never()).decrementLoad(Mockito.anyLong(), Mockito.any());
+        Mockito.verify(riderRepository, Mockito.never()).incrementLoad(Mockito.anyLong(), Mockito.any());
+        Mockito.verifyNoInteractions(outboxService);
     }
 
 
@@ -457,6 +566,29 @@ class DispatchServiceTests {
         LocalDateTime createdAt = LocalDateTime.of(2026, 4, 4, 12, 0);
         Mockito.when(dispatchOrderRepository.lockByOrderId(ORDER_ID))
                 .thenReturn(new DispatchOrderEntity(ORDER_ID, null, createdAt, createdAt));
+    }
+
+
+    /**
+     * order.cancelled for an order whose delivery is already finished ({@code finished}), or that has none (null): the
+     * tombstone is set before the delivery is locked, and the delivery is neither written nor cancelled, no rider is
+     * released and no delivery event is published.
+     */
+    private void assertOrderCancelledOnlySetsTheTombstone(DeliveryEntity finished) {
+        OrderEventEnvelope cancelled = orderEvent("order.cancelled", ORDER_ID, 2L, "CANCELLED");
+        Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", cancelled)).thenReturn(true);
+        openDispatchOrder();
+        Mockito.when(deliveryRepository.lockByOrderId(ORDER_ID)).thenReturn(finished);
+
+        service.handle(cancelled);
+
+        org.mockito.InOrder tombstone = Mockito.inOrder(dispatchOrderRepository, deliveryRepository);
+        tombstone.verify(dispatchOrderRepository).insertIfAbsent(Mockito.eq(ORDER_ID), Mockito.any());
+        tombstone.verify(dispatchOrderRepository).lockByOrderId(ORDER_ID);
+        tombstone.verify(dispatchOrderRepository).markCancelled(Mockito.eq(ORDER_ID), Mockito.any());
+        tombstone.verify(deliveryRepository).lockByOrderId(ORDER_ID);
+        Mockito.verifyNoMoreInteractions(deliveryRepository, dispatchOrderRepository);
+        Mockito.verifyNoInteractions(riderRepository, outboxService, metricsService);
     }
 
 

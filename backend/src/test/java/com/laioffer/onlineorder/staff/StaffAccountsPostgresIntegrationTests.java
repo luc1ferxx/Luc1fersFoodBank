@@ -3,6 +3,7 @@ package com.laioffer.onlineorder.staff;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import com.laioffer.onlineorder.PostgresRowLocks;
 import com.laioffer.onlineorder.fulfilment.dispatch.DispatchService;
 import com.laioffer.onlineorder.fulfilment.dispatch.RiderService;
 import com.laioffer.onlineorder.fulfilment.order.OrderActor;
@@ -646,7 +647,8 @@ class StaffAccountsPostgresIntegrationTests {
 
             // ... while the rider's own request still reads them as active and then waits for the row.
             Future<?> goOnDuty = executor.submit(() -> riderService.setOnDuty(customerId, true));
-            awaitLockWaiter();
+            PostgresRowLocks.awaitLockWaiters(
+                    jdbcTemplate, 1, "The rider's update never waited for the deactivation's row lock");
             commit.countDown();
             deactivation.get(30, TimeUnit.SECONDS);
 
@@ -803,27 +805,6 @@ class StaffAccountsPostgresIntegrationTests {
                   AND event_type = 'order.accepted'
                 """, String.class, order.id());
         return objectMapper.readValue(payload, OrderEventEnvelope.class);
-    }
-
-
-    /**
-     * Waits until some backend of this database is blocked on a lock (the rider's UPDATE behind the admin's).
-     */
-    private void awaitLockWaiter() throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
-        while (System.nanoTime() < deadline) {
-            Integer waiting = jdbcTemplate.queryForObject("""
-                    SELECT COUNT(*)
-                    FROM pg_stat_activity
-                    WHERE datname = current_database()
-                      AND wait_event_type = 'Lock'
-                    """, Integer.class);
-            if (waiting != null && waiting > 0) {
-                return;
-            }
-            Thread.sleep(20);
-        }
-        Assertions.fail("The rider's update never waited for the deactivation's row lock");
     }
 
 
