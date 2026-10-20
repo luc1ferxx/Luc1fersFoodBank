@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/after-sales-events/aftersales.case_opened/v1.json",
+  "title": "aftersales.case_opened, version 1",
+  "description": "An after-sales case was opened: a customer's refund request on a completed order (kind CUSTOMER_REQUEST, status PENDING_MERCHANT, action OPEN, with the customer's reason and the merchant's deadline), or the automatic refund of a paid order that was cancelled (kind ORDER_CANCELLED, status REFUNDING, action ORDER_CANCELLED, with the approved amount, the order total). Topic after-sales-events, record key: the order id, aggregate: AFTER_SALES_CASE (aggregate_id = the case id).",
+  "$ref": "../../common/envelope/v1.json",
+  "properties": {
+    "event_type": {
+      "const": "aftersales.case_opened"
+    },
+    "aggregate_type": {
+      "const": "AFTER_SALES_CASE"
+    },
+    "data": {
+      "$ref": "../../common/after-sales-case-data/v1.json",
+      "properties": {
+        "status": {
+          "enum": [
+            "PENDING_MERCHANT",
+            "REFUNDING"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "ORDER_CANCELLED"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "approved_amount",
+          "resolution"
+        ],
+        "properties": {
+          "status": {
+            "const": "REFUNDING"
+          },
+          "action": {
+            "const": "ORDER_CANCELLED"
+          },
+          "resolution": {
+            "const": "ORDER_CANCELLED"
+          }
+        }
+      },
+      "else": {
+        "required": [
+          "restaurant_id",
+          "reason_code",
+          "description",
+          "deadline_at"
+        ],
+        "properties": {
+          "status": {
+            "const": "PENDING_MERCHANT"
+          },
+          "action": {
+            "const": "OPEN"
+          }
+        }
+      }
+    }
+  }
+}

@@ -2,6 +2,7 @@ package com.laioffer.onlineorder;
 
 
 import com.laioffer.onlineorder.cache.CacheInvalidationMessage;
+import com.laioffer.onlineorder.messaging.AfterSalesEventEnvelope;
 import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
 import com.laioffer.onlineorder.messaging.MerchantEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
@@ -49,6 +50,7 @@ class JsonInputTypesTests {
             OrderEventEnvelope.class,
             DeliveryEventEnvelope.class,
             MerchantEventEnvelope.class,
+            AfterSalesEventEnvelope.class,
             CacheInvalidationMessage.class
     );
 

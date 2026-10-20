@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/after-sales-events/aftersales.offer_made/v1.json",
+  "title": "aftersales.offer_made, version 1",
+  "description": "The merchant offered a partial refund (action MERCHANT_OFFER); the customer accepts or declines it until deadline_at. Topic after-sales-events, record key: the order id, aggregate: AFTER_SALES_CASE (aggregate_id = the case id).",
+  "$ref": "../../common/envelope/v1.json",
+  "properties": {
+    "event_type": {
+      "const": "aftersales.offer_made"
+    },
+    "aggregate_type": {
+      "const": "AFTER_SALES_CASE"
+    },
+    "data": {
+      "$ref": "../../common/after-sales-case-data/v1.json",
+      "required": [
+        "merchant_decision",
+        "offered_amount",
+        "deadline_at"
+      ],
+      "properties": {
+        "status": {
+          "const": "COUNTER_OFFERED"
+        }
+      }
+    }
+  }
+}

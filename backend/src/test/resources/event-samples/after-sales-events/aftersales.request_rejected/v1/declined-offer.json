@@ -1,0 +1,51 @@
+{
+  "event_id": "5d1c9a7e-2b4f-4c8d-9e3a-000000000205",
+  "event_version": 1,
+  "event_type": "aftersales.request_rejected",
+  "aggregate_type": "AFTER_SALES_CASE",
+  "aggregate_id": 501,
+  "sequence": 3,
+  "occurred_at": "2026-04-25T18:00:00",
+  "correlation_id": "after-sales-decline-91aa",
+  "idempotency_key": "after-sales-decline-91aa",
+  "data": {
+    "case_id": 501,
+    "order_id": 1001,
+    "order_no": "7254189912938504192",
+    "customer_id": 3,
+    "restaurant_id": 1,
+    "kind": "CUSTOMER_REQUEST",
+    "attempt_no": 1,
+    "status": "REJECTED",
+    "action": "CUSTOMER_DECLINE_OFFER",
+    "actor_type": "CUSTOMER",
+    "actor_id": 3,
+    "version": 2,
+    "reason_code": "MISSING_ITEM",
+    "description": "The burger was missing from the bag.",
+    "requested_amount": 16.09,
+    "offered_amount": 5.50,
+    "currency": "USD",
+    "merchant_decision": "OFFERED",
+    "deadline_at": "2026-04-27T18:00:00",
+    "lines": [
+      {
+        "order_item_id": 41,
+        "menu_item_name": "Whopper Meal",
+        "quantity": 1,
+        "unit_price": 10.59,
+        "amount": 10.59,
+        "currency": "USD"
+      },
+      {
+        "order_item_id": 42,
+        "menu_item_name": "Large Fries",
+        "quantity": 2,
+        "unit_price": 2.75,
+        "amount": 5.50,
+        "currency": "USD"
+      }
+    ],
+    "opened_at": "2026-04-25T13:10:05.120394"
+  }
+}

@@ -242,6 +242,11 @@ app:
       batch-size: ${FULFILMENT_DEADLINE_BATCH_SIZE:100}
       # Delay before a deadline whose firing failed (for example a lock timeout) is tried again.
       retry-backoff: ${FULFILMENT_DEADLINE_RETRY_BACKOFF:30s}
+  # After-sales refunds (com.laioffer.onlineorder.aftersales, docs/adr/0002-after-sales-state-machine.md).
+  after-sales:
+    # After-sales events (aftersales.*) published by the after-sales module, keyed by the order id (same partition
+    # count as the order topic).
+    topic: ${KAFKA_AFTER_SALES_TOPIC:after-sales-events}
   cleanup:
     enabled: ${CLEANUP_ENABLED:true}
     fixed-delay-ms: ${CLEANUP_FIXED_DELAY_MS:3600000}

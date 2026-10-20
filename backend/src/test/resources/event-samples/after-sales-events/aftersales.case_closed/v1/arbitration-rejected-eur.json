@@ -1,0 +1,43 @@
+{
+  "event_id": "5d1c9a7e-2b4f-4c8d-9e3a-000000000213",
+  "event_version": 1,
+  "event_type": "aftersales.case_closed",
+  "aggregate_type": "AFTER_SALES_CASE",
+  "aggregate_id": 503,
+  "sequence": 4,
+  "occurred_at": "2026-04-27T10:00:00",
+  "correlation_id": "arbitrate-8d10",
+  "idempotency_key": "arbitrate-8d10",
+  "data": {
+    "case_id": 503,
+    "order_id": 1003,
+    "order_no": "7254189912938504194",
+    "customer_id": 3,
+    "restaurant_id": 1,
+    "kind": "CUSTOMER_REQUEST",
+    "attempt_no": 2,
+    "status": "CLOSED",
+    "action": "ADMIN_REJECT",
+    "actor_type": "ADMIN",
+    "actor_id": 1,
+    "version": 3,
+    "reason_code": "QUALITY_ISSUE",
+    "description": "The pizza arrived cold.",
+    "requested_amount": 9.80,
+    "currency": "EUR",
+    "merchant_decision": "REJECTED",
+    "merchant_note": "Delivered within 25 minutes.",
+    "close_reason": "ARBITRATION_REJECTED",
+    "lines": [
+      {
+        "order_item_id": 77,
+        "menu_item_name": "Margherita",
+        "quantity": 1,
+        "unit_price": 9.80,
+        "amount": 9.80,
+        "currency": "EUR"
+      }
+    ],
+    "opened_at": "2026-04-25T13:10:05.120394"
+  }
+}

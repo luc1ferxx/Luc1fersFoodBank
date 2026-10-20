@@ -114,7 +114,8 @@ public class ApplicationMetricsService {
      *
      * @param side      producer (an event the application tried to write: a bug, its transaction was rolled back) or
      *                  consumer (a record read from Kafka: dead-lettered without retries)
-     * @param topic     the contract topic (order-events, delivery-events, merchant-events), or unknown
+     * @param topic     the contract topic (order-events, delivery-events, merchant-events, after-sales-events), or
+     *                  unknown
      * @param eventType a published event type, or unknown
      */
     public void recordEventSchemaViolation(String side, String topic, String eventType) {

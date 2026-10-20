@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/after-sales-events/aftersales.case_escalated/v1.json",
+  "title": "aftersales.case_escalated, version 1",
+  "description": "The customer asked the platform to step in (action CUSTOMER_ESCALATE); an admin arbitrates until deadline_at. Topic after-sales-events, record key: the order id, aggregate: AFTER_SALES_CASE (aggregate_id = the case id).",
+  "$ref": "../../common/envelope/v1.json",
+  "properties": {
+    "event_type": {
+      "const": "aftersales.case_escalated"
+    },
+    "aggregate_type": {
+      "const": "AFTER_SALES_CASE"
+    },
+    "data": {
+      "$ref": "../../common/after-sales-case-data/v1.json",
+      "required": [
+        "deadline_at"
+      ],
+      "properties": {
+        "status": {
+          "const": "IN_ARBITRATION"
+        }
+      }
+    }
+  }
+}
