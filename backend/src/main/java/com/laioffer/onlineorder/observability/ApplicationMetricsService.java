@@ -67,6 +67,22 @@ public class ApplicationMetricsService {
 
 
     /**
+     * An after-sales deadline the poller handled.
+     *
+     * @param trigger the timeout: MERCHANT_TIMEOUT, OFFER_TIMEOUT, CUSTOMER_TIMEOUT or ARBITRATION_TIMEOUT
+     * @param outcome fired (the step committed), skipped (the after-sales machine refused it, so nothing was written) or
+     *                failed (it rolled back and the deadline backs off)
+     */
+    public void recordAfterSalesDeadline(String trigger, String outcome) {
+        meterRegistry.counter(
+                "onlineorder.aftersales.deadlines",
+                "trigger", normalize(trigger),
+                "outcome", normalize(outcome)
+        ).increment();
+    }
+
+
+    /**
      * @param decision accepted, rejected or timeout (the merchant did not answer within app.fulfilment.accept-timeout)
      */
     public void recordMerchantDecision(String decision) {

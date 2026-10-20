@@ -256,6 +256,17 @@ app:
     merchant-response-timeout: ${AFTER_SALES_MERCHANT_RESPONSE_TIMEOUT:24h}
     customer-response-timeout: ${AFTER_SALES_CUSTOMER_RESPONSE_TIMEOUT:48h}
     arbitration-timeout: ${AFTER_SALES_ARBITRATION_TIMEOUT:72h}
+    poller:
+      # Fires the deadlines of the open cases (com.laioffer.onlineorder.aftersales.AfterSalesPoller) on its own thread,
+      # not on the shared scheduler the outbox publisher uses. Follows Kafka like the fulfilment deadline poller; set
+      # AFTER_SALES_POLLER_ENABLED=true to fire them in the h2 profile.
+      enabled: ${AFTER_SALES_POLLER_ENABLED:${app.kafka.enabled:true}}
+      interval: ${AFTER_SALES_POLL_INTERVAL:1s}
+      # Cases fired per run, one transaction each.
+      batch-size: ${AFTER_SALES_POLL_BATCH_SIZE:100}
+      # Delay before a case whose deadline failed to fire (for example a lock timeout) is tried again. Its deadline_at
+      # stays as it was, so the customer's and the merchant's answers stay refused meanwhile.
+      retry-backoff: ${AFTER_SALES_DEADLINE_RETRY_BACKOFF:30s}
   cleanup:
     enabled: ${CLEANUP_ENABLED:true}
     fixed-delay-ms: ${CLEANUP_FIXED_DELAY_MS:3600000}
