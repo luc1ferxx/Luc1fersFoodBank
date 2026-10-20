@@ -6,6 +6,7 @@ import com.laioffer.onlineorder.model.CartDto;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.PaymentCheckoutBody;
 import com.laioffer.onlineorder.service.CartService;
+import com.laioffer.onlineorder.service.OrderService;
 import com.laioffer.onlineorder.service.PaymentService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -18,6 +19,7 @@ import org.springframework.test.context.DynamicPropertySource;
 
 
 import java.math.BigDecimal;
+import java.util.Map;
 
 
 @SpringBootTest
@@ -39,6 +41,9 @@ class H2CartCheckoutIntegrationTests {
 
     @Autowired
     private PaymentService paymentService;
+
+    @Autowired
+    private OrderService orderService;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -108,6 +113,55 @@ class H2CartCheckoutIntegrationTests {
         } finally {
             cartService.clearCart(customerId);
         }
+    }
+
+
+    @Test
+    void paymentCheckout_shouldRecordOneCaptureThatNeitherAReplayNorAnotherCheckoutAdds() {
+        Long customerId = customerId("demo@laifood.com");
+        cartService.clearCart(customerId);
+        PaymentCheckoutBody card = new PaymentCheckoutBody("Demo User", "4242424242424242", "12/30", "123");
+        String key = "h2-capture-key-" + System.nanoTime();
+
+        cartService.addMenuItemToCart(customerId, 1L);
+        cartService.addMenuItemToCart(customerId, 1L);
+        OrderDto paid = paymentService.payAndCheckout(customerId, key, card);
+
+        Map<String, Object> capture = jdbcTemplate.queryForMap(
+                "SELECT customer_id, amount, currency, status, provider_reference, captured_at FROM order_payments "
+                        + "WHERE order_id = ?",
+                paid.id()
+        );
+        Assertions.assertEquals(customerId, ((Number) capture.get("customer_id")).longValue());
+        Assertions.assertEquals(0, paid.totalPrice().compareTo((BigDecimal) capture.get("amount")));
+        Assertions.assertEquals(0, amount("9.78").compareTo((BigDecimal) capture.get("amount")));
+        Assertions.assertEquals(paid.currency(), capture.get("currency"));
+        Assertions.assertEquals("CAPTURED", capture.get("status"));
+        Assertions.assertTrue(((String) capture.get("provider_reference")).startsWith("SIMPAY-"));
+        Assertions.assertNotNull(capture.get("captured_at"));
+
+        // A replay of the key returns the same order and captures nothing more.
+        Assertions.assertEquals(paid.id(), paymentService.payAndCheckout(customerId, key, card).id());
+        Assertions.assertEquals(1, countPayments(paid.id()));
+
+        // POST /cart/checkout places an unpaid order, and the admin PATCH to PAID records no capture either.
+        cartService.addMenuItemToCart(customerId, 1L);
+        OrderDto placed = cartService.checkoutWithIdempotency(customerId, "PLACED", "h2-placed-key-" + System.nanoTime());
+        Assertions.assertEquals("PLACED", placed.status());
+        Assertions.assertEquals("PAID", orderService.idempotentTransitionOrderStatus(
+                customerId, placed.id(), "PAID", "h2-admin-paid-key-" + System.nanoTime()).status());
+        Assertions.assertEquals(0, countPayments(placed.id()));
+        Assertions.assertEquals(1, countPayments(paid.id()));
+    }
+
+
+    private int countPayments(Long orderId) {
+        Integer payments = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM order_payments WHERE order_id = ?",
+                Integer.class,
+                orderId
+        );
+        return payments == null ? 0 : payments;
     }
 
 
