@@ -1520,3 +1520,21 @@ RefundDto(Long id, Long caseId, Long orderId, @JsonFormat(shape = STRING) Long o
    - 默认：申请窗口 24h，商家处理 24h，顾客处理 48h，平台处理 72h。
    - 新增 `backend/src/main/resources/application-demo.yml`（profile `demo`，可与 `h2` 组合：`SPRING_PROFILES_ACTIVE=h2,demo`）：`request-window: 2h`、`merchant-response-timeout: 2m`、`customer-response-timeout: 3m`、`arbitration-timeout: 5m`，并设 `app.after-sales.poller.enabled: true`，让 h2 下也会触发超时和执行退款。
    - README 写明演示步骤：下单 → 完成 → 申请售后 → 等 2 分钟看商家超时自动同意。
+
+---
+
+## 21. P1 实施记录（提交 39c0f84；P2 开始前必读）
+
+P1 只加测试，全量门禁通过（873 个测试，0 失败，0 跳过）。实施中发现的、与前文描述不一致或 P2 需要知道的地方：
+
+1. **no-op 也会写幂等行。** 经 `runIdempotentOrderOperation` 的 no-op（管理员 PATCH 到当前状态、顾客重复取消）不写 orders、history、事件和指标，但会插入并标记一条 SUCCEEDED 的 `idempotency_requests` 行。13.2 里"no-op 什么都不写"只针对订单本身。
+2. **竞态 2 管理员先执行时，PATCH 本身不删 deadline。** 之后轮询器触发，`cancelIfStillIn` 返回 empty，`OrderDeadlineProcessor` 照样执行 `deleteById`。测试断言的是"两者都结束后 deadline 不存在"。
+3. **商家重复命令也会改写收件箱行。** `MerchantOrderService.decide` 在 `changed=false` 时也会重写 `merchant_orders` 的 status、cancel_reason、updated_at。
+4. **P2-4 会按预期打破的测试（13.3 未列全）：**
+   - `OrderServiceTests#adminPatch_shouldLockAndWriteInTheDocumentedOrder`、`#customerCancel_shouldLockAndWriteInTheDocumentedOrder`（InOrder 里 stub 并校验 `orderRepository.save`）、`#adminPatch_cancelled_shouldRecordAdminCancelled`。
+   - `DispatchServiceTests#advance_illegalMoves_shouldConflictWithTheExactMessage`（`never().updateStatus`，删掉 `updateStatus` 后编译失败）。
+   - 处理方式：把 `save` / `updateStatus` 换成新的 `compareAndSetStatus`，**保留**原有的顺序断言和"不写库"断言。
+5. **"不写库"断言改成 `verifyNoMoreInteractions`。** 新增测试在显式校验加锁调用后用 `verifyNoMoreInteractions(orderRepository)`，所以 P2 换成 CAS 后仍然有效。旧测试里的 `never().save(...)`（如 `OrderServiceTests` 约 138、205 行）在 P2 后会变成空断言，P2 要一并改掉。
+6. **竞态测试改成强制串行顺序。** 竞态测试用 `T/PostgresRowLocks.java` 先持有订单行锁，按固定顺序让两个命令排队，再放锁，每轮交替顺序，所以两种结局每次都会跑到。它依赖连接池的 `lock_timeout`（3000 ms，`application.yml`）。
+7. **骑手负载递减有下限保护。** `RiderRepository.decrementLoad` 带 `AND active_deliveries > 0`，重复释放会被截在 0。负载总和断言（`assertEveryRiderLoadMatchesTheirOpenDeliveries`）能发现重复释放，P2 不能删这个断言。
+8. **13.2、13.3、14 节的行号已漂移**，以 `grep` 为准。
