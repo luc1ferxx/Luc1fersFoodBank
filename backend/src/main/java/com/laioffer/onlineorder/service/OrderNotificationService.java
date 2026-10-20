@@ -61,7 +61,7 @@ public class OrderNotificationService {
     /**
      * Tells the customer about their delivery: rider assigned, picked up, delivered. A cancelled delivery gets no
      * notification of its own; the order's cancellation notification covers it. One notification per order and
-     * event type (uq_notification_order_event), so a redelivered event adds nothing.
+     * event type (uq_notification_order_event_scope, with the empty scope), so a redelivered event adds nothing.
      */
     public void recordDeliveryEvent(DeliveryEventEnvelope event) {
         if (event == null || event.data() == null || event.data().orderId() == null || event.data().customerId() == null) {

@@ -13,6 +13,12 @@ import java.util.List;
 
 public interface OrderNotificationRepository extends ListCrudRepository<OrderNotificationEntity, Long> {
 
+    /**
+     * Records an order or delivery notification unless the order already has one of this event type, and returns the
+     * rows inserted: 1 or 0. The row takes the empty dedup_scope (the column default), the scope of every order and
+     * delivery event, so uq_notification_order_event_scope keeps one per order and event type. The ON CONFLICT target
+     * is PostgreSQL syntax; the notification consumers only run with Kafka, which the h2 profile switches off.
+     */
     @Modifying
     @Query("""
             INSERT INTO order_notifications (
@@ -30,7 +36,7 @@ public interface OrderNotificationRepository extends ListCrudRepository<OrderNot
                 :message,
                 :createdAt
             )
-            ON CONFLICT (order_id, event_type) DO NOTHING
+            ON CONFLICT (order_id, event_type, dedup_scope) DO NOTHING
             """)
     int insertIfAbsent(
             Long orderId,
