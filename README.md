@@ -355,6 +355,24 @@ API errors use a consistent JSON shape and include the OpenTelemetry trace id, w
   `en-US`, the currency's own decimals: $12.78, €0.50, ¥950), and `lineTotal` multiplies a price by a quantity in
   integer hundredths.
 
+### Timestamps and time zone
+
+- **The server runs in UTC.** `OnlineOrderApplication.main` makes UTC the JVM's default zone before Spring starts,
+  whatever the host, the image or `-Duser.timezone` say; the Gradle `test` task and `bootRun` start their JVM in UTC
+  too, since tests do not run `main`. Every timestamp is a `LocalDateTime` from `LocalDateTime.now()` in a `TIMESTAMP`
+  column, so it is UTC wall-clock time, and the PostgreSQL driver opens each session in the JVM's zone, so
+  `CURRENT_TIMESTAMP` stored into a `TIMESTAMP` column (column defaults, the login lockout, the demo seed) is UTC as
+  well (`ServerTimeZoneTests`, `ServerTimeZonePostgresTests`).
+- **The JSON keeps its format.** Timestamps are still ISO dates and times without an offset
+  (`"2026-10-20T12:00:00"`, with fractional seconds when there are any); they mean UTC.
+- **Frontend.** `parseTimestamp` in `src/lib/format.ts` is the only parser of backend timestamps (ESLint rejects
+  `Date.parse` and `new Date(value)` elsewhere): an offset-less date and time is read as UTC, one with `Z` or an offset
+  keeps it. `formatDateTime` shows the time in the browser's zone and locale, and countdowns and deadline checks are
+  exact whatever the browser's zone. The UI tests run in `America/New_York` against a fake backend that writes UTC,
+  so reading a timestamp as local time fails them.
+- Rows written earlier by a server in another zone keep that zone's wall-clock time (`docs/operations.md`
+  section 3).
+
 ### Order State
 
 Allowed transitions:
@@ -978,6 +996,8 @@ the steps taken after the change). The after-sales poller fires the timeout once
 - Deadlines are hard for the customer's and the merchant's answers: from `deadline_at` on they are refused with
   `409 AFTER_SALES_DEADLINE_PASSED`, whether the poller has fired yet or not. Withdrawing and arbitrating have no
   deadline: until the poller fires the timeout, whoever locks the case first wins.
+- `deadline_at` and `request_deadline` are UTC, like every timestamp (see "Timestamps and time zone"): in any browser
+  zone a countdown, and the answer buttons it disables, end when the backend's hard deadline does.
 - The merchant timeout applies to every restaurant, also one without an active merchant account (unlike the order
   accept timeout, which only runs for staffed restaurants).
 - The poller (`AfterSalesPoller`) runs on its own thread, `after-sales-poller`, not on the shared scheduler, on every

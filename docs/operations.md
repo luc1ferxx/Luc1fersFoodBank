@@ -10,6 +10,7 @@ How OnlineOrder is observed, packaged, deployed and gated. Paths are relative to
 | Kubernetes | `deploy/k8s/` (kustomize base + `staging` and `prod` overlays) |
 | Read replicas (read/write splitting) | `backend/src/main/java/com/laioffer/onlineorder/datasource/`, section 11 |
 | Image | `Dockerfile` |
+| Time zone (the server runs in UTC) | `OnlineOrderApplication.main`, section 3 |
 | CI and CD | `.github/workflows/`, `.github/dependabot.yml`, `.trivyignore` |
 | Event contracts, per-aggregate order | section 8 |
 | Partitions, order numbers, worker ids | section 9; the sharding plan in `docs/adr/0001-order-sharding.md` |
@@ -239,6 +240,17 @@ application, 8081 management when the deployment sets `MANAGEMENT_SERVER_PORT=80
 `backend/Dockerfile` packages a jar built beforehand (`cd backend && ./gradlew bootJar`, then `docker build backend`)
 on the same pinned Java 17 runtime, layered and non-root. Use `docker build --platform linux/amd64 backend` to build
 for another architecture.
+
+**Time zone.** The server runs in UTC: `OnlineOrderApplication.main` makes UTC the JVM's default zone before Spring
+starts, so neither the host's or container's `TZ` nor `-Duser.timezone` in `JAVA_OPTS` changes it (the image sets
+neither). Every timestamp is UTC wall-clock time without an offset (`LocalDateTime` in `TIMESTAMP` columns and in the
+JSON), the PostgreSQL sessions of the pool and of Flyway are UTC, and so are the log timestamps; the frontend reads the
+JSON's timestamps as UTC (README "Timestamps and time zone"). Operator SQL that compares with the current time uses
+`now() AT TIME ZONE 'UTC'` (the runbook queries) or runs with `PGTZ=UTC` (`db/ops/repair_order_history.sql`).
+Rows written by a server in another zone keep that zone's wall-clock time; nothing converts them. The images already
+ran in UTC, so their deployments see no change. A backend whose JVM was not in UTC (`bootRun` on a laptop in another
+zone) left older rows that now read as shifted by its offset, deadlines and request windows included. Reset a local
+or demo database as AGENTS.md describes (recreate `onlineorder`, or delete the `onlineorder-pg-local` volume).
 
 ```sh
 docker build -t onlineorder:local .
@@ -643,7 +655,7 @@ On PostgreSQL the append-only tables that grow with traffic are range-partitione
 | `order_status_history` | `occurred_at` | `CLEANUP_ORDER_STATUS_HISTORY_RETENTION` | 0d: kept forever |
 
 Partitions are named `<table>_pYYYY_MM` and cover `[first of the month, first of the next month)` of the column, in
-the time the application writes (`LocalDateTime.now()` of the JVM, UTC in the image); `<table>_default` takes rows
+the time the application writes (`LocalDateTime.now()`, UTC: section 3); `<table>_default` takes rows
 outside every partition. V10 copies each table into its partitioned replacement with its ids, keys, checks, the
 history's foreign key to `orders` and the indexes, and creates the months that have rows, the current month and the
 next three. H2 keeps plain tables (the `h2` profile deletes rows instead). `outbox_events` is not partitioned yet; it
@@ -1235,7 +1247,7 @@ WHERE o.status = 'CANCELLED' AND o.total_price > 0
 "After-sales deadline <trigger> of case <id> (order <order>) failed (attempt N); retrying at ...") is tried again after
 `poller.retry-backoff` (30s), with no limit on the tries. Its `deadline_at` does not move, so the customer's and the
 merchant's answers stay refused meanwhile. No alert covers it. A case whose deadline passed minutes ago means the poller
-is off, stopped or keeps failing (the application writes UTC in the image, as in section 9):
+is off, stopped or keeps failing (the application writes UTC, section 3):
 
 ```sql
 SELECT id, order_id, status, deadline_at, deadline_retry_at, deadline_attempts
