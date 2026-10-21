@@ -1843,7 +1843,7 @@ P5 的文档提交在这个范围之后。
   - `orders.status` 和 `deliveries.status` 的每次写入都先 `decide`，再用 CAS 写（`OrderRepository.compareAndSetStatus`；`DeliveryRepository.compareAndSetStatus`、`compareAndSetRider`），行数不为 1 时抛 `StaleTransitionException`。`SELECT ... FOR UPDATE` 仍是决策点。
   - 409 的错误码和文案、no-op、历史、事件和审计与迁移前一致（第 22 节）。`onlineorder.order.transition` 改为提交后计数。
 - **售后后端**：
-  - 迁移：V12 建售后单、行、历史、`refunds`、`order_payments`、`merchant_after_sales_cases`，并给 `order_notifications` 加 `dedup_scope`；V12_1（Java）加币种检查；V12_2 给 `idempotency_requests` 加 `case_id`。
+  - 迁移：V12 建售后单、行、历史、`refunds`、`order_payments`、`merchant_after_sales_cases`，并给 `order_notifications` 加 `dedup_scope`；V12_1（Java）加币种检查；V12_2 给 `idempotency_requests` 加 `case_id`；P5 之后 V12_3 给 `refunds` 加 `claim_failures`（后续事项第 9 条）。
   - 写入：`AfterSalesTransitions` 是售后单的单一写入者，CAS 条件是 `id + status + version`。已付款订单取消时，经 `service.CancellationRefunds` 在同一事务里开 ORDER_CANCELLED 单和退款。商家决策经 `OrderLifecycleCommands.decideAfterSalesCase` 同步进入。
   - 接口共 16 个：
     - 顾客：`POST /orders/{orderId}/after-sales`、`GET /after-sales/cases`、`GET /after-sales/cases/{caseId}`，以及 `POST /after-sales/cases/{caseId}/` 下的 `accept-offer`、`decline-offer`、`escalate`、`withdraw`。顾客的 POST 都要求 `Idempotency-Key`。
@@ -1852,7 +1852,7 @@ P5 的文档提交在这个范围之后。
   - 新错误码 4 个：`AFTER_SALES_NOT_ELIGIBLE`、`AFTER_SALES_STATUS_CONFLICT`、`AFTER_SALES_DEADLINE_PASSED`、`REFUND_STATUS_CONFLICT`。审计动作 2 个：`after_sales_case.arbitrate`、`refund.retry`。
   - 事件：topic `after-sales-events`，7 个 `aftersales.*` 事件类型，都是 INITIAL。消费组 `onlineorder-merchant-aftersales` 维护商家投影（只前进），`onlineorder-aftersales-notification` 写顾客通知。
   - 执行：轮询器 `AfterSalesPoller`（线程 `after-sales-poller`）每个 tick 先触发到期的截止时间（`AfterSalesDeadlineProcessor`），再执行到期的退款（`RefundExecutor`，网关调用在事务外，网关是 `SimulatedRefundGateway`）。开关 `app.after-sales.poller.enabled` 默认跟随 `app.kafka.enabled`；`demo` profile 缩短时限并打开轮询器。
-  - 指标：`onlineorder.aftersales.steps{action,from,to}`、`onlineorder.aftersales.deadlines{trigger,outcome}`、`onlineorder.aftersales.refunds{outcome}`、`onlineorder.aftersales.cancellations.undercaptured`、`onlineorder.aftersales.merchant_decisions{decision}`。
+  - 指标：`onlineorder.aftersales.steps{action,from,to}`、`onlineorder.aftersales.deadlines{trigger,outcome}`、`onlineorder.aftersales.refunds{outcome}`、`onlineorder.aftersales.cancellations.undercaptured`、`onlineorder.aftersales.merchant_decisions{decision}`；P5 之后加了网关线程的 gauge 和 `onlineorder.aftersales.refund_gateway.saturated`（后续事项第 10 条）。
 - **前端**：
   - API 层：`proxyPaths.ts` 加 `/after-sales`；`dto.ts` 加 DTO 和严格解码器；`endpoints.ts` 加 16 个端点函数；fake backend 是 `src/test/fakeAfterSales.ts`。
   - 顾客在 `OrderingPage` 的订单上申请和跟进（`AfterSalesRequestForm`、`AfterSalesCaseView`、`useAfterSales`）。
@@ -1863,6 +1863,7 @@ P5 的文档提交在这个范围之后。
 
 **测试**
 - 后端：最后一次全量门禁 1527 个测试，0 失败，0 跳过。P1 结束时是 873 个，P3b 结束时是 1351 个。
+  - P5 之后的代码小修（58983b5 到 68a1d85，后续事项第 7–11、13、14 条）之后：全量门禁（`--rerun`）1551 个测试，0 失败，0 跳过，Testcontainers 测试都实际执行了。前端仍是 161 个。
   - 状态机：`StateMachineTests`、`OrderStateMachineTests`、`DeliveryStateMachineTests`、`AfterSalesStateMachineTests`、`RefundStateMachineTests`。
   - 售后的 schema、顾客 API、管理员、截止时间、取消退款、退款执行器、商家和通知，各有 H2 和 PostgreSQL 两套集成测试。
   - 端到端：`AfterSalesFlowContainerTests`（第 25 节的 6 条流程）。
@@ -1890,7 +1891,7 @@ P5 的文档提交在这个范围之后。
 9. **商家端**：命令要求投影行已经存在，否则返回 404。所以 h2 profile（Kafka 关闭）下，商家看不到也处理不了售后单，商家超时仍会自动同意。没有商家详情接口（第 25 节）。
 10. **通知**：范围比第 10.3 节宽，开单、申请平台介入、所有关闭原因和顾客拒绝还价都会通知。已扣款且金额大于 0 的取消，通知都写"将自动退款"（第 25 节）。
 11. **退款的 `last_error` 只给管理员**：顾客看到的 `RefundDto` 不带这个字段（第 24 节）。
-12. **发布**（运维步骤见 `docs/operations.md` 第 12 节"Rollout (V12-V12_2)"）：
+12. **发布**（运维步骤见 `docs/operations.md` 第 12 节"Rollout (V12-V12_3)"）：
     - 第 15 节"V12 可以在线执行"的说法不成立。V12 给 `order_notifications` 换唯一键要建唯一索引（第 23 节）。
     - 第 15 节"回滚：新表保留，影响无害"也不成立。V12 删掉了旧键 `uq_notification_order_event`，上一版本写通知用的 `ON CONFLICT (order_id, event_type)` 会被 PostgreSQL 拒绝。回滚后，直到再次前滚，上一版本的消费者会把每个订单事件，以及 `delivery.assigned`、`delivery.picked_up`、`delivery.delivered`，都送进死信；它取消的已付订单不建售后单，也就不会自动退款。旧版本 pod 与新版本并存时也是这样。
     - 把旧键 `UNIQUE (order_id, event_type)` 加回去，只在没有任何订单有两条同类型通知时可行；一个订单的第二次售后申请就会产生这样的两条。所以优先前滚。
@@ -1909,16 +1910,16 @@ P5 的文档提交在这个范围之后。
 | 4 | 轮询器稳健性：skipped 结束本轮、claim 拆成两条查询、claim 失败只退避这一条、网关线程上限、tick 预算、H2 的 SKIP LOCKED 测试、少扣款的取消可观测 | 第 24 节第 1–6、8 条 | 已完成（P3c） |
 | 5 | 已扣款的取消，通知统一写"将自动退款" | 第 24 节第 7 条 | 已完成（P3c） |
 | 6 | 前端代理 `/after-sales`、失败重试复用 key、第二次申请换新 key | 第 23、25 节 | 已完成（P4） |
-| 7 | 新 POST 接口的限流 | 第 25 节 | 未处理：`RateLimitingFilter` 没有任何售后路径的规则，顾客、商家、管理员的 POST 都没有 |
-| 8 | 管理员状态过滤不区分大小写 | 第 25、26 节 | 未处理：`AfterSalesAdminService` 直接 `valueOf`，小写的值返回 400；商家端会先 trim 并转大写 |
-| 9 | 一直 claim 失败的退款需要上限 | 第 25 节 | 未处理：`backed_off` 不计尝试次数，这样的退款永远不会变成 FAILED。P5 加的告警 `OnlineOrderRefundsBackingOff` 让它们可见，但没有上限 |
-| 10 | 网关线程全部被卡住时要能观察到 | 第 25 节 | 未处理：只有 `RefundExecutor` 的一条 WARN 日志（线程恢复时一条 INFO），没有指标 |
-| 11 | `refund.retry` 的审计测试断言真实的 order_id | 第 25 节 | 未处理：`AuditLogIntegrationTests` 仍只断言 `order_id > 0` |
+| 7 | 新 POST 接口的限流 | 第 25 节 | 部分完成（58983b5）：`RateLimitingFilter` 给管理员的 arbitrate 和退款 retry 各加一个按用户的桶（10 个，每 6s 补 1 个，同 outbox retry/abandon），商家的 approve、reject、offer 共用一个按用户的桶（30 个，每 2s 补 1 个，同订单状态变更）。顾客的 5 个 POST（都要求 `Idempotency-Key`）仍没有规则 |
+| 8 | 管理员状态过滤不区分大小写 | 第 25、26 节 | 已完成（36904ae）：`GET /admin/after-sales` 和 `GET /admin/refunds` 先 trim 并转大写，和商家端一致；锁定小写返回 400 的 P3c 单元测试改用未知状态；fake backend 同步 |
+| 9 | 一直 claim 失败的退款需要上限 | 第 25 节 | 已完成（e175477）：V12_3 加 `refunds.claim_failures`，每次退避加 1（版本不变），退款每保存一步（含管理员重试）归零。连续失败达到 `app.after-sales.refund.max-claim-failures`（默认 10，至少 1，启动时校验）时，最后一次在自己的事务里、按 claim 时的版本放弃：PENDING 走 CLAIM 再 GIVE_UP，过期租约直接 GIVE_UP，尝试次数不变，不调网关，状态机的表不变。期间被别人改过或放弃本身失败时，照旧退避 |
+| 10 | 网关线程全部被卡住时要能观察到 | 第 25 节 | 已完成（db55f14）：`RefundExecutor` 是 `MeterBinder`，有 gauge `onlineorder.aftersales.refund_gateway.threads.busy` 和 `.threads.max`；每次因为没有空闲线程而什么也没 claim 的运行计入 `onlineorder.aftersales.refund_gateway.saturated`（启动时注册为 0）。告警 `OnlineOrderRefundGatewaySaturated`（持续 10 分钟），promtool 测试 2 组 |
+| 11 | `refund.retry` 的审计测试断言真实的 order_id | 第 25 节 | 已完成（fac4c13）：断言等于被重试退款所属售后单的 `order_id` |
 | 12 | `app.after-sales.refund.retry-backoff` 的注释补上"claim 失败也用这个间隔" | 第 25 节 | 已完成（P5，`application.yml` 的注释） |
-| 13 | 售后通知的过期事件保护 | 第 25 节 | 未处理：`AfterSalesNotificationService` 不调用 `EventSequenceTracker`（商家投影调用了），从死信重放的旧事件仍会写通知；订单通知现状也是这样 |
-| 14 | `ApiContractIntegrationTests` 覆盖 `MerchantAfterSalesCaseDto` 和管理员的 `RefundDto[]` 列表 | 第 25、26 节 | 未处理：目前只锁定顾客的售后单、退款和 overview |
+| 13 | 售后通知的过期事件保护 | 第 25 节 | 已完成（8096186）：`AfterSalesNotificationService` 在 processed_events 标记之后调用 `EventSequenceTracker.advance`，过期事件不写通知（计入 `onlineorder.events.stale_skipped`）；只有会写通知的事件（`OrderNotificationService.notifiesOf`）推进位置。订单通知仍没有这个保护 |
+| 14 | `ApiContractIntegrationTests` 覆盖 `MerchantAfterSalesCaseDto` 和管理员的 `RefundDto[]` 列表 | 第 25、26 节 | 已完成（68a1d85）：锁定商家列表里还价中的售后单及其行，以及管理员退款列表（含 `last_error`）的字段顺序 |
 | 15 | 10 个 listener 容器下重跑 k6 order-flow，评估 prod 连接池 | 第 25 节 | 未处理：默认并发 3 时有 30 个消费线程；prod overlay 是 `DATABASE_POOL_MAX_SIZE=20`，base 是 30。k6 没有重跑；不跑压测的分析和两种限制办法见 `docs/operations.md` 第 12 节"Connections: listener threads and the pool" |
-| 16 | promtool 告警规则：`onlineorder.aftersales.refunds{outcome=failed}`、`onlineorder.aftersales.cancellations.undercaptured` | 第 25 节 | 已完成（P5）：`alerts.yml` 加了 `OnlineOrderRefundsGivenUp`、`OnlineOrderRefundsBackingOff`、`OnlineOrderCancellationsUndercaptured`，`alerts.test.yml` 加了 5 组测试。仍未处理：`onlineorder.aftersales.deadlines{outcome=failed}` 没有告警，网关线程被占满没有指标（见第 10 条） |
+| 16 | promtool 告警规则：`onlineorder.aftersales.refunds{outcome=failed}`、`onlineorder.aftersales.cancellations.undercaptured` | 第 25 节 | 已完成（P5）：`alerts.yml` 加了 `OnlineOrderRefundsGivenUp`、`OnlineOrderRefundsBackingOff`、`OnlineOrderCancellationsUndercaptured`，`alerts.test.yml` 加了 5 组测试。仍未处理：`onlineorder.aftersales.deadlines{outcome=failed}` 没有告警。网关线程被占满的指标和告警已由第 10 条补上 |
 | 17 | 限制骑手取餐后的取消 | 第 19.18 条 | 未处理：`CUSTOMER_CANCEL` 仍允许从 ACCEPTED 取消，取消后全额自动退款 |
 | 18 | P2 留下的小问题：`completeDeliveredOrder` 忽略第一步的 `TransitionOutcome`；`firingOnlyFrom` 在同族出现两个相同的 from 和目标时有歧义；`DispatchService` 里 `from.holdsRider()` 为假的分支不可达；把 `OrderActor` 移到中立的包，解开 `model` ↔ `fulfilment.order` 的循环 | 第 22 节 | 未处理 |
 | 19 | 时间戳是不带时区的 LocalDateTime，浏览器和服务器不在同一时区时倒计时有偏差 | 第 26 节 | 未处理（现有的其他时间戳也一样） |
