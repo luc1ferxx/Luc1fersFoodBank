@@ -9,6 +9,7 @@ import {
   updateRiderAvailability,
 } from "../api/endpoints";
 import { errorCopy } from "../lib/format";
+import { orderLabel } from "../lib/labels";
 import { withEntry, withoutEntry } from "../lib/maps";
 import { useLiveResource } from "./useLiveResource";
 import { usePolling } from "./usePolling";
@@ -100,11 +101,8 @@ export function useRiderConsole() {
           );
           // Finishing a delivery frees the rider: refresh the active-delivery count.
           reloadProfile();
-          setNotice(
-            command === "picked-up"
-              ? `Order #${delivery.order_id} picked up.`
-              : `Order #${delivery.order_id} delivered.`,
-          );
+          const label = orderLabel({ id: delivery.order_id, order_no: delivery.order_no });
+          setNotice(command === "picked-up" ? `${label} picked up.` : `${label} delivered.`);
           return true;
         })
         .catch((requestError: unknown) => {

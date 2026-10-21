@@ -6,12 +6,16 @@ import {
   deliveryFixture,
   idempotencyKeys,
   installFakeBackend,
+  orderNoFor,
   requestJson,
   riderUser,
 } from "../test/fakeBackend";
 import { flushPromises, renderApp, resetVisibility, setVisibility } from "../test/helpers";
 
 const DEACTIVATED = "This rider account is deactivated. Ask an admin to reactivate it.";
+
+/** How the console names an order: its public number, the one the customer sees. */
+const orderName = (orderId: number) => `Order #${orderNoFor(orderId)}`;
 
 const deliveryCard = (deliveryId: number) =>
   screen.findByRole("article", { name: `Delivery #${deliveryId}` });
@@ -85,18 +89,18 @@ describe("rider console", () => {
     const user = renderApp();
 
     const delivery = await deliveryCard(5);
-    expect(delivery).toHaveTextContent("Order #101");
+    expect(delivery).toHaveTextContent(orderName(101));
     expect(delivery).toHaveTextContent("Pick up at Burger Barn");
     expect(await screen.findByText("1 active deliveries")).toBeInTheDocument();
 
     await user.click(within(delivery).getByRole("button", { name: "Picked up" }));
-    expect(await screen.findByText("Order #101 picked up.")).toBeInTheDocument();
+    expect(await screen.findByText(`${orderName(101)} picked up.`)).toBeInTheDocument();
     expect(
       within(await deliveryCard(5)).getByText("Picked up", { selector: ".status-badge" }),
     ).toBeInTheDocument();
 
     await user.click(within(await deliveryCard(5)).getByRole("button", { name: "Delivered" }));
-    expect(await screen.findByText("Order #101 delivered.")).toBeInTheDocument();
+    expect(await screen.findByText(`${orderName(101)} delivered.`)).toBeInTheDocument();
     // Delivered is not an active delivery: the re-read list drops it, and the count follows.
     expect(
       await screen.findByText("No active deliveries. New assignments show up here."),
@@ -107,6 +111,20 @@ describe("rider console", () => {
     expect(idempotencyKeys(backend.callsTo("POST", "/rider/deliveries/5/delivered"))).toEqual([
       null,
     ]);
+  });
+
+  it("falls back to the order id for a delivery without an order number", async () => {
+    const backend = installFakeBackend({ user: riderUser });
+    // Order 100 is from before order numbers reached dispatch: the backend sends none.
+    backend.state.deliveries = [deliveryFixture({ delivery_id: 6, order_id: 100, order_no: null })];
+    const user = renderApp();
+
+    const delivery = await deliveryCard(6);
+    expect(within(delivery).getByRole("heading", { name: "Order #100" })).toBeInTheDocument();
+
+    await user.click(within(delivery).getByRole("button", { name: "Picked up" }));
+    expect(await screen.findByText("Order #100 picked up.")).toBeInTheDocument();
+    expect(backend.callsTo("POST", "/rider/deliveries/6/picked-up")).toHaveLength(1);
   });
 
   it("shows delivered deliveries under their filter", async () => {

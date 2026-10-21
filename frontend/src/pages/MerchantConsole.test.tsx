@@ -21,7 +21,10 @@ import { flushPromises, renderApp, resetVisibility, setVisibility } from "../tes
 
 const DEACTIVATED = "This merchant account is deactivated. Ask an admin to reactivate it.";
 
-const card = (orderId: number) => screen.findByRole("article", { name: `Order #${orderId}` });
+/** How the console names an order: its public number, the one the customer sees. */
+const orderName = (orderId: number) => `Order #${orderNoFor(orderId)}`;
+
+const card = (orderId: number) => screen.findByRole("article", { name: orderName(orderId) });
 
 /** The merchant login as GET /me shows it once an admin (de)activated the account. */
 const withMerchantActive = (active: boolean) => ({
@@ -75,7 +78,7 @@ describe("merchant console", () => {
     expect(ordersRequests(backend)[0]?.url).toBe("/merchant/orders?limit=50");
 
     await selectStatus(user, "Accepted");
-    await waitFor(() => expect(screen.queryByRole("article", { name: "Order #7" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("article", { name: orderName(7) })).toBeNull());
     expect(await card(8)).toBeInTheDocument();
     expect(ordersRequests(backend).map((call) => call.url)).toContain(
       "/merchant/orders?limit=50&status=ACCEPTED",
@@ -85,18 +88,41 @@ describe("merchant console", () => {
     expect(await screen.findByText("No completed orders.")).toBeInTheDocument();
   });
 
+  it("names an order by its public number and falls back to the id without one", async () => {
+    const backend = installFakeBackend({ user: merchantUser });
+    // Order 6 is from before order numbers reached the inbox: the backend sends none.
+    backend.state.merchantOrders = [
+      merchantOrderFixture({ order_id: 7, status: "PAID" }),
+      merchantOrderFixture({ order_id: 6, order_no: null, status: "PAID" }),
+    ];
+    const user = renderApp();
+
+    const numbered = await card(7);
+    expect(within(numbered).getByText(`Order #${orderNoFor(7)}`)).toBeInTheDocument();
+    expect(screen.queryByText("Order #7")).toBeNull();
+
+    const legacy = await screen.findByRole("article", { name: "Order #6" });
+    expect(within(legacy).getByText("Order #6")).toBeInTheDocument();
+    await user.click(within(legacy).getByRole("button", { name: "Reject" }));
+    expect(within(legacy).getByLabelText("Reason for rejecting Order #6")).toBeInTheDocument();
+    await user.click(within(legacy).getByRole("button", { name: "Back" }));
+    await user.click(within(legacy).getByRole("button", { name: "Accept" }));
+    expect(await screen.findByText("Order #6 accepted.")).toBeInTheDocument();
+    expect(backend.callsTo("POST", "/merchant/orders/6/accept")).toHaveLength(1);
+  });
+
   it("accepts an order and then marks it as preparing", async () => {
     const backend = merchantBackend();
     const user = renderApp();
 
     await user.click(within(await card(7)).getByRole("button", { name: "Accept" }));
 
-    expect(await screen.findByText("Order #7 accepted.")).toBeInTheDocument();
+    expect(await screen.findByText(`${orderName(7)} accepted.`)).toBeInTheDocument();
     const accepted = await card(7);
     expect(within(accepted).getByText("ACCEPTED")).toBeInTheDocument();
     await user.click(within(accepted).getByRole("button", { name: "Mark preparing" }));
 
-    expect(await screen.findByText("Order #7 marked as preparing.")).toBeInTheDocument();
+    expect(await screen.findByText(`${orderName(7)} marked as preparing.`)).toBeInTheDocument();
     expect(
       within(await card(7)).getByText("Waiting for a rider to pick it up."),
     ).toBeInTheDocument();
@@ -119,12 +145,12 @@ describe("merchant console", () => {
     expect(backend.callsTo("POST", "/merchant/orders/7/reject")).toHaveLength(0);
 
     await user.type(
-      within(paid).getByLabelText("Reason for rejecting order #7"),
+      within(paid).getByLabelText(`Reason for rejecting ${orderName(7)}`),
       "  Out of buns  ",
     );
     await user.click(within(paid).getByRole("button", { name: "Reject order" }));
 
-    expect(await screen.findByText("Order #7 rejected.")).toBeInTheDocument();
+    expect(await screen.findByText(`${orderName(7)} rejected.`)).toBeInTheDocument();
     expect(requestJson(backend.callsTo("POST", "/merchant/orders/7/reject")[0])).toEqual({
       reason: "Out of buns",
     });
@@ -161,7 +187,7 @@ describe("merchant console", () => {
     expect(within(await card(8)).queryByRole("alert")).toBeNull();
 
     await user.click(within(paid).getByRole("button", { name: "Accept" }));
-    expect(await screen.findByText("Order #7 accepted.")).toBeInTheDocument();
+    expect(await screen.findByText(`${orderName(7)} accepted.`)).toBeInTheDocument();
     expect(within(await card(7)).queryByRole("alert")).toBeNull();
   });
 
@@ -229,7 +255,7 @@ describe("merchant console", () => {
     await selectStatus(user, "New (paid)");
     await selectStatus(user, "Accepted");
     expect(await card(8)).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByRole("article", { name: "Order #7" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("article", { name: orderName(7) })).toBeNull());
 
     // The PAID list arrives after the merchant switched to ACCEPTED.
     await act(async () => {
@@ -238,8 +264,8 @@ describe("merchant console", () => {
     });
     await flushPromises();
 
-    expect(screen.queryByRole("article", { name: "Order #7" })).toBeNull();
-    expect(screen.getByRole("article", { name: "Order #8" })).toBeInTheDocument();
+    expect(screen.queryByRole("article", { name: orderName(7) })).toBeNull();
+    expect(screen.getByRole("article", { name: orderName(8) })).toBeInTheDocument();
     expect(screen.getByLabelText("Status")).toHaveValue("ACCEPTED");
     expect(
       ordersRequests(backend).find((call) => call.query.get("status") === "PAID")?.signal?.aborted,
@@ -261,7 +287,7 @@ describe("merchant console", () => {
     await waitFor(() => expect(ordersRequests(backend)).toHaveLength(2));
 
     await user.click(within(paid).getByRole("button", { name: "Accept" }));
-    expect(await screen.findByText("Order #7 accepted.")).toBeInTheDocument();
+    expect(await screen.findByText(`${orderName(7)} accepted.`)).toBeInTheDocument();
 
     await act(async () => {
       stalePoll.resolve(json([merchantOrderFixture({ order_id: 7, status: "PAID" })]));
@@ -779,10 +805,10 @@ describe("merchant orders behind the After-sales tab", () => {
     // Back on the Orders tab the new order is on screen; accepting it lowers the count.
     await user.click(ordersTab());
     await user.click(within(await card(9)).getByRole("button", { name: "Accept" }));
-    expect(await screen.findByText("Order #9 accepted.")).toBeInTheDocument();
+    expect(await screen.findByText(`${orderName(9)} accepted.`)).toBeInTheDocument();
     expect(ordersTab()).toHaveAccessibleName("Orders, 1 to accept");
     await user.click(within(await card(7)).getByRole("button", { name: "Accept" }));
-    expect(await screen.findByText("Order #7 accepted.")).toBeInTheDocument();
+    expect(await screen.findByText(`${orderName(7)} accepted.`)).toBeInTheDocument();
     expect(ordersTab()).toHaveAccessibleName("Orders");
     expect(ordersTab().querySelector(".tab-badge")).toBeNull();
   });
@@ -794,7 +820,7 @@ describe("merchant orders behind the After-sales tab", () => {
 
     await card(7);
     await selectStatus(user, "Accepted");
-    await waitFor(() => expect(screen.queryByRole("article", { name: "Order #7" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("article", { name: orderName(7) })).toBeNull());
     await waitFor(() =>
       expect(ordersRequests(backend).map((call) => call.url)).toEqual([
         "/merchant/orders?limit=50",

@@ -19,7 +19,7 @@ import {
   useMerchantOrders,
 } from "../hooks/useMerchantOrders";
 import { formatDateTime, formatMoney, lineTotal } from "../lib/format";
-import { AFTER_SALES_STATUS_LABELS, ORDER_STATUS_LABELS } from "../lib/labels";
+import { AFTER_SALES_STATUS_LABELS, ORDER_STATUS_LABELS, orderLabel } from "../lib/labels";
 
 const REJECT_REASON_MAX = 200;
 
@@ -89,6 +89,7 @@ function MerchantOrderCard({
   const [reasonError, setReasonError] = useState("");
   const reasonId = useId();
   const busy = pending !== undefined || locked;
+  const label = orderLabel({ id: order.order_id, order_no: order.order_no });
 
   const submitReject = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -105,10 +106,10 @@ function MerchantOrderCard({
   };
 
   return (
-    <article className="order-card console-card" aria-label={`Order #${order.order_id}`}>
+    <article className="order-card console-card" aria-label={label}>
       <div className="order-card__top">
         <div>
-          <p className="section-kicker">Order #{order.order_id}</p>
+          <p className="section-kicker">{label}</p>
           <h3>{formatMoney(order.total_price, order.currency)}</h3>
         </div>
         <span className={`status-badge status-badge--${order.status}`}>{order.status}</span>
@@ -148,7 +149,7 @@ function MerchantOrderCard({
 
       {order.status === "PAID" && rejecting ? (
         <form className="stack-form reject-form" onSubmit={submitReject} noValidate>
-          <label htmlFor={reasonId}>Reason for rejecting order #{order.order_id}</label>
+          <label htmlFor={reasonId}>Reason for rejecting {label}</label>
           <input
             id={reasonId}
             value={reason}

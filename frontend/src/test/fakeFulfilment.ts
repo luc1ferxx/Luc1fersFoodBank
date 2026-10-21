@@ -7,7 +7,7 @@ import {
   type RiderDelivery,
 } from "../api/dto";
 import type { FakeState } from "./fakeBackend";
-import { USD } from "./fixtures";
+import { USD, orderNoFor } from "./fixtures";
 import { type FakeHandler, type FakeRoute, apiError, idParam, json, requestJson } from "./fakeHttp";
 
 /** What the fake's route groups share with the core fake backend. */
@@ -28,10 +28,14 @@ export interface FakeContext {
   emailRegistered: (email: string) => boolean;
 }
 
-/** A paid order in the merchant inbox, with defaults for what a test does not care about. */
+/**
+ * A paid order in the merchant inbox, with defaults for what a test does not care about.
+ * Its `order_no` is the one the customer side shows for the same order id.
+ */
 export const merchantOrderFixture = (
   overrides: Partial<MerchantOrder> & Pick<MerchantOrder, "order_id">,
 ): MerchantOrder => ({
+  order_no: orderNoFor(overrides.order_id),
   restaurant_id: 1,
   customer_id: 1,
   status: "PAID",
@@ -44,10 +48,11 @@ export const merchantOrderFixture = (
   ...overrides,
 });
 
-/** A delivery of the signed-in rider. */
+/** A delivery of the signed-in rider; `order_no` as in merchantOrderFixture. */
 export const deliveryFixture = (
   overrides: Partial<RiderDelivery> & Pick<RiderDelivery, "delivery_id" | "order_id">,
 ): RiderDelivery => ({
+  order_no: orderNoFor(overrides.order_id),
   restaurant_id: 1,
   restaurant_name: "Burger Barn",
   status: "ASSIGNED",
