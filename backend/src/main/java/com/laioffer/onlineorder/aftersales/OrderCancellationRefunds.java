@@ -51,7 +51,7 @@ public class OrderCancellationRefunds implements CancellationRefunds {
     private final OrderHistoryItemRepository orderHistoryItemRepository;
     private final AfterSalesTransitions transitions;
     private final ApplicationMetricsService metricsService;
-    private final BigDecimal pickedUpRefundShare;
+    private final PickedUpRefundShare pickedUpRefundShare;
 
 
     public OrderCancellationRefunds(
@@ -61,15 +61,11 @@ public class OrderCancellationRefunds implements CancellationRefunds {
             ApplicationMetricsService metricsService,
             @Value("${app.after-sales.picked-up-cancel-refund-percent:50}") int pickedUpRefundPercent
     ) {
-        if (pickedUpRefundPercent < 0 || pickedUpRefundPercent > 100) {
-            throw new IllegalArgumentException("app.after-sales.picked-up-cancel-refund-percent must be between 0 and "
-                    + "100, got " + pickedUpRefundPercent);
-        }
         this.orderPaymentRepository = orderPaymentRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
         this.transitions = transitions;
         this.metricsService = metricsService;
-        this.pickedUpRefundShare = BigDecimal.valueOf(pickedUpRefundPercent).movePointLeft(2);
+        this.pickedUpRefundShare = new PickedUpRefundShare(pickedUpRefundPercent);
     }
 
 
@@ -80,7 +76,7 @@ public class OrderCancellationRefunds implements CancellationRefunds {
         Money total = cancelledOrder.total();
         boolean cancelledAfterPickup = cancellation.trigger() == OrderTrigger.CUSTOMER_CANCEL
                 && cancellation.pickedUpAt() != null;
-        Money refund = cancelledAfterPickup ? total.multiply(pickedUpRefundShare) : total;
+        Money refund = cancelledAfterPickup ? total.multiply(pickedUpRefundShare.factor()) : total;
         if (!refund.isPositive()) {
             if (cancelledAfterPickup && total.isPositive()) {
                 LOGGER.info("Order {} was cancelled by the customer after its pickup at {}; its refund share of {} is "
@@ -117,6 +113,31 @@ public class OrderCancellationRefunds implements CancellationRefunds {
                         cancelledOrder.id(), refund, payment.get().providerReference(), captured, opened.id());
                 metricsService.recordAfterSalesUndercapturedCancellation();
             });
+        }
+    }
+
+
+    /**
+     * app.after-sales.picked-up-cancel-refund-percent, checked when the application starts: 0 to 100. The check sits in
+     * this record rather than in the service's constructor, which Spring subclasses for its transaction proxy.
+     *
+     * @param percent the share of the total a customer's cancel after the pickup refunds
+     */
+    record PickedUpRefundShare(int percent) {
+
+        PickedUpRefundShare {
+            if (percent < 0 || percent > 100) {
+                throw new IllegalArgumentException("app.after-sales.picked-up-cancel-refund-percent must be between 0 "
+                        + "and 100, got " + percent);
+            }
+        }
+
+
+        /**
+         * The percent as a factor: 50 is 0.50.
+         */
+        BigDecimal factor() {
+            return BigDecimal.valueOf(percent).movePointLeft(2);
         }
     }
 }
