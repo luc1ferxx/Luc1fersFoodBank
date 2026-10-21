@@ -1504,7 +1504,7 @@ RefundDto(Long id, Long caseId, Long orderId, @JsonFormat(shape = STRING) Long o
 
 ## 20. 产品决策（2026-10-20 已定；优先于前文和第 19 节）
 
-1. **撤销后可以再申请一次**（替换 D5 的"一单一张售后单"）。
+1. **撤销后可以再申请一次**（替换 D5 的"一单一张售后单"）。**2026-10-21 已收紧**：下面"第 2 次"和"只有被撤销的单"两处按任何撤销都放行的写法作废，只有第 1 张单在 `PENDING_MERCHANT` 或 `COUNTER_OFFERED` 时被撤销才允许第 2 次，见第 27 节后续事项第 24 条。
    - `after_sales_cases` 去掉 `UNIQUE (order_id)`，新增 `attempt_no SMALLINT NOT NULL`，约束 `CHECK (attempt_no IN (1, 2))` 和 `UNIQUE (order_id, kind, attempt_no)`。`ORDER_CANCELLED` 单固定 `attempt_no = 1`。普通唯一约束即可，H2 和 PostgreSQL 都能建，不需要部分索引。
    - 开单时先锁订单行（`orders ... FOR UPDATE`），在锁内检查：
      - 第 1 次：该订单没有 `CUSTOMER_REQUEST` 单。
@@ -1873,7 +1873,7 @@ P5 的文档提交在这个范围之后。
 1. **声明的位置和 actor 类型**：订单的 `OrderTrigger`、`OrderTransitionContext`、`OrderStateMachine` 在 `model` 包，不在 `service`（第 19.12 条、第 22 节）。售后和退款状态机用自己的 `AfterSalesActor`（CUSTOMER、MERCHANT、ADMIN、SYSTEM），不复用 `OrderActor.Type`（第 23 节）。
 2. **触发器由调用方选定**，而且在加锁之前选定。`decide()` 最先检查 actor，不允许的 actor 得到 `IllegalStateException`（500）（第 19 节、第 22 节）。
 3. **每单至多两次顾客申请**，替换 D5 的 `UNIQUE (order_id)`：
-   - 第 1 张被撤销后，可以在原窗口内再申请一次（`attempt_no`，`UNIQUE (order_id, kind, attempt_no)`）。
+   - 第 1 张在 `PENDING_MERCHANT` 或 `COUNTER_OFFERED` 时被撤销后，可以在原窗口内再申请一次（`attempt_no`，`UNIQUE (order_id, kind, attempt_no)`；后续事项第 24 条）。
    - `refunds` 仍有 `UNIQUE (order_id)`，所以每单至多一笔退款。
    - 售后的幂等记录经 `idempotency_requests.case_id`（V12_2）绑定到售后单；通知去重加了 `dedup_scope`（第 20、23 节）。
 4. **错误码**：没有 `AFTER_SALES_CASE_EXISTS`。已有售后单和超出可退余额都返回 409 `AFTER_SALES_NOT_ELIGIBLE`（第 23 节）。
@@ -1928,3 +1928,4 @@ P5 的文档提交在这个范围之后。
 | 21 | 管理员仲裁是单 slot 的 key：两次重试之间去仲裁另一张单，会丢掉第一张单的 key | 第 26 节 | 已完成（5aab969）：`useAfterSalesAdmin` 按售后单保存 key（slot `arbitrate:{caseId}`），规则同 `useAfterSales`：payload 不变就复用 key，payload 变了就换新 key，成功后只删除这一单的 key。测试：`AdminConsole.test.tsx` 的 "keeps a failed arbitration's key per case while another case is arbitrated" |
 | 22 | 运行手册：FAILED 退款和 `backed_off`、少扣款的取消、V12 不能在线执行、V12_2 的外键检查、V12 之前的已付订单没有支付记录时的人工处理、新指标 | D16、第 23、25 节 | 由 P5 的 docs/operations.md 处理 |
 | 23 | README 的模块表和前端售后入口、h2 下商家售后收件箱为空、取消 `AFTER_SALES_CASE_EXISTS`、eligible 列表包含扣款 0.00 的订单（申请会返回 400）；AGENTS.md 的容器测试列表加上 `AfterSalesFlowContainerTests` | 第 23、25、26 节 | 由 P5 的 README.md 和 AGENTS.md 处理 |
+| 24 | 撤销后再申请的漏洞：按第 20 节第 1 条，第 1 张单无论从哪个状态撤销都放行第 2 次。商家拒绝后，顾客撤销再申请，商家处理时限重新计时，商家错过时 `MERCHANT_TIMEOUT` 全额退款，绕过了拒绝；从 `IN_ARBITRATION` 撤销再申请同样绕过平台 | 用户决定（2026-10-21） | 已完成（2026-10-21，取代第 20 节第 1 条"任何撤销都放行"的写法）：第 2 次只在第 1 张单从 `PENDING_MERCHANT` 或 `COUNTER_OFFERED` 撤销时允许，依据是第 1 张单 `CUSTOMER_WITHDRAW` 历史行的 `from_status`（`AfterSalesCaseHistoryRepository.findWithdrawnFromStatus`，在订单行锁内读取；`AfterSalesCustomerService.REQUEST_AGAIN_AFTER_WITHDRAWAL_FROM`）。从 `REJECTED`（商家拒绝，或顾客拒绝还价）或 `IN_ARBITRATION` 撤销，第 2 次返回 409 `AFTER_SALES_NOT_ELIGIBLE` "This order cannot be submitted for after-sales again"；没有撤销历史行的也一样。`OrderRepository.findPageOpenToAfterSales`（overview 的 `eligible_orders`）用同样的规则（`EXISTS` 子查询，PostgreSQL 和 H2 都能执行），界面不会再提供会被拒绝的申请；顾客撤销确认框按状态说明撤销后能否再申请。状态机声明、迁移和事件都没变；之前已从这些状态撤销的订单也不再能申请。fake backend 同步。测试：`AfterSalesCustomerServiceTests`（每个撤销来源，以及 SQL 与 Java 的状态集合一致）、`AfterSalesApi*IntegrationTests` 的 `secondRequest_shouldNeedTheFirstWithdrawnBeforeARejection`、`fakeAfterSales.test.ts`、`AfterSalesCaseView.test.tsx`、`App.test.tsx` 的 "offers no other request once a rejected request is withdrawn" |

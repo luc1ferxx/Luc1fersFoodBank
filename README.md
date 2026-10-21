@@ -170,7 +170,7 @@ between them with the tabs under the header; guests and logins without a known r
 
 | Role | Workspace |
 | --- | --- |
-| `ROLE_USER`, guests | Order food: menus, cart, checkout, orders with their status history (`GET /orders/{id}/history`), notifications. Adding another restaurant's item (`409 CART_RESTAURANT_CONFLICT`) asks whether to clear the cart (`DELETE /cart`) and add it. Signed-in customers also get "Request a refund" on a completed order within the request window (whole order or chosen lines), their refund cases with a countdown, accept or decline a counter-offer, escalate, withdraw (then "Request a refund again (1 left)"), and the automatic refund of a cancelled paid order. |
+| `ROLE_USER`, guests | Order food: menus, cart, checkout, orders with their status history (`GET /orders/{id}/history`), notifications. Adding another restaurant's item (`409 CART_RESTAURANT_CONFLICT`) asks whether to clear the cart (`DELETE /cart`) and add it. Signed-in customers also get "Request a refund" on a completed order within the request window (whole order or chosen lines), their refund cases with a countdown, accept or decline a counter-offer, escalate, withdraw (a first request withdrawn before a rejection then offers "Request a refund again (1 left)"), and the automatic refund of a cancelled paid order. |
 | `ROLE_MERCHANT` | Merchant console, "Orders" tab: the restaurant's orders (`GET /merchant/orders`, status filter), accept, reject with a reason, mark preparing. "After-sales" tab: the restaurant's refund requests; approve, reject with a reason, or offer less than requested, until the deadline. |
 | `ROLE_RIDER` | Rider console: on-duty switch, the rider's own deliveries, picked up and delivered. |
 | `ROLE_ADMIN` | Admin console: list, create, and deactivate merchants (restaurant picked from the catalog) and riders; the manual order-status change and dead-letter replay; the after-sales queue by status, a case's history with its refund attempts and last error, arbitration, and the failed refunds with Retry. |
@@ -920,7 +920,7 @@ and the record of what was built: [ADR 0002](docs/adr/0002-after-sales-state-mac
 
 | Who | What they can do |
 | --- | --- |
-| Customer | Ask for a refund of their `COMPLETED` order that has a restaurant and a captured payment, within `request-window` of its completion: the whole order or chosen lines (at most the quantities ordered), a reason (`MISSING_ITEM`, `WRONG_ITEM`, `QUALITY_ISSUE`, `DAMAGED_PACKAGING`, `FOOD_SAFETY`, `LATE_DELIVERY`, `OTHER`) and a description. Accept or decline a counter-offer, ask the platform to step in after a rejection, withdraw an open case, and ask once more after withdrawing. |
+| Customer | Ask for a refund of their `COMPLETED` order that has a restaurant and a captured payment, within `request-window` of its completion: the whole order or chosen lines (at most the quantities ordered), a reason (`MISSING_ITEM`, `WRONG_ITEM`, `QUALITY_ISSUE`, `DAMAGED_PACKAGING`, `FOOD_SAFETY`, `LATE_DELIVERY`, `OTHER`) and a description. Accept or decline a counter-offer, ask the platform to step in after a rejection, withdraw an open case, and ask once more after withdrawing a request the merchant had not answered or had made a counter-offer on. |
 | Merchant | Answer each request on their restaurant's orders once, before its deadline: approve the requested amount, reject with a reason, or offer a partial refund (more than 0, less than requested). |
 | Admin | Read any case with its whole history, arbitrate an escalated case (`FULL`, `PARTIAL` with an amount, or `REJECT`, each with a note the customer sees), list refunds by status with their last error, retry a `FAILED` refund. |
 | System | Fire the timeout of each waiting status, open the automatic refund of a cancelled paid order, execute refunds. |
@@ -1012,11 +1012,15 @@ the steps taken after the change). The after-sales poller fires the timeout once
 
 ### Asking again after a withdrawal
 
-An order gets at most two customer requests (`attempt_no` 1 and 2). The second is accepted only when the first is
-`CLOSED` as `WITHDRAWN`, and only within the same request window (counted from the completion, not restarted). A
-request rejected by arbitration, closed by the customer timeout, or refunded allows no other:
-`409 AFTER_SALES_NOT_ELIGIBLE` "This order cannot be submitted for after-sales again"; while one is open it is "An
-after-sales case is already open for this order". The order's row lock serializes two concurrent requests, and
+An order gets at most two customer requests (`attempt_no` 1 and 2). The second is accepted only when the customer
+withdrew the first while it was `PENDING_MERCHANT` or `COUNTER_OFFERED` (the `from_status` of its `CUSTOMER_WITHDRAW`
+history step), and only within the same request window (counted from the completion, not restarted). A first request
+withdrawn after a rejection (`REJECTED`, whether the merchant rejected it or the customer declined the offer) or from
+`IN_ARBITRATION` allows no other: a second request would restart the merchant's clock, whose timeout refunds in full,
+and so bypass the rejection or the platform. Neither does a request rejected by arbitration, closed by the customer
+timeout, or refunded: `409 AFTER_SALES_NOT_ELIGIBLE` "This order cannot be submitted for after-sales again"; while
+one is open it is "An after-sales case is already open for this order". `eligible_orders` applies the same rule, so
+the order is not offered again. The order's row lock serializes two concurrent requests, and
 `UNIQUE (order_id, kind, attempt_no)` turns one that slipped past it into the same `409`. A withdrawn case was never
 refunded, so at most one case of an order reaches `REFUNDING`. The second request needs a new `Idempotency-Key`: a
 request's key is scoped to the order, so the first request's key with the same body replays the withdrawn case, and
@@ -1096,7 +1100,7 @@ and are checked for an active account on every request (`403`), like the merchan
 | `POST` | `/after-sales/cases/{caseId}/accept-offer` | signed in | required | `COUNTER_OFFERED -> REFUNDING` at the offered amount |
 | `POST` | `/after-sales/cases/{caseId}/decline-offer` | signed in | required | `COUNTER_OFFERED -> REJECTED` |
 | `POST` | `/after-sales/cases/{caseId}/escalate` | signed in | required | `REJECTED -> IN_ARBITRATION`, optional body `{"note": "..."}` |
-| `POST` | `/after-sales/cases/{caseId}/withdraw` | signed in | required | Any waiting status `-> CLOSED` (`WITHDRAWN`) |
+| `POST` | `/after-sales/cases/{caseId}/withdraw` | signed in | required | Any waiting status `-> CLOSED` (`WITHDRAWN`); only a first request withdrawn from `PENDING_MERCHANT` or `COUNTER_OFFERED` leaves the order a second one |
 | `GET` | `/merchant/after-sales?status=&limit=50` | `MERCHANT` | | The restaurant's requests, newest first (status filter in any letter case) |
 | `POST` | `/merchant/after-sales/{caseId}/approve` | `MERCHANT` | | `PENDING_MERCHANT -> REFUNDING` at the requested amount |
 | `POST` | `/merchant/after-sales/{caseId}/reject` | `MERCHANT` | | `PENDING_MERCHANT -> REJECTED`, body `{"reason": "..."}` (required) |
