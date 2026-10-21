@@ -235,6 +235,52 @@ class RateLimitingFilterTests {
     }
 
 
+    @Test
+    void shouldRateLimitAfterSalesCommandsByUserButNotReads() throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        allowRedisRequest(redisTemplate);
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                Mockito.mock(ApplicationMetricsService.class),
+                errorResponseWriter()
+        );
+
+        for (String[] request : List.of(
+                new String[]{"GET", "/admin/after-sales"},
+                new String[]{"GET", "/admin/after-sales/9"},
+                new String[]{"GET", "/admin/refunds"},
+                new String[]{"GET", "/merchant/after-sales"},
+                new String[]{"GET", "/admin/after-sales/9/arbitrate"},
+                new String[]{"POST", "/admin/after-sales/abc/arbitrate"},
+                new String[]{"POST", "/admin/refunds/4"},
+                new String[]{"POST", "/merchant/after-sales/5/withdraw"},
+                new String[]{"POST", "/merchant/after-sales/5/approve/extra"}
+        )) {
+            filter.doFilter(new MockHttpServletRequest(request[0], request[1]), new MockHttpServletResponse(), new MockFilterChain());
+        }
+        Mockito.verifyNoInteractions(redisTemplate);
+
+        for (String[] expected : List.of(
+                new String[]{"/admin/after-sales/9/arbitrate", "after-sales-arbitrate", "10", "6000"},
+                new String[]{"/admin/refunds/4/retry", "refund-retry", "10", "6000"},
+                new String[]{"/merchant/after-sales/5/offer", "merchant-after-sales", "30", "2000"}
+        )) {
+            Mockito.clearInvocations(redisTemplate);
+            MockHttpServletRequest command = new MockHttpServletRequest("POST", expected[0]);
+            command.setRemoteAddr("10.0.0.5");
+            command.setUserPrincipal((Principal) () -> "Staff@Example.com");
+            filter.doFilter(command, new MockHttpServletResponse(), new MockFilterChain());
+
+            Assertions.assertEquals("onlineorder:rate-limit:" + expected[1] + ":user:staff@example.com", capturedRedisKey(redisTemplate));
+            Object[] args = capturedRedisArgs(redisTemplate);
+            Assertions.assertEquals(expected[2], args[0], expected[0]);
+            Assertions.assertEquals(expected[3], args[2], expected[0]);
+        }
+    }
+
+
     @ParameterizedTest
     @CsvSource({
             "POST, /%6Cogin, login",
@@ -252,6 +298,12 @@ class RateLimitingFilterTests {
             "POST, /dead-letters/%31%32/replay, dead-letter-replay",
             "POST, /admin/outbox/events/7/%72etry, outbox-retry",
             "POST, /admin/outbox/events/7/%61bandon, outbox-abandon",
+            "POST, /admin/after-sales/%39/arbitrate, after-sales-arbitrate",
+            "POST, /admin//after-sales/9/arbitrate/, after-sales-arbitrate",
+            "POST, /admin/refunds/%34/retry, refund-retry",
+            "POST, /merchant/after-sales/5/%61pprove, merchant-after-sales",
+            "POST, /merchant/after-sales/5/reject/, merchant-after-sales",
+            "POST, /merchant//after-sales/5/offer, merchant-after-sales",
             "PATCH, /orders/%34%32/status, order-status",
             "POST, /admin/%6Derchants, admin-provisioning",
             "POST, /admin//riders/, admin-provisioning",
