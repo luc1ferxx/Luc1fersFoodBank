@@ -26,6 +26,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 
 
@@ -58,6 +59,16 @@ public class AfterSalesCustomerService {
 
     static final String CASE_NOT_FOUND = "After-sales case not found";
 
+    /**
+     * The statuses a withdrawn first request must have been withdrawn from for the order to get a second one (ADR 0002
+     * section 27, follow-up 24): before the merchant answered, or on a counter-offer. Withdrawing a rejection (the
+     * merchant's, or the customer's declined offer) or an arbitration leaves no other request, or the second request
+     * would restart the merchant's clock (whose timeout refunds in full) and sidestep the rejection or the platform.
+     * {@code OrderRepository.findPageOpenToAfterSales} lists the orders by the same statuses.
+     */
+    static final Set<AfterSalesStatus> REQUEST_AGAIN_AFTER_WITHDRAWAL_FROM =
+            Set.of(AfterSalesStatus.PENDING_MERCHANT, AfterSalesStatus.COUNTER_OFFERED);
+
     private static final String ORDER_NOT_FOUND = "Order not found";
 
     /**
@@ -69,6 +80,7 @@ public class AfterSalesCustomerService {
     private static final String OPEN_ROUTE = "/orders/{orderId}/after-sales";
 
     private final AfterSalesCaseRepository caseRepository;
+    private final AfterSalesCaseHistoryRepository historyRepository;
     private final OrderRepository orderRepository;
     private final OrderHistoryItemRepository orderHistoryItemRepository;
     private final OrderPaymentRepository orderPaymentRepository;
@@ -82,6 +94,7 @@ public class AfterSalesCustomerService {
     @Autowired
     public AfterSalesCustomerService(
             AfterSalesCaseRepository caseRepository,
+            AfterSalesCaseHistoryRepository historyRepository,
             OrderRepository orderRepository,
             OrderHistoryItemRepository orderHistoryItemRepository,
             OrderPaymentRepository orderPaymentRepository,
@@ -90,13 +103,14 @@ public class AfterSalesCustomerService {
             AfterSalesCaseViews views,
             AfterSalesDeadlines deadlines
     ) {
-        this(caseRepository, orderRepository, orderHistoryItemRepository, orderPaymentRepository, transitions,
-                idempotentRequests, views, deadlines, LocalDateTime::now);
+        this(caseRepository, historyRepository, orderRepository, orderHistoryItemRepository, orderPaymentRepository,
+                transitions, idempotentRequests, views, deadlines, LocalDateTime::now);
     }
 
 
     AfterSalesCustomerService(
             AfterSalesCaseRepository caseRepository,
+            AfterSalesCaseHistoryRepository historyRepository,
             OrderRepository orderRepository,
             OrderHistoryItemRepository orderHistoryItemRepository,
             OrderPaymentRepository orderPaymentRepository,
@@ -107,6 +121,7 @@ public class AfterSalesCustomerService {
             Supplier<LocalDateTime> clock
     ) {
         this.caseRepository = caseRepository;
+        this.historyRepository = historyRepository;
         this.orderRepository = orderRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
         this.orderPaymentRepository = orderPaymentRepository;
@@ -165,9 +180,9 @@ public class AfterSalesCustomerService {
      * Opens a request on the customer's order (POST /orders/{orderId}/after-sales). Under the order's row lock, the
      * order must be COMPLETED, have a restaurant and a captured payment, and be within the request window of its
      * completion (409 AFTER_SALES_NOT_ELIGIBLE otherwise). It is the first request, or the second after the customer
-     * withdrew the first (section 20). The lines must be the order's, within the quantities ordered, and add up to more
-     * than zero (400); the refunds of the order cannot exceed its captured payment (409). A replay with the same key
-     * answers with the case the key opened.
+     * withdrew the first while it was PENDING_MERCHANT or COUNTER_OFFERED (sections 20 and 27). The lines must be the
+     * order's, within the quantities ordered, and add up to more than zero (400); the refunds of the order cannot
+     * exceed its captured payment (409). A replay with the same key answers with the case the key opened.
      */
     @Transactional
     public AfterSalesCaseDto open(Long customerId, Long orderId, OpenAfterSalesBody body, String idempotencyKey) {
@@ -220,7 +235,8 @@ public class AfterSalesCustomerService {
 
 
     /**
-     * Withdraws an open case. Only a withdrawn first request lets the customer request once more.
+     * Withdraws an open case. Only a first request withdrawn while PENDING_MERCHANT or COUNTER_OFFERED lets the customer
+     * request once more ({@link #REQUEST_AGAIN_AFTER_WITHDRAWAL_FROM}).
      */
     @Transactional
     public AfterSalesCaseDto withdraw(Long customerId, Long caseId, String idempotencyKey) {
@@ -298,9 +314,11 @@ public class AfterSalesCustomerService {
 
 
     /**
-     * The attempt a new request of the order is: 1 without a customer request, 2 after a withdrawn first one.
+     * The attempt a new request of the order is: 1 without a customer request, 2 after a first one the customer
+     * withdrew from a status of {@link #REQUEST_AGAIN_AFTER_WITHDRAWAL_FROM} (read from its CUSTOMER_WITHDRAW history
+     * step, under the order's lock like the cases). A withdrawn case is CLOSED for good, so its step never changes.
      */
-    private static int nextAttempt(List<AfterSalesCaseEntity> cases) {
+    private int nextAttempt(List<AfterSalesCaseEntity> cases) {
         List<AfterSalesCaseEntity> requests = cases.stream()
                 .filter(current -> AfterSalesKind.CUSTOMER_REQUEST.name().equals(current.kind()))
                 .toList();
@@ -311,10 +329,24 @@ public class AfterSalesCustomerService {
         if (!AfterSalesStateMachine.DEFINITION.terminalStates().contains(AfterSalesStatus.valueOf(latest.status()))) {
             throw AfterSalesErrors.notEligible(ALREADY_OPEN);
         }
-        if (requests.size() == 1 && AfterSalesCloseReason.WITHDRAWN.name().equals(latest.closeReason())) {
+        if (requests.size() == 1
+                && AfterSalesCloseReason.WITHDRAWN.name().equals(latest.closeReason())
+                && withdrawnBeforeARejection(latest)) {
             return 2;
         }
         throw AfterSalesErrors.notEligible(NO_ATTEMPT_LEFT);
+    }
+
+
+    /**
+     * Whether the customer withdrew {@code withdrawn} from a status that leaves the order another request; a withdrawn
+     * case without its CUSTOMER_WITHDRAW step does not.
+     */
+    private boolean withdrawnBeforeARejection(AfterSalesCaseEntity withdrawn) {
+        return historyRepository.findWithdrawnFromStatus(withdrawn.id())
+                .map(AfterSalesStatus::valueOf)
+                .filter(REQUEST_AGAIN_AFTER_WITHDRAWAL_FROM::contains)
+                .isPresent();
     }
 
 

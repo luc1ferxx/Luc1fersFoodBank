@@ -368,6 +368,7 @@ abstract class AbstractAfterSalesDeadlineIntegrationTests {
         }
         AfterSalesCustomerService customers = new AfterSalesCustomerService(
                 caseRepository,
+                applicationContext.getBean(AfterSalesCaseHistoryRepository.class),
                 applicationContext.getBean(OrderRepository.class),
                 applicationContext.getBean(OrderHistoryItemRepository.class),
                 applicationContext.getBean(OrderPaymentRepository.class),

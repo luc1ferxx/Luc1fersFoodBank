@@ -120,6 +120,74 @@ describe("fake after-sales backend", () => {
     });
   });
 
+  it("allows another request only after a withdrawal before a rejection", async () => {
+    const backend = installFakeBackend({ user: customerUser });
+    backend.state.orders = [101, 102, 103, 104, 105].map((id) =>
+      orderFixture({ id, status: "COMPLETED", total_price: 12.78, items: completedOrder.items }),
+    );
+    const openAndWithdraw = async (
+      orderId: number,
+      answer: (caseId: number) => Promise<unknown>,
+    ) => {
+      const opened = await api.openAfterSalesCase(orderId, oneWhopper, `open-${orderId}`);
+      await answer(opened.id);
+      backend.state.user = customerUser;
+      const withdrawn = await api.withdrawAfterSalesCase(opened.id, `withdraw-${orderId}`);
+      return withdrawn.history.at(-1)?.from_status;
+    };
+    const merchant = async (run: () => Promise<unknown>) => {
+      backend.state.user = merchantUser;
+      await run();
+    };
+
+    // Waiting for the merchant, and on a counter-offer: the order can be asked again.
+    expect(await openAndWithdraw(101, () => Promise.resolve())).toBe("PENDING_MERCHANT");
+    expect(
+      await openAndWithdraw(102, (caseId) =>
+        merchant(() => api.offerMerchantAfterSales(caseId, 3, null)),
+      ),
+    ).toBe("COUNTER_OFFERED");
+    // After the merchant's rejection, a declined offer, or from arbitration: no other request.
+    expect(
+      await openAndWithdraw(103, (caseId) =>
+        merchant(() => api.rejectMerchantAfterSales(caseId, "Looked fine")),
+      ),
+    ).toBe("REJECTED");
+    expect(
+      await openAndWithdraw(104, async (caseId) => {
+        await merchant(() => api.offerMerchantAfterSales(caseId, 3, null));
+        backend.state.user = customerUser;
+        await api.declineAfterSalesOffer(caseId, `decline-${caseId}`);
+      }),
+    ).toBe("REJECTED");
+    expect(
+      await openAndWithdraw(105, async (caseId) => {
+        await merchant(() => api.rejectMerchantAfterSales(caseId, "Looked fine"));
+        backend.state.user = customerUser;
+        await api.escalateAfterSalesCase(caseId, null, `escalate-${caseId}`);
+      }),
+    ).toBe("IN_ARBITRATION");
+
+    expect((await api.getAfterSalesOverview()).eligible_orders).toEqual([
+      expect.objectContaining({ order_id: 101, attempt_no: 2 }),
+      expect.objectContaining({ order_id: 102, attempt_no: 2 }),
+    ]);
+    for (const orderId of [103, 104, 105]) {
+      expect(
+        await rejection(api.openAfterSalesCase(orderId, oneWhopper, `again-${orderId}`)),
+      ).toEqual({
+        status: 409,
+        code: "AFTER_SALES_NOT_ELIGIBLE",
+        message: "This order cannot be submitted for after-sales again",
+      });
+    }
+    for (const orderId of [101, 102]) {
+      await expect(
+        api.openAfterSalesCase(orderId, oneWhopper, `again-${orderId}`),
+      ).resolves.toMatchObject({ attempt_no: 2, status: "PENDING_MERCHANT" });
+    }
+  });
+
   it("walks a request through the merchant, the customer and arbitration", async () => {
     const backend = installFakeBackend({ user: customerUser });
     backend.state.orders = [completedOrder];

@@ -43,9 +43,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 
 /**
- * The customer's after-sales API (ADR 0002 sections 11.2, 19 and 20) on a real database, through HTTP: opening a
- * request under the order's lock with every eligibility and money rule, the one second request after a withdrawal,
- * idempotent replays bound to their case, the answers to a counter-offer and a rejection, the deadlines, and that
+ * The customer's after-sales API (ADR 0002 sections 11.2, 19, 20 and 27) on a real database, through HTTP: opening a
+ * request under the order's lock with every eligibility and money rule, the one second request after a withdrawal
+ * before a rejection (and none after one), idempotent replays bound to their case, the answers to a counter-offer and a rejection, the deadlines, and that
  * another customer's orders and cases do not exist for the caller. The merchant answers through the merchant's
  * endpoints, once the merchant's inbox got the case's events. The cases have to hold on PostgreSQL and on H2 (the
  * {@code h2} profile), so each database gets a subclass.
@@ -183,6 +183,97 @@ abstract class AbstractAfterSalesApiIntegrationTests {
         JsonNode overview = overview(alice);
         Assertions.assertEquals(List.of(secondId, firstId), ids(overview.get("cases")));
         Assertions.assertFalse(overview.get("cases").get(0).has("history"), "lists carry no history");
+    }
+
+
+    /**
+     * Section 27 (follow-up 24): only a first request withdrawn while PENDING_MERCHANT or COUNTER_OFFERED lists the
+     * order again (attempt 2) and opens a second request. One withdrawn after the merchant's rejection, after the
+     * customer declined the offer, or from arbitration leaves the order off the list and the open command refuses it,
+     * so withdrawing cannot restart the merchant's clock (and its full refund on timeout) or sidestep the platform.
+     */
+    @Test
+    void secondRequest_shouldNeedTheFirstWithdrawnBeforeARejection() throws Exception {
+        Customer grace = customer("after-sales-withdrawn-from-");
+
+        CompletedOrder pending = completedOrder(grace, menuItem(BURGER_KING, 1));
+        long pendingCase = openWholeOrder(grace, pending);
+        withdrawFrom(grace, pendingCase, "PENDING_MERCHANT");
+        assertSecondRequest(grace, pending, true);
+
+        CompletedOrder offered = completedOrder(grace, menuItem(BURGER_KING, 1));
+        long offeredCase = openWholeOrder(grace, offered);
+        merchantOffers(offeredCase, "1.00");
+        withdrawFrom(grace, offeredCase, "COUNTER_OFFERED");
+        assertSecondRequest(grace, offered, true);
+
+        CompletedOrder rejected = completedOrder(grace, menuItem(BURGER_KING, 1));
+        long rejectedCase = openWholeOrder(grace, rejected);
+        merchantRejects(rejectedCase, "The order was complete.");
+        withdrawFrom(grace, rejectedCase, "REJECTED");
+        assertSecondRequest(grace, rejected, false);
+
+        CompletedOrder declined = completedOrder(grace, menuItem(BURGER_KING, 1));
+        long declinedCase = openWholeOrder(grace, declined);
+        merchantOffers(declinedCase, "1.00");
+        command(grace, declinedCase, "decline-offer", "decline-" + declinedCase)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REJECTED"));
+        withdrawFrom(grace, declinedCase, "REJECTED");
+        assertSecondRequest(grace, declined, false);
+
+        CompletedOrder arbitrated = completedOrder(grace, menuItem(BURGER_KING, 1));
+        long arbitratedCase = openWholeOrder(grace, arbitrated);
+        merchantRejects(arbitratedCase, "The order was complete.");
+        command(grace, arbitratedCase, "escalate", "escalate-" + arbitratedCase)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("IN_ARBITRATION"));
+        withdrawFrom(grace, arbitratedCase, "IN_ARBITRATION");
+        assertSecondRequest(grace, arbitrated, false);
+
+        // The two orders asked again have their second request open; the other three have none left.
+        Assertions.assertEquals(0, overview(grace).get("eligible_orders").size());
+    }
+
+
+    /**
+     * The customer withdraws the case, which was {@code from}: its last step is the CUSTOMER_WITHDRAW from there.
+     */
+    private void withdrawFrom(Customer customer, long caseId, String from) throws Exception {
+        JsonNode withdrawn = json(command(customer, caseId, "withdraw", "withdraw-" + caseId)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CLOSED"))
+                .andExpect(jsonPath("$.close_reason").value("WITHDRAWN")));
+        List<String> history = historyOf(withdrawn);
+        Assertions.assertEquals("CUSTOMER_WITHDRAW|" + from + "->CLOSED|CUSTOMER", history.get(history.size() - 1));
+    }
+
+
+    /**
+     * After the first request was withdrawn: either the order is listed with attempt 2 and a second request opens
+     * (200), or it is not listed and the request is a 409 that writes nothing, its key included.
+     */
+    private void assertSecondRequest(Customer customer, CompletedOrder order, boolean allowed) throws Exception {
+        JsonNode eligible = eligibleOrderOrNull(customer, order.orderId());
+        String key = "open-again-" + order.orderId();
+        ResultActions second = open(customer, order.orderId(), key, wholeOrder());
+        if (allowed) {
+            Assertions.assertNotNull(eligible, "order " + order.orderId() + " is listed again");
+            Assertions.assertEquals(2, eligible.get("attempt_no").asInt());
+            second.andExpect(status().isOk())
+                    .andExpect(jsonPath("$.attempt_no").value(2))
+                    .andExpect(jsonPath("$.status").value("PENDING_MERCHANT"));
+            Assertions.assertEquals(List.of(1, 2), caseRepository.findAllByOrderId(order.orderId()).stream()
+                    .map(AfterSalesCaseEntity::attemptNo).toList());
+            return;
+        }
+        Assertions.assertNull(eligible, "order " + order.orderId() + " is not listed again");
+        second.andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("AFTER_SALES_NOT_ELIGIBLE"))
+                .andExpect(jsonPath("$.message").value("This order cannot be submitted for after-sales again"));
+        Assertions.assertEquals(List.of(1), caseRepository.findAllByOrderId(order.orderId()).stream()
+                .map(AfterSalesCaseEntity::attemptNo).toList());
+        Assertions.assertEquals(0, idempotencyRows(customer.id(), "after-sales-open:v1:" + order.orderId(), key));
     }
 
 
