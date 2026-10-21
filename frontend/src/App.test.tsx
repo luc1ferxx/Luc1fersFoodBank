@@ -522,6 +522,77 @@ describe("after-sales", () => {
     expect(overviewReads()).toBe(3);
   });
 
+  it("stops polling a refund that failed, says support will call, and reads it again on Refresh", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.orders = [completedOrder];
+    const approved = afterSalesCaseFixture({
+      id: 900,
+      order_id: 7,
+      status: "REFUNDING",
+      approved_amount: 6.39,
+      merchant_decision: "APPROVED",
+      resolution: "MERCHANT_APPROVED",
+      deadline_at: null,
+      refund: refundFixture({ id: 901, case_id: 900, order_id: 7 }),
+    });
+    backend.state.afterSalesCases = [approved];
+    const overviewReads = () => backend.callsTo("GET", "/after-sales/cases").length;
+    render(<App />);
+
+    await signedInLabel();
+    fireEvent.click(screen.getByRole("button", { name: "Orders" }));
+    const request = await refundRequest();
+    expect(within(request).getByText("Refund of $6.39: Pending")).toBeInTheDocument();
+
+    // The executor gives up: the case stays REFUNDING until an admin retries the refund.
+    const { refund } = approved;
+    if (!refund) {
+      throw new Error("missing fixture");
+    }
+    Object.assign(refund, {
+      status: "FAILED",
+      attempts: 5,
+      last_error: "Gateway timeout",
+      next_attempt_at: null,
+    });
+    act(() => {
+      vi.advanceTimersByTime(AFTER_SALES_POLL_MS);
+    });
+    await waitFor(() =>
+      expect(within(request).getByText("Refund of $6.39: Failed")).toBeInTheDocument(),
+    );
+    expect(
+      within(request).getByText("Refund failed", { selector: ".status-badge" }),
+    ).toBeInTheDocument();
+    expect(within(request).getByRole("status")).toHaveTextContent(
+      "The refund did not go through. Our support team will contact you about it.",
+    );
+    // The reason is for the platform only.
+    expect(within(request).queryByText(/Gateway timeout/)).toBeNull();
+    expect(overviewReads()).toBe(2);
+
+    // Nothing moves it on its own: no more reads.
+    act(() => {
+      vi.advanceTimersByTime(AFTER_SALES_POLL_MS * 3);
+    });
+    await flushPromises();
+    expect(overviewReads()).toBe(2);
+
+    // An admin retried the refund: the customer's Refresh shows it, and polling resumes.
+    Object.assign(refund, { status: "PENDING", last_error: null });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() =>
+      expect(within(request).getByText("Refund of $6.39: Pending")).toBeInTheDocument(),
+    );
+    expect(within(request).queryByRole("status")).toBeNull();
+    expect(overviewReads()).toBe(3);
+    act(() => {
+      vi.advanceTimersByTime(AFTER_SALES_POLL_MS);
+    });
+    await waitFor(() => expect(overviewReads()).toBe(4));
+  });
+
   it("offers a refund once a polled notification says the order completed", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const backend = installFakeBackend({ user: demoUser });
@@ -649,6 +720,33 @@ describe("after-sales", () => {
 
     // 50% of $9.01, rounded half-even like the backend: $4.50.
     expect(await screen.findByText("Automatic refund $4.50: Refunding")).toBeInTheDocument();
+  });
+
+  it("shows that the automatic refund of a cancelled order failed", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.orders = [orderFixture({ id: 7, status: "PAID", total_price: 9 })];
+    const user = renderApp();
+
+    await openOrders(user);
+    await user.click(await screen.findByRole("button", { name: "Cancel order" }));
+    expect(await screen.findByText("Automatic refund $9.00: Refunding")).toBeInTheDocument();
+    expect(screen.queryByText(/Our support team will contact you/)).toBeNull();
+
+    // The executor gives up on the refund the cancel opened.
+    const refund = backend.state.afterSalesCases.find((item) => item.order_id === 7)?.refund;
+    if (!refund) {
+      throw new Error("the cancel opened no refund");
+    }
+    Object.assign(refund, { status: "FAILED", attempts: 5, last_error: "Card account closed" });
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(await screen.findByText("Automatic refund $9.00: Refund failed")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The refund did not go through. Our support team will contact you about it.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Card account closed/)).toBeNull();
   });
 });
 

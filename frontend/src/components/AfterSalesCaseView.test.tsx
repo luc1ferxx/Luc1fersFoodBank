@@ -1,11 +1,14 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { AfterSalesCase } from "../api/dto";
+import type { AfterSalesCase, Refund } from "../api/dto";
 import { afterSalesCaseFixture, localTimestamp, refundFixture } from "../test/fakeBackend";
-import { AfterSalesCaseView } from "./AfterSalesCaseView";
+import { AfterSalesCaseView, AutomaticRefund } from "./AfterSalesCaseView";
 
 const HOUR = 60 * 60 * 1000;
+
+const SUPPORT_WILL_CALL =
+  "The refund did not go through. Our support team will contact you about it.";
 
 const renderCase = (overrides: Partial<AfterSalesCase>) => {
   const handlers = {
@@ -130,6 +133,35 @@ describe("AfterSalesCaseView", () => {
     expect(screen.getByText("Refunding")).toBeInTheDocument();
     expect(screen.getByText("Approved by the restaurant")).toBeInTheDocument();
     expect(screen.getByText("Refund of $6.39: Processing")).toBeInTheDocument();
+    expect(screen.queryByText(SUPPORT_WILL_CALL)).toBeNull();
+    expect(commandButtons()).toEqual([]);
+  });
+
+  it("shows a failed refund and that support will contact the customer, without its error", () => {
+    renderCase({
+      status: "REFUNDING",
+      approved_amount: 6.39,
+      merchant_decision: "APPROVED",
+      resolution: "MERCHANT_APPROVED",
+      deadline_at: null,
+      refund: refundFixture({
+        id: 901,
+        case_id: 900,
+        order_id: 7,
+        status: "FAILED",
+        attempts: 5,
+        last_error: "Gateway timeout",
+        next_attempt_at: null,
+      }),
+    });
+
+    expect(screen.getByText("Refund failed", { selector: ".status-badge" })).toHaveClass(
+      "status-badge--FAILED",
+    );
+    expect(screen.queryByText("Refunding")).toBeNull();
+    expect(screen.getByText("Refund of $6.39: Failed")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(SUPPORT_WILL_CALL);
+    expect(screen.queryByText(/Gateway timeout/)).toBeNull();
     expect(commandButtons()).toEqual([]);
   });
 
@@ -138,5 +170,41 @@ describe("AfterSalesCaseView", () => {
 
     expect(screen.getByText("Closed: Withdrawn")).toBeInTheDocument();
     expect(commandButtons()).toEqual([]);
+  });
+});
+
+describe("AutomaticRefund", () => {
+  const cancelledOrderRefund = (refund: Partial<Refund>) =>
+    afterSalesCaseFixture({
+      id: 900,
+      order_id: 7,
+      kind: "ORDER_CANCELLED",
+      status: "REFUNDING",
+      reason_code: null,
+      description: null,
+      requested_amount: 9,
+      approved_amount: 9,
+      resolution: "ORDER_CANCELLED",
+      deadline_at: null,
+      refund: refundFixture({ id: 901, case_id: 900, order_id: 7, amount: 9, ...refund }),
+    });
+
+  it("shows the refund of a cancelled order on its way", () => {
+    render(<AutomaticRefund afterSalesCase={cancelledOrderRefund({ status: "PROCESSING" })} />);
+
+    expect(screen.getByText("Automatic refund $9.00: Refunding")).toBeInTheDocument();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("shows that the refund failed and that support will contact the customer", () => {
+    render(
+      <AutomaticRefund
+        afterSalesCase={cancelledOrderRefund({ status: "FAILED", last_error: "Card closed" })}
+      />,
+    );
+
+    expect(screen.getByText("Automatic refund $9.00: Refund failed")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(SUPPORT_WILL_CALL);
+    expect(screen.queryByText(/Card closed/)).toBeNull();
   });
 });

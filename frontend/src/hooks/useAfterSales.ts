@@ -52,9 +52,20 @@ export const openRequestOf = (draft: AfterSalesDraft): OpenAfterSalesRequest => 
   description: draft.description.trim(),
 });
 
-/** Whether the server may still change the case: an open step, or its refund on the way. */
+/**
+ * A REFUNDING case whose refund the executor gave up on: it stays there until an admin
+ * retries the refund, so nothing changes on its own and support follows up.
+ */
+export const refundFailed = (afterSalesCase: AfterSalesCase): boolean =>
+  afterSalesCase.status === "REFUNDING" && afterSalesCase.refund?.status === "FAILED";
+
+/**
+ * Whether the server may still change the case on its own: an open step, or its refund
+ * on the way (not one that FAILED, which waits for an admin's retry).
+ */
 export const isLiveCase = (afterSalesCase: AfterSalesCase): boolean =>
-  AFTER_SALES_OPEN_STATUSES.has(afterSalesCase.status) || afterSalesCase.status === "REFUNDING";
+  AFTER_SALES_OPEN_STATUSES.has(afterSalesCase.status) ||
+  (afterSalesCase.status === "REFUNDING" && !refundFailed(afterSalesCase));
 
 /** The key of an order's request form, or of a case's buttons, in `pending` and `errors`. */
 export const orderTarget = (orderId: number) => `order:${orderId}`;
@@ -87,11 +98,11 @@ const withCase = (
  *
  * The overview is read when the page mounts, on `reload()`, and every 10 seconds while
  * the page is shown and a case can still change (an open step, or a refund on its
- * way); polling stops once every case is final. OrderingPage also calls `reload()`
- * when a notification newer than any seen before arrives (useNotifications), so an
- * order that completes meanwhile gets its request form without a poll here. Only the
- * newest read may update the screen, and a command's result drops a read that
- * started before it.
+ * way); polling stops once every case is final or waits on a FAILED refund, which only
+ * an admin's retry moves on. OrderingPage also calls `reload()` when a notification
+ * newer than any seen before arrives (useNotifications), so an order that completes
+ * meanwhile gets its request form without a poll here. Only the newest read may
+ * update the screen, and a command's result drops a read that started before it.
  *
  * Every command sends an Idempotency-Key, kept per slot (`open:{order}:{attempt}` or
  * `{command}:{case}`) with the request body it was made for: a retry of the same body

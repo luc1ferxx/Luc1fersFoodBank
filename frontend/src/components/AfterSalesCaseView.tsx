@@ -1,6 +1,10 @@
 import { type FormEvent, Fragment, useId, useState } from "react";
 import { AFTER_SALES_OPEN_STATUSES, type AfterSalesCase, type AfterSalesStatus } from "../api/dto";
-import { type AfterSalesCommand, useAfterSalesCaseDetail } from "../hooks/useAfterSales";
+import {
+  type AfterSalesCommand,
+  refundFailed,
+  useAfterSalesCaseDetail,
+} from "../hooks/useAfterSales";
 import { useNow } from "../hooks/useNow";
 import { formatDateTime, formatMoney, timeLeft } from "../lib/format";
 import {
@@ -24,14 +28,34 @@ const DEADLINE_LABELS: Readonly<Partial<Record<AfterSalesStatus, string>>> = {
   IN_ARBITRATION: "Platform decides",
 };
 
-/** "Automatic refund $12.78: Refunding" for the refund of a paid order that was cancelled. */
+/**
+ * What a customer reads about a refund that failed. Why it failed (the refund's
+ * last_error) is for the platform only; support contacts the customer.
+ */
+const REFUND_FAILED_LABEL = "Refund failed";
+const REFUND_FAILED_COPY =
+  "The refund did not go through. Our support team will contact you about it.";
+
+/** The case's status for its customer: a failed refund rather than a REFUNDING that never ends. */
+const caseStatusLabel = (afterSalesCase: AfterSalesCase): string =>
+  refundFailed(afterSalesCase)
+    ? REFUND_FAILED_LABEL
+    : AFTER_SALES_STATUS_LABELS[afterSalesCase.status];
+
+/**
+ * "Automatic refund $12.78: Refunding" for the refund of a paid order that was cancelled,
+ * and support's follow-up once that refund failed.
+ */
 export function AutomaticRefund({ afterSalesCase }: { afterSalesCase: AfterSalesCase }) {
   const amount = afterSalesCase.approved_amount ?? afterSalesCase.requested_amount;
   return (
-    <p className="after-sales after-sales--automatic">
-      Automatic refund {formatMoney(amount, afterSalesCase.currency)}:{" "}
-      {AFTER_SALES_STATUS_LABELS[afterSalesCase.status]}
-    </p>
+    <>
+      <p className="after-sales after-sales--automatic">
+        Automatic refund {formatMoney(amount, afterSalesCase.currency)}:{" "}
+        {caseStatusLabel(afterSalesCase)}
+      </p>
+      {refundFailed(afterSalesCase) ? <Alert tone="neutral">{REFUND_FAILED_COPY}</Alert> : null}
+    </>
   );
 }
 
@@ -117,6 +141,7 @@ export function AfterSalesCaseView({
   const noteId = useId();
   const { status, currency } = afterSalesCase;
   const open = AFTER_SALES_OPEN_STATUSES.has(status);
+  const failed = refundFailed(afterSalesCase);
   const answerable =
     afterSalesCase.deadline_at !== null && timeLeft(afterSalesCase.deadline_at, now) !== null;
   const busy = pending !== undefined;
@@ -143,8 +168,8 @@ export function AfterSalesCaseView({
     <section className="after-sales" aria-label={`Refund request for ${label}`}>
       <div className="order-card__top">
         <h4>{afterSalesCase.attempt_no > 1 ? "Second refund request" : "Refund request"}</h4>
-        <span className={`status-badge status-badge--${status}`}>
-          {AFTER_SALES_STATUS_LABELS[status]}
+        <span className={`status-badge status-badge--${failed ? "FAILED" : status}`}>
+          {caseStatusLabel(afterSalesCase)}
         </span>
       </div>
       {afterSalesCase.reason_code ? (
@@ -196,6 +221,7 @@ export function AfterSalesCaseView({
           {REFUND_STATUS_LABELS[afterSalesCase.refund.status]}
         </p>
       ) : null}
+      {failed ? <Alert tone="neutral">{REFUND_FAILED_COPY}</Alert> : null}
       {confirmingWithdraw ? null : <Alert tone="danger">{error}</Alert>}
 
       <div className="after-sales__actions">
