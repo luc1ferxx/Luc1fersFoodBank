@@ -215,7 +215,7 @@ public class OrderEventOutboxService {
         if (published < eventIds.size()) {
             // Kafka has them, but the claim that sent them expired and another publisher reclaimed them: it sends them
             // again (consumers drop the duplicates) or already did.
-            warnClaimLost("published", claimToken, eventIds.size(), published);
+            warnClaimLost("publish", eventIds, published);
         }
     }
 
@@ -237,7 +237,7 @@ public class OrderEventOutboxService {
                 LocalDateTime.now()
         );
         if (released < eventIds.size()) {
-            warnClaimLost("released", claimToken, eventIds.size(), released);
+            warnClaimLost("release", eventIds, released);
         }
     }
 
@@ -261,7 +261,7 @@ public class OrderEventOutboxService {
                 abbreviate(lastError)
         );
         if (released < eventIds.size()) {
-            warnClaimLost("released after a failed send", claimToken, eventIds.size(), released);
+            warnClaimLost("release after a failed send", eventIds, released);
         }
     }
 
@@ -307,7 +307,7 @@ public class OrderEventOutboxService {
             );
             return RetryableFailure.FAILED;
         }
-        warnClaimLost("marked failed", claimToken, 1, 0);
+        warnClaimLost("failure", List.of(eventId), 0);
         return RetryableFailure.CLAIM_LOST;
     }
 
@@ -419,14 +419,13 @@ public class OrderEventOutboxService {
     }
 
 
-    private static void warnClaimLost(String write, String claimToken, int expected, int changed) {
+    private static void warnClaimLost(String write, List<Long> eventIds, int changed) {
         LOGGER.warn(
-                "Outbox claim {} {} {} of {} event(s); the others were no longer held by it: the claim expired and "
-                        + "another publisher took them over (app.outbox.claim-timeout)",
-                claimToken,
+                "Outbox {} changed {} of the events {}; the others were no longer held by this publisher's claim: it "
+                        + "expired and another publisher took them over (app.outbox.claim-timeout)",
                 write,
                 changed,
-                expected
+                eventIds
         );
     }
 

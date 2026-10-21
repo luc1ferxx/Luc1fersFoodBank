@@ -596,10 +596,10 @@ SELECT replay_status, COUNT(*) FROM dead_letter_events GROUP BY replay_status;
 A claim of this release writes a new token, and its outcome (published, released, retry, failed) changes a row only
 while it is still `PROCESSING` under that token: a publisher whose claim expired mid-batch can no longer put an event
 that another publisher published back to `PENDING` (sending it again) or make it `FAILED` (blocking its aggregate), nor
-release another publisher's claim. Such a late write changes nothing and logs the WARN "Outbox claim ... changed n of m
-event(s); the others were no longer held by it"; several of them mean `app.outbox.claim-timeout` is too short for the
-publish timeout (the startup WARN about `claim-timeout` says so too). While pods of the previous release still run
-next to this one, their claims write no token and their outcomes stay unfenced, as before: they behave as they do
+release another publisher's claim. Such a late write changes nothing and logs the WARN "Outbox <write> changed n of the
+events [ids]; the others were no longer held by this publisher's claim"; several of them mean
+`app.outbox.claim-timeout` is too short for the publish timeout (the startup WARN about `claim-timeout` says so too).
+While pods of the previous release still run next to this one, their claims write no token and their outcomes stay unfenced, as before: they behave as they do
 today, and a row they claimed keeps the token of an earlier claim of this release, if any, so a late write under that
 token still applies. The fencing is complete once no older pod publishes.
 
