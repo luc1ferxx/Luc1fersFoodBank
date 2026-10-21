@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/order-events/order.preparing/v2.json",
+  "title": "order.preparing, version 2",
+  "description": "The restaurant started preparing the order. Topic order-events, record key: the order id, aggregate: ORDER (aggregate_id = the order id). Version 2 adds the optional data.order_no, the order's public number.",
+  "$ref": "../../common/envelope/v1.json",
+  "properties": {
+    "event_type": {
+      "const": "order.preparing"
+    },
+    "aggregate_type": {
+      "const": "ORDER"
+    },
+    "data": {
+      "$ref": "../../common/order-data/v2.json",
+      "properties": {
+        "status": {
+          "const": "PREPARING"
+        }
+      }
+    }
+  }
+}

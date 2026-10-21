@@ -99,7 +99,8 @@ class OrderEventOutboxServiceTests {
 
         OutboxEventEntity stored = savedOutboxEvent(repository);
         JsonNode payload = EventTestSupport.mapper().readTree(stored.payload());
-        Assertions.assertEquals(1, payload.get("event_version").asInt());
+        Assertions.assertEquals(2, payload.get("event_version").asInt());
+        Assertions.assertEquals(OrderEventOutboxService.ORDER_EVENT_VERSION, payload.get("event_version").asInt());
         Assertions.assertEquals(1L, payload.get("sequence").asLong());
         Assertions.assertEquals(1L, stored.aggregateSequence());
         JsonNode item = payload.get("data").get("items").get(0);
@@ -112,6 +113,28 @@ class OrderEventOutboxServiceTests {
         Assertions.assertFalse(item.has("currency"));
         Assertions.assertEquals("USD", payload.get("data").get("currency").asString());
         Assertions.assertTrue(stored.payload().contains("\"total_price\":21.18"), stored.payload());
+        // This order was built without a number: the event omits it rather than writing null.
+        Assertions.assertFalse(payload.get("data").has("order_no"), stored.payload());
+    }
+
+
+    @Test
+    void enqueueOrderEvent_shouldCarryTheOrderNumberAsAString() throws Exception {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        LocalDateTime createdAt = LocalDateTime.of(2026, 4, 25, 12, 0);
+        long orderNo = 7_254_189_912_938_504_192L;
+        OrderEntity paidOrder = new OrderEntity(10L, 3L, Money.of("21.18", "USD"), "PAID", createdAt, 2L, null)
+                .withOrderNo(orderNo);
+
+        service.enqueueOrderEvent(paidOrder, List.of(), null, createdAt);
+
+        String stored = savedOutboxEvent(repository).payload();
+        JsonNode data = EventTestSupport.mapper().readTree(stored).get("data");
+        // A JSON string: the number is past 2^53, which JavaScript numbers cannot hold exactly.
+        Assertions.assertTrue(data.get("order_no").isString(), stored);
+        Assertions.assertEquals("7254189912938504192", data.get("order_no").asString());
+        Assertions.assertEquals(orderNo, service.readEnvelope(stored).data().orderNo());
     }
 
 

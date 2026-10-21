@@ -9,7 +9,8 @@ import java.time.LocalDateTime;
 
 /**
  * An order event on the order topic (order.created, order.paid, order.accepted, order.preparing, order.completed,
- * order.cancelled), keyed by the order id. Contract: {@code event-schemas/order-events/<event_type>/v1.json}.
+ * order.cancelled), keyed by the order id. Contract: {@code event-schemas/order-events/<event_type>/v2.json}; a
+ * version 1 event is read the same way, without {@link OrderEventPayload#orderNo()}.
  *
  * @param aggregateId the order id
  * @param sequence    see {@link EventEnvelope#sequence()}

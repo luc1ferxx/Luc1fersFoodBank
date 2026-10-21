@@ -5,37 +5,43 @@
     "order.created": {
       "topic": "order-events",
       "versions": {
-        "1": "INITIAL"
+        "1": "INITIAL",
+        "2": "BACKWARD"
       }
     },
     "order.paid": {
       "topic": "order-events",
       "versions": {
-        "1": "INITIAL"
+        "1": "INITIAL",
+        "2": "BACKWARD"
       }
     },
     "order.accepted": {
       "topic": "order-events",
       "versions": {
-        "1": "INITIAL"
+        "1": "INITIAL",
+        "2": "BACKWARD"
       }
     },
     "order.preparing": {
       "topic": "order-events",
       "versions": {
-        "1": "INITIAL"
+        "1": "INITIAL",
+        "2": "BACKWARD"
       }
     },
     "order.completed": {
       "topic": "order-events",
       "versions": {
-        "1": "INITIAL"
+        "1": "INITIAL",
+        "2": "BACKWARD"
       }
     },
     "order.cancelled": {
       "topic": "order-events",
       "versions": {
-        "1": "INITIAL"
+        "1": "INITIAL",
+        "2": "BACKWARD"
       }
     },
     "delivery.assigned": {

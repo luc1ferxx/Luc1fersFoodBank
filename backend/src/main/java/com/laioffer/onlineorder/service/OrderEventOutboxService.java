@@ -36,9 +36,10 @@ import java.util.UUID;
 public class OrderEventOutboxService {
 
     /**
-     * The schema version of the order events written here: event-schemas/order-events/&lt;event_type&gt;/v1.json.
+     * The schema version of the order events written here: event-schemas/order-events/&lt;event_type&gt;/v2.json, which
+     * adds the order's public number (data.order_no) to version 1.
      */
-    public static final int ORDER_EVENT_VERSION = 1;
+    public static final int ORDER_EVENT_VERSION = 2;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(OrderEventOutboxService.class);
 
@@ -80,6 +81,8 @@ public class OrderEventOutboxService {
 
 
     /**
+     * @param order      the order after the change, as saved: its order number is set (checkout's save assigns it,
+     *                   OrderNumberCallback), and the event carries it
      * @param occurredAt when the change this event describes happened: the order creation time for a
      *                   new order, or the transition time for a status change
      */
@@ -111,7 +114,8 @@ public class OrderEventOutboxService {
                         order.createdAt(),
                         eventItems(items),
                         order.restaurantId(),
-                        order.cancelReason()
+                        order.cancelReason(),
+                        order.orderNo()
                 )
         );
         enqueueEvent(orderTopic, String.valueOf(order.id()), envelope);
