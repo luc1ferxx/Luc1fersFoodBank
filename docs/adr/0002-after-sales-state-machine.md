@@ -1652,3 +1652,67 @@ P1 只加测试，全量门禁通过（873 个测试，0 失败，0 跳过）。
 6. 改写 application.yml 里 `refund-gateway.timeout` 的注释：超时之后的安全性靠网关按 `gateway_key` 幂等来保证。
 7. 统一通知文案：只要是已扣款的取消，都提示"将自动退款"。和 P3-10 的通知消费者一起做。
 8. 开单时如果订单总额大于扣款金额，记日志或指标，让客服在退款失败之前就能看到。
+
+---
+
+## 25. P3c 实施记录（提交 045039d 到 1ebafd4；P4、P5 开始前必读）
+
+做法：四块工作在各自的 worktree 里并行完成，分别是稳健性、商家端、管理员端和通知；之后按顺序 cherry-pick 到 `feature/after-sales`，过程中没有文本冲突。端到端测试和只读审查同时进行。
+
+对抗审查结论：通过，没有必须修复的问题。端到端测试 `AfterSalesFlowContainerTests` 在真实的 PostgreSQL、Redis 和 Kafka 上跑通了 6 条完整流程：
+- 同意退款
+- 还价后接受
+- 拒绝后申请平台介入，管理员部分退款
+- 商家超时，自动同意
+- 已付款订单取消后自动退款
+- 撤销后用新 key 再次申请
+
+每条流程的模拟网关都先失败一次，再重试成功。测试一次就通过，没有发现生产代码的缺陷。
+
+**已完成**
+- 稳健性（第 24 节第 1–6、8 条）：
+  - 截止时间处理器遇到 skipped 就结束本轮。
+  - 退款 claim 拆成两条有索引的查询：先领过期租约，再领到期的 PENDING。
+  - claim 失败时只让这一条退款退避，指标 outcome 记为 `backed_off`，不计尝试次数。
+  - 网关线程池加上限 `app.after-sales.refund-gateway.max-threads`（默认 4）。
+  - 每个 tick 设时间预算 `app.after-sales.poller.tick-budget`（默认 5s）。
+  - 新增 H2 上验证 SKIP LOCKED 的测试。
+  - 少扣款的取消会在提交后记 WARN，并计数 `onlineorder.aftersales.cancellations.undercaptured`。
+- 商家端：
+  - 同步接口 `OrderLifecycleCommands.decideAfterSalesCase`。依赖反转：`service.AfterSalesMerchantCommands` 由 `aftersales.AfterSalesMerchantDecisions` 实现。
+  - 投影消费者 `MerchantAfterSalesConsumer`，消费组 `app.after-sales.merchant-group`，按 `data.version` 只前进。
+  - 接口 `/merchant/after-sales`：列表、approve、reject、offer。
+- 管理员端：
+  - `/admin/after-sales`：队列、详情、`arbitrate`（需要 Idempotency-Key），审计 `after_sales_case.arbitrate`。
+  - `/admin/refunds`：列表和 `{id}/retry`，审计 `refund.retry`。
+  - AppConfig 为这两类路径加了显式的 ROLE_ADMIN 匹配规则。
+- 通知：消费者在 `fulfilment.notification`，消费组 `app.after-sales.notification-group`，`dedup_scope = 'case:' + caseId`。所有已扣款且金额大于 0 的取消通知，都统一写"将自动退款"。
+
+**与前文的偏差**
+1. 通知范围比第 10.3 节宽：开单、申请平台介入、所有关闭原因（包括 WITHDRAWN）、顾客拒绝还价都会通知。case_closed 的标题是 "Refund request closed"。
+2. 商家命令要求投影行已经存在：消费者处理到这张单之前，商家操作返回 404。所以在 h2 profile（Kafka 关闭）下，商家看不到售后单，也无法处理，和商家订单收件箱的现状一致；商家超时仍会自动同意。
+3. 商家端没有详情接口（第 11.3 节没有定义）。状态过滤值会转成大写；管理员的过滤值区分大小写，两边不一致（见待办）。
+4. 管理员重试写在 `AfterSalesAdminService`（加锁 → `ADMIN_RETRY` → 带 version 的 save），重试后 `last_error` 保留到下一次尝试。管理员队列里，开放状态按截止时间由近到远排序。
+5. 通知代码在 `service` 包里，用字符串字面量比较售后的 kind、action、resolution，以免引入包循环。
+6. listener 容器从 8 个增加到 10 个。在默认并发 3 的情况下是 30 个消费线程，等于默认 Hikari 连接池的 30；但 prod overlay 的连接池只有 20。
+
+**待办（审查给出，非阻断）**
+- **P4 前端需要知道的**：
+  - `proxyPaths.ts` 加 `/after-sales`（`/merchant`、`/admin` 已有）。
+  - 顾客命令和管理员仲裁需要 Idempotency-Key，重试时复用同一个 key；第二次申请必须用新 key。商家命令不带 key。
+  - h2 下商家收件箱是空的。
+  - 新的 DTO 要和后端的字段顺序一致，其中 `MerchantAfterSalesCaseDto` 和管理员的 `RefundDto[]` 列表还没有纳入 `ApiContractIntegrationTests`。
+- **P5 文档和运维**：
+  - 在 docs/operations.md 写运行手册：FAILED 退款、`backed_off`、少扣款的取消、V12 的 order_notifications 唯一键不能在线执行。
+  - 加 promtool 告警规则：refunds `outcome=failed`、undercaptured。
+  - README 的模块表加上售后模块。
+  - AGENTS.md 的容器测试列表加上 `AfterSalesFlowContainerTests`。
+  - 在 10 个 listener 的情况下重跑 k6 order-flow，并评估 prod 连接池 20 是否够用。
+- **小修**：
+  - 新的 POST 接口（arbitrate、refund retry、商家的 approve/reject/offer）还没有限流规则。
+  - 管理员状态过滤改为不区分大小写。
+  - 一直失败的 claim 只会无限退避，永远不会变成 FAILED，需要设上限。
+  - 网关线程全部被卡住时，要能观察到这种状态。
+  - `AuditLogIntegrationTests` 中 `refund.retry` 断言真实的 order_id。
+  - application.yml 里 `refund.retry-backoff` 的注释补上"claim 失败也用这个间隔"。
+  - 售后通知没有过期事件保护：从死信重放的旧事件仍会写通知，这一点和订单通知的现状一致。
