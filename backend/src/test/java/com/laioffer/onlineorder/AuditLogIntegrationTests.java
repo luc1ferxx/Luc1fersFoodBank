@@ -333,7 +333,10 @@ class AuditLogIntegrationTests {
         Assertions.assertEquals(caseId, details.get("case_id").asLong());
         Assertions.assertEquals(8, details.get("previous_attempts").asInt());
         Assertions.assertEquals("card account closed", details.get("last_error").asString());
-        Assertions.assertTrue(details.get("order_id").asLong() > 0);
+        Assertions.assertEquals(
+                jdbcTemplate.queryForObject("SELECT order_id FROM after_sales_cases WHERE id = ?", Long.class, caseId),
+                details.get("order_id").asLong(),
+                "the order of the refunded case");
     }
 
 
