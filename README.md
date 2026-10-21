@@ -195,6 +195,31 @@ Use this when you want a smaller backend run without PostgreSQL or Kafka. Redis 
 
 The `h2` profile runs Flyway migrations and includes the demo seed callback by default.
 
+### After-sales demo
+
+The `demo` profile (`backend/src/main/resources/application-demo.yml`) shortens the after-sales time limits, which
+otherwise default to a 24-hour request window and 24, 48 and 72 hours to answer: a request window of 2 hours, 2 minutes
+for the merchant, 3 for the customer and 5 for the platform. It also turns on the after-sales poller, which follows
+Kafka and is therefore off in the plain `h2` profile, so that the deadlines fire and refunds go through the simulated
+refund gateway.
+
+```sh
+(cd backend && SPRING_PROFILES_ACTIVE=h2,demo ./gradlew bootRun)
+```
+
+1. Sign in as `demo@laifood.com` (a customer and an admin), add a menu item to the cart and pay with
+   `POST /payments/checkout` (with an `Idempotency-Key`).
+2. Complete the order as the admin: `PATCH /orders/{orderId}/status` with `{"status": "ACCEPTED"}`, then `PREPARING`,
+   then `COMPLETED`, each with its own `Idempotency-Key`.
+3. Ask for a refund: `POST /orders/{orderId}/after-sales` with
+   `{"scope": "WHOLE_ORDER", "reason_code": "MISSING_ITEM", "description": "..."}` and an `Idempotency-Key`.
+4. Leave it unanswered for 2 minutes. The poller then fires the merchant timeout, which approves the requested amount,
+   and executes the refund in the same tick: `GET /after-sales/cases/{caseId}` shows the case `REFUNDED` and its
+   refund `SUCCEEDED`.
+
+Add `AFTER_SALES_REFUND_GATEWAY_FAIL_FIRST_ATTEMPTS=2` to watch the refund fail twice and back off (10 s, then 20 s)
+before it succeeds.
+
 ---
 
 ## Core API Map
