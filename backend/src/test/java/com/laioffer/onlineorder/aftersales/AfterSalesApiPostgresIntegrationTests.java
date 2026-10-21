@@ -125,6 +125,69 @@ class AfterSalesApiPostgresIntegrationTests extends AbstractAfterSalesApiIntegra
 
 
     /**
+     * Two requests with one key on one order (a double submit, or a retry while the first still runs): the first
+     * inserts the key's row and queues on the order's row, the second queues on the first's uncommitted key row. Once
+     * the first committed, the second answers with the case the first opened when it is the same request, and is
+     * refused when it is another one; never a second case, and never "still processing" (ADR 0002 section 14, P3
+     * race 5). The requests alternate between the whole order and one line from round to round.
+     */
+    @Test
+    void twoConcurrentRequestsWithOneKey_shouldOpenOneCase() throws Exception {
+        Customer customer = customer("after-sales-race-key-");
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+        try {
+            for (int round = 0; round < 4; round++) {
+                CompletedOrder order = completedOrder(customer, menuItem(BURGER_KING, 0), menuItem(BURGER_KING, 1));
+                Long orderId = order.orderId();
+                String key = "race-one-key-" + orderId;
+                boolean firstIsWhole = round < 2;
+                boolean sameRequest = round % 2 == 0;
+                String whole = wholeOrder();
+                String partial = items(order.itemIds().get(0), 1);
+                String firstBody = firstIsWhole ? whole : partial;
+                String secondBody = sameRequest ? firstBody : firstIsWhole ? partial : whole;
+
+                Future<String> first;
+                Future<String> second;
+                try (RowLockHolder orderRow = PostgresRowLocks.holdRowLock(
+                        executor, transactionManager, jdbcTemplate, "orders", orderId)) {
+                    first = orderRow.queue(() -> openOutcome(customer, orderId, key, firstBody));
+                    second = orderRow.queue(() -> openOutcome(customer, orderId, key, secondBody));
+                    orderRow.release();
+                }
+
+                String firstResult = first.get(20, TimeUnit.SECONDS);
+                String secondResult = second.get(20, TimeUnit.SECONDS);
+                List<AfterSalesCaseEntity> cases = caseRepository.findAllByOrderId(orderId);
+                Assertions.assertEquals(1, cases.size(), "round " + round + ": " + firstResult + " / " + secondResult);
+                AfterSalesCaseEntity opened = cases.get(0);
+                Assertions.assertEquals("PENDING_MERCHANT|" + opened.id(), firstResult);
+                Assertions.assertEquals(sameRequest
+                                ? "PENDING_MERCHANT|" + opened.id()
+                                : "CONFLICT|CONFLICT|Idempotency key was already used with a different request",
+                        secondResult, "round " + round);
+                Assertions.assertEquals(
+                        firstIsWhole ? order.total().amount() : lineAmount(order.itemIds().get(0)),
+                        opened.requestedAmount().setScale(2)
+                );
+                Assertions.assertEquals("SUCCEEDED|" + opened.id(), jdbcTemplate.queryForObject("""
+                        SELECT status || '|' || case_id
+                        FROM idempotency_requests
+                        WHERE customer_id = ?
+                          AND scope = ?
+                          AND idempotency_key = ?
+                        """, String.class, customer.id(), "after-sales-open:v1:" + orderId, key));
+                Assertions.assertEquals(List.of("aftersales.case_opened"), eventTypes(opened.id()));
+                Assertions.assertEquals(1, jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM after_sales_case_history WHERE case_id = ?", Integer.class, opened.id()));
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+
+    /**
      * The customer withdrawing a counter-offered case while accepting the offer (two tabs), queued on the case's row:
      * either the case is withdrawn and the acceptance refused, or the offer is accepted (one refund) and the withdrawal
      * refused. Neither ends with both, and the refused command writes nothing.

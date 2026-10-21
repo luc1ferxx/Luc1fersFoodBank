@@ -703,7 +703,15 @@ class StaffAccountsPostgresIntegrationTests {
                 row(HttpMethod.GET, "/admin/deliveries", null, 401, 403, 403, 403, 200),
                 row(HttpMethod.GET, "/admin/deliveries?rider_id=" + demoRiderId, null, 401, 403, 403, 403, 200),
                 row(HttpMethod.POST, "/admin/deliveries/987654/reassign", "{\"rider_id\": " + demoRiderId + "}",
-                        401, 403, 403, 403, 404)
+                        401, 403, 403, 403, 404),
+                // After-sales (ADR 0002 section 11): every login has its own requests; the merchant's inbox and the
+                // platform's arbitration and refunds are for their roles only.
+                row(HttpMethod.GET, "/after-sales/cases", null, 401, 200, 200, 200, 200),
+                row(HttpMethod.GET, "/merchant/after-sales", null, 401, 403, 200, 403, 403),
+                row(HttpMethod.POST, "/merchant/after-sales/987654/approve", null, 401, 403, 404, 403, 403),
+                row(HttpMethod.GET, "/admin/after-sales", null, 401, 403, 403, 403, 200),
+                row(HttpMethod.GET, "/admin/refunds", null, 401, 403, 403, 403, 200),
+                row(HttpMethod.POST, "/admin/refunds/987654/retry", null, 401, 403, 403, 403, 404)
         );
         List<String> mismatches = new ArrayList<>();
         for (Object[] entry : matrix) {
