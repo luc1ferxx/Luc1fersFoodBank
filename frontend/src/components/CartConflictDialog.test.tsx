@@ -148,11 +148,17 @@ describe("adding an item from another restaurant", () => {
     backend.on("POST", "/cart", () => apiError(503, "Menu service unavailable"));
     await user.click(within(dialog).getByRole("button", { name: "Clear cart & add" }));
 
-    // The dialog's add was asked for on the Dan Dan Noodles card: it says so there only.
+    // The dialog's add was asked for on the Dan Dan Noodles card, and it emptied the cart:
+    // the card and the Cart tab say so.
+    const message =
+      "Your cart was cleared, but Dan Dan Noodles was not added. 503: Menu service unavailable";
     expect(await within(menuCard("Dan Dan Noodles")).findByRole("alert")).toHaveTextContent(
-      "Your cart was cleared, but Dan Dan Noodles was not added. 503: Menu service unavailable",
+      message,
     );
-    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getAllByRole("alert").map((alert) => alert.textContent)).toEqual([
+      expect.stringContaining(message),
+      expect.stringContaining(message),
+    ]);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByText("Your cart is empty. Checkout is disabled.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cart (0)" })).toBeInTheDocument();
@@ -172,6 +178,63 @@ describe("adding an item from another restaurant", () => {
     );
     expect(screen.getAllByRole("alert")).toHaveLength(1);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});
+
+describe("a menu card's error when the card is not on screen", () => {
+  const browsing = () => screen.getByRole("region", { name: "Restaurant and menu browsing" });
+
+  it("shows the dialog's failed add above another restaurant's menu", async () => {
+    const backend = installFakeBackend({ user: demoUser, cartItems: [whopperLine] });
+    const add = deferred();
+    backend.on("POST", "/cart", () => add.promise);
+    const user = renderApp();
+
+    // The 409 comes back after the customer moved on to Taco Town.
+    await screen.findByRole("button", { name: "Pay $12.78" });
+    await user.click(screen.getByRole("button", { name: /Noodle Nook/ }));
+    await screen.findByText("Dan Dan Noodles");
+    await user.click(screen.getByRole("button", { name: "Add to cart" }));
+    await user.click(screen.getByRole("button", { name: /Taco Town/ }));
+    await screen.findByText("Fish Taco");
+    await act(async () => {
+      add.resolve(cartConflict());
+      await add.promise;
+    });
+    const dialog = await screen.findByRole("dialog", { name: "Start a new cart?" });
+    backend.on("POST", "/cart", () => apiError(503, "Menu service unavailable"));
+    await user.click(within(dialog).getByRole("button", { name: "Clear cart & add" }));
+
+    const message =
+      "Your cart was cleared, but Dan Dan Noodles was not added. 503: Menu service unavailable";
+    expect(await within(browsing()).findByRole("alert")).toHaveTextContent(message);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByText("Your cart is empty. Checkout is disabled.")).toBeInTheDocument();
+  });
+
+  it("names the item above the menu until its card is shown again", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    const add = deferred();
+    backend.on("POST", "/cart", () => add.promise);
+    const user = renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Add to cart" }));
+    await user.click(screen.getByRole("button", { name: /Noodle Nook/ }));
+    await screen.findByText("Dan Dan Noodles");
+    await act(async () => {
+      add.resolve(apiError(503, "Menu service unavailable"));
+      await add.promise;
+    });
+
+    expect(await within(browsing()).findByRole("alert")).toHaveTextContent(
+      "Whopper: 503: Menu service unavailable",
+    );
+
+    await user.click(screen.getByRole("button", { name: /Burger Barn/ }));
+    expect(await within(menuCard("Whopper")).findByRole("alert")).toHaveTextContent(
+      "503: Menu service unavailable",
+    );
+    expect(within(browsing()).getAllByRole("alert")).toHaveLength(1);
   });
 });
 
