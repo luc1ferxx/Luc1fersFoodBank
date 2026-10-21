@@ -560,7 +560,7 @@ runs the procedure for `orders` (a key other tables reference) and `idempotency_
    `after.txt`: `diff before.txt after.txt` must print nothing, which also proves that the `ON CONFLICT` targets are
    back. Then drop the old columns.
 
-## 8. Event contracts and per-aggregate order (V9-V9_2)
+## 8. Event contracts and per-aggregate order (V9-V9_2, V13)
 
 README "Event contracts" describes the schemas, the validation and the evolution rules; this section is the operator's
 side.
@@ -580,6 +580,28 @@ a second per million rows. V9_2 adds `consumer_aggregate_sequences`, empty. Roll
 older version (section 7's procedure): an older pod writes events without a sequence (the claim publishes them
 unordered) and without schema validation. Pods of this release read events written by older pods (no `sequence`) and the
 reverse (older consumers ignore the new field).
+
+**Claim fencing (V13).** V13 adds `outbox_events.claim_token` (nullable, no default: catalog only on PostgreSQL) and
+the CHECKs `chk_outbox_events_status` (`PENDING`, `PROCESSING`, `PUBLISHED`, `FAILED`, `ABANDONED`) and
+`chk_dead_letter_events_replay_status` (`PENDING`, `REPLAYING`, `REPLAYED`, `REPLAY_FAILED`). Each `ADD CONSTRAINT`
+checks the existing rows under the table's `ACCESS EXCLUSIVE` lock, so outbox writes (checkouts, status changes) wait
+for the scan of `outbox_events`, about as long as V3's and V9_1's index builds (a second per million rows); published
+rows are kept for `app.cleanup.outbox-retention` (7 days). Check first that no row has another status:
+
+```sql
+SELECT status, COUNT(*) FROM outbox_events GROUP BY status;
+SELECT replay_status, COUNT(*) FROM dead_letter_events GROUP BY replay_status;
+```
+
+A claim of this release writes a new token, and its outcome (published, released, retry, failed) changes a row only
+while it is still `PROCESSING` under that token: a publisher whose claim expired mid-batch can no longer put an event
+that another publisher published back to `PENDING` (sending it again) or make it `FAILED` (blocking its aggregate), nor
+release another publisher's claim. Such a late write changes nothing and logs the WARN "Outbox <write> changed n of the
+events [ids]; the others were no longer held by this publisher's claim"; several of them mean
+`app.outbox.claim-timeout` is too short for the publish timeout (the startup WARN about `claim-timeout` says so too).
+While pods of the previous release still run next to this one, their claims write no token and their outcomes stay unfenced, as before: they behave as they do
+today, and a row they claimed keeps the token of an earlier claim of this release, if any, so a late write under that
+token still applies. The fencing is complete once no older pod publishes.
 
 **A blocked aggregate** (`OnlineOrderOutboxAggregatesBlocked`): the publisher only claims the head of each aggregate,
 so a `FAILED` event holds back the later events of its order or delivery, on every topic it writes to, until it is

@@ -440,6 +440,10 @@ which must not run next to pods of an older version.
 - A scheduled publisher claims `PENDING` or stale `PROCESSING` rows with `FOR UPDATE SKIP LOCKED`, but only the head
   of each aggregate: an event waits while an earlier event of its aggregate is `PENDING`, `PROCESSING` or `FAILED`. So
   an aggregate's events reach Kafka in sequence order, one acknowledgement after the other, across publisher instances.
+- Each claim writes a token of its own (`claim_token`, V13), and every outcome below is written only while the row is
+  still `PROCESSING` under that token. A publisher whose claim expired mid-batch (`app.outbox.claim-timeout`) can then
+  neither undo a publish by the instance that reclaimed the event nor release that instance's claim; its event may
+  still be sent twice, which consumers deduplicate.
 - Successful publish marks the row `PUBLISHED`.
 - Retryable failures return to `PENDING` until `app.outbox.max-attempts`.
 - Max-attempt failures become `FAILED` and require admin retry after the root cause is fixed; until then the later

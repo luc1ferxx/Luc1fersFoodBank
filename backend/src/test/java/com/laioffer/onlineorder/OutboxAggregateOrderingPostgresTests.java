@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
@@ -254,6 +255,86 @@ class OutboxAggregateOrderingPostgresTests {
         Assertions.assertEquals(5, countByStatus("PUBLISHED"));
         Assertions.assertEquals(0L, outboxEventRepository.countBlockedAggregates());
         Assertions.assertEquals(0.0, meterRegistry.get("onlineorder.outbox.blocked_events").gauge().value());
+    }
+
+
+    @Test
+    void lateFailuresOfAnExpiredClaim_shouldNotTouchTheEventThatTheClaimTakingItOverPublished() {
+        long order = uniqueAggregateId();
+        enqueueInOwnTransaction("order-events", order, orderEvent(order, 0));
+        enqueueInOwnTransaction("order-events", order, orderEvent(order, 1));
+        // Publisher A claims the head; its claim expires mid-batch and publisher B claims and publishes the head.
+        OutboxEventEntity claimedByA = single(outboxService.claimNextBatch());
+        expireClaims();
+        OutboxEventEntity claimedByB = single(outboxService.claimNextBatch());
+        Assertions.assertEquals(claimedByA.id(), claimedByB.id());
+        Assertions.assertNotEquals(claimedByA.claimToken(), claimedByB.claimToken());
+        outboxService.markPublished(claimedByB.claimToken(), List.of(claimedByB.id()));
+
+        // A's results arrive late: a record error with attempts left (it used to put the event back to PENDING, to be
+        // sent again), one without (it used to make it FAILED and hold back the aggregate), and a transient failure.
+        Assertions.assertEquals(
+                OrderEventOutboxService.RetryableFailure.CLAIM_LOST,
+                outboxService.markRetryableFailure(claimedByA.claimToken(), claimedByA.id(), "Record rejected")
+        );
+        jdbcTemplate.update("UPDATE outbox_events SET attempts = ? WHERE id = ?", MAX_ATTEMPTS, claimedByA.id());
+        Assertions.assertEquals(
+                OrderEventOutboxService.RetryableFailure.CLAIM_LOST,
+                outboxService.markRetryableFailure(claimedByA.claimToken(), claimedByA.id(), "Record rejected")
+        );
+        outboxService.releaseFailedClaims(claimedByA.claimToken(), List.of(claimedByA.id()), "Kafka timed out");
+
+        OutboxEventEntity head = outboxEventRepository.findById(claimedByA.id()).orElseThrow();
+        Assertions.assertEquals("PUBLISHED", head.status());
+        Assertions.assertNull(head.lastError());
+        Assertions.assertNull(head.claimToken());
+        Assertions.assertEquals(0L, outboxEventRepository.countBlockedAggregates());
+        Assertions.assertEquals(2L, single(outboxService.claimNextBatch()).aggregateSequence(), "the aggregate flows on");
+    }
+
+
+    @Test
+    void theReleaseOfAnExpiredClaim_shouldLeaveTheClaimThatTookItOver() {
+        long order = uniqueAggregateId();
+        enqueueInOwnTransaction("order-events", order, orderEvent(order, 0));
+        OutboxEventEntity claimedByA = single(outboxService.claimNextBatch());
+        expireClaims();
+        OutboxEventEntity claimedByB = single(outboxService.claimNextBatch());
+
+        // A never sent it and gives it back, after its claim expired.
+        outboxService.releaseClaims(claimedByA.claimToken(), List.of(claimedByA.id()));
+
+        OutboxEventEntity held = outboxEventRepository.findById(claimedByA.id()).orElseThrow();
+        Assertions.assertEquals("PROCESSING", held.status());
+        Assertions.assertEquals(claimedByB.claimToken(), held.claimToken());
+        Assertions.assertEquals(2, held.attempts(), "no attempt of B's claim was given back");
+        Assertions.assertTrue(outboxService.claimNextBatch().isEmpty(), "no third publisher can claim it meanwhile");
+        outboxService.markPublished(claimedByB.claimToken(), List.of(claimedByB.id()));
+        Assertions.assertEquals("PUBLISHED", outboxEventRepository.findById(claimedByA.id()).orElseThrow().status());
+    }
+
+
+    @Test
+    void outboxAndReplayStatuses_shouldBeLimitedToTheOnesTheCodeWrites() {
+        long order = uniqueAggregateId();
+        enqueueInOwnTransaction("order-events", order, orderEvent(order, 0));
+
+        Assertions.assertThrows(
+                DataIntegrityViolationException.class,
+                () -> jdbcTemplate.update("UPDATE outbox_events SET status = 'SENT'")
+        );
+        Assertions.assertThrows(
+                DataIntegrityViolationException.class,
+                () -> jdbcTemplate.update(
+                        """
+                                INSERT INTO dead_letter_events (
+                                    source_topic, dead_letter_topic, message_key, payload, error_message,
+                                    replay_status, replay_attempts, created_at, updated_at
+                                )
+                                VALUES ('order-events', 'order-events.DLT', '1', '{}', 'boom', 'DONE', 0, NOW(), NOW())
+                                """
+                )
+        );
     }
 
 
@@ -591,6 +672,22 @@ class OutboxAggregateOrderingPostgresTests {
         } finally {
             pool.shutdownNow();
         }
+    }
+
+
+    private static OutboxEventEntity single(List<OutboxEventEntity> claimed) {
+        Assertions.assertEquals(1, claimed.size(), "claimed: " + claimed);
+        return claimed.get(0);
+    }
+
+
+    /**
+     * Ages every PROCESSING claim past app.outbox.claim-timeout (30s), as a publisher stalled mid-batch would.
+     */
+    private void expireClaims() {
+        jdbcTemplate.update(
+                "UPDATE outbox_events SET updated_at = updated_at - INTERVAL '1 hour' WHERE status = 'PROCESSING'"
+        );
     }
 
 

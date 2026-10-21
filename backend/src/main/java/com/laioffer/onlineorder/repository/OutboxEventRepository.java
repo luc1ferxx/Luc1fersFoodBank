@@ -150,62 +150,94 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
     );
 
 
+    /**
+     * Claims the locked events for one batch: PROCESSING under {@code claimToken}, a new token per claim, which every
+     * result write below requires. A reclaim of an expired claim replaces the token, so the writes of the publisher
+     * whose claim expired no longer match.
+     */
     @Modifying
     @Query("""
             UPDATE outbox_events
-            SET status = :status,
+            SET status = :processingStatus,
+                claim_token = :claimToken,
                 attempts = attempts + 1,
                 updated_at = :updatedAt,
                 last_error = NULL
             WHERE id IN (:ids)
             """)
-    int markProcessing(List<Long> ids, String status, LocalDateTime updatedAt);
+    int markProcessing(List<Long> ids, String processingStatus, String claimToken, LocalDateTime updatedAt);
 
 
+    /**
+     * Marks the events of claim {@code claimToken} that Kafka acknowledged as published. Rows that are no longer
+     * PROCESSING under that claim are left alone.
+     */
     @Modifying
     @Query("""
             UPDATE outbox_events
-            SET status = :status,
+            SET status = :publishedStatus,
+                claim_token = NULL,
                 updated_at = :updatedAt,
                 published_at = :publishedAt,
                 last_error = NULL
             WHERE id IN (:ids)
+              AND status = :processingStatus
+              AND claim_token = :claimToken
             """)
-    int markPublished(List<Long> ids, String status, LocalDateTime updatedAt, LocalDateTime publishedAt);
+    int markPublished(
+            List<Long> ids,
+            String claimToken,
+            String processingStatus,
+            String publishedStatus,
+            LocalDateTime updatedAt,
+            LocalDateTime publishedAt
+    );
 
 
     /**
-     * Returns claimed events that were never sent to PENDING and gives back the attempt the claim counted.
-     * Rows that are no longer PROCESSING are left alone.
+     * Returns events of claim {@code claimToken} that were never sent to PENDING and gives back the attempt the claim
+     * counted. Rows that are no longer PROCESSING under that claim are left alone.
      */
     @Modifying
     @Query("""
             UPDATE outbox_events
             SET status = :pendingStatus,
+                claim_token = NULL,
                 attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
                 updated_at = :updatedAt
             WHERE id IN (:ids)
               AND status = :processingStatus
+              AND claim_token = :claimToken
             """)
-    int releaseClaims(List<Long> ids, String processingStatus, String pendingStatus, LocalDateTime updatedAt);
+    int releaseClaims(
+            List<Long> ids,
+            String claimToken,
+            String processingStatus,
+            String pendingStatus,
+            LocalDateTime updatedAt
+    );
 
 
     /**
-     * Returns claimed events whose send failed for a transient reason to PENDING, gives back the attempt the claim
-     * counted and records the error. Rows that are no longer PROCESSING are left alone.
+     * Returns events of claim {@code claimToken} whose send failed for a transient reason to PENDING, gives back the
+     * attempt the claim counted and records the error. Rows that are no longer PROCESSING under that claim are left
+     * alone.
      */
     @Modifying
     @Query("""
             UPDATE outbox_events
             SET status = :pendingStatus,
+                claim_token = NULL,
                 attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
                 updated_at = :updatedAt,
                 last_error = :lastError
             WHERE id IN (:ids)
               AND status = :processingStatus
+              AND claim_token = :claimToken
             """)
     int releaseFailedClaims(
             List<Long> ids,
+            String claimToken,
             String processingStatus,
             String pendingStatus,
             LocalDateTime updatedAt,
@@ -213,26 +245,60 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
     );
 
 
+    /**
+     * Returns an event of claim {@code claimToken} that Kafka rejected to PENDING, keeping the attempt, while it has
+     * attempts left (fewer than {@code maxAttempts}, the claim's own included). Otherwise, or when the row is no longer
+     * PROCESSING under that claim, nothing changes.
+     */
     @Modifying
     @Query("""
             UPDATE outbox_events
-            SET status = :status,
+            SET status = :pendingStatus,
+                claim_token = NULL,
                 updated_at = :updatedAt,
                 last_error = :lastError
             WHERE id = :id
+              AND status = :processingStatus
+              AND claim_token = :claimToken
+              AND attempts < :maxAttempts
             """)
-    void markPendingRetry(Long id, String status, LocalDateTime updatedAt, String lastError);
+    int markPendingRetry(
+            Long id,
+            String claimToken,
+            String processingStatus,
+            String pendingStatus,
+            int maxAttempts,
+            LocalDateTime updatedAt,
+            String lastError
+    );
 
 
+    /**
+     * Gives up on an event of claim {@code claimToken} that Kafka rejected once it used up its attempts
+     * ({@code maxAttempts} or more): FAILED, which holds back the later events of its aggregate. Otherwise, or when the
+     * row is no longer PROCESSING under that claim, nothing changes.
+     */
     @Modifying
     @Query("""
             UPDATE outbox_events
-            SET status = :status,
+            SET status = :failedStatus,
+                claim_token = NULL,
                 updated_at = :updatedAt,
                 last_error = :lastError
             WHERE id = :id
+              AND status = :processingStatus
+              AND claim_token = :claimToken
+              AND attempts >= :maxAttempts
             """)
-    void markFailed(Long id, String status, LocalDateTime updatedAt, String lastError);
+    int markFailed(
+            Long id,
+            String claimToken,
+            String processingStatus,
+            String failedStatus,
+            int maxAttempts,
+            LocalDateTime updatedAt,
+            String lastError
+    );
 
 
     @Modifying

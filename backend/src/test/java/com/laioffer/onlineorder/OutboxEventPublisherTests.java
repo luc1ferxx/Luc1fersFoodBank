@@ -42,6 +42,8 @@ import java.util.concurrent.CompletableFuture;
 class OutboxEventPublisherTests {
 
     private static final Duration PUBLISH_INTERVAL = Duration.ofMillis(500);
+    // The token of the claim the mocked claimNextBatch returns; every result write must pass it on.
+    private static final String CLAIM_TOKEN = "claim-1";
 
     @Mock
     private KafkaTemplate<String, String> kafkaTemplate;
@@ -72,7 +74,7 @@ class OutboxEventPublisherTests {
                 LocalDateTime.of(2026, 4, 4, 12, 0),
                 LocalDateTime.of(2026, 4, 4, 12, 0),
                 null
-        );
+        ).withClaimToken(CLAIM_TOKEN);
         OutboxEventPublisher publisher = newPublisher(20, Duration.ofSeconds(5));
 
         Mockito.when(orderEventOutboxService.claimNextBatch()).thenReturn(List.of(event));
@@ -81,10 +83,10 @@ class OutboxEventPublisherTests {
 
         publisher.publishPendingEvents();
 
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(event.id()));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(event.id()));
         Mockito.verify(metricsService).recordOutboxPublishResult(event.topic(), true);
-        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
-        Mockito.verify(orderEventOutboxService, Mockito.never()).releaseClaims(Mockito.anyList());
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.any(), Mockito.anyLong(), Mockito.anyString());
+        Mockito.verify(orderEventOutboxService, Mockito.never()).releaseClaims(Mockito.any(), Mockito.anyList());
     }
 
 
@@ -105,7 +107,7 @@ class OutboxEventPublisherTests {
                 LocalDateTime.of(2026, 4, 4, 12, 0),
                 LocalDateTime.of(2026, 4, 4, 12, 0),
                 null
-        );
+        ).withClaimToken(CLAIM_TOKEN);
         OutboxEventPublisher publisher = newPublisher(20, Duration.ofSeconds(5));
 
         Mockito.when(orderEventOutboxService.claimNextBatch()).thenReturn(List.of(event));
@@ -114,9 +116,9 @@ class OutboxEventPublisherTests {
 
         publisher.publishPendingEvents();
 
-        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(event.id()), Mockito.contains("Kafka unavailable"));
+        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(CLAIM_TOKEN), Mockito.eq(event.id()), Mockito.contains("Kafka unavailable"));
         Mockito.verify(metricsService).recordOutboxPublishResult(event.topic(), false);
-        Mockito.verify(orderEventOutboxService, Mockito.never()).markPublished(Mockito.anyList());
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markPublished(Mockito.any(), Mockito.anyList());
     }
 
 
@@ -134,9 +136,9 @@ class OutboxEventPublisherTests {
 
         Mockito.verify(orderEventOutboxService, Mockito.times(3)).claimNextBatch();
         Mockito.verify(kafkaTemplate, Mockito.times(5)).send(Mockito.anyString(), Mockito.anyString(), Mockito.anyString());
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(1L, 2L));
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(3L, 4L));
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(5L));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(1L, 2L));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(3L, 4L));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(5L));
         Mockito.verify(metricsService, Mockito.times(5)).recordOutboxPublishResult("order-events", true);
     }
 
@@ -159,8 +161,8 @@ class OutboxEventPublisherTests {
         publisher.publishPendingEvents();
 
         Mockito.verify(orderEventOutboxService, Mockito.times(2)).claimNextBatch();
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(1L, 2L));
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(3L));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(1L, 2L));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(3L));
         Mockito.verify(orderEventOutboxService).hasPendingSuccessor(List.of(3L));
     }
 
@@ -193,7 +195,7 @@ class OutboxEventPublisherTests {
         Mockito.verify(orderEventOutboxService).claimNextBatch();
         Mockito.verify(kafkaTemplate, Mockito.never()).send(Mockito.anyString(), Mockito.anyString(), Mockito.anyString());
         Mockito.verifyNoInteractions(metricsService);
-        Mockito.verify(orderEventOutboxService, Mockito.never()).markPublished(Mockito.anyList());
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markPublished(Mockito.any(), Mockito.anyList());
     }
 
 
@@ -216,8 +218,8 @@ class OutboxEventPublisherTests {
 
         publisher.publishPendingEvents();
 
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(1L, 2L, 3L));
-        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(1L, 2L, 3L));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.any(), Mockito.anyLong(), Mockito.anyString());
     }
 
 
@@ -243,9 +245,9 @@ class OutboxEventPublisherTests {
         publisher.publishPendingEvents();
 
         Mockito.verify(kafkaTemplate, Mockito.never()).send(second.topic(), second.eventKey(), second.payload());
-        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(1L), Mockito.contains("Record rejected"));
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(2L, 4L));
-        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(3L));
+        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(CLAIM_TOKEN), Mockito.eq(1L), Mockito.contains("Record rejected"));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(2L, 4L));
+        Mockito.verify(orderEventOutboxService).releaseClaims(CLAIM_TOKEN, List.of(3L));
     }
 
 
@@ -280,8 +282,8 @@ class OutboxEventPublisherTests {
 
         Assertions.assertEquals(List.of(first.payload(), otherOrder.payload(), second.payload()), sentPayloads);
         Assertions.assertEquals(List.of(true), firstAcknowledgedWhenSecondSent);
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(1L, 3L, 2L));
-        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(1L, 3L, 2L));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.any(), Mockito.anyLong(), Mockito.anyString());
     }
 
 
@@ -306,9 +308,9 @@ class OutboxEventPublisherTests {
 
         Mockito.verify(kafkaTemplate, Mockito.times(1)).send(Mockito.anyString(), Mockito.anyString(), Mockito.anyString());
         Mockito.verify(orderEventOutboxService)
-                .releaseFailedClaims(Mockito.eq(List.of(1L)), Mockito.contains("not present in metadata"));
-        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(2L, 3L));
-        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
+                .releaseFailedClaims(Mockito.eq(CLAIM_TOKEN), Mockito.eq(List.of(1L)), Mockito.contains("not present in metadata"));
+        Mockito.verify(orderEventOutboxService).releaseClaims(CLAIM_TOKEN, List.of(2L, 3L));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.any(), Mockito.anyLong(), Mockito.anyString());
         Mockito.verify(metricsService).recordOutboxPublishResult(first.topic(), false);
         Mockito.verify(orderEventOutboxService, Mockito.times(1)).claimNextBatch();
 
@@ -321,7 +323,7 @@ class OutboxEventPublisherTests {
         publisher.publishPendingEvents();
 
         Mockito.verify(orderEventOutboxService, Mockito.times(2)).claimNextBatch();
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(1L, 2L));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(1L, 2L));
 
         publisher.publishPendingEvents();
 
@@ -341,9 +343,9 @@ class OutboxEventPublisherTests {
         publisher.publishPendingEvents();
 
         Mockito.verify(kafkaTemplate, Mockito.never()).send(second.topic(), second.eventKey(), second.payload());
-        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(1L), Mockito.contains("Send failed"));
-        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(2L));
-        Mockito.verify(orderEventOutboxService, Mockito.never()).markPublished(Mockito.anyList());
+        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(CLAIM_TOKEN), Mockito.eq(1L), Mockito.contains("Send failed"));
+        Mockito.verify(orderEventOutboxService).releaseClaims(CLAIM_TOKEN, List.of(2L));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markPublished(Mockito.any(), Mockito.anyList());
     }
 
 
@@ -448,10 +450,10 @@ class OutboxEventPublisherTests {
         publisher.publishPendingEvents();
 
         Mockito.verify(orderEventOutboxService)
-                .releaseFailedClaims(Mockito.eq(List.of(1L)), Mockito.contains("did not acknowledge"));
-        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
+                .releaseFailedClaims(Mockito.eq(CLAIM_TOKEN), Mockito.eq(List.of(1L)), Mockito.contains("did not acknowledge"));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.any(), Mockito.anyLong(), Mockito.anyString());
         Mockito.verify(metricsService).recordOutboxPublishResult(event.topic(), false);
-        Mockito.verify(orderEventOutboxService, Mockito.never()).markPublished(Mockito.anyList());
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markPublished(Mockito.any(), Mockito.anyList());
     }
 
 
@@ -477,10 +479,10 @@ class OutboxEventPublisherTests {
         publisher.publishPendingEvents();
 
         Mockito.verify(orderEventOutboxService)
-                .releaseFailedClaims(Mockito.eq(List.of(1L)), Mockito.contains("Expiring 1 record(s)"));
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(2L));
-        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(3L));
-        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
+                .releaseFailedClaims(Mockito.eq(CLAIM_TOKEN), Mockito.eq(List.of(1L)), Mockito.contains("Expiring 1 record(s)"));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(2L));
+        Mockito.verify(orderEventOutboxService).releaseClaims(CLAIM_TOKEN, List.of(3L));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.any(), Mockito.anyLong(), Mockito.anyString());
         Mockito.verify(kafkaTemplate, Mockito.never()).send(second.topic(), second.eventKey(), second.payload());
 
         publisher.publishPendingEvents();
@@ -510,11 +512,11 @@ class OutboxEventPublisherTests {
 
         publisher.publishPendingEvents();
 
-        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(1L), Mockito.contains("RecordTooLarge"));
+        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(CLAIM_TOKEN), Mockito.eq(1L), Mockito.contains("RecordTooLarge"));
         Mockito.verify(kafkaTemplate, Mockito.never())
                 .send(laterWithSameKey.topic(), laterWithSameKey.eventKey(), laterWithSameKey.payload());
-        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(2L));
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(3L, 4L));
+        Mockito.verify(orderEventOutboxService).releaseClaims(CLAIM_TOKEN, List.of(2L));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(3L, 4L));
 
         publisher.publishPendingEvents();
 
@@ -535,9 +537,9 @@ class OutboxEventPublisherTests {
         publisher.publishPendingEvents();
 
         Mockito.verify(kafkaTemplate, Mockito.never()).send(third.topic(), third.eventKey(), third.payload());
-        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(1L), Mockito.contains("too large"));
-        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(2L), Mockito.contains("too large"));
-        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(3L));
+        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(CLAIM_TOKEN), Mockito.eq(1L), Mockito.contains("too large"));
+        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(CLAIM_TOKEN), Mockito.eq(2L), Mockito.contains("too large"));
+        Mockito.verify(orderEventOutboxService).releaseClaims(CLAIM_TOKEN, List.of(3L));
 
         publisher.publishPendingEvents();
 
@@ -565,10 +567,10 @@ class OutboxEventPublisherTests {
         Mockito.verify(kafkaTemplate, Mockito.never())
                 .send(otherOrderSecond.topic(), otherOrderSecond.eventKey(), otherOrderSecond.payload());
         Mockito.verify(orderEventOutboxService)
-                .releaseFailedClaims(Mockito.eq(List.of(1L)), Mockito.contains("did not acknowledge"));
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(2L));
-        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(3L, 4L));
-        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
+                .releaseFailedClaims(Mockito.eq(CLAIM_TOKEN), Mockito.eq(List.of(1L)), Mockito.contains("did not acknowledge"));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(2L));
+        Mockito.verify(orderEventOutboxService).releaseClaims(CLAIM_TOKEN, List.of(3L, 4L));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.any(), Mockito.anyLong(), Mockito.anyString());
         Mockito.verify(orderEventOutboxService, Mockito.times(1)).claimNextBatch();
     }
 
@@ -590,8 +592,8 @@ class OutboxEventPublisherTests {
         publisher.publishPendingEvents();
 
         Mockito.verify(kafkaTemplate, Mockito.never()).send(second.topic(), second.eventKey(), second.payload());
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(1L));
-        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(2L));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(1L));
+        Mockito.verify(orderEventOutboxService).releaseClaims(CLAIM_TOKEN, List.of(2L));
         Mockito.verify(orderEventOutboxService, Mockito.times(1)).claimNextBatch();
     }
 
@@ -624,9 +626,9 @@ class OutboxEventPublisherTests {
         Mockito.verify(kafkaTemplate, Mockito.never())
                 .send(laterWithSameKey.topic(), laterWithSameKey.eventKey(), laterWithSameKey.payload());
         Mockito.verify(orderEventOutboxService, Mockito.times(1)).claimNextBatch();
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(1L));
-        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
-        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(3L));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(1L));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.any(), Mockito.anyLong(), Mockito.anyString());
+        Mockito.verify(orderEventOutboxService).releaseClaims(CLAIM_TOKEN, List.of(3L));
     }
 
 
@@ -651,8 +653,8 @@ class OutboxEventPublisherTests {
 
         Assertions.assertTrue(interruptedAfterRun);
         Mockito.verify(kafkaTemplate, Mockito.never()).send(otherOrder.topic(), otherOrder.eventKey(), otherOrder.payload());
-        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(1L, 2L));
-        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
+        Mockito.verify(orderEventOutboxService).releaseClaims(CLAIM_TOKEN, List.of(1L, 2L));
+        Mockito.verify(orderEventOutboxService, Mockito.never()).markRetryableFailure(Mockito.any(), Mockito.anyLong(), Mockito.anyString());
         Mockito.verify(orderEventOutboxService, Mockito.times(1)).claimNextBatch();
     }
 
@@ -670,7 +672,7 @@ class OutboxEventPublisherTests {
         Mockito.when(kafkaTemplate.send(rejected.topic(), rejected.eventKey(), rejected.payload()))
                 .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("Record rejected")));
         Mockito.doThrow(new IllegalStateException("Database unavailable"))
-                .when(orderEventOutboxService).markPublished(List.of(1L));
+                .when(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(1L));
 
         IllegalStateException failure = Assertions.assertThrows(
                 IllegalStateException.class,
@@ -678,8 +680,8 @@ class OutboxEventPublisherTests {
         );
 
         Assertions.assertEquals("Database unavailable", failure.getMessage());
-        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(2L), Mockito.contains("Record rejected"));
-        Mockito.verify(orderEventOutboxService).releaseClaims(List.of(3L));
+        Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(CLAIM_TOKEN), Mockito.eq(2L), Mockito.contains("Record rejected"));
+        Mockito.verify(orderEventOutboxService).releaseClaims(CLAIM_TOKEN, List.of(3L));
     }
 
 
@@ -712,7 +714,7 @@ class OutboxEventPublisherTests {
         Mockito.doAnswer(invocation -> {
             Thread.currentThread().interrupt();
             return null;
-        }).when(orderEventOutboxService).markPublished(List.of(1L));
+        }).when(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(1L));
 
         boolean interruptedAfterRun;
         try {
@@ -759,7 +761,7 @@ class OutboxEventPublisherTests {
                 now,
                 now,
                 null
-        );
+        ).withClaimToken(CLAIM_TOKEN);
     }
 
 

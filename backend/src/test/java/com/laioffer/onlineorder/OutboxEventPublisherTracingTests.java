@@ -58,6 +58,8 @@ class OutboxEventPublisherTracingTests {
     private static final String TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
     private static final String PARENT_SPAN_ID = "00f067aa0ba902b7";
     private static final String FAILURE_LOG_PREFIX = "Failed to publish outbox event";
+    // The token of the claim the mocked claimNextBatch returns; every result write must pass it on.
+    private static final String CLAIM_TOKEN = "claim-1";
 
     @SuppressWarnings("unchecked")
     private final KafkaTemplate<String, String> kafkaTemplate = Mockito.mock(KafkaTemplate.class);
@@ -84,7 +86,7 @@ class OutboxEventPublisherTracingTests {
             Assertions.assertEquals(TRACE_ID, spanAtSend.get().context().traceId());
             Assertions.assertEquals(PARENT_SPAN_ID, spanAtSend.get().context().parentId());
             Assertions.assertNull(tracing.tracer.currentSpan(), "the relay scope is closed after the send");
-            Mockito.verify(orderEventOutboxService).markPublished(List.of(event.id()));
+            Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(event.id()));
             SpanData relay = tracing.relaySpan();
             Assertions.assertEquals(TRACE_ID, relay.getTraceId());
             Assertions.assertEquals(StatusCode.UNSET, relay.getStatus().getStatusCode());
@@ -109,7 +111,7 @@ class OutboxEventPublisherTracingTests {
             List<String> traceIdsAtFailureLog = traceIdsAtFailureLogs(tracing, () -> publishWith(tracing.registry));
 
             Assertions.assertEquals(List.of(TRACE_ID), traceIdsAtFailureLog);
-            Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(event.id()), Mockito.anyString());
+            Mockito.verify(orderEventOutboxService).markRetryableFailure(Mockito.eq(CLAIM_TOKEN), Mockito.eq(event.id()), Mockito.anyString());
             SpanData relay = tracing.relaySpan();
             Assertions.assertEquals(TRACE_ID, relay.getTraceId());
             Assertions.assertEquals(StatusCode.ERROR, relay.getStatus().getStatusCode());
@@ -216,12 +218,12 @@ class OutboxEventPublisherTracingTests {
 
     private void assertPublishedOnce(OutboxEventEntity event) {
         Mockito.verify(kafkaTemplate, Mockito.times(1)).send(event.topic(), event.eventKey(), event.payload());
-        Mockito.verify(orderEventOutboxService).markPublished(List.of(event.id()));
+        Mockito.verify(orderEventOutboxService).markPublished(CLAIM_TOKEN, List.of(event.id()));
         Mockito.verify(orderEventOutboxService, Mockito.never())
-                .markRetryableFailure(Mockito.anyLong(), Mockito.anyString());
+                .markRetryableFailure(Mockito.any(), Mockito.anyLong(), Mockito.anyString());
         Mockito.verify(orderEventOutboxService, Mockito.never())
-                .releaseFailedClaims(Mockito.anyList(), Mockito.anyString());
-        Mockito.verify(orderEventOutboxService, Mockito.never()).releaseClaims(Mockito.anyList());
+                .releaseFailedClaims(Mockito.any(), Mockito.anyList(), Mockito.anyString());
+        Mockito.verify(orderEventOutboxService, Mockito.never()).releaseClaims(Mockito.any(), Mockito.anyList());
     }
 
 
@@ -284,7 +286,7 @@ class OutboxEventPublisherTracingTests {
                 now,
                 now,
                 null
-        );
+        ).withClaimToken(CLAIM_TOKEN);
     }
 
 

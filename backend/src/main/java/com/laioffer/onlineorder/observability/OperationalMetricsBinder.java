@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.observability;
 
 
+import com.laioffer.onlineorder.messaging.OutboxStatus;
 import com.laioffer.onlineorder.repository.DeadLetterEventRepository;
 import com.laioffer.onlineorder.repository.OutboxEventRepository;
 import io.micrometer.core.instrument.Gauge;
@@ -18,11 +19,11 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class OperationalMetricsBinder implements MeterBinder {
 
-    private static final String OUTBOX_STATUS_PENDING = "PENDING";
-    private static final String OUTBOX_STATUS_PROCESSING = "PROCESSING";
-    private static final String OUTBOX_STATUS_FAILED = "FAILED";
-    private static final String OUTBOX_STATUS_PUBLISHED = "PUBLISHED";
-    private static final String OUTBOX_STATUS_ABANDONED = "ABANDONED";
+    private static final String OUTBOX_STATUS_PENDING = OutboxStatus.PENDING.name();
+    private static final String OUTBOX_STATUS_PROCESSING = OutboxStatus.PROCESSING.name();
+    private static final String OUTBOX_STATUS_FAILED = OutboxStatus.FAILED.name();
+    private static final String OUTBOX_STATUS_PUBLISHED = OutboxStatus.PUBLISHED.name();
+    private static final String OUTBOX_STATUS_ABANDONED = OutboxStatus.ABANDONED.name();
 
     private static final String REPLAY_STATUS_PENDING = "PENDING";
     private static final String REPLAY_STATUS_REPLAYING = "REPLAYING";

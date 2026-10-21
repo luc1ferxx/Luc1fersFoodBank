@@ -3,6 +3,7 @@ package com.laioffer.onlineorder.service;
 
 import com.laioffer.onlineorder.repository.ConsumerAggregateSequenceRepository;
 import com.laioffer.onlineorder.audit.AuditLogRepository;
+import com.laioffer.onlineorder.messaging.OutboxStatus;
 import com.laioffer.onlineorder.partition.PartitionCatalog;
 import com.laioffer.onlineorder.partition.PartitionedTable;
 import com.laioffer.onlineorder.repository.DeadLetterEventRepository;
@@ -32,7 +33,7 @@ import java.util.function.IntUnaryOperator;
 public class MaintenanceCleanupService {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MaintenanceCleanupService.class);
-    private static final String OUTBOX_STATUS_PUBLISHED = "PUBLISHED";
+    private static final String OUTBOX_STATUS_PUBLISHED = OutboxStatus.PUBLISHED.name();
     private static final String DEAD_LETTER_STATUS_REPLAYED = "REPLAYED";
 
     private final boolean cleanupEnabled;

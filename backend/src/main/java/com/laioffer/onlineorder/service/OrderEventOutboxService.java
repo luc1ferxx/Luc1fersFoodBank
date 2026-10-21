@@ -10,6 +10,7 @@ import com.laioffer.onlineorder.messaging.EventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventItem;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
+import com.laioffer.onlineorder.messaging.OutboxStatus;
 import com.laioffer.onlineorder.messaging.contract.EventContracts;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
@@ -41,11 +42,11 @@ public class OrderEventOutboxService {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(OrderEventOutboxService.class);
 
-    private static final String OUTBOX_STATUS_PENDING = "PENDING";
-    private static final String OUTBOX_STATUS_PROCESSING = "PROCESSING";
-    private static final String OUTBOX_STATUS_PUBLISHED = "PUBLISHED";
-    private static final String OUTBOX_STATUS_FAILED = "FAILED";
-    private static final String OUTBOX_STATUS_ABANDONED = "ABANDONED";
+    private static final String OUTBOX_STATUS_PENDING = OutboxStatus.PENDING.name();
+    private static final String OUTBOX_STATUS_PROCESSING = OutboxStatus.PROCESSING.name();
+    private static final String OUTBOX_STATUS_PUBLISHED = OutboxStatus.PUBLISHED.name();
+    private static final String OUTBOX_STATUS_FAILED = OutboxStatus.FAILED.name();
+    private static final String OUTBOX_STATUS_ABANDONED = OutboxStatus.ABANDONED.name();
 
     private final int batchSize;
     private final Duration claimTimeout;
@@ -157,7 +158,8 @@ public class OrderEventOutboxService {
                 now,
                 null,
                 null,
-                sequence
+                sequence,
+                null
         ));
     }
 
@@ -168,6 +170,10 @@ public class OrderEventOutboxService {
      * ({@link OutboxEventRepository#lockNextBatchReadyToPublish}). An aggregate's next event is only claimed once Kafka
      * acknowledged the previous one, whichever instance published it, and a FAILED event holds back the later events of
      * its aggregate until an operator retries ({@link #retryFailedEvent}) or abandons ({@link #abandonFailedEvent}) it.
+     *
+     * @return the claimed events, each with the claim's token ({@link OutboxEventEntity#claimToken()}), which the
+     * result writes ({@link #markPublished}, {@link #releaseClaims}, {@link #releaseFailedClaims},
+     * {@link #markRetryableFailure}) need: a write under a token that another claim replaced changes nothing
      */
     @Transactional
     public List<OutboxEventEntity> claimNextBatch() {
@@ -179,22 +185,38 @@ public class OrderEventOutboxService {
                 staleBefore,
                 batchSize
         );
-
-        if (!events.isEmpty()) {
-            outboxEventRepository.markProcessing(eventIds(events), OUTBOX_STATUS_PROCESSING, now);
+        if (events.isEmpty()) {
+            return events;
         }
-        return events;
+
+        String claimToken = UUID.randomUUID().toString();
+        outboxEventRepository.markProcessing(eventIds(events), OUTBOX_STATUS_PROCESSING, claimToken, now);
+        return events.stream()
+                .map(event -> event.withClaimToken(claimToken))
+                .toList();
     }
 
 
     @Transactional
-    public void markPublished(List<Long> eventIds) {
+    public void markPublished(String claimToken, List<Long> eventIds) {
         if (eventIds.isEmpty()) {
             return;
         }
 
         LocalDateTime now = LocalDateTime.now();
-        outboxEventRepository.markPublished(eventIds, OUTBOX_STATUS_PUBLISHED, now, now);
+        int published = outboxEventRepository.markPublished(
+                eventIds,
+                claimToken,
+                OUTBOX_STATUS_PROCESSING,
+                OUTBOX_STATUS_PUBLISHED,
+                now,
+                now
+        );
+        if (published < eventIds.size()) {
+            // Kafka has them, but the claim that sent them expired and another publisher reclaimed them: it sends them
+            // again (consumers drop the duplicates) or already did.
+            warnClaimLost("publish", eventIds, published);
+        }
     }
 
 
@@ -202,17 +224,21 @@ public class OrderEventOutboxService {
      * Returns claimed events that were never sent to PENDING without counting the claim as an attempt.
      */
     @Transactional
-    public void releaseClaims(List<Long> eventIds) {
+    public void releaseClaims(String claimToken, List<Long> eventIds) {
         if (eventIds.isEmpty()) {
             return;
         }
 
-        outboxEventRepository.releaseClaims(
+        int released = outboxEventRepository.releaseClaims(
                 eventIds,
+                claimToken,
                 OUTBOX_STATUS_PROCESSING,
                 OUTBOX_STATUS_PENDING,
                 LocalDateTime.now()
         );
+        if (released < eventIds.size()) {
+            warnClaimLost("release", eventIds, released);
+        }
     }
 
 
@@ -221,42 +247,68 @@ public class OrderEventOutboxService {
      * counting the claim as an attempt, and records the error.
      */
     @Transactional
-    public void releaseFailedClaims(List<Long> eventIds, String lastError) {
+    public void releaseFailedClaims(String claimToken, List<Long> eventIds, String lastError) {
         if (eventIds.isEmpty()) {
             return;
         }
 
-        outboxEventRepository.releaseFailedClaims(
+        int released = outboxEventRepository.releaseFailedClaims(
                 eventIds,
+                claimToken,
                 OUTBOX_STATUS_PROCESSING,
                 OUTBOX_STATUS_PENDING,
                 LocalDateTime.now(),
                 abbreviate(lastError)
         );
+        if (released < eventIds.size()) {
+            warnClaimLost("release after a failed send", eventIds, released);
+        }
     }
 
 
+    /**
+     * Records that Kafka rejected a claimed event: back to PENDING while it has attempts left, FAILED once it used up
+     * app.outbox.max-attempts. The attempts are compared in the write itself, under the claim's token.
+     *
+     * @return what the write did
+     */
     @Transactional
-    public void markRetryableFailure(Long eventId, String lastError) {
+    public RetryableFailure markRetryableFailure(String claimToken, Long eventId, String lastError) {
         LocalDateTime now = LocalDateTime.now();
         String abbreviatedError = abbreviate(lastError);
-        OutboxEventEntity event = outboxEventRepository.findById(eventId).orElse(null);
-        if (event != null && event.attempts() != null && event.attempts() >= maxAttempts) {
-            outboxEventRepository.markFailed(
-                    eventId,
-                    OUTBOX_STATUS_FAILED,
-                    now,
-                    abbreviatedError
-            );
-            return;
-        }
-
-        outboxEventRepository.markPendingRetry(
+        int retried = outboxEventRepository.markPendingRetry(
                 eventId,
+                claimToken,
+                OUTBOX_STATUS_PROCESSING,
                 OUTBOX_STATUS_PENDING,
+                maxAttempts,
                 now,
                 abbreviatedError
         );
+        if (retried == 1) {
+            return RetryableFailure.RETRY_PENDING;
+        }
+        int failed = outboxEventRepository.markFailed(
+                eventId,
+                claimToken,
+                OUTBOX_STATUS_PROCESSING,
+                OUTBOX_STATUS_FAILED,
+                maxAttempts,
+                now,
+                abbreviatedError
+        );
+        if (failed == 1) {
+            LOGGER.warn(
+                    "Outbox event {} FAILED after {} attempts; it holds back the later events of its aggregate "
+                            + "until it is retried or abandoned: {}",
+                    eventId,
+                    maxAttempts,
+                    abbreviatedError
+            );
+            return RetryableFailure.FAILED;
+        }
+        warnClaimLost("failure", List.of(eventId), 0);
+        return RetryableFailure.CLAIM_LOST;
     }
 
 
@@ -367,6 +419,17 @@ public class OrderEventOutboxService {
     }
 
 
+    private static void warnClaimLost(String write, List<Long> eventIds, int changed) {
+        LOGGER.warn(
+                "Outbox {} changed {} of the events {}; the others were no longer held by this publisher's claim: it "
+                        + "expired and another publisher took them over (app.outbox.claim-timeout)",
+                write,
+                changed,
+                eventIds
+        );
+    }
+
+
     private List<Long> eventIds(List<OutboxEventEntity> events) {
         return events.stream()
                 .map(OutboxEventEntity::id)
@@ -415,5 +478,24 @@ public class OrderEventOutboxService {
             return "Unknown publish error";
         }
         return value.length() > 1000 ? value.substring(0, 1000) : value;
+    }
+
+
+    /**
+     * What {@link #markRetryableFailure} did with a rejected event.
+     */
+    public enum RetryableFailure {
+        /**
+         * Back to PENDING: it has attempts left.
+         */
+        RETRY_PENDING,
+        /**
+         * FAILED: it used up its attempts and holds back its aggregate.
+         */
+        FAILED,
+        /**
+         * Nothing: the claim expired and another publisher holds the event, or published it.
+         */
+        CLAIM_LOST
     }
 }

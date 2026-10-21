@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -154,47 +155,79 @@ class OutboxPublisherH2IntegrationTests {
 
 
     @Test
-    void releaseClaims_shouldReturnOnlyProcessingEventsToPendingAndGiveBackTheirAttempt() {
-        Long claimed = insertEvent("order-1", "PROCESSING", 2);
-        Long claimedWithoutAttempts = insertEvent("order-2", "PROCESSING", 0);
-        Long published = insertEvent("order-3", "PUBLISHED", 1);
+    void releaseClaims_shouldReturnOnlyTheClaimsProcessingEventsToPendingAndGiveBackTheirAttempt() {
+        Long claimed = insertEvent("order-1", "PROCESSING", 2, "claim-a");
+        Long claimedWithoutAttempts = insertEvent("order-2", "PROCESSING", 0, "claim-a");
+        Long published = insertEvent("order-3", "PUBLISHED", 1, null);
+        Long reclaimed = insertEvent("order-4", "PROCESSING", 1, "claim-b");
 
-        orderEventOutboxService.releaseClaims(List.of(claimed, claimedWithoutAttempts, published));
+        orderEventOutboxService.releaseClaims(
+                "claim-a",
+                List.of(claimed, claimedWithoutAttempts, published, reclaimed)
+        );
 
         Assertions.assertEquals("PENDING", event(claimed).get("status"));
         Assertions.assertEquals(1, event(claimed).get("attempts"));
+        Assertions.assertNull(event(claimed).get("claim_token"));
         Assertions.assertEquals("PENDING", event(claimedWithoutAttempts).get("status"));
         Assertions.assertEquals(0, event(claimedWithoutAttempts).get("attempts"));
         Assertions.assertEquals("PUBLISHED", event(published).get("status"));
         Assertions.assertEquals(1, event(published).get("attempts"));
+        // Another claim holds it: claim-a expired and the event was claimed again.
+        Assertions.assertEquals("PROCESSING", event(reclaimed).get("status"));
+        Assertions.assertEquals(1, event(reclaimed).get("attempts"));
+        Assertions.assertEquals("claim-b", event(reclaimed).get("claim_token"));
     }
 
 
     @Test
-    void releaseFailedClaims_shouldReturnOnlyProcessingEventsToPendingWithTheirError() {
-        Long claimed = insertEvent("order-1", "PROCESSING", 2);
-        Long published = insertEvent("order-2", "PUBLISHED", 1);
+    void releaseFailedClaims_shouldReturnOnlyTheClaimsProcessingEventsToPendingWithTheirError() {
+        Long claimed = insertEvent("order-1", "PROCESSING", 2, "claim-a");
+        Long published = insertEvent("order-2", "PUBLISHED", 1, null);
+        Long reclaimed = insertEvent("order-3", "PROCESSING", 1, "claim-b");
 
-        orderEventOutboxService.releaseFailedClaims(List.of(claimed, published), "Kafka timed out");
+        orderEventOutboxService.releaseFailedClaims(
+                "claim-a",
+                List.of(claimed, published, reclaimed),
+                "Kafka timed out"
+        );
 
         Assertions.assertEquals("PENDING", event(claimed).get("status"));
         Assertions.assertEquals(1, event(claimed).get("attempts"));
         Assertions.assertEquals("Kafka timed out", event(claimed).get("last_error"));
         Assertions.assertEquals("PUBLISHED", event(published).get("status"));
         Assertions.assertNull(event(published).get("last_error"));
+        Assertions.assertEquals("PROCESSING", event(reclaimed).get("status"));
+        Assertions.assertNull(event(reclaimed).get("last_error"));
+    }
+
+
+    @Test
+    void outboxStatus_shouldRefuseAStatusTheCodeDoesNotWrite() {
+        Long event = insertEvent("order-1", "PENDING", 0, null);
+
+        Assertions.assertThrows(
+                DataIntegrityViolationException.class,
+                () -> jdbcTemplate.update("UPDATE outbox_events SET status = 'SENT' WHERE id = ?", event)
+        );
     }
 
 
     private Long insertEvent(String eventKey, String status, int attempts) {
+        return insertEvent(eventKey, status, attempts, null);
+    }
+
+
+    private Long insertEvent(String eventKey, String status, int attempts, String claimToken) {
         String eventId = "evt-h2-" + EVENT_SEQUENCE.incrementAndGet();
         Timestamp now = Timestamp.valueOf(LocalDateTime.now());
         jdbcTemplate.update(
                 """
                         INSERT INTO outbox_events (
                             aggregate_type, aggregate_id, event_id, topic, event_key, event_type, payload,
-                            status, attempts, created_at, updated_at
+                            status, attempts, created_at, updated_at, claim_token
                         )
-                        VALUES ('ORDER', ?, ?, 'order-events', ?, 'order.created', ?, ?, ?, ?, ?)
+                        VALUES ('ORDER', ?, ?, 'order-events', ?, 'order.created', ?, ?, ?, ?, ?, ?)
                         """,
                 Long.valueOf(eventKey.replaceAll("\\D", "")),
                 eventId,
@@ -203,14 +236,18 @@ class OutboxPublisherH2IntegrationTests {
                 status,
                 attempts,
                 now,
-                now
+                now,
+                claimToken
         );
         return jdbcTemplate.queryForObject("SELECT id FROM outbox_events WHERE event_id = ?", Long.class, eventId);
     }
 
 
     private Map<String, Object> event(Long id) {
-        return jdbcTemplate.queryForMap("SELECT status, attempts, last_error FROM outbox_events WHERE id = ?", id);
+        return jdbcTemplate.queryForMap(
+                "SELECT status, attempts, last_error, claim_token FROM outbox_events WHERE id = ?",
+                id
+        );
     }
 
 
