@@ -5,6 +5,8 @@ import { type CartItem, ROLES } from "./api/dto";
 import { NOTIFICATION_POLL_MS } from "./hooks/useNotifications";
 import { SESSION_EXPIRED_MESSAGE } from "./hooks/useSession";
 import {
+  AFTER_SALES_TIMEOUTS,
+  afterSalesCaseFixture,
   apiError,
   customerUser,
   demoUser,
@@ -13,7 +15,9 @@ import {
   merchantOrderFixture,
   merchantUser,
   orderFixture,
+  localTimestamp,
   orderNoFor,
+  requestJson,
   riderUser,
   USD,
 } from "./test/fakeBackend";
@@ -317,5 +321,52 @@ describe("role-based workspaces", () => {
     await signIn(user, demoUser.email, "demo123");
     expect(await screen.findByText("Demo is signed in")).toBeInTheDocument();
     expect(pressedWorkspace()).toEqual(["Order food"]);
+  });
+
+  it("keeps a failed arbitration's Idempotency-Key and form across a workspace switch", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.afterSalesCases = [
+      afterSalesCaseFixture({
+        id: 900,
+        order_id: 100,
+        status: "IN_ARBITRATION",
+        deadline_at: localTimestamp(AFTER_SALES_TIMEOUTS.arbitration),
+      }),
+    ];
+    backend.on("POST", "/admin/after-sales/900/arbitrate", () =>
+      apiError(503, "Arbitration unavailable", { traceId: "trace-88" }),
+    );
+    const user = renderApp();
+
+    await screen.findByText("Demo is signed in");
+    await openWorkspace(user, "Admin console");
+    await user.click(screen.getByRole("button", { name: "After-sales" }));
+    await user.click(await screen.findByRole("button", { name: "View case #900" }));
+    const form = await screen.findByRole("form", { name: "Arbitrate case #900" });
+    await user.click(within(form).getByRole("radio", { name: "Partial refund" }));
+    await user.type(within(form).getByLabelText(/Refund amount/), "3.20");
+    await user.type(
+      within(form).getByLabelText("Note for the customer and the restaurant"),
+      "Cold",
+    );
+    await user.click(within(form).getByRole("button", { name: "Submit decision" }));
+    expect(await within(form).findByRole("alert")).toHaveTextContent("Trace trace-88.");
+
+    await openWorkspace(user, "Order food");
+    await openWorkspace(user, "Admin console");
+
+    // The retry after coming back is the same attempt: same form, same key.
+    expect(within(form).getByLabelText(/Refund amount/)).toHaveValue("3.20");
+    await user.click(within(form).getByRole("button", { name: "Submit decision" }));
+    expect(await screen.findByText("Case #900 arbitrated: it is REFUNDING now.")).toBeVisible();
+
+    const calls = backend.callsTo("POST", "/admin/after-sales/900/arbitrate");
+    expect(calls.map(requestJson)).toEqual([
+      { decision: "PARTIAL", amount: 3.2, note: "Cold" },
+      { decision: "PARTIAL", amount: 3.2, note: "Cold" },
+    ]);
+    const keys = idempotencyKeys(calls);
+    expect(keys[0]).toEqual(expect.any(String));
+    expect(keys[1]).toBe(keys[0]);
   });
 });

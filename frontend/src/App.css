@@ -1107,3 +1107,46 @@ button:disabled {
 .merchant-tabs {
   grid-template-columns: repeat(2, 1fr);
 }
+
+/* After-sales: admin */
+
+.admin-tabs {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.after-sales-admin {
+  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.after-sales-admin .order-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.decision-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.decision-options legend {
+  margin-bottom: 6px;
+  color: #4e554b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.decision-options .toggle-row {
+  margin-bottom: 0;
+}
+
+@media (max-width: 900px) {
+  .after-sales-admin {
+    grid-template-columns: 1fr;
+  }
+}
