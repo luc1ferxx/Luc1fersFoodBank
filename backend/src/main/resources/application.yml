@@ -247,6 +247,8 @@ app:
     # After-sales events (aftersales.*) published by the after-sales module, keyed by the order id (same partition
     # count as the order topic).
     topic: ${KAFKA_AFTER_SALES_TOPIC:after-sales-events}
+    # The merchant module's consumer group on it: builds the merchant's after-sales inbox (merchant_after_sales_cases).
+    merchant-group: ${AFTER_SALES_MERCHANT_GROUP:onlineorder-merchant-aftersales}
     # A customer can ask for a refund until request-window after the order completed (orders.updated_at), a second
     # time only after withdrawing the first and within the same window. Each open step waits for its answer until a
     # deadline set when the case enters it: the merchant's answer (merchant-response-timeout), the customer's answer to

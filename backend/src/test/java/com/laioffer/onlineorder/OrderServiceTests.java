@@ -19,6 +19,7 @@ import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
+import com.laioffer.onlineorder.service.AfterSalesMerchantCommands;
 import com.laioffer.onlineorder.service.CancellationRefunds;
 import com.laioffer.onlineorder.service.IdempotencyRequestInitializer;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
@@ -77,6 +78,9 @@ class OrderServiceTests {
     @Mock
     private CancellationRefunds cancellationRefunds;
 
+    @Mock
+    private AfterSalesMerchantCommands afterSalesMerchantCommands;
+
     private OrderService orderService;
 
 
@@ -91,7 +95,8 @@ class OrderServiceTests {
                 idempotencyRequestInitializer,
                 orderStatusHistoryService,
                 auditLogService,
-                cancellationRefunds
+                cancellationRefunds,
+                afterSalesMerchantCommands
         );
     }
 

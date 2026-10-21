@@ -2,6 +2,10 @@ package com.laioffer.onlineorder.aftersales;
 
 
 import com.laioffer.onlineorder.entity.OrderEntity;
+import com.laioffer.onlineorder.fulfilment.merchant.MerchantAfterSalesInboxService;
+import com.laioffer.onlineorder.messaging.AfterSalesEventEnvelope;
+import com.laioffer.onlineorder.messaging.contract.EventContracts;
+import com.laioffer.onlineorder.messaging.contract.EventTopic;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.repository.OrderRepository;
@@ -29,6 +33,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -41,8 +46,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * The customer's after-sales API (ADR 0002 sections 11.2, 19 and 20) on a real database, through HTTP: opening a
  * request under the order's lock with every eligibility and money rule, the one second request after a withdrawal,
  * idempotent replays bound to their case, the answers to a counter-offer and a rejection, the deadlines, and that
- * another customer's orders and cases do not exist for the caller. The merchant's answers, which have no endpoint
- * yet, go through the single writer as the merchant module will. The cases have to hold on PostgreSQL and on H2 (the
+ * another customer's orders and cases do not exist for the caller. The merchant answers through the merchant's
+ * endpoints, once the merchant's inbox got the case's events. The cases have to hold on PostgreSQL and on H2 (the
  * {@code h2} profile), so each database gets a subclass.
  */
 abstract class AbstractAfterSalesApiIntegrationTests {
@@ -80,6 +85,12 @@ abstract class AbstractAfterSalesApiIntegrationTests {
 
     @Autowired
     PlatformTransactionManager transactionManager;
+
+    @Autowired
+    EventContracts eventContracts;
+
+    @Autowired
+    MerchantAfterSalesInboxService merchantInbox;
 
 
     @Test
@@ -602,27 +613,49 @@ abstract class AbstractAfterSalesApiIntegrationTests {
 
 
     /**
-     * The merchant's counter-offer through the single writer, as the merchant module will make it.
+     * The Burger King merchant's counter-offer through the merchant's endpoint.
      */
-    void merchantOffers(long caseId, String amount) {
-        merchantAnswers(caseId, AfterSalesTrigger.MERCHANT_OFFER, Money.of(amount, "USD"), "We can refund part.");
+    void merchantOffers(long caseId, String amount) throws Exception {
+        merchantAnswers(caseId, "offer", objectMapper.writeValueAsString(
+                Map.of("amount", new BigDecimal(amount), "note", "We can refund part.")));
     }
 
 
-    void merchantRejects(long caseId, String reason) {
-        merchantAnswers(caseId, AfterSalesTrigger.MERCHANT_REJECT, null, reason);
+    /**
+     * The Burger King merchant's rejection through the merchant's endpoint.
+     */
+    void merchantRejects(long caseId, String reason) throws Exception {
+        merchantAnswers(caseId, "reject", objectMapper.writeValueAsString(Map.of("reason", reason)));
     }
 
 
-    private void merchantAnswers(long caseId, AfterSalesTrigger trigger, Money amount, String note) {
-        Long merchantId = jdbcTemplate.queryForObject(
-                "SELECT id FROM customers WHERE email = ?", Long.class, BURGER_KING_MERCHANT);
-        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
-            AfterSalesTransitions.Step step = transitions.fire(caseRepository.lockById(caseId),
-                    new AfterSalesTransitions.Command(
-                            trigger, AfterSalesActor.MERCHANT, merchantId, amount, note, null));
-            Assertions.assertTrue(step.applied(), () -> step.decision().toString());
-        });
+    /**
+     * The merchant answers a case of their inbox. Kafka is off, so the case's events first go to the merchant's inbox
+     * the way its consumer gets them (each once).
+     */
+    private void merchantAnswers(long caseId, String command, String body) throws Exception {
+        jdbcTemplate.queryForList("""
+                        SELECT payload
+                        FROM outbox_events
+                        WHERE aggregate_type = 'AFTER_SALES_CASE'
+                          AND aggregate_id = ?
+                        ORDER BY aggregate_sequence
+                        """, String.class, caseId)
+                .forEach(payload -> merchantInbox.handle(
+                        eventContracts.read(EventTopic.AFTER_SALES_EVENTS, payload, AfterSalesEventEnvelope.class)));
+        MockHttpSession merchant = (MockHttpSession) mockMvc.perform(post("/login")
+                        .param("username", BURGER_KING_MERCHANT)
+                        .param("password", "merchant123"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getRequest()
+                .getSession(false);
+        mockMvc.perform(post("/merchant/after-sales/{id}/" + command, caseId)
+                        .session(merchant)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.case_id").value(caseId));
     }
 
 

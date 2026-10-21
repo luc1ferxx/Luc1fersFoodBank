@@ -122,6 +122,20 @@ public class ApplicationMetricsService {
 
 
     /**
+     * A merchant's answer to an after-sales request, counted once its transaction committed and only when it changed
+     * the case (not a retry).
+     *
+     * @param decision approved, rejected or offered
+     */
+    public void recordAfterSalesMerchantDecision(String decision) {
+        meterRegistry.counter(
+                "onlineorder.aftersales.merchant_decisions",
+                "decision", normalize(decision)
+        ).increment();
+    }
+
+
+    /**
      * A paid order reached its restaurant's merchant inbox.
      *
      * @param staffing staffed (the restaurant had an active merchant account, so the order gets an accept deadline) or

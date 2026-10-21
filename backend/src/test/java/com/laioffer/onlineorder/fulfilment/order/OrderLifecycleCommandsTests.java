@@ -4,11 +4,14 @@ package com.laioffer.onlineorder.fulfilment.order;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.AfterSalesDecision;
+import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.AfterSalesResponse;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.DeliveryCompletion;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.RestaurantOrderTransition;
 import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineEntity;
 import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineProcessor;
 import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineRepository;
+import com.laioffer.onlineorder.messaging.AfterSalesCasePayload;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.money.Money;
@@ -16,6 +19,7 @@ import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
+import com.laioffer.onlineorder.service.AfterSalesMerchantCommands;
 import com.laioffer.onlineorder.service.CancellationRefunds;
 import com.laioffer.onlineorder.service.IdempotencyRequestInitializer;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
@@ -80,6 +84,9 @@ class OrderLifecycleCommandsTests {
     @Mock
     private CancellationRefunds cancellationRefunds;
 
+    @Mock
+    private AfterSalesMerchantCommands afterSalesMerchantCommands;
+
     private OrderService orderService;
 
 
@@ -94,7 +101,8 @@ class OrderLifecycleCommandsTests {
                 idempotencyRequestInitializer,
                 orderStatusHistoryService,
                 auditLogService,
-                cancellationRefunds
+                cancellationRefunds,
+                afterSalesMerchantCommands
         );
     }
 
@@ -809,6 +817,29 @@ class OrderLifecycleCommandsTests {
     /**
      * Every compare-and-set of the order's status changes its one row, as it does under the row lock.
      */
+    /**
+     * ADR 0002 section 7: the merchant's after-sales answer is the after-sales module's to decide; the order module
+     * only forwards it, in its own transaction, and touches no order.
+     */
+    @Test
+    void decideAfterSalesCase_shouldForwardTheAnswerToTheAfterSalesModule() {
+        AfterSalesResponse response = AfterSalesResponse.offer(new BigDecimal("4.00"), "Half");
+        AfterSalesDecision decision = new AfterSalesDecision(new AfterSalesCasePayload(300L, ORDER_ID, 9005L, 3L,
+                RESTAURANT_ID, "CUSTOMER_REQUEST", 1, "COUNTER_OFFERED", "MERCHANT_OFFER", "MERCHANT", 40L, 1L,
+                "MISSING_ITEM", "Cold", new BigDecimal("8.00"), new BigDecimal("4.00"), null, null, "USD", "OFFERED",
+                "Half", null, null, LocalDateTime.of(2026, 10, 22, 12, 0), List.of(), LocalDateTime.of(2026, 10, 20,
+                12, 0)), true);
+        Mockito.when(afterSalesMerchantCommands.decide(300L, RESTAURANT_ID, response, OrderActor.merchant(40L)))
+                .thenReturn(decision);
+
+        Assertions.assertSame(decision, orderService.decideAfterSalesCase(
+                300L, RESTAURANT_ID, response, OrderActor.merchant(40L)));
+
+        Mockito.verifyNoInteractions(orderRepository, orderEventOutboxService, orderStatusHistoryService,
+                cancellationRefunds);
+    }
+
+
     private void stubCompareAndSet() {
         Mockito.when(orderRepository.compareAndSetStatus(
                 Mockito.anyLong(), Mockito.anyString(), Mockito.anyString(), Mockito.any(),

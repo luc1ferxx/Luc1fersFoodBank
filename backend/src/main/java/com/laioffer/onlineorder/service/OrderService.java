@@ -55,7 +55,9 @@ import java.util.function.Supplier;
  * cannot happen. Each caller maps a trigger that already happened or that the status does not allow to its own answer.
  *
  * <p>A move from PAID or ACCEPTED to CANCELLED also opens the order's automatic refund ({@link CancellationRefunds}),
- * after the order's event and in the same transaction, so the cancel and its refund commit or roll back together.
+ * after the order's event and in the same transaction, so the cancel and its refund commit or roll back together. The
+ * merchant's answers to after-sales requests go to the after-sales module ({@link AfterSalesMerchantCommands}), the
+ * other half of the seam's after-sales command.
  */
 @Service
 public class OrderService implements OrderLifecycleCommands {
@@ -97,6 +99,7 @@ public class OrderService implements OrderLifecycleCommands {
     private final OrderStatusHistoryService orderStatusHistoryService;
     private final AuditLogService auditLogService;
     private final CancellationRefunds cancellationRefunds;
+    private final AfterSalesMerchantCommands afterSalesMerchantCommands;
 
 
     public OrderService(
@@ -108,7 +111,8 @@ public class OrderService implements OrderLifecycleCommands {
             IdempotencyRequestInitializer idempotencyRequestInitializer,
             OrderStatusHistoryService orderStatusHistoryService,
             AuditLogService auditLogService,
-            CancellationRefunds cancellationRefunds
+            CancellationRefunds cancellationRefunds,
+            AfterSalesMerchantCommands afterSalesMerchantCommands
     ) {
         this.orderRepository = orderRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
@@ -119,6 +123,7 @@ public class OrderService implements OrderLifecycleCommands {
         this.orderStatusHistoryService = orderStatusHistoryService;
         this.auditLogService = auditLogService;
         this.cancellationRefunds = cancellationRefunds;
+        this.afterSalesMerchantCommands = afterSalesMerchantCommands;
     }
 
 
@@ -419,6 +424,22 @@ public class OrderService implements OrderLifecycleCommands {
             case COMPLETED -> DeliveryCompletion.ALREADY_COMPLETED;
             case PLACED, PAID, CANCELLED -> DeliveryCompletion.IGNORED;
         };
+    }
+
+
+    /**
+     * The after-sales module locks the case, decides with the after-sales machine and writes the step, all in this
+     * transaction.
+     */
+    @Override
+    @Transactional
+    public AfterSalesDecision decideAfterSalesCase(
+            Long caseId,
+            Long restaurantId,
+            AfterSalesResponse response,
+            OrderActor actor
+    ) {
+        return afterSalesMerchantCommands.decide(caseId, restaurantId, response, actor);
     }
 
 
