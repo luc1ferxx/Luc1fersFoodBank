@@ -3,6 +3,7 @@ package com.laioffer.onlineorder.security;
 import com.laioffer.onlineorder.error.ApiErrorResponseFactory;
 import com.laioffer.onlineorder.error.ApiErrorResponseWriter;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import jakarta.servlet.ServletOutputStream;
 import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -21,6 +22,8 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.io.PrintWriter;
+import java.io.UnsupportedEncodingException;
 import java.security.Principal;
 import java.time.Duration;
 import java.util.HashMap;
@@ -50,6 +53,7 @@ class RateLimitingFilterTests {
         filter.doFilter(request, response, new MockFilterChain());
 
         Assertions.assertEquals(HttpServletResponse.SC_OK, response.getStatus());
+        Assertions.assertNull(response.getHeader("Retry-After"), "only a refused request carries Retry-After");
         Assertions.assertEquals(
                 "onlineorder:rate-limit:payment-checkout:user:user@example.com",
                 capturedRedisKey(redisTemplate)
@@ -81,6 +85,7 @@ class RateLimitingFilterTests {
         filter.doFilter(request, response, new MockFilterChain());
 
         Assertions.assertEquals(HttpServletResponse.SC_OK, response.getStatus());
+        Assertions.assertNull(response.getHeader("Retry-After"));
         Mockito.verify(metricsService).recordRateLimitStoreFailure("login");
     }
 
@@ -132,11 +137,13 @@ class RateLimitingFilterTests {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/login");
         request.setRemoteAddr("10.0.0.5");
         request.addHeader("X-Trace-Id", "trace-rate-12345");
-        MockHttpServletResponse response = new MockHttpServletResponse();
+        HeaderAtBodyRecordingResponse response = new HeaderAtBodyRecordingResponse("Retry-After");
 
         filter.doFilter(request, response, new MockFilterChain());
 
         Assertions.assertEquals(429, response.getStatus());
+        Assertions.assertEquals("6", response.getHeader("Retry-After"), "login refills one token every 6s");
+        Assertions.assertEquals("6", response.headerWhenTheBodyStarted, "set before the body commits the response");
         Assertions.assertEquals("application/json", response.getContentType());
         Assertions.assertTrue(response.getContentAsString().contains("\"code\":\"RATE_LIMITED\""));
         Assertions.assertTrue(response.getContentAsString().contains("\"trace_id\":\"trace-rate-12345\""));
@@ -421,6 +428,7 @@ class RateLimitingFilterTests {
             MockHttpServletResponse response = new MockHttpServletResponse();
             filter.doFilter(customerCommand("Customer@Example.com", refused[0], refused[1]), response, chain);
             Assertions.assertEquals(429, response.getStatus(), refused[0]);
+            Assertions.assertEquals("3", response.getHeader("Retry-After"), refused[0]);
             Assertions.assertTrue(response.getContentAsString().contains("\"code\":\"RATE_LIMITED\""), refused[0]);
             Assertions.assertNull(chain.getRequest(), refused[0]);
         }
@@ -521,6 +529,7 @@ class RateLimitingFilterTests {
         MockHttpServletResponse response = new MockHttpServletResponse();
         filter.doFilter(customerCommand("customer@example.com", "/orders/43/cancel", "cancel-43"), response, refused);
         Assertions.assertEquals(429, response.getStatus());
+        Assertions.assertEquals("3", response.getHeader("Retry-After"));
         Assertions.assertNull(refused.getRequest());
         Mockito.verify(metricsService).recordRateLimitRejection("order-cancel");
 
@@ -628,8 +637,76 @@ class RateLimitingFilterTests {
         filter.doFilter(request, response, chain);
 
         Assertions.assertEquals(429, response.getStatus());
+        Assertions.assertEquals("6", response.getHeader("Retry-After"));
         Assertions.assertNull(chain.getRequest());
         Mockito.verify(metricsService).recordRateLimitRejection("login");
+    }
+
+
+    /**
+     * Retry-After is the time one request's token takes to come back, ceil(cost x refill period / refill tokens),
+     * in whole seconds: every bucket refills fully in 60s, so the smaller the bucket, the longer the wait.
+     */
+    @ParameterizedTest
+    @CsvSource({
+            "POST, /login, 6",
+            "POST, /signup, 12",
+            "POST, /cart/checkout, 3",
+            "POST, /payments/checkout, 6",
+            "POST, /dead-letters/12/replay, 6",
+            "POST, /admin/outbox/events/7/retry, 6",
+            "POST, /admin/outbox/events/7/abandon, 6",
+            "POST, /admin/after-sales/9/arbitrate, 6",
+            "POST, /admin/refunds/4/retry, 6",
+            "POST, /merchant/after-sales/5/approve, 2",
+            "POST, /orders/42/after-sales, 3",
+            "POST, /after-sales/cases/7/withdraw, 3",
+            "PATCH, /admin/menu-items/5, 2",
+            "POST, /admin/merchants, 6",
+            "PATCH, /admin/riders/12, 2",
+            "PATCH, /orders/42/status, 2",
+            "POST, /orders/42/cancel, 3",
+            "POST, /cart, 1",
+            "DELETE, /cart/items/3, 1",
+            "POST, /merchant/orders/42/accept, 1",
+            "POST, /rider/deliveries/8/delivered, 2",
+            "PUT, /rider/me/availability, 6",
+            "POST, /admin/deliveries/8/reassign, 1"
+    })
+    void shouldTellARefusedClientHowLongOneTokenTakesToRefill(String method, String uri, String retryAfter) throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        Mockito.when(redisTemplate.execute(
+                Mockito.<RedisScript<Long>>any(),
+                Mockito.<List<String>>any(),
+                Mockito.any(Object[].class)
+        )).thenReturn(0L);
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                Mockito.mock(ApplicationMetricsService.class),
+                errorResponseWriter()
+        );
+
+        MockHttpServletRequest request = new MockHttpServletRequest(method, uri);
+        request.setRemoteAddr("10.0.0.5");
+        request.setUserPrincipal((Principal) () -> "someone@example.com");
+        HeaderAtBodyRecordingResponse response = new HeaderAtBodyRecordingResponse("Retry-After");
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        Assertions.assertEquals(429, response.getStatus());
+        Assertions.assertEquals(retryAfter, response.getHeader("Retry-After"));
+        Assertions.assertEquals(retryAfter, response.headerWhenTheBodyStarted);
+        Object[] args = capturedRedisArgs(redisTemplate);
+        long refillMillis = Long.parseLong(String.valueOf(args[2]));
+        long cost = Long.parseLong(String.valueOf(args[3]));
+        long refillTokens = Long.parseLong(String.valueOf(args[1]));
+        Assertions.assertEquals(
+                Long.parseLong(retryAfter),
+                Math.max(1L, (long) Math.ceil(cost * refillMillis / (double) refillTokens / 1000d)),
+                "matches the rule the script was given"
+        );
     }
 
 
@@ -743,5 +820,44 @@ class RateLimitingFilterTests {
 
     private ApiErrorResponseWriter errorResponseWriter() {
         return new ApiErrorResponseWriter(new ApiErrorResponseFactory(), JsonMapper.builder().build());
+    }
+
+
+    /**
+     * Records a header's value when the body starts: a servlet container drops headers set once the body has
+     * committed the response, which {@link MockHttpServletResponse} does not model.
+     */
+    private static final class HeaderAtBodyRecordingResponse extends MockHttpServletResponse {
+
+        private final String headerName;
+        private String headerWhenTheBodyStarted;
+        private boolean bodyStarted;
+
+
+        private HeaderAtBodyRecordingResponse(String headerName) {
+            this.headerName = headerName;
+        }
+
+
+        @Override
+        public ServletOutputStream getOutputStream() {
+            recordHeader();
+            return super.getOutputStream();
+        }
+
+
+        @Override
+        public PrintWriter getWriter() throws UnsupportedEncodingException {
+            recordHeader();
+            return super.getWriter();
+        }
+
+
+        private void recordHeader() {
+            if (!bodyStarted) {
+                bodyStarted = true;
+                headerWhenTheBodyStarted = getHeader(headerName);
+            }
+        }
     }
 }
