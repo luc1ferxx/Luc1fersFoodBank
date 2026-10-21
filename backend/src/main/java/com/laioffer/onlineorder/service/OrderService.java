@@ -35,6 +35,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.HashMap;
@@ -502,7 +503,10 @@ public class OrderService implements OrderLifecycleCommands {
             return new TransitionOutcome(decision, currentOrder, null);
         }
         OrderStatus targetStatus = move.to();
-        LocalDateTime transitionedAt = LocalDateTime.now();
+        // Microseconds, what the timestamp columns keep: the order row, its history and the events it writes (the
+        // order's and a cancellation refund's) then carry one instant. A Linux clock has nanoseconds, which the
+        // database would round, so the events would not match the rows.
+        LocalDateTime transitionedAt = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
         OrderEntity updatedOrder = currentOrder.withStatus(
                 targetStatus.name(),
                 targetStatus == OrderStatus.CANCELLED ? cancelReason : currentOrder.cancelReason(),
