@@ -682,7 +682,8 @@ offset, like the existing one.
 letter replayed after later events of the same order were applied still reaches a group out of order. The consumers
 that keep per-aggregate state (merchant inbox, dispatch, timeout) therefore record the last sequence they applied per
 order (`consumer_aggregate_sequences`, through `EventSequenceTracker`) and skip an event whose sequence is not above it
-(`onlineorder_events_stale_skipped_total`). Only event types a consumer applies move its position: dispatch ignores
+(`onlineorder_events_stale_skipped_total`). The after-sales consumers do the same per case: the merchant projection,
+and the customer notifications, which write no notice for a step the case has already left. Only event types a consumer applies move its position: dispatch ignores
 `order.preparing`, so an `order.accepted` dead-lettered for want of a rider and replayed after it still gets one.
 Events without a sequence (written before V9) and positions older than the processed-events retention fall back on the
 rules below, which still hold for every module when the order of two events flips:

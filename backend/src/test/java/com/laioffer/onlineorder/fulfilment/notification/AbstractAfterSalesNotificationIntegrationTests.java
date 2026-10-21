@@ -10,6 +10,8 @@ import com.laioffer.onlineorder.messaging.AfterSalesEventEnvelope;
 import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.repository.CustomerRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -48,6 +50,9 @@ abstract class AbstractAfterSalesNotificationIntegrationTests {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private MeterRegistry meterRegistry;
+
 
     @Test
     void secondRequestOfAnOrder_shouldNotifyInItsOwnScopeNextToTheOrdersNotifications() {
@@ -59,11 +64,11 @@ abstract class AbstractAfterSalesNotificationIntegrationTests {
         long firstCase = caseId();
         long secondCase = caseId();
 
-        afterSalesNotificationService.handle(event(order, firstCase, FulfilmentEvents.AFTER_SALES_CASE_OPENED,
+        afterSalesNotificationService.handle(event(order, firstCase, 1, FulfilmentEvents.AFTER_SALES_CASE_OPENED,
                 "CUSTOMER_REQUEST", "PENDING_MERCHANT", "OPEN", null));
-        afterSalesNotificationService.handle(event(order, firstCase, FulfilmentEvents.AFTER_SALES_CASE_CLOSED,
+        afterSalesNotificationService.handle(event(order, firstCase, 2, FulfilmentEvents.AFTER_SALES_CASE_CLOSED,
                 "CUSTOMER_REQUEST", "CLOSED", "CUSTOMER_WITHDRAW", "WITHDRAWN"));
-        afterSalesNotificationService.handle(event(order, secondCase, FulfilmentEvents.AFTER_SALES_CASE_OPENED,
+        afterSalesNotificationService.handle(event(order, secondCase, 1, FulfilmentEvents.AFTER_SALES_CASE_OPENED,
                 "CUSTOMER_REQUEST", "PENDING_MERCHANT", "OPEN", null));
 
         Assertions.assertEquals(List.of(
@@ -80,21 +85,22 @@ abstract class AbstractAfterSalesNotificationIntegrationTests {
 
 
     /**
-     * A redelivered event is caught by its processed_events mark. Once the mark is gone (retention, a replay much
-     * later under the event id), the unique (order_id, event_type, dedup_scope) still keeps one notification, and the
-     * insert reports the duplicate as 0 rows instead of failing.
+     * A redelivered event is caught by its processed_events mark. Once the mark and the consumer's position in the
+     * case's events are gone (retention, a replay much later under the event id), the unique (order_id, event_type,
+     * dedup_scope) still keeps one notification, and the insert reports the duplicate as 0 rows instead of failing.
      */
     @Test
     void redeliveredEvent_shouldNotifyOnce_evenWithoutItsProcessedMark() {
         Order order = order("COMPLETED");
         long caseId = caseId();
-        AfterSalesEventEnvelope opened = event(order, caseId, FulfilmentEvents.AFTER_SALES_CASE_OPENED,
+        AfterSalesEventEnvelope opened = event(order, caseId, 1, FulfilmentEvents.AFTER_SALES_CASE_OPENED,
                 "CUSTOMER_REQUEST", "PENDING_MERCHANT", "OPEN", null);
 
         afterSalesNotificationService.handle(opened);
         afterSalesNotificationService.handle(opened);
         Assertions.assertEquals(1, marks(opened.eventId()));
         jdbcTemplate.update("DELETE FROM processed_events WHERE dedup_key = ?", opened.eventId());
+        Assertions.assertEquals(1, deletePosition(caseId));
         afterSalesNotificationService.handle(opened);
 
         Assertions.assertEquals(List.of(FulfilmentEvents.AFTER_SALES_CASE_OPENED + "|case:" + caseId + "|Refund requested"),
@@ -108,10 +114,11 @@ abstract class AbstractAfterSalesNotificationIntegrationTests {
         Order order = order("CANCELLED");
         long caseId = caseId();
 
-        afterSalesNotificationService.handle(event(order, caseId, FulfilmentEvents.AFTER_SALES_CASE_OPENED,
+        afterSalesNotificationService.handle(event(order, caseId, 1, FulfilmentEvents.AFTER_SALES_CASE_OPENED,
                 "ORDER_CANCELLED", "REFUNDING", "ORDER_CANCELLED", null));
         Assertions.assertEquals(List.of(), notifications(order));
-        afterSalesNotificationService.handle(event(order, caseId, FulfilmentEvents.AFTER_SALES_CASE_REFUNDED,
+        Assertions.assertNull(position(caseId), "an event that notifies nothing does not move the position");
+        afterSalesNotificationService.handle(event(order, caseId, 2, FulfilmentEvents.AFTER_SALES_CASE_REFUNDED,
                 "ORDER_CANCELLED", "REFUNDED", "REFUND_SUCCEEDED", null));
 
         Assertions.assertEquals(List.of(FulfilmentEvents.AFTER_SALES_CASE_REFUNDED + "|case:" + caseId + "|Refund completed"),
@@ -129,13 +136,47 @@ abstract class AbstractAfterSalesNotificationIntegrationTests {
     void notificationOfAMissingOrder_shouldFailTheEventWithoutKeepingItsMark() {
         Order order = order("COMPLETED");
         Order missing = new Order(order.id() + 999_999L, order.orderNo(), order.customerId());
-        AfterSalesEventEnvelope opened = event(missing, caseId(), FulfilmentEvents.AFTER_SALES_CASE_OPENED,
+        long caseId = caseId();
+        AfterSalesEventEnvelope opened = event(missing, caseId, 1, FulfilmentEvents.AFTER_SALES_CASE_OPENED,
                 "CUSTOMER_REQUEST", "PENDING_MERCHANT", "OPEN", null);
 
         Assertions.assertThrows(DataIntegrityViolationException.class,
                 () -> afterSalesNotificationService.handle(opened));
 
         Assertions.assertEquals(0, marks(opened.eventId()));
+        Assertions.assertNull(position(caseId), "the position rolls back with the mark");
+    }
+
+
+    /**
+     * Section 27, follow-up 13 (README "Out-of-order events"): a dead letter replayed after a later event of its case
+     * was notified is stale and writes no notification, which would describe a step the case has left; it keeps its
+     * mark and counts as skipped. A later event still notifies.
+     */
+    @Test
+    void staleEventReplayedAfterALaterOne_shouldNotNotify() {
+        Order order = order("COMPLETED");
+        long caseId = caseId();
+        afterSalesNotificationService.handle(event(order, caseId, 1, FulfilmentEvents.AFTER_SALES_CASE_OPENED,
+                "CUSTOMER_REQUEST", "PENDING_MERCHANT", "OPEN", null));
+        afterSalesNotificationService.handle(event(order, caseId, 3, FulfilmentEvents.AFTER_SALES_CASE_ESCALATED,
+                "CUSTOMER_REQUEST", "IN_ARBITRATION", "CUSTOMER_ESCALATE", null));
+        AfterSalesEventEnvelope replayedRejection = event(order, caseId, 2,
+                FulfilmentEvents.AFTER_SALES_REQUEST_REJECTED, "CUSTOMER_REQUEST", "REJECTED", "MERCHANT_REJECT", null);
+        double skippedBefore = staleSkipped(FulfilmentEvents.AFTER_SALES_REQUEST_REJECTED);
+
+        afterSalesNotificationService.handle(replayedRejection);
+
+        Assertions.assertEquals(1, marks(replayedRejection.eventId()));
+        Assertions.assertEquals(3L, position(caseId));
+        Assertions.assertEquals(skippedBefore + 1, staleSkipped(FulfilmentEvents.AFTER_SALES_REQUEST_REJECTED));
+        afterSalesNotificationService.handle(event(order, caseId, 4, FulfilmentEvents.AFTER_SALES_CASE_CLOSED,
+                "CUSTOMER_REQUEST", "CLOSED", "CUSTOMER_WITHDRAW", "WITHDRAWN"));
+        Assertions.assertEquals(List.of(
+                FulfilmentEvents.AFTER_SALES_CASE_OPENED + "|case:" + caseId + "|Refund requested",
+                FulfilmentEvents.AFTER_SALES_CASE_ESCALATED + "|case:" + caseId + "|Platform review requested",
+                FulfilmentEvents.AFTER_SALES_CASE_CLOSED + "|case:" + caseId + "|Refund request closed"
+        ), notifications(order));
     }
 
 
@@ -172,9 +213,13 @@ abstract class AbstractAfterSalesNotificationIntegrationTests {
     }
 
 
+    /**
+     * @param sequence the event's number among its case's events
+     */
     private static AfterSalesEventEnvelope event(
             Order order,
             long caseId,
+            long sequence,
             String eventType,
             String kind,
             String status,
@@ -213,7 +258,7 @@ abstract class AbstractAfterSalesNotificationIntegrationTests {
         );
         String eventId = UUID.randomUUID().toString();
         return new AfterSalesEventEnvelope(
-                eventId, 1, eventType, "AFTER_SALES_CASE", caseId, 1L, OPENED_AT, eventId, null, data);
+                eventId, 1, eventType, "AFTER_SALES_CASE", caseId, sequence, OPENED_AT, eventId, null, data);
     }
 
 
@@ -246,6 +291,36 @@ abstract class AbstractAfterSalesNotificationIntegrationTests {
                 eventId
         );
         return count == null ? 0 : count;
+    }
+
+
+    /**
+     * The last sequence of the case this consumer applied, or null when it has none.
+     */
+    private Long position(long caseId) {
+        List<Long> sequences = jdbcTemplate.queryForList("""
+                SELECT last_sequence
+                FROM consumer_aggregate_sequences
+                WHERE consumer_name = ? AND aggregate_type = 'AFTER_SALES_CASE' AND aggregate_id = ?
+                """, Long.class, AfterSalesNotificationService.AFTER_SALES_NOTIFICATION_CONSUMER, caseId);
+        return sequences.isEmpty() ? null : sequences.get(0);
+    }
+
+
+    private int deletePosition(long caseId) {
+        return jdbcTemplate.update("""
+                DELETE FROM consumer_aggregate_sequences
+                WHERE consumer_name = ? AND aggregate_type = 'AFTER_SALES_CASE' AND aggregate_id = ?
+                """, AfterSalesNotificationService.AFTER_SALES_NOTIFICATION_CONSUMER, caseId);
+    }
+
+
+    private double staleSkipped(String eventType) {
+        Counter counter = meterRegistry.find("onlineorder.events.stale_skipped")
+                .tag("consumer", AfterSalesNotificationService.AFTER_SALES_NOTIFICATION_CONSUMER)
+                .tag("event_type", eventType)
+                .counter();
+        return counter == null ? 0 : counter.count();
     }
 
 

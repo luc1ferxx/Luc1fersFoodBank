@@ -28,6 +28,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 
 @Service
@@ -53,6 +54,19 @@ public class OrderNotificationService {
     private static final String ORDER_CANCELLED_KIND = "ORDER_CANCELLED";
 
     private static final String CUSTOMER_DECLINE_OFFER_ACTION = "CUSTOMER_DECLINE_OFFER";
+
+    /**
+     * The after-sales event types with a notification of a customer request.
+     */
+    private static final Set<String> AFTER_SALES_NOTICE_TYPES = Set.of(
+            FulfilmentEvents.AFTER_SALES_CASE_OPENED,
+            FulfilmentEvents.AFTER_SALES_OFFER_MADE,
+            FulfilmentEvents.AFTER_SALES_REQUEST_REJECTED,
+            FulfilmentEvents.AFTER_SALES_CASE_ESCALATED,
+            FulfilmentEvents.AFTER_SALES_REFUND_APPROVED,
+            FulfilmentEvents.AFTER_SALES_CASE_REFUNDED,
+            FulfilmentEvents.AFTER_SALES_CASE_CLOSED
+    );
 
     private static final Map<String, String> REFUND_APPROVED_LEADS = Map.of(
             "MERCHANT_APPROVED", "The restaurant approved your refund request: ",
@@ -177,8 +191,8 @@ public class OrderNotificationService {
             throw new IllegalArgumentException("After-sales event payload is missing required identifiers");
         }
         AfterSalesCasePayload data = event.data();
-        String eventType = event.eventType() == null ? "" : event.eventType();
-        if (ORDER_CANCELLED_KIND.equals(data.kind()) && !FulfilmentEvents.AFTER_SALES_CASE_REFUNDED.equals(eventType)) {
+        String eventType = event.eventType();
+        if (!notifiesOf(event)) {
             return;
         }
         String orderNumber = data.orderNo() == null ? orderNumber(data.orderId()) : String.valueOf(data.orderNo());
@@ -195,6 +209,22 @@ public class OrderNotificationService {
                 notice.get().message(),
                 LocalDateTime.now()
         );
+    }
+
+
+    /**
+     * Whether {@link #recordAfterSalesEvent} notifies the customer of {@code event}: every step of a customer request,
+     * and only the completed refund of a cancelled order's case. The after-sales notification consumer moves its
+     * position in the case's events only for these.
+     */
+    public boolean notifiesOf(AfterSalesEventEnvelope event) {
+        if (event == null || event.data() == null || event.eventType() == null) {
+            return false;
+        }
+        if (ORDER_CANCELLED_KIND.equals(event.data().kind())) {
+            return FulfilmentEvents.AFTER_SALES_CASE_REFUNDED.equals(event.eventType());
+        }
+        return AFTER_SALES_NOTICE_TYPES.contains(event.eventType());
     }
 
 

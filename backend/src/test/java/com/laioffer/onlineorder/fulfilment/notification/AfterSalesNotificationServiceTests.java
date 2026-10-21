@@ -15,6 +15,7 @@ import com.laioffer.onlineorder.messaging.AfterSalesEventEnvelope;
 import com.laioffer.onlineorder.repository.OrderNotificationRepository;
 import com.laioffer.onlineorder.repository.OrderPaymentRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
+import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderNotificationService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.junit.jupiter.api.Assertions;
@@ -24,6 +25,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -76,6 +78,9 @@ class AfterSalesNotificationServiceTests {
     @Mock
     private ProcessedEventService processedEventService;
 
+    @Mock
+    private EventSequenceTracker sequenceTracker;
+
     private AfterSalesNotificationService service;
 
 
@@ -83,11 +88,13 @@ class AfterSalesNotificationServiceTests {
     void setUp() {
         service = new AfterSalesNotificationService(
                 new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository),
-                processedEventService
+                processedEventService,
+                sequenceTracker
         );
         Mockito.when(processedEventService.markIfUnseen(
                 Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any()))
                 .thenReturn(true);
+        Mockito.when(sequenceTracker.advance(Mockito.any(), Mockito.any())).thenReturn(true);
     }
 
 
@@ -274,6 +281,52 @@ class AfterSalesNotificationServiceTests {
         assertNotified(FulfilmentEvents.AFTER_SALES_CASE_REFUNDED, "case:501", "Refund completed",
                 "Your payment of 22.00 USD for cancelled " + ORDER + " was refunded.");
         Mockito.verifyNoMoreInteractions(orderNotificationRepository);
+        // Only the event that notified moved the position in the case's events.
+        Mockito.verify(sequenceTracker).advance(
+                Mockito.eq(AfterSalesNotificationService.AFTER_SALES_NOTIFICATION_CONSUMER),
+                Mockito.argThat(event -> "evt-cancelled-refunded".equals(event.eventId())));
+        Mockito.verifyNoMoreInteractions(sequenceTracker);
+    }
+
+
+    /**
+     * Section 27, follow-up 13: a dead letter replayed after a later event of its case was notified is stale; it keeps
+     * its processed_events mark, moves the position after it, and writes no notification.
+     */
+    @Test
+    void staleEvent_shouldNotNotify() {
+        AfterSalesEventEnvelope opened = request().envelope("evt-stale-opened", FulfilmentEvents.AFTER_SALES_CASE_OPENED);
+        Mockito.when(sequenceTracker.advance(AfterSalesNotificationService.AFTER_SALES_NOTIFICATION_CONSUMER, opened))
+                .thenReturn(false);
+
+        service.handle(opened);
+
+        InOrder steps = Mockito.inOrder(processedEventService, sequenceTracker);
+        steps.verify(processedEventService).markIfUnseen(
+                AfterSalesNotificationService.AFTER_SALES_NOTIFICATION_CONSUMER,
+                "evt-stale-opened",
+                "evt-stale-opened",
+                FulfilmentEvents.AFTER_SALES_CASE_OPENED,
+                "AFTER_SALES_CASE",
+                501L
+        );
+        steps.verify(sequenceTracker).advance(AfterSalesNotificationService.AFTER_SALES_NOTIFICATION_CONSUMER, opened);
+        Mockito.verifyNoInteractions(orderNotificationRepository, orderRepository);
+    }
+
+
+    /**
+     * A redelivered event stops at its mark, before the position.
+     */
+    @Test
+    void redeliveredEvent_shouldNotMoveThePosition() {
+        Mockito.when(processedEventService.markIfUnseen(
+                Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any()))
+                .thenReturn(false);
+
+        service.handle(request().envelope("evt-seen", FulfilmentEvents.AFTER_SALES_CASE_OPENED));
+
+        Mockito.verifyNoInteractions(sequenceTracker, orderNotificationRepository);
     }
 
 
