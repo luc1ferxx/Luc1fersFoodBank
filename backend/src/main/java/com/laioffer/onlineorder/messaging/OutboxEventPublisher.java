@@ -415,6 +415,8 @@ public class OutboxEventPublisher {
     private final class BatchPublication {
 
         private final long deadline = System.nanoTime() + publishTimeout.toNanos();
+        // One claim returned the batch, so its events share the claim's token, which every result write passes on.
+        private final String claimToken;
         private final Map<String, Deque<OutboxEventEntity>> unsentByKey = new LinkedHashMap<>();
         private final List<OutboxEventEntity> published = new ArrayList<>();
         private final List<FailedEvent> failed = new ArrayList<>();
@@ -425,6 +427,7 @@ public class OutboxEventPublisher {
 
 
         private BatchPublication(List<OutboxEventEntity> events) {
+            claimToken = events.get(0).claimToken();
             for (OutboxEventEntity event : events) {
                 unsentByKey.computeIfAbsent(event.eventKey(), key -> new ArrayDeque<>()).add(event);
             }
@@ -619,7 +622,10 @@ public class OutboxEventPublisher {
             RuntimeException writeFailure = null;
             if (!published.isEmpty()) {
                 writeFailure = runWrite(writeFailure, () -> {
-                    orderEventOutboxService.markPublished(published.stream().map(OutboxEventEntity::id).toList());
+                    orderEventOutboxService.markPublished(
+                            claimToken,
+                            published.stream().map(OutboxEventEntity::id).toList()
+                    );
                     for (OutboxEventEntity event : published) {
                         metricsService.recordOutboxPublishResult(event.topic(), true);
                     }
@@ -634,7 +640,7 @@ public class OutboxEventPublisher {
                 } else {
                     writeFailure = runWrite(
                             writeFailure,
-                            () -> orderEventOutboxService.markRetryableFailure(event.id(), failure.error())
+                            () -> orderEventOutboxService.markRetryableFailure(claimToken, event.id(), failure.error())
                     );
                 }
                 metricsService.recordOutboxPublishResult(event.topic(), false);
@@ -642,11 +648,18 @@ public class OutboxEventPublisher {
             for (Map.Entry<String, List<Long>> idsByError : transientFailureIdsByError.entrySet()) {
                 writeFailure = runWrite(
                         writeFailure,
-                        () -> orderEventOutboxService.releaseFailedClaims(idsByError.getValue(), idsByError.getKey())
+                        () -> orderEventOutboxService.releaseFailedClaims(
+                                claimToken,
+                                idsByError.getValue(),
+                                idsByError.getKey()
+                        )
                 );
             }
             if (!unsentIds.isEmpty()) {
-                writeFailure = runWrite(writeFailure, () -> orderEventOutboxService.releaseClaims(unsentIds));
+                writeFailure = runWrite(
+                        writeFailure,
+                        () -> orderEventOutboxService.releaseClaims(claimToken, unsentIds)
+                );
             }
             if (writeFailure != null) {
                 throw writeFailure;

@@ -237,7 +237,7 @@ class OrderEventOutboxServiceTests {
 
 
     @Test
-    void claimNextBatch_shouldMarkClaimedEventsProcessingWithOneBulkUpdate() {
+    void claimNextBatch_shouldClaimTheBatchUnderANewTokenWithOneBulkUpdate() {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
         OrderEventOutboxService service = newService(repository);
         List<OutboxEventEntity> lockedEvents = List.of(eventWithId(1L), eventWithId(2L), eventWithId(3L));
@@ -248,19 +248,23 @@ class OrderEventOutboxServiceTests {
                 Mockito.eq(20)
         )).thenReturn(lockedEvents);
 
-        List<OutboxEventEntity> claimedEvents = service.claimNextBatch();
+        List<OutboxEventEntity> firstClaim = service.claimNextBatch();
+        List<OutboxEventEntity> secondClaim = service.claimNextBatch();
 
-        Assertions.assertEquals(lockedEvents, claimedEvents);
-        Mockito.verify(repository, Mockito.times(1)).markProcessing(
+        ArgumentCaptor<String> tokens = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(repository, Mockito.times(2)).markProcessing(
                 Mockito.eq(List.of(1L, 2L, 3L)),
                 Mockito.eq("PROCESSING"),
+                tokens.capture(),
                 Mockito.any(LocalDateTime.class)
         );
-        Mockito.verify(repository, Mockito.times(1)).markProcessing(
-                Mockito.anyList(),
-                Mockito.anyString(),
-                Mockito.any(LocalDateTime.class)
-        );
+        String firstToken = tokens.getAllValues().get(0);
+        String secondToken = tokens.getAllValues().get(1);
+        Assertions.assertNotNull(firstToken);
+        Assertions.assertNotEquals(firstToken, secondToken);
+        Assertions.assertEquals(List.of(1L, 2L, 3L), firstClaim.stream().map(OutboxEventEntity::id).toList());
+        Assertions.assertTrue(firstClaim.stream().allMatch(event -> firstToken.equals(event.claimToken())));
+        Assertions.assertTrue(secondClaim.stream().allMatch(event -> secondToken.equals(event.claimToken())));
     }
 
 
@@ -280,21 +284,24 @@ class OrderEventOutboxServiceTests {
         Mockito.verify(repository, Mockito.never()).markProcessing(
                 Mockito.anyList(),
                 Mockito.anyString(),
+                Mockito.anyString(),
                 Mockito.any(LocalDateTime.class)
         );
     }
 
 
     @Test
-    void markPublished_shouldMarkAllEventsPublishedWithOneBulkUpdate() {
+    void markPublished_shouldMarkTheClaimsEventsPublishedWithOneBulkUpdate() {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
         OrderEventOutboxService service = newService(repository);
 
-        service.markPublished(List.of(1L, 2L));
-        service.markPublished(List.of());
+        service.markPublished("claim-1", List.of(1L, 2L));
+        service.markPublished("claim-1", List.of());
 
         Mockito.verify(repository, Mockito.times(1)).markPublished(
                 Mockito.eq(List.of(1L, 2L)),
+                Mockito.eq("claim-1"),
+                Mockito.eq("PROCESSING"),
                 Mockito.eq("PUBLISHED"),
                 Mockito.any(LocalDateTime.class),
                 Mockito.any(LocalDateTime.class)
@@ -304,15 +311,16 @@ class OrderEventOutboxServiceTests {
 
 
     @Test
-    void releaseClaims_shouldReturnProcessingEventsToPending() {
+    void releaseClaims_shouldReturnTheClaimsProcessingEventsToPending() {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
         OrderEventOutboxService service = newService(repository);
 
-        service.releaseClaims(List.of(4L, 5L));
-        service.releaseClaims(List.of());
+        service.releaseClaims("claim-1", List.of(4L, 5L));
+        service.releaseClaims("claim-1", List.of());
 
         Mockito.verify(repository, Mockito.times(1)).releaseClaims(
                 Mockito.eq(List.of(4L, 5L)),
+                Mockito.eq("claim-1"),
                 Mockito.eq("PROCESSING"),
                 Mockito.eq("PENDING"),
                 Mockito.any(LocalDateTime.class)
@@ -322,15 +330,16 @@ class OrderEventOutboxServiceTests {
 
 
     @Test
-    void releaseFailedClaims_shouldReturnProcessingEventsToPendingWithAbbreviatedError() {
+    void releaseFailedClaims_shouldReturnTheClaimsProcessingEventsToPendingWithAbbreviatedError() {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
         OrderEventOutboxService service = newService(repository);
 
-        service.releaseFailedClaims(List.of(4L, 5L), "x".repeat(1200));
-        service.releaseFailedClaims(List.of(), "Kafka unavailable");
+        service.releaseFailedClaims("claim-1", List.of(4L, 5L), "x".repeat(1200));
+        service.releaseFailedClaims("claim-1", List.of(), "Kafka unavailable");
 
         Mockito.verify(repository, Mockito.times(1)).releaseFailedClaims(
                 Mockito.eq(List.of(4L, 5L)),
+                Mockito.eq("claim-1"),
                 Mockito.eq("PROCESSING"),
                 Mockito.eq("PENDING"),
                 Mockito.any(LocalDateTime.class),
@@ -341,49 +350,90 @@ class OrderEventOutboxServiceTests {
 
 
     @Test
-    void markRetryableFailure_whenAttemptsReachMax_shouldMarkFailed() {
+    void markRetryableFailure_withAttemptsLeft_shouldKeepItPendingWithoutReadingTheRowFirst() {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
         OrderEventOutboxService service = newService(repository);
-        OutboxEventEntity event = eventWithAttempts(2);
-        Mockito.when(repository.findById(1L)).thenReturn(Optional.of(event));
-
-        service.markRetryableFailure(1L, "Kafka unavailable");
-
-        Mockito.verify(repository).markFailed(
+        Mockito.when(repository.markPendingRetry(
                 Mockito.eq(1L),
-                Mockito.eq("FAILED"),
+                Mockito.eq("claim-1"),
+                Mockito.eq("PROCESSING"),
+                Mockito.eq("PENDING"),
+                Mockito.eq(2),
                 Mockito.any(LocalDateTime.class),
                 Mockito.eq("Kafka unavailable")
+        )).thenReturn(1);
+
+        Assertions.assertEquals(
+                OrderEventOutboxService.RetryableFailure.RETRY_PENDING,
+                service.markRetryableFailure("claim-1", 1L, "Kafka unavailable")
         );
-        Mockito.verify(repository, Mockito.never()).markPendingRetry(
-                Mockito.anyLong(),
-                Mockito.anyString(),
+
+        Mockito.verifyNoMoreInteractions(repository);
+    }
+
+
+    @Test
+    void markRetryableFailure_outOfAttempts_shouldMarkItFailed() {
+        OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
+        OrderEventOutboxService service = newService(repository);
+        Mockito.when(repository.markFailed(
+                Mockito.eq(1L),
+                Mockito.eq("claim-1"),
+                Mockito.eq("PROCESSING"),
+                Mockito.eq("FAILED"),
+                Mockito.eq(2),
                 Mockito.any(LocalDateTime.class),
-                Mockito.anyString()
+                Mockito.eq("Kafka unavailable")
+        )).thenReturn(1);
+
+        Assertions.assertEquals(
+                OrderEventOutboxService.RetryableFailure.FAILED,
+                service.markRetryableFailure("claim-1", 1L, "Kafka unavailable")
+        );
+
+        // The retry write refused it first (no attempts left): its result is the mock's 0.
+        Mockito.verify(repository).markPendingRetry(
+                Mockito.eq(1L),
+                Mockito.eq("claim-1"),
+                Mockito.eq("PROCESSING"),
+                Mockito.eq("PENDING"),
+                Mockito.eq(2),
+                Mockito.any(LocalDateTime.class),
+                Mockito.eq("Kafka unavailable")
         );
     }
 
+
     @Test
-    void markRetryableFailure_whenAttemptsBelowMax_shouldKeepPending() {
+    void markRetryableFailure_whenTheClaimWasTakenOver_shouldChangeNothing() {
         OutboxEventRepository repository = Mockito.mock(OutboxEventRepository.class);
         OrderEventOutboxService service = newService(repository);
-        OutboxEventEntity event = eventWithAttempts(1);
-        Mockito.when(repository.findById(1L)).thenReturn(Optional.of(event));
 
-        service.markRetryableFailure(1L, "Kafka unavailable");
+        // Both fenced writes match no row: the event is no longer PROCESSING under this claim.
+        Assertions.assertEquals(
+                OrderEventOutboxService.RetryableFailure.CLAIM_LOST,
+                service.markRetryableFailure("claim-1", 1L, "Kafka unavailable")
+        );
 
         Mockito.verify(repository).markPendingRetry(
-                Mockito.eq(1L),
-                Mockito.eq("PENDING"),
-                Mockito.any(LocalDateTime.class),
-                Mockito.eq("Kafka unavailable")
-        );
-        Mockito.verify(repository, Mockito.never()).markFailed(
                 Mockito.anyLong(),
                 Mockito.anyString(),
+                Mockito.anyString(),
+                Mockito.anyString(),
+                Mockito.anyInt(),
                 Mockito.any(LocalDateTime.class),
                 Mockito.anyString()
         );
+        Mockito.verify(repository).markFailed(
+                Mockito.anyLong(),
+                Mockito.anyString(),
+                Mockito.anyString(),
+                Mockito.anyString(),
+                Mockito.anyInt(),
+                Mockito.any(LocalDateTime.class),
+                Mockito.anyString()
+        );
+        Mockito.verifyNoMoreInteractions(repository);
     }
 
 
@@ -579,11 +629,6 @@ class OrderEventOutboxServiceTests {
                 now,
                 null
         );
-    }
-
-
-    private OutboxEventEntity eventWithAttempts(int attempts) {
-        return eventWithStatus("PROCESSING", attempts, null);
     }
 
 

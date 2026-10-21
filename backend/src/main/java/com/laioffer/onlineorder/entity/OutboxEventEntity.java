@@ -50,7 +50,12 @@ public record OutboxEventEntity(
         // carried in the envelope as "sequence". The publisher only claims an event when no earlier event of its
         // aggregate is still unpublished. Null only for rows written before V9 that were already published.
         @Column("aggregate_sequence")
-        Long aggregateSequence
+        Long aggregateSequence,
+        // Token of the claim that holds a PROCESSING row (V13): OrderEventOutboxService.claimNextBatch writes a new one
+        // for each batch and returns the events with it, and the publisher's result writes change the row only under
+        // it. Null for a row no claim holds.
+        @Column("claim_token")
+        String claimToken
 ) {
 
     /**
@@ -89,6 +94,7 @@ public record OutboxEventEntity(
                 updatedAt,
                 publishedAt,
                 null,
+                null,
                 null
         );
     }
@@ -111,7 +117,31 @@ public record OutboxEventEntity(
                 updatedAt,
                 publishedAt,
                 traceParent,
-                aggregateSequence
+                aggregateSequence,
+                claimToken
+        );
+    }
+
+
+    public OutboxEventEntity withClaimToken(String claimToken) {
+        return new OutboxEventEntity(
+                id,
+                aggregateType,
+                aggregateId,
+                eventId,
+                topic,
+                eventKey,
+                eventType,
+                payload,
+                status,
+                attempts,
+                lastError,
+                createdAt,
+                updatedAt,
+                publishedAt,
+                traceParent,
+                aggregateSequence,
+                claimToken
         );
     }
 }
