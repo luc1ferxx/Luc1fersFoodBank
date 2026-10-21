@@ -1072,19 +1072,21 @@ what was built); this section is the operator's side.
 | `refund.retry-backoff` | 10s, doubled after every further failed call; a failed claim waits 10s, never doubled | `AFTER_SALES_REFUND_RETRY_BACKOFF` |
 | `refund.retry-backoff-max` | 10m | `AFTER_SALES_REFUND_RETRY_BACKOFF_MAX` |
 | `refund.claim-timeout` | 60s lease of a claimed refund | `AFTER_SALES_REFUND_CLAIM_TIMEOUT` |
+| `refund.max-claim-failures` | 10 claims failed in a row (`backed_off`) before the last one gives the refund up, no attempt used up; at least 1 | `AFTER_SALES_REFUND_MAX_CLAIM_FAILURES` |
 | `refund-gateway.timeout` | 10s; must be below `refund.claim-timeout` | `AFTER_SALES_REFUND_GATEWAY_TIMEOUT` |
 | `refund-gateway.max-threads` | 4 gateway calls at once, calls that outlived their timeout included | `AFTER_SALES_REFUND_GATEWAY_MAX_THREADS` |
+| `refund-gateway.fail-first-attempts` | 0: `SimulatedRefundGateway` fails the first N attempts of every refund (retryable); demos and tests only, never negative | `AFTER_SALES_REFUND_GATEWAY_FAIL_FIRST_ATTEMPTS` |
 | `request-window`, `merchant-response-timeout`, `customer-response-timeout`, `arbitration-timeout` | 24h, 24h, 48h, 72h | `AFTER_SALES_REQUEST_WINDOW`, `AFTER_SALES_MERCHANT_RESPONSE_TIMEOUT`, `AFTER_SALES_CUSTOMER_RESPONSE_TIMEOUT`, `AFTER_SALES_ARBITRATION_TIMEOUT` |
 | `picked-up-cancel-refund-percent` | 50: the share of the total a customer's cancel after the pickup refunds (0-100, half-even; 0 refunds nothing); an admin's cancel always refunds in full | `AFTER_SALES_PICKED_UP_CANCEL_REFUND_PERCENT` |
 | `topic`, `merchant-group`, `notification-group` | `after-sales-events`, `onlineorder-merchant-aftersales`, `onlineorder-aftersales-notification` | `KAFKA_AFTER_SALES_TOPIC`, `AFTER_SALES_MERCHANT_GROUP`, `AFTER_SALES_NOTIFICATION_GROUP` |
 
-The application does not start when `refund.max-attempts` or `refund-gateway.max-threads` is below 1, a time limit,
-backoff, timeout or the tick budget is not positive, `retry-backoff-max` is below `retry-backoff`, or
-`refund-gateway.timeout` is not below `refund.claim-timeout`. `poller.interval` and `poller.batch-size` are not checked:
-an interval below 1 ms runs as 1 ms, a batch size below 1 as 1. The tick budget bounds what a slow or hung gateway costs
-the deadlines: each job stops claiming once the budget is spent, after one case or refund at least, and a call already
-started runs to its timeout, so the next tick's deadlines wait about the budget plus one gateway timeout (15s with the
-defaults).
+The application does not start when `refund.max-attempts`, `refund.max-claim-failures` or `refund-gateway.max-threads`
+is below 1, `refund-gateway.fail-first-attempts` is negative, a time limit, backoff, timeout or the tick budget is not
+positive, `retry-backoff-max` is below `retry-backoff`, or `refund-gateway.timeout` is not below
+`refund.claim-timeout`. `poller.interval` and `poller.batch-size` are not checked: an interval below 1 ms runs as 1 ms,
+a batch size below 1 as 1. The tick budget bounds what a slow or hung gateway costs the deadlines: each job stops
+claiming once the budget is spent, after one case or refund at least, and a call already started runs to its timeout,
+so the next tick's deadlines wait about the budget plus one gateway timeout (15s with the defaults).
 
 **Demo profile.** `SPRING_PROFILES_ACTIVE=h2,demo` (`application-demo.yml`) sets a 2h request window, 2m for the
 merchant, 3m for the customer and 5m for the platform, and turns the poller on although `h2` has no Kafka; the variables
@@ -1117,11 +1119,11 @@ as `OnlineOrderDeadLettersGrowing` does. `OnlineOrderRefundsBackingOff` needs ba
 the same table with a retry button):
 
 ```sh
-curl -sf "$BASE_URL/admin/refunds?status=FAILED&limit=100" -b "$ADMIN_COOKIE"
+curl -sS -f "$BASE_URL/admin/refunds?status=FAILED&limit=100" -b "$ADMIN_COOKIE"
 ```
 
-`status` is `PENDING`, `PROCESSING`, `SUCCEEDED` or `FAILED` in upper case (`FAILED` when left out, 400 for anything
-else), `limit` 1-100 (50), newest first. Each entry has `case_id`, `order_id`, `order_no`, `attempts` and
+`status` is `PENDING`, `PROCESSING`, `SUCCEEDED` or `FAILED` in any letter case (`FAILED` when left out, 400 for an
+unknown status), `limit` 1-100 (50), newest first. Each entry has `case_id`, `order_id`, `order_no`, `attempts` and
 `last_error`; the ERROR log line "Refund ... gave up after N attempt(s): ..." has the same error. With read replicas
 the list may be up to `max-lag` behind (section 11).
 
@@ -1130,11 +1132,12 @@ the list may be up to `max-lag` behind (section 11).
 | the gateway's error, for example "The refund gateway did not answer within 10000 ms" | a permanent failure, or the last of `max-attempts` retryable ones | fix the gateway side, then retry |
 | "The lease of attempt N expired without a result and no attempt is left" | the instance making the last attempt died or stalled; that call may have refunded | retry: the gateway answers the same key with the same refund |
 | "Case ... is ..., not REFUNDING", "The refund of ... is not the approved amount ...", "Order ... has no captured payment", "The refund names the payment ... but order ... was paid by ...", "The refund of ... exceeds the ... captured by payment ..." | the refund does not match its case or the order's payment; checked before every call, so nothing was paid | a retry fails the same way: correct the data, or refund the customer by hand |
+| "10 claims failed in a row; the last one: The claim of attempt N failed: ..." | its claim transaction failed `max-claim-failures` times in a row before any call, so nothing was paid (see "Refunds that keep backing off" below) | fix that cause, then retry |
 
 Then retry it:
 
 ```sh
-curl -sf -X POST "$BASE_URL/admin/refunds/<id>/retry" -b "$ADMIN_COOKIE"
+curl -sS -f -X POST "$BASE_URL/admin/refunds/<id>/retry" -b "$ADMIN_COOKIE"
 ```
 
 The refund becomes `PENDING`, due at once, with its attempts reset, and the next tick calls the gateway with the same
@@ -1142,6 +1145,29 @@ The refund becomes `PENDING`, due at once, with its attempts reset, and the next
 `previous_attempts` and `last_error`. A refund that is already `PENDING` answers 200 unchanged and is not audited again;
 `PROCESSING` or `SUCCEEDED` answers 409 `REFUND_STATUS_CONFLICT`, an unknown id 404. The retry takes no
 `Idempotency-Key`.
+
+**Many refunds given up at once** (a gateway outage longer than the 8 attempts, about 21 minutes with the defaults).
+Fix the gateway first. The retries share the admin's `refund-retry` bucket in `RateLimitingFilter`: 10 tokens per
+login, one more every 6 s, the console's retry button included. A loop over more than 10 refunds therefore paces itself
+at one retry every 6 s after the first 10 (100 refunds take about 9 minutes) or retries a `429 RATE_LIMITED`, which
+retried nothing. The loop below does the latter: `--retry 5 --retry-delay 6` waits one refill and sends the request
+again on a 429 (also on a 408, 500, 502, 503 or 504, which is safe: a refund already `PENDING` answers unchanged), and
+`-sS -f` prints every other failure, such as a 409 for a refund another admin retried meanwhile, and goes on with the
+next one. curl also prints each 429 it retries; only the refunds the loop names were not retried.
+
+```sh
+curl -sS -f "$BASE_URL/admin/refunds?status=FAILED&limit=100" -b "$ADMIN_COOKIE" | jq -r '.[].id' > failed-refunds.txt
+while read -r id; do
+  curl -sS -f --retry 5 --retry-delay 6 -o /dev/null -X POST "$BASE_URL/admin/refunds/$id/retry" -b "$ADMIN_COOKIE" \
+    || echo "refund $id was not retried" >&2
+done < failed-refunds.txt
+curl -sS -f "$BASE_URL/admin/refunds?status=FAILED&limit=100" -b "$ADMIN_COOKIE" | jq length
+```
+
+The last command lists `status=FAILED` again and should print 0. With more than 100 given up, run the loop again for
+the next ones (the retried refunds have left `FAILED`). A refund that is listed again failed once more: read its
+`last_error` rather than retrying it again. A mismatch from the table above fails at its next claim, within seconds; a
+gateway that still fails gives the refunds up again after about 21 minutes, so list `FAILED` once more after that.
 
 **Refunds that keep backing off** (`OnlineOrderRefundsBackingOff`, `outcome="backed_off"`). The claim transaction failed
 after it had claimed the refund, before any call: a database error (lock or statement timeout, a lost connection) or an
@@ -1219,9 +1245,9 @@ ORDER BY deadline_at;
 ```
 
 **Arbitration queue.** `GET /admin/after-sales` lists `IN_ARBITRATION` cases by default (another status with
-`?status=`, upper case), the nearest deadline first. A case nobody arbitrates within `arbitration-timeout` (72h) is
-refunded the amount requested. `POST /admin/after-sales/{caseId}/arbitrate` takes an `Idempotency-Key` and is audited as
-`after_sales_case.arbitrate`.
+`?status=`, any letter case; 400 for an unknown status), the nearest deadline first. A case nobody arbitrates within
+`arbitration-timeout` (72h) is refunded the amount requested. `POST /admin/after-sales/{caseId}/arbitrate` takes an
+`Idempotency-Key` and is audited as `after_sales_case.arbitrate`.
 
 **Events.** After-sales events go through the outbox to `after-sales-events` (aggregate type `AFTER_SALES_CASE`), so a
 `FAILED` after-sales event holds back its case's later events like any other (`OnlineOrderOutboxAggregatesBlocked`,

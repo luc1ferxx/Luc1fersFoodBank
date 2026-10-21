@@ -1030,7 +1030,9 @@ attempt. The poller's refund job (`RefundExecutor`) takes one refund at a time i
    `retry-backoff` x 2^(attempts - 1), at most `retry-backoff-max`, while fewer than `max-attempts` were made; a
    permanent failure, or one with no attempt left, makes it `FAILED` with its `last_error`. A result for a refund that
    another executor reclaimed meanwhile is discarded. A claim transaction that fails backs only that refund off by
-   `retry-backoff`, without using an attempt.
+   `retry-backoff`, without using an attempt; once `max-claim-failures` of its claims failed in a row, the last one
+   gives it up (`FAILED`, attempts unchanged) instead of backing it off again. Any other step of the refund starts
+   that count over.
 
 A `FAILED` refund leaves its case in `REFUNDING` until an operator acts: `GET /admin/refunds` (by default the
 `FAILED` ones) shows `last_error`, which customers never see, and `POST /admin/refunds/{refundId}/retry` moves the
@@ -1061,10 +1063,10 @@ and are checked for an active account on every request (`403`), like the merchan
 | `POST` | `/merchant/after-sales/{caseId}/approve` | `MERCHANT` | | `PENDING_MERCHANT -> REFUNDING` at the requested amount |
 | `POST` | `/merchant/after-sales/{caseId}/reject` | `MERCHANT` | | `PENDING_MERCHANT -> REJECTED`, body `{"reason": "..."}` (required) |
 | `POST` | `/merchant/after-sales/{caseId}/offer` | `MERCHANT` | | `PENDING_MERCHANT -> COUNTER_OFFERED`, body `{"amount": 4.50, "note": "..."}` |
-| `GET` | `/admin/after-sales?status=IN_ARBITRATION&limit=50` | `ADMIN` | | Cases of one status (the exact name); the waiting ones by deadline, the others newest first |
+| `GET` | `/admin/after-sales?status=IN_ARBITRATION&limit=50` | `ADMIN` | | Cases of one status (any letter case; 400 for an unknown status); the waiting ones by deadline, the others newest first |
 | `GET` | `/admin/after-sales/{caseId}` | `ADMIN` | | Any case with its history and its refund's `last_error` |
 | `POST` | `/admin/after-sales/{caseId}/arbitrate` | `ADMIN` | required | `{"decision": "FULL" \| "PARTIAL" \| "REJECT", "amount": 4.50, "note": "..."}` (`amount` for `PARTIAL` only); audited as `after_sales_case.arbitrate` |
-| `GET` | `/admin/refunds?status=FAILED&limit=50` | `ADMIN` | | Refunds of one status (the exact name) |
+| `GET` | `/admin/refunds?status=FAILED&limit=50` | `ADMIN` | | Refunds of one status (any letter case; 400 for an unknown status) |
 | `POST` | `/admin/refunds/{refundId}/retry` | `ADMIN` | | `FAILED -> PENDING` (see above); audited as `refund.retry` |
 
 - **Idempotency.** A customer command or an arbitration runs once per login, key and scope (the order for a request,
@@ -1134,15 +1136,17 @@ others:
 | `app.after-sales.refund.retry-backoff` (`AFTER_SALES_REFUND_RETRY_BACKOFF`) | `10s` | First wait after a failed call, doubling per attempt; also the back-off of a failed claim |
 | `app.after-sales.refund.retry-backoff-max` (`AFTER_SALES_REFUND_RETRY_BACKOFF_MAX`) | `10m` | Longest wait between attempts |
 | `app.after-sales.refund.claim-timeout` (`AFTER_SALES_REFUND_CLAIM_TIMEOUT`) | `60s` | Lease of a claimed refund |
+| `app.after-sales.refund.max-claim-failures` (`AFTER_SALES_REFUND_MAX_CLAIM_FAILURES`) | `10` | Failed claims in a row before a refund is given up (no attempt used up) |
 | `app.after-sales.refund-gateway.timeout` (`AFTER_SALES_REFUND_GATEWAY_TIMEOUT`) | `10s` | Wait for one gateway call; must be shorter than `claim-timeout` |
 | `app.after-sales.refund-gateway.max-threads` (`AFTER_SALES_REFUND_GATEWAY_MAX_THREADS`) | `4` | Gateway calls running at once, timed-out ones included |
 | `app.after-sales.refund-gateway.fail-first-attempts` (`AFTER_SALES_REFUND_GATEWAY_FAIL_FIRST_ATTEMPTS`) | `0` | Simulated gateway: fail the first N attempts of every refund (retryable) |
 
-Startup refuses a time limit, back-off or budget that is not positive, `max-attempts` or `max-threads` below 1,
-`retry-backoff-max` below `retry-backoff`, and a gateway timeout not shorter than `claim-timeout`. `poller.interval`
-and `poller.batch-size` are not checked: an interval below 1 ms runs as 1 ms, a batch size below 1 as 1. The `demo`
-profile (`application-demo.yml`) sets the demo values above. The two listeners use `app.fulfilment.listener-concurrency`
-(see the capacity note under [Configuration](#configuration)).
+Startup refuses a time limit, back-off or budget that is not positive, `max-attempts`, `max-claim-failures` or
+`max-threads` below 1, a negative `fail-first-attempts`, `retry-backoff-max` below `retry-backoff`, and a gateway
+timeout not shorter than `claim-timeout`. `poller.interval` and `poller.batch-size` are not checked: an interval below
+1 ms runs as 1 ms, a batch size below 1 as 1. The `demo` profile (`application-demo.yml`) sets the demo values above.
+The two listeners use `app.fulfilment.listener-concurrency` (see the capacity note under
+[Configuration](#configuration)).
 
 Metrics (tag values are lower case):
 
