@@ -87,7 +87,7 @@ class AfterSalesNotificationServiceTests {
     @BeforeEach
     void setUp() {
         service = new AfterSalesNotificationService(
-                new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository),
+                new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository, 50),
                 processedEventService,
                 sequenceTracker
         );
@@ -286,6 +286,28 @@ class AfterSalesNotificationServiceTests {
                 Mockito.eq(AfterSalesNotificationService.AFTER_SALES_NOTIFICATION_CONSUMER),
                 Mockito.argThat(event -> "evt-cancelled-refunded".equals(event.eventId())));
         Mockito.verifyNoMoreInteractions(sequenceTracker);
+    }
+
+
+    /**
+     * Section 27, follow-up 17: a customer's cancel after the pickup refunds a share of the order; the completion names
+     * it against the whole payment.
+     */
+    @Test
+    void orderCancelledCaseOfAShare_shouldNameTheShareOfThePaymentWhenItIsRefunded() {
+        service.handle(request()
+                .kind(AfterSalesKind.ORDER_CANCELLED)
+                .requested("16.09")
+                .approved("8.04")
+                .refunded("8.04")
+                .resolution(AfterSalesResolution.ORDER_CANCELLED)
+                .status(AfterSalesStatus.REFUNDED)
+                .action(AfterSalesTrigger.REFUND_SUCCEEDED, AfterSalesActor.SYSTEM)
+                .deadlineAt(null)
+                .envelope("evt-share-refunded", FulfilmentEvents.AFTER_SALES_CASE_REFUNDED));
+
+        assertNotified(FulfilmentEvents.AFTER_SALES_CASE_REFUNDED, "case:501", "Refund completed",
+                "8.04 USD of your 16.09 USD payment for cancelled " + ORDER + " was refunded.");
     }
 
 

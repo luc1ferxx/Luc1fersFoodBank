@@ -152,6 +152,35 @@ abstract class AbstractCancellationRefundIntegrationTests {
 
 
     /**
+     * A pickup that reaches the order module after the cancel (the refund was decided without it) is not recorded, so a
+     * recorded pickup always came before the cancel; one after the completion is dropped too.
+     */
+    @Test
+    void pickupAfterTheCancelOrTheCompletion_shouldNotBeRecorded() throws Exception {
+        Customer hana = customer("cancel-refund-late-pickup-");
+        OrderDto paid = paidOrder(hana, menuItem(BURGER_KING, 0));
+        orderService.transitionOrderStatus(paid.id(), "ACCEPTED");
+        cancel(hana, paid.id(), "cancel-" + paid.id()).andExpect(status().isOk());
+
+        deliveryCompletionService.handle(
+                pickedUp(paid.id(), "late-pickup-" + paid.id(), LocalDateTime.of(2026, 10, 21, 9, 0)));
+
+        Assertions.assertNull(jdbcTemplate.queryForObject(
+                "SELECT picked_up_at FROM orders WHERE id = ?", LocalDateTime.class, paid.id()));
+        assertRefundOpened(paid.id());
+
+        OrderDto completed = paidOrder(hana, menuItem(BURGER_KING, 1));
+        orderService.transitionOrderStatus(completed.id(), "ACCEPTED");
+        orderService.transitionOrderStatus(completed.id(), "PREPARING");
+        orderService.transitionOrderStatus(completed.id(), "COMPLETED");
+        deliveryCompletionService.handle(
+                pickedUp(completed.id(), "late-pickup-" + completed.id(), LocalDateTime.of(2026, 10, 21, 9, 0)));
+        Assertions.assertNull(jdbcTemplate.queryForObject(
+                "SELECT picked_up_at FROM orders WHERE id = ?", LocalDateTime.class, completed.id()));
+    }
+
+
+    /**
      * An admin's cancel after the pickup is the platform's decision: still the whole order.
      */
     @Test

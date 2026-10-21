@@ -76,8 +76,8 @@ public class DeliveryCompletionService {
                 throw new IllegalArgumentException("Pickup event is missing its time");
             }
             if (!orderLifecycleCommands.recordPickup(orderId, event.occurredAt(), actor)) {
-                LOGGER.info("Pickup of order {} not recorded: unknown order or pickup already recorded (delivery {})",
-                        orderId, event.aggregateId());
+                LOGGER.info("Pickup of order {} not recorded: unknown order, cancelled or completed already, or pickup "
+                        + "already recorded (delivery {})", orderId, event.aggregateId());
             }
             return;
         }

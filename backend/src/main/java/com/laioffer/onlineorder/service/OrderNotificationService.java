@@ -16,6 +16,7 @@ import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.repository.OrderNotificationRepository;
 import com.laioffer.onlineorder.repository.OrderPaymentRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -94,15 +95,22 @@ public class OrderNotificationService {
     private final OrderRepository orderRepository;
     private final OrderPaymentRepository orderPaymentRepository;
 
+    /**
+     * app.after-sales.picked-up-cancel-refund-percent as a factor (the after-sales module checks its range at startup).
+     */
+    private final BigDecimal pickedUpRefundShare;
+
 
     public OrderNotificationService(
             OrderNotificationRepository orderNotificationRepository,
             OrderRepository orderRepository,
-            OrderPaymentRepository orderPaymentRepository
+            OrderPaymentRepository orderPaymentRepository,
+            @Value("${app.after-sales.picked-up-cancel-refund-percent:50}") int pickedUpRefundPercent
     ) {
         this.orderNotificationRepository = orderNotificationRepository;
         this.orderRepository = orderRepository;
         this.orderPaymentRepository = orderPaymentRepository;
+        this.pickedUpRefundShare = BigDecimal.valueOf(pickedUpRefundPercent).movePointLeft(2);
     }
 
 
@@ -313,12 +321,15 @@ public class OrderNotificationService {
      * reject, the accept timeout) says the payment will be refunded automatically: the cancel opened its refund (ADR
      * 0002 D12). Without one, a reject or an accept timeout points the customer to support (a paid order without a
      * capture: an admin marked it PAID, or it was paid before payments were recorded), and the other cancellations say
-     * nothing about a payment. A payment timeout only cancels an unpaid order.
+     * nothing about a payment. A payment timeout only cancels an unpaid order. A customer's cancel after the rider picked
+     * the order up refunded only a share of it (ADR 0002 section 27, follow-up 17), and the note says how much.
      *
      * @param orderNumber the number shown to the customer
      * @param orderId     the order's internal id
+     * @param data        the order.cancelled payload: its reason and its total
      */
-    private String buildCancelledMessage(String orderNumber, Long orderId, String reason) {
+    private String buildCancelledMessage(String orderNumber, Long orderId, OrderEventPayload data) {
+        String reason = data.reason();
         if (reason != null && reason.startsWith(OrderLifecycleCommands.MERCHANT_REJECTED)) {
             String note = reason.substring(OrderLifecycleCommands.MERCHANT_REJECTED.length()).replaceFirst("^:\\s*", "");
             return "The restaurant could not take order #" + orderNumber
@@ -332,8 +343,31 @@ public class OrderNotificationService {
         if (OrderLifecycleCommands.PAYMENT_TIMEOUT.equals(reason)) {
             return "Order #" + orderNumber + " was cancelled because it was not paid in time.";
         }
-        return "Order #" + orderNumber + " was cancelled."
-                + (refundsAutomatically(orderId) ? " " + AUTOMATIC_REFUND_NOTE : "");
+        if (!refundsAutomatically(orderId)) {
+            return "Order #" + orderNumber + " was cancelled.";
+        }
+        if (OrderLifecycleCommands.CUSTOMER_CANCELLED.equals(reason)
+                && orderRepository.findPickedUpAt(orderId).isPresent()) {
+            return "Order #" + orderNumber + " was cancelled after the rider picked it up. " + pickedUpRefundNote(data);
+        }
+        return "Order #" + orderNumber + " was cancelled. " + AUTOMATIC_REFUND_NOTE;
+    }
+
+
+    /**
+     * What a customer's cancel after the pickup refunds: the configured share of the total, computed as the after-sales
+     * module computes it (half-even to the currency's minor unit), or nothing. A pickup is recorded only before the
+     * order is cancelled, so one read now was there when the cancel decided the refund.
+     */
+    private String pickedUpRefundNote(OrderEventPayload data) {
+        if (data.totalPrice() == null) {
+            return "Part of your payment will be refunded automatically.";
+        }
+        Money total = money(data.totalPrice(), data.currencyCode());
+        Money share = total.multiply(pickedUpRefundShare);
+        return share.isPositive()
+                ? share + " of your " + total + " payment will be refunded automatically."
+                : "Your payment will not be refunded.";
     }
 
 
@@ -364,7 +398,7 @@ public class OrderNotificationService {
             case "order.accepted" -> "Order #" + orderNumber + " was accepted by the restaurant.";
             case "order.preparing" -> "Order #" + orderNumber + " is now being prepared.";
             case "order.completed" -> "Order #" + orderNumber + " is completed and ready.";
-            case "order.cancelled" -> buildCancelledMessage(orderNumber, orderId, event.data().reason());
+            case "order.cancelled" -> buildCancelledMessage(orderNumber, orderId, event.data());
             default -> "Order #" + orderNumber + " has a new event: " + event.eventType() + ".";
         };
     }
@@ -414,11 +448,15 @@ public class OrderNotificationService {
             case FulfilmentEvents.AFTER_SALES_CASE_REFUNDED -> {
                 Money refunded = money(
                         firstOf(data.refundedAmount(), data.approvedAmount(), data.requestedAmount()), data.currency());
+                // A customer's cancel after the pickup refunds a share of the order (section 27, follow-up 17).
+                boolean share = requested.isGreaterThan(refunded);
                 yield new Notice(
                         "Refund completed",
-                        ORDER_CANCELLED_KIND.equals(data.kind())
-                                ? "Your payment of " + refunded + " for cancelled " + order + " was refunded."
-                                : refunded + " for " + order + " was refunded."
+                        !ORDER_CANCELLED_KIND.equals(data.kind())
+                                ? refunded + " for " + order + " was refunded."
+                                : share
+                                ? refunded + " of your " + requested + " payment for cancelled " + order + " was refunded."
+                                : "Your payment of " + refunded + " for cancelled " + order + " was refunded."
                 );
             }
             case FulfilmentEvents.AFTER_SALES_CASE_CLOSED -> new Notice(

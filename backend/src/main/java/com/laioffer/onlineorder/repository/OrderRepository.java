@@ -106,9 +106,10 @@ public interface OrderRepository extends ListCrudRepository<OrderEntity, Long> {
 
 
     /**
-     * Records when the rider picked the order up, once: a repeated or later pickup leaves the first one. Not a status
-     * change, so neither the status nor updated_at moves. Returns the rows changed, 0 for an unknown order or one whose
-     * pickup is already recorded.
+     * Records when the rider picked the order up, once and only while the order is neither cancelled nor completed: a
+     * repeated or later pickup leaves the first one, and a pickup that arrives after the cancel (it was decided without
+     * it) is not recorded. Not a status change, so neither the status nor updated_at moves. Returns the rows changed, 0
+     * for an unknown order, a cancelled or completed one, or one whose pickup is already recorded.
      */
     @Modifying
     @Query("""
@@ -116,6 +117,7 @@ public interface OrderRepository extends ListCrudRepository<OrderEntity, Long> {
             SET picked_up_at = :pickedUpAt
             WHERE id = :id
               AND picked_up_at IS NULL
+              AND status NOT IN ('CANCELLED', 'COMPLETED')
             """)
     int recordPickup(Long id, LocalDateTime pickedUpAt);
 

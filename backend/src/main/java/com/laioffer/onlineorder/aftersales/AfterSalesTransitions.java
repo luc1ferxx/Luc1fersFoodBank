@@ -534,11 +534,13 @@ public class AfterSalesTransitions {
 
 
     /**
-     * A paid order the caller cancelled in this transaction, to refund in full.
+     * A paid order the caller cancelled in this transaction, to refund in full or in part.
      *
      * @param order       the order as the cancel wrote it, still locked
      * @param payment     the order's captured payment, which the refund names
      * @param items       every line of the order; the case asks for each in full
+     * @param refund      what the case approves and refunds: the order total, or a share of it for a customer's cancel
+     *                    after the pickup (section 27, follow-up 17); more than zero and at most the total
      * @param cancelledAt the time of the cancel, read after the order's lock: the time of the opening and when the
      *                    refund is due
      */
