@@ -229,7 +229,8 @@ app:
     # off also drops pending ACCEPT deadlines without cancelling.
     accept-timeout-enabled: ${FULFILMENT_ACCEPT_TIMEOUT_ENABLED:true}
     # Consumer threads per fulfilment listener (merchant, timeout, timeout-merchant, dispatch, order-delivery,
-    # notification-delivery). With Kafka on there are 8 listener containers (these 6, notifications, the DLT); each
+    # notification-delivery) and per after-sales listener (merchant-aftersales, aftersales-notification). With Kafka on
+    # there are 10 listener containers (these 8, notifications, the DLT), 30 consumer threads at the default of 3; each
     # consumer thread holds a pooled database connection only while it handles a record, but all of them share the
     # Hikari pool above.
     listener-concurrency: ${FULFILMENT_LISTENER_CONCURRENCY:${app.kafka.listener-concurrency}}

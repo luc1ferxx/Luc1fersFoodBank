@@ -633,6 +633,7 @@ delivery event for a cancelled order is logged and ignored.
 | `order-events` (key: order id) | order module, via the outbox | `onlineorder` (notifications), `onlineorder-merchant`, `onlineorder-timeout`, `onlineorder-dispatch` |
 | `delivery-events` (key: order id) | dispatch, via the outbox | `onlineorder-order-delivery`, `onlineorder-notification-delivery` |
 | `merchant-events` (key: order id) | merchant, via the outbox | `onlineorder-timeout-merchant` |
+| `after-sales-events` (key: order id) | after-sales, via the outbox | `onlineorder-merchant-aftersales`, `onlineorder-aftersales-notification` |
 | `order-events.dlt` | the listener error handler | `onlineorder-dlt` |
 
 All events go through the transactional outbox (`OrderEventOutboxService.enqueueEvent` stores any aggregate type and
@@ -772,7 +773,7 @@ and goes back to the dead-letter topic; a replay after the customer cancelled as
 | `app.fulfilment.delivery-topic` (`KAFKA_DELIVERY_TOPIC`) | `delivery-events` | Delivery event topic |
 | `app.fulfilment.merchant-topic` (`KAFKA_MERCHANT_TOPIC`) | `merchant-events` | Merchant event topic (`merchant.order_received`) |
 | `app.fulfilment.*-group` | see the table above | Consumer group per module |
-| `app.fulfilment.listener-concurrency` (`FULFILMENT_LISTENER_CONCURRENCY`) | `app.kafka.listener-concurrency` (3) | Consumer threads of each of the six fulfilment listeners |
+| `app.fulfilment.listener-concurrency` (`FULFILMENT_LISTENER_CONCURRENCY`) | `app.kafka.listener-concurrency` (3) | Consumer threads of each of the six fulfilment listeners and the two after-sales listeners |
 
 Metrics: `onlineorder.fulfilment.merchant.decisions{decision=accepted|rejected|timeout}`,
 `onlineorder.fulfilment.merchant.orders_received{staffing=staffed|unstaffed}`,
@@ -780,11 +781,11 @@ Metrics: `onlineorder.fulfilment.merchant.decisions{decision=accepted|rejected|t
 `onlineorder.fulfilment.dispatch.assignments{result=assigned|duplicate|cancelled|no_rider_attempt}`. `no_rider_attempt`
 counts attempts, not orders: with no active rider each listener retry and each DLT replay counts once more.
 
-Capacity: with Kafka on, the app runs 8 listener containers (the 6 fulfilment listeners, notifications, the DLT). At the
-default concurrency of 3 that is 24 consumer threads, against 6 before these modules. A thread holds a pooled
-connection only while it handles a record, but they share the 30-connection pool with HTTP requests, the outbox
-publisher and the deadline poller, and every order event now costs one short transaction in each of the 4 groups on
-`order-events` instead of 1. The k6 order flow has not been rerun with these consumers yet; if it shows connection
+Capacity: with Kafka on, the app runs 10 listener containers (the 6 fulfilment listeners, the 2 after-sales listeners
+on `after-sales-events`, notifications, the DLT). At the default concurrency of 3 that is 30 consumer threads, against 6
+before these modules. A thread holds a pooled connection only while it handles a record, but they share the
+30-connection pool with HTTP requests, the outbox publisher and the deadline and after-sales pollers, and every order
+event now costs one short transaction in each of the 4 groups on `order-events` instead of 1. The k6 order flow has not been rerun with these consumers yet; if it shows connection
 waits, lower `FULFILMENT_LISTENER_CONCURRENCY` before raising the pool.
 
 ### Timeouts: why a deadline table instead of a Kafka delay
