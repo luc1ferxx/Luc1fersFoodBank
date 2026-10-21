@@ -1302,14 +1302,75 @@ refund gateway call holds no connection) and every HTTP request.
 
 Kafka limits how many of them have work: every topic has `KAFKA_ORDER_TOPIC_PARTITIONS` (3) partitions, and a group's
 partitions are spread over its consumers on all pods, so the whole cluster has at most 30 consumer threads with
-partitions (10 x 3), however many pods run: 5-10 per pod when prod's 3-6 pods share them evenly. The risk is a pod that
-holds most partitions (the only pod up, the others restarting, or an uneven assignment) while every topic has a
-backlog, for example after a Kafka or database outage. Its consumer threads alone can then take every connection of a
-30-connection pool, and outnumber prod's 20 by 10. Requests wait up to `DATABASE_POOL_CONNECTION_TIMEOUT_MS` (2000)
-and answer 503; a consumer that times out waiting retries the record as a transient failure for up to
-`KAFKA_LISTENER_TRANSIENT_RETRY_TIMEOUT` (5m) before it dead-letters it. `OnlineOrderHikariPendingSustained` and
-`OnlineOrderHikariConnectionTimeouts` show it. The k6 order flow has not been run again with 10 listeners. Two ways
-to bound it: `FULFILMENT_LISTENER_CONCURRENCY=1` caps the eight fulfilment and after-sales listeners at one thread
-each, 14 consumer threads per pod; with 3 or more pods every partition still gets a consumer of its own, with fewer
-one consumer takes several partitions. Or raise the pool, keeping `maxReplicas x DATABASE_POOL_MAX_SIZE` below
-`max_connections` (prod: 6 x 20 = 120 today).
+partitions (10 x 3), however many pods run: 5-10 per pod when prod's 3-6 pods share them evenly. The case to watch is
+a pod that holds most partitions (the only pod up, the others restarting, or an uneven assignment) while its topics
+have a backlog, for example after a Kafka outage or a consumer restart. If its consumers took the connections,
+requests would wait up to `DATABASE_POOL_CONNECTION_TIMEOUT_MS` (2000) and answer 503, and a consumer that timed out
+would retry the record as a transient failure for up to `KAFKA_LISTENER_TRANSIENT_RETRY_TIMEOUT` (5m) before
+dead-lettering it; `OnlineOrderHikariPendingSustained` and `OnlineOrderHikariConnectionTimeouts` would show it.
+
+Measured on 2026-10-21 with `load-tests/order-flow.js` (build of 69ab24f; the later after-sales commits add one
+statement per notified after-sales event). One backend with Kafka on, which is the pod holding every partition:
+1 GB heap on a 15-core machine shared with k6 and the Compose services, no read replica (the primary pool served
+every read), `SECURITY_RATE_LIMIT_ENABLED=false` and `FULFILMENT_ACCEPT_TIMEOUT=30s`, so the merchant timeout
+cancelled and refunded every paid order and the order, merchant and after-sales topics all carried records: 7 of the
+10 listeners had work (21 threads at concurrency 3, 9 at 1). The script never accepts an order, so the two delivery
+listeners and the DLT listener stayed idle. Each run: 90 s at a fixed number of VUs, fresh users, the actuator
+scraped every second; "inbox p95" is the time from the payment to the merchant inbox row (`merchant_orders`), which
+shows whether the consumers keep up. The 100-VU runs (about 285 req/s) left the pool idle in all three
+configurations and are not listed.
+
+| VUs | Pool / concurrency | req/s | p95 / p99 ms | Errors | Pending avg / max | Acquire p99 | Timeouts | Inbox p95 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 300 | 30 / 3 | 820 | 82 / 270 | 0 | 0.9 / 13 | 11 ms | 0 | 0.6 s |
+| 300 | 20 / 3 | 835 | 72 / 113 | 0 | 2.5 / 26 | 15 ms | 0 | 0.6 s |
+| 300 | 20 / 1 | 838 | 70 / 95 | 0 | 0.5 / 21 | 1 ms | 0 | 0.7 s |
+| 500 | 30 / 3 | 1123 | 544 / 900 | 0 | 27 / 90 | 179 ms | 0 | 1.9 s |
+| 500 | 20 / 3 | 1120 | 556 / 876 | 0 | 47 / 146 | 268 ms | 0 | 2.2 s |
+| 500 | 20 / 1 | 1156 | 505 / 833 | 0 | 32 / 115 | 224 ms | 0 | 44 s |
+| 700 | 30 / 3 | 1168 | 920 / 1368 | 0 | 60 / 166 | 358 ms | 0 | 24 s |
+| 700 | 20 / 3 | 1168 | 927 / 1416 | 0 | 82 / 185 | 447 ms | 0 | 28 s |
+| 700 | 20 / 1 | 1207 | 851 / 1389 | 0 | 59 / 127 | 358 ms | 0 | 61 s |
+
+With a backlog, 300 VUs, each run on a freshly started backend. "Real": the order events of 31,000 orders that no
+consumer had seen (about 125,000 records over the four order-topic groups, full processing; the merchant events,
+cancellations and refunds they caused followed during the run), drained in the first 60 s. "Replay": fresh consumer
+group ids (`auto-offset-reset: earliest`), so every listener re-read its topic's history, about 1.8 million records,
+each a `processed_events` dedup hit (one short transaction); it was still running when the run ended, since none of
+the orders placed meanwhile reached the merchant inbox.
+
+| Backlog | Pool / concurrency | req/s | p95 / p99 ms | Pending avg / max | Active avg | Acquire p99 | Timeouts |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| none | 20 / 3 | 816 | 87 / 235 | 2.2 / 49 | 8.6 | 34 ms | 0 |
+| real | 20 / 3 | 792 | 116 / 483 | 6.8 / 84 | 12.6 | 67 ms (90 ms while it drained) | 0 |
+| replay | 30 / 3 | 802 | 93 / 213 | 3.2 / 25 | 26.1 | 6 ms | 0 |
+| replay | 20 / 3 | 809 | 94 / 219 | 8.5 / 60 | 19.3 | 22 ms | 0 |
+| replay | 20 / 1 | 826 | 77 / 158 | 0.4 / 10 | 12.9 | 1 ms | 0 |
+
+What it shows:
+
+- No run had a Hikari timeout, a failed request, a transient listener retry or a dead letter, prod's 20 connections
+  included. The worst acquire p99, 447 ms in the CPU-bound 700-VU run, stays far below the 2000 ms timeout.
+- A pool of 20 instead of 30 changes where requests queue, not what they get: throughput, p95 and p99 stay within a
+  few percent at every load. From 500 VUs the machine's CPU (97% busy) is the limit, and the smaller pool only holds
+  more of the waiting requests.
+- Busy consumers do not lock requests out. A consumer thread borrows a connection for one record's transaction and
+  returns it before it takes the next record (a connection was held 2-10 ms on average across all borrowers here),
+  and HikariCP hands a returned connection to the threads already waiting. Under the replay, the 20 connections were
+  in use 97% of the time (19.3 active on average, a thread waiting in 91% of the samples), yet connections were
+  handed out within 22 ms at p99. The real backlog, heavier per record, cost more (p99 483 ms against 235 ms without a
+  backlog) and stayed far from the timeout as well.
+- `FULFILMENT_LISTENER_CONCURRENCY=1` relieves the pool, but on a pod that holds every partition, the one case where
+  the pool is at risk, one thread per listener does not keep up: at 500 VUs (165 checkouts/s) merchants saw paid
+  orders 44 s late at p95, against 2.2 s with 3 threads.
+
+Recommendation: keep prod at `DATABASE_POOL_MAX_SIZE=20` and `FULFILMENT_LISTENER_CONCURRENCY` at its default of 3,
+with no change under `deploy/`. Lowering the concurrency would trade a pool risk that did not show for consumer lag
+that did. Raising the pool does not help either, since requests got the same latency from 30 connections. If
+`OnlineOrderHikariConnectionTimeouts` fires, check the pod's CPU throttling first (it lengthens every transaction)
+and only then the pool, keeping `maxReplicas x DATABASE_POOL_MAX_SIZE` below `max_connections` (prod: 6 x 20 = 120
+today). The limits of this measurement: a prod pod has 2 CPUs (limit) and read replicas for the read-only endpoints,
+where this backend had 15 cores to share and served every read from the primary. A throttled pod holds each
+connection longer, so its acquire times can be higher than these at a far lower request rate. The delivery and DLT
+listeners (9 threads at concurrency 3) had no records. Watch acquire p99 and pending on the dashboard during the first
+rollout to staging, which has the real pod limits and a replica.
