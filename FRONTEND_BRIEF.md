@@ -372,7 +372,7 @@ username=demo%40laifood.com&password=demo123
 #### `DELETE /cart`
 
 - Auth: required.
-- Response `200`: no body; empties the user's cart (the clear-cart dialog).
+- Response `204 No Content`: empties the user's cart (the clear-cart dialog).
 - Errors:
   - `401 Unauthorized`.
   - `429 Too Many Requests` once the shared cart bucket is empty.

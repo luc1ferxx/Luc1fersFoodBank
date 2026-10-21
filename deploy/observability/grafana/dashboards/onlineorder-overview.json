@@ -2338,7 +2338,7 @@
           "exemplar": false
         }
       ],
-      "description": "Requests refused with 429 RATE_LIMITED per bucket (route), and in red the requests let through unchecked because their bucket check failed in the rate-limit store (Redis): those are not limited, and when every check fails (Redis down) no bucket refuses anything. Rates over 5m; OnlineOrderRateLimiterFailingOpen fires when failures keep coming for 5 minutes. The first refusal or failure of a route registers its series and is not counted here."
+      "description": "Requests refused with 429 RATE_LIMITED per bucket (route), and in red the requests let through unchecked because their bucket check failed in the rate-limit store (Redis): those are not limited, and when every check fails (Redis down) no bucket refuses anything. Rates over 5m; OnlineOrderRateLimiterFailingOpen fires once failures have gone on for about 3 minutes and resolves about 2 minutes after the last one. The first refusal or failure of a route registers its series and is not counted here."
     }
   ]
 }

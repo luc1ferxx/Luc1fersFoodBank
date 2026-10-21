@@ -541,25 +541,22 @@ tests:
               severity: warning
             exp_annotations:
               summary: The rate limiter is failing open
-              description: '60 rate-limited request(s) of the last 2 minutes went through unchecked because their bucket check failed in the rate-limit store (Redis), and such failures have kept coming for 5 minutes. Those requests are not limited; when every check fails no bucket refuses anything (README "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
+              description: '60 rate-limited request(s) of the last 2 minutes went through unchecked because their bucket check failed in the rate-limit store (Redis); failures have gone on for about 3 minutes or more (the alert also counts the 2 minutes after the last one, so it can fire just after Redis is back). Those requests are not limited; when every check fails no bucket refuses anything (README "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
       # Resolves once the window no longer holds a failure.
       - eval_time: 40m
         alertname: OnlineOrderRateLimiterFailingOpen
         exp_alerts: []
 
-  # A Redis blip: three requests fail open within a minute, then the buckets work again. The increase is above 0 from
-  # 6m until just before 8m (while the 2m window holds the 5m and 6m samples), shorter than `for`: the 7m check is the
-  # one that needs `for` (without it the alert fires there).
+  # A Redis blip: three requests fail open within a minute, then the buckets work again. Ranges are left-open (t-2m,
+  # t], so the window holds both the 5m and the 6m sample only at 6m and 6m30s: the expression is true there and
+  # nowhere else, far shorter than `for`. The 6m30s check needs `for` (without it the alert fires there).
   - name: a short rate limiter blip raises nothing
     interval: 1m
     input_series:
       - series: 'onlineorder_security_rate_limit_store_failure_total{application="OnlineOrder", instance="app:8081", route="cart"}'
         values: '_x5 1 3x30'
     alert_rule_test:
-      - eval_time: 7m
-        alertname: OnlineOrderRateLimiterFailingOpen
-        exp_alerts: []
-      - eval_time: 9m
+      - eval_time: 6m30s
         alertname: OnlineOrderRateLimiterFailingOpen
         exp_alerts: []
       - eval_time: 10m

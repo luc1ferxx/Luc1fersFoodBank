@@ -189,7 +189,7 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 | `OnlineOrderHikariPendingSustained` | threads waiting for a connection for 5m | warning |
 | `OnlineOrderHikariConnectionTimeouts` | connection requests timed out (503) in the last 5m | warning |
 | `OnlineOrderKafkaConsumerLag` | a consumer client > 1000 records behind for 10m | warning |
-| `OnlineOrderRateLimiterFailingOpen` | rate-limit store failures in every 2m window for 5m: those requests went through unchecked, all of them when Redis is down (runbook below) | warning |
+| `OnlineOrderRateLimiterFailingOpen` | rate-limit store failures for about 3 minutes (`increase(...[2m]) > 0` for 5m, so it can fire just after Redis is back): those requests went through unchecked, all of them when Redis is down (runbook below) | warning |
 | `OnlineOrderPartitionsAheadLow` / `...Missing` | fewer than 2 monthly partitions past the current month for 1h / none for 10m (section 9) | warning / critical |
 | `OnlineOrderPartitionDefaultRows` | rows in a table's default partition for 1h (section 9) | warning |
 | `OnlineOrderDbReplicaLagging` | a read replica > 2s behind the primary for 5m (it gets no reads meanwhile; section 11) | warning |
@@ -234,13 +234,13 @@ Fulfilment staffing (README "Provisioning merchants and riders"):
 
 Rate limiter failing open (`OnlineOrderRateLimiterFailingOpen`, README "Security and Abuse Controls"):
 
-- What it means: for 5 minutes the token-bucket check of rate-limited requests (every write endpoint) has kept failing
-  in Redis, in every 2-minute window (a blip of under about 3 minutes does not fire it), for some or all requests: Redis
-  down or unreachable, slower than `REDIS_TIMEOUT` (500ms), out of memory, or refusing the bucket script.
-  `RateLimitingFilter` fails open per request, so those requests reached their handlers without taking a token; when
-  every check fails, login and signup have no per-IP limit meanwhile (the per-account lockout after failed logins still
-  applies), nor do checkout, payment and the staff commands. The first failure of a route only registers its series, so
-  one failure never fires.
+- What it means: the token-bucket check of rate-limited requests (every write endpoint) has kept failing in Redis, for
+  some or all requests, for about 3 minutes or more (the alert counts the 2 minutes after the last failure, so it can
+  fire just after Redis is back; a shorter blip does not fire it): Redis down or unreachable, slower than
+  `REDIS_TIMEOUT` (500ms), out of memory, or refusing the bucket script. `RateLimitingFilter` fails open per request, so
+  those requests reached their handlers without taking a token; when every check fails, login and signup have no per-IP
+  limit meanwhile (the per-account lockout after failed logins still applies), nor do checkout, payment and the staff
+  commands. The first failure of a route only registers its series, so one failure never fires.
 - Where: `sum by (instance, route) (increase(onlineorder_security_rate_limit_store_failure_total[2m]))`, or the
   dashboard's "Rate limits" row. Every instance failing points at Redis, one instance at its network path. The WARN log
   "Rate-limit store unavailable for route ... Failing open." carries the exception (connection refused, command
@@ -250,7 +250,7 @@ Rate limiter failing open (`OnlineOrderRateLimiterFailingOpen`, README "Security
   `maxclients`; and that the application's Redis user may run `EVALSHA` and `EVAL` (`ACL GETUSER <user>`). Redis also
   holds the sessions and the catalog's L2 cache, so a full outage shows in the readiness probe and the 5xx rate too; a
   failure that only the script hits shows only here.
-- It resolves once 5 minutes pass without a failure. Nothing needs replaying: the requests let through ran normally.
+- It resolves about 2 minutes after the last failure. Nothing needs replaying: the requests let through ran normally.
   Buckets refuse again from the first successful check (a bucket whose key is gone starts full). Do not silence the
   alert with `SECURITY_RATE_LIMIT_ENABLED=false`: that removes the limits for good and hides the next failure.
 

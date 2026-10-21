@@ -203,9 +203,10 @@ groups:
       # timing out, out of memory, or refusing the EVAL of the bucket script) goes through unchecked and counts once in
       # onlineorder.security.rate_limit.store_failure{route}. When every check fails (Redis down for all instances) no
       # bucket refuses anything, login and signup included. The series of a route is registered by its first failure,
-      # so it starts at 1 and increase() cannot see that one; a sustained failure raises it again. The 2m range lets
-      # `for` measure how long the failures last: it fires once they have come in every 2-minute window for 5 minutes
-      # (an outage of about 3 minutes or more), not for a blip.
+      # so it starts at 1 and increase() cannot see that one; a sustained failure raises it again. With the 2m range
+      # the expression is true from the second failing scrape until 2 minutes after the last failure, so `for: 5m`
+      # fires once failures have gone on for about 3 minutes (it counts those 2 minutes, so it can fire just after
+      # Redis is back), and the alert resolves about 2 minutes after the last failure. A blip does not fire.
       - alert: OnlineOrderRateLimiterFailingOpen
         expr: sum(increase(onlineorder_security_rate_limit_store_failure_total{application="OnlineOrder"}[2m])) > 0
         for: 5m
@@ -213,7 +214,7 @@ groups:
           severity: warning
         annotations:
           summary: The rate limiter is failing open
-          description: '{{ $value | humanize }} rate-limited request(s) of the last 2 minutes went through unchecked because their bucket check failed in the rate-limit store (Redis), and such failures have kept coming for 5 minutes. Those requests are not limited; when every check fails no bucket refuses anything (README "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
+          description: '{{ $value | humanize }} rate-limited request(s) of the last 2 minutes went through unchecked because their bucket check failed in the rate-limit store (Redis); failures have gone on for about 3 minutes or more (the alert also counts the 2 minutes after the last one, so it can fire just after Redis is back). Those requests are not limited; when every check fails no bucket refuses anything (README "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
 
       # Monthly partitions of audit_log, order_status_history and processed_events (PostgreSQL, V10). The partition
       # maintenance job keeps app.partitions.months-ahead (3) partitions past the current month, so a healthy table
