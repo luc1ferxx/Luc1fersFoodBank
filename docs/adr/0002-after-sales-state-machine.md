@@ -1612,3 +1612,43 @@ P1 只加测试，全量门禁通过（873 个测试，0 失败，0 跳过）。
 **留给 P4 和 P5**
 - P4：在前端 `proxyPaths.ts` 加 `/after-sales`。第二次申请必须用**新的** Idempotency-Key：复用第一次的 key 和请求体，会重放第一张（已撤销的）单。
 - P5：V12 里替换 `order_notifications` 唯一键需要重建索引，**不是**在线安全的操作，第 15 节“可以在线执行”的说法要改。其他待写进文档的内容：V12_2 的外键检查、新指标、取消 `AFTER_SALES_CASE_EXISTS`、eligible 列表包含 0.00 的已付订单（`open()` 会返回 400）。
+
+---
+
+## 24. P3b 实施记录（提交 d2fa479、1adce61、3bc6e6c、6445dc6、61017e9；P3c 开始前必读）
+
+对抗审查结论：通过，没有必须修复的问题。审查尝试从这几方面推翻实现：重复付款或超额付款、取消退款的完整性、P1/P2 订单行为、硬截止和软截止、SKIP LOCKED、version 守卫、网关调用在事务外、RECLAIM 上限、锁顺序、轮询器规则、`last_error` 隐私。都没有找到失败场景。全量门禁 1351 个测试，0 失败，0 跳过。
+
+**已完成**
+- **取消自动退款**
+  - 订单模块自己定义接口 `service.CancellationRefunds`，由 `aftersales.OrderCancellationRefunds` 实现，`service` 包不 import `aftersales`。
+  - `OrderService.applyTransition` 在 PAID/ACCEPTED → CANCELLED 时调用它。调用时机：订单自身的 outbox 事件之后，转换指标、审计和幂等标记之前。
+  - 加锁顺序：订单行 → ORDER 的 outbox 序列行 → 新建售后单、行、历史、退款 → AFTER_SALES_CASE 的 outbox 序列行。
+  - 先判断总额是否大于 0，再查支付记录。有付款状态但没有扣款记录的订单记 WARN 日志，正常取消，不建售后单。
+- **截止时间**：`AfterSalesDeadlineProcessor` 加 `AfterSalesPoller`（`SmartLifecycle`，独立线程 `after-sales-poller`）。
+- **退款执行器**：`RefundExecutor`、`RefundGateway` 和 `SimulatedRefundGateway`。
+  - 网关调用在独立的线程池里执行，线程名 `refund-gateway-N`，用 `Future.get(timeout)` 等待，超时就中断。
+  - 启动时校验配置：max-attempts ≥ 1，所有时长为正，retry-backoff-max ≥ retry-backoff，网关超时 < claim-timeout。
+- **演示配置**：`application-demo.yml`。
+- **测试 JVM 堆**：提到 1 GB。默认 512 MB 时，缓存的 Spring 测试上下文会撑爆内存。
+
+**与前文的偏差**
+1. 第 19.4 条的金额校验放在 claim 事务里、写租约之前。另外要求 `refunds.payment_reference` 等于 `order_payments.provider_reference`，比 ADR 更严格。不一致时直接放弃（FAILED），不调用网关。
+2. ORDER_CANCELLED 单在开单时不和扣款金额比较。扣款金额更小的情况，由执行器的金额校验让它 FAILED。
+3. 只有商家拒单和接单超时的通知会加上 "Your payment will be refunded automatically."（前提是扣款金额大于 0）。顾客取消、管理员取消、支付超时的通知文案没有改。
+4. 新增配置 `app.after-sales.refund-gateway.timeout`，默认 10s。
+5. 指标的 outcome 取值：
+   - `onlineorder.aftersales.refunds`：succeeded、retried、failed、superseded、unrecorded、skipped。
+   - `onlineorder.aftersales.deadlines`：fired、skipped、failed。
+6. `RefundDto.forCustomer` 去掉了 `last_error`，P3a 遗留的这一项已经关闭。管理员视图仍然带这个字段。
+7. "上下文里恰好一个 TaskScheduler"的断言另外放进了 `AfterSalesDeadlinePostgresIntegrationTests` 和 `AfterSalesDemoProfileTests`。后者不需要 Docker。
+
+**P3c 应一并处理（审查给出的稳健性建议）**
+1. 截止时间处理器遇到 skipped 时，和退款执行器一样结束本轮。否则时钟回拨时，同一张单会在一轮里被重复 claim 最多 batch-size 次。对应测试 `refusedTimeout_shouldCountAsSkippedAndBackNothingOff` 把第二次 claim 打桩成 null，掩盖了这个问题，要一起修。
+2. `RefundRepository.claimNextDue` 是 `ORDER BY id` 加上两个 OR 条件，表大了可能扫过所有 SUCCEEDED 行。拆成两条查询：PENDING 按 `next_attempt_at`，PROCESSING 按 `claimed_until`。
+3. claim 事务里某一条退款抛异常时，只让这一条退避，不要卡住它后面所有的退款。
+4. 网关线程池加上限；每个 tick 设时间预算，避免网关挂起时截止时间被拖延太久。
+5. 补一个 H2 测试，覆盖 SKIP LOCKED 真的会跳过被锁的行。
+6. 改写 application.yml 里 `refund-gateway.timeout` 的注释：超时之后的安全性靠网关按 `gateway_key` 幂等来保证。
+7. 统一通知文案：只要是已扣款的取消，都提示"将自动退款"。和 P3-10 的通知消费者一起做。
+8. 开单时如果订单总额大于扣款金额，记日志或指标，让客服在退款失败之前就能看到。
