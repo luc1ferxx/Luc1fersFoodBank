@@ -37,9 +37,11 @@ const idle = <T>(): Loaded<T> => ({ data: null, loading: false, error: "" });
  * executor gave up (FAILED), arbitration, and retrying a refund.
  *
  * Created at the top of AdminConsole, which stays mounted while another workspace is
- * shown, so an arbitration that failed is retried with the same Idempotency-Key for as
- * long as its payload (case, decision, amount, note) is unchanged; a changed payload
- * gets a new key and a success drops it. Reads are started by the section (`loadQueue`,
+ * shown. Arbitration keys are kept per case (slot `arbitrate:{case}`), so an
+ * arbitration that failed is retried with the same Idempotency-Key for as long as its
+ * payload (decision, amount, note) is unchanged, also after other cases were
+ * arbitrated meanwhile; a changed payload gets a new key, and a success drops only
+ * that case's key. Reads are started by the section (`loadQueue`,
  * `loadRefunds`, `select`) and each list keeps only its newest read: a superseded
  * response, or one that started before an arbitration's result, is dropped. A refund
  * retry sends no key (the backend makes it idempotent by state).
@@ -59,8 +61,8 @@ export function useAfterSalesAdmin() {
   const statusRef = useRef<AfterSalesStatus>("IN_ARBITRATION");
   // The case whose details are on screen or loading, for the answers that may replace them.
   const selectedIdRef = useRef<number | null>(null);
-  const arbitrateKeyRef = useRef<string | null>(null);
-  const arbitratePayloadRef = useRef("");
+  // The Idempotency-Key of each case's last arbitration that did not succeed, by slot.
+  const arbitrateKeysRef = useRef(new Map<string, { payload: string; key: string }>());
   const nextQueueSignal = useLatestRequest();
   const nextDetailSignal = useLatestRequest();
   const nextRefundsSignal = useLatestRequest();
@@ -200,21 +202,18 @@ export function useAfterSalesAdmin() {
         body.amount = amount;
       }
 
-      const payload = `${current.id}:${decision}:${body.amount ?? ""}:${note}`;
-      if (arbitratePayloadRef.current !== payload) {
-        arbitrateKeyRef.current = null;
-      }
-      arbitratePayloadRef.current = payload;
-      const key = arbitrateKeyRef.current ?? createIdempotencyKey();
-      arbitrateKeyRef.current = key;
+      const slot = `arbitrate:${current.id}`;
+      const payload = `${decision}:${body.amount ?? ""}:${note}`;
+      const stored = arbitrateKeysRef.current.get(slot);
+      const key = stored?.payload === payload ? stored.key : createIdempotencyKey();
+      arbitrateKeysRef.current.set(slot, { payload, key });
       setArbitrating(true);
       setArbitrateError("");
       setNotice("");
 
       try {
         const updated = await arbitrateAfterSalesCase(current.id, body, key);
-        arbitratePayloadRef.current = "";
-        arbitrateKeyRef.current = null;
+        arbitrateKeysRef.current.delete(slot);
         applyCase(updated);
         setNotice(`Case #${updated.id} arbitrated: it is ${updated.status} now.`);
         return true;

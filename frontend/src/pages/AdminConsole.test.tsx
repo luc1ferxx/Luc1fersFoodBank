@@ -524,6 +524,43 @@ describe("admin console: after-sales", () => {
     expect(changedRetry).toBe(changed);
   });
 
+  it("keeps a failed arbitration's key per case while another case is arbitrated", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.afterSalesCases = [escalatedCase(900), escalatedCase(901)];
+    backend.on("POST", "/admin/after-sales/900/arbitrate", () =>
+      apiError(503, "Arbitration unavailable", { traceId: "trace-900" }),
+    );
+    backend.on("POST", "/admin/after-sales/901/arbitrate", () =>
+      apiError(503, "Arbitration unavailable", { traceId: "trace-901" }),
+    );
+    const user = renderApp();
+    const section = await openAfterSales(user);
+
+    // Both may have reached the server before they failed.
+    const first = await viewCase(section, user, 900);
+    await decide(first, user, "Full refund", "Both were cold");
+    expect(await within(first).findByRole("alert")).toHaveTextContent("Trace trace-900.");
+    const second = await viewCase(section, user, 901);
+    await decide(second, user, "Reject", "No evidence");
+    expect(await within(second).findByRole("alert")).toHaveTextContent("Trace trace-901.");
+
+    // Each retry replays its own case's attempt, whatever was arbitrated in between.
+    await decide(await viewCase(section, user, 900), user, "Full refund", "Both were cold");
+    expect(
+      await within(section).findByText("Case #900 arbitrated: it is REFUNDING now."),
+    ).toBeVisible();
+    await decide(await viewCase(section, user, 901), user, "Reject", "No evidence");
+    expect(
+      await within(section).findByText("Case #901 arbitrated: it is CLOSED now."),
+    ).toBeVisible();
+
+    const firstKeys = idempotencyKeys(backend.callsTo("POST", "/admin/after-sales/900/arbitrate"));
+    const secondKeys = idempotencyKeys(backend.callsTo("POST", "/admin/after-sales/901/arbitrate"));
+    expect(firstKeys).toEqual([expect.any(String), firstKeys[0]]);
+    expect(secondKeys).toEqual([expect.any(String), secondKeys[0]]);
+    expect(secondKeys[0]).not.toBe(firstKeys[0]);
+  });
+
   it("retries a failed refund, and re-reads the list when it is no longer failed", async () => {
     const backend = installFakeBackend({ user: demoUser });
     backend.state.afterSalesCases = [failedRefundCase(905, 906), failedRefundCase(907, 908)];
