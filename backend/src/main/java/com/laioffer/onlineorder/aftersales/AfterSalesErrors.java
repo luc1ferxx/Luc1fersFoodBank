@@ -8,6 +8,7 @@ import com.laioffer.onlineorder.statemachine.Decision;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 
 
 /**
@@ -30,6 +31,11 @@ public final class AfterSalesErrors {
      * 409: the deadline of the case's current step passed (the customer's and the merchant's answers only).
      */
     public static final String AFTER_SALES_DEADLINE_PASSED = "AFTER_SALES_DEADLINE_PASSED";
+
+    /**
+     * 409: the refund's status does not allow the command (an admin retry of a refund that is not FAILED).
+     */
+    public static final String REFUND_STATUS_CONFLICT = "REFUND_STATUS_CONFLICT";
 
 
     private AfterSalesErrors() {
@@ -67,6 +73,28 @@ public final class AfterSalesErrors {
             );
         }
         throw new IllegalStateException("No API error for " + rejected);
+    }
+
+
+    /**
+     * The 409 REFUND_STATUS_CONFLICT of an admin retry the refund machine refused (section 5.4), with the statuses
+     * ADMIN_RETRY fires from in declaration order: "Refund is SUCCEEDED; only FAILED refunds can be retried".
+     *
+     * @throws IllegalStateException for another refusal: ADMIN_RETRY has no guard, and the executor's own steps answer
+     *                               no request
+     */
+    public static ConflictException refundRetryRefused(Decision.Rejected<RefundStatus, RefundTrigger> rejected) {
+        if (rejected.trigger() != RefundTrigger.ADMIN_RETRY
+                || rejected.reason() != Decision.Reason.NOT_FROM_CURRENT_STATE) {
+            throw new IllegalStateException("No API error for " + rejected);
+        }
+        List<String> from = RefundStateMachine.DEFINITION.transition(RefundTrigger.ADMIN_RETRY).from().stream()
+                .map(RefundStatus::name)
+                .toList();
+        return new ConflictException(
+                REFUND_STATUS_CONFLICT,
+                "Refund is " + rejected.current() + "; only " + String.join(" or ", from) + " refunds can be retried"
+        );
     }
 
 

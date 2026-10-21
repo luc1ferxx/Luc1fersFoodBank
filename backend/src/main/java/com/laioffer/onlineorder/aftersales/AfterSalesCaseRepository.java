@@ -137,6 +137,20 @@ public interface AfterSalesCaseRepository extends ListCrudRepository<AfterSalesC
     List<AfterSalesCaseEntity> findPageByStatus(String status, int limit);
 
 
+    /**
+     * The cases waiting in an open status, the nearest deadline first: the admin's queue, where a case left alone runs
+     * out at its deadline (an arbitration refunds the requested amount). Every case of an open status has a deadline.
+     */
+    @Query("""
+            SELECT *
+            FROM after_sales_cases
+            WHERE status = :status
+            ORDER BY deadline_at, id
+            LIMIT :limit
+            """)
+    List<AfterSalesCaseEntity> findQueueByStatus(String status, int limit);
+
+
     @Query("""
             SELECT *
             FROM after_sales_cases

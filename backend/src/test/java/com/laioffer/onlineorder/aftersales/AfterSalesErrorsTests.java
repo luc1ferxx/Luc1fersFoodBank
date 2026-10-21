@@ -12,7 +12,8 @@ import java.time.LocalDateTime;
 
 
 /**
- * How a refused after-sales step maps to its 409 (ADR 0002 section 5.2).
+ * How a refused after-sales step maps to its 409 (ADR 0002 section 5.2), and a refused admin retry of a refund to its
+ * own (section 5.4).
  */
 class AfterSalesErrorsTests {
 
@@ -54,6 +55,31 @@ class AfterSalesErrorsTests {
                 AfterSalesStateMachine.DEADLINE_DUE);
 
         Assertions.assertThrows(IllegalStateException.class, () -> AfterSalesErrors.refused(timeout, OFFERED));
+    }
+
+
+    @Test
+    void refundRetryRefused_shouldBeARefundStatusConflictNamingTheStatusARetryNeeds() {
+        for (RefundStatus status : new RefundStatus[]{RefundStatus.PROCESSING, RefundStatus.SUCCEEDED}) {
+            ConflictException conflict = AfterSalesErrors.refundRetryRefused(new Decision.Rejected<>(
+                    RefundTrigger.ADMIN_RETRY, status, Decision.Reason.NOT_FROM_CURRENT_STATE, null));
+
+            Assertions.assertEquals("REFUND_STATUS_CONFLICT", conflict.getCode());
+            Assertions.assertEquals("Refund is " + status + "; only FAILED refunds can be retried",
+                    conflict.getMessage());
+        }
+    }
+
+
+    @Test
+    void refundRetryRefused_ofAnotherStepOrByAGuard_shouldBeAProgrammingError() {
+        Decision.Rejected<RefundStatus, RefundTrigger> claim = new Decision.Rejected<>(
+                RefundTrigger.CLAIM, RefundStatus.FAILED, Decision.Reason.NOT_FROM_CURRENT_STATE, null);
+        Decision.Rejected<RefundStatus, RefundTrigger> guarded = new Decision.Rejected<>(
+                RefundTrigger.ADMIN_RETRY, RefundStatus.FAILED, Decision.Reason.GUARD_FAILED, "someGuard");
+
+        Assertions.assertThrows(IllegalStateException.class, () -> AfterSalesErrors.refundRetryRefused(claim));
+        Assertions.assertThrows(IllegalStateException.class, () -> AfterSalesErrors.refundRetryRefused(guarded));
     }
 
 

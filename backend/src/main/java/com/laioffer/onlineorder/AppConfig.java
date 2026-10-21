@@ -110,6 +110,9 @@ public class AppConfig {
                                 // service, which also answers 403 for a deactivated merchant or rider).
                                 .requestMatchers("/admin/merchants/**", "/admin/merchants").hasRole("ADMIN")
                                 .requestMatchers("/admin/riders/**", "/admin/riders").hasRole("ADMIN")
+                                // After-sales: arbitration and refund operations are admin-only (ADR 0002 11.4).
+                                .requestMatchers("/admin/after-sales/**", "/admin/after-sales").hasRole("ADMIN")
+                                .requestMatchers("/admin/refunds/**", "/admin/refunds").hasRole("ADMIN")
                                 .requestMatchers("/rider/**").hasRole("RIDER")
                                 .anyRequest().authenticated()
                 )

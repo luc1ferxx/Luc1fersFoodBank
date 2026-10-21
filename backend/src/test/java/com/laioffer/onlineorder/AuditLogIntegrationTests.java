@@ -3,11 +3,16 @@ package com.laioffer.onlineorder;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import com.laioffer.onlineorder.aftersales.AfterSalesActor;
+import com.laioffer.onlineorder.aftersales.AfterSalesCaseRepository;
+import com.laioffer.onlineorder.aftersales.AfterSalesTransitions;
+import com.laioffer.onlineorder.aftersales.AfterSalesTrigger;
 import com.laioffer.onlineorder.audit.AuditActor;
 import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.CustomerService;
+import com.laioffer.onlineorder.service.OrderService;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -88,6 +93,15 @@ class AuditLogIntegrationTests {
 
     @Autowired
     private CartService cartService;
+
+    @Autowired
+    private OrderService orderService;
+
+    @Autowired
+    private AfterSalesTransitions afterSalesTransitions;
+
+    @Autowired
+    private AfterSalesCaseRepository afterSalesCaseRepository;
 
 
     @Test
@@ -221,6 +235,108 @@ class AuditLogIntegrationTests {
     }
 
 
+    /**
+     * An arbitration is one action per key: the replay is not audited again, and neither is a decision the case's
+     * status refuses. The entry and the case history name the same admin and trace.
+     */
+    @Test
+    void afterSalesArbitration_shouldBeAuditedOncePerKeyWithTheAdminAndTheRequestsTraceId() throws Exception {
+        long caseId = escalatedAfterSalesCase();
+        MockHttpSession admin = login(ADMIN_EMAIL, "demo123");
+        String traceId = "6d3e2f5c4b3a2a1908f7e6d5c4b3a291";
+
+        for (int attempt = 0; attempt < 2; attempt++) {
+            mockMvc.perform(post("/admin/after-sales/{id}/arbitrate", caseId)
+                            .session(admin)
+                            .header("Idempotency-Key", "audit-arbitrate-" + caseId)
+                            .header("traceparent", "00-" + traceId + "-00f067aa0ba902b7-01")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"decision\": \"REJECT\", \"note\": \"The photos show a complete order.\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("CLOSED"));
+        }
+        mockMvc.perform(post("/admin/after-sales/{id}/arbitrate", caseId)
+                        .session(admin)
+                        .header("Idempotency-Key", "audit-arbitrate-again-" + caseId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"decision\": \"FULL\", \"note\": \"Refund it after all.\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("AFTER_SALES_STATUS_CONFLICT"));
+
+        List<Map<String, Object>> entries = entriesFor("AFTER_SALES_CASE", caseId);
+        Assertions.assertEquals(1, entries.size(), "the replay and the refused decision are not actions");
+        Map<String, Object> entry = entries.get(0);
+        Assertions.assertEquals("after_sales_case.arbitrate", entry.get("action"));
+        Assertions.assertEquals(adminId(), ((Number) entry.get("actor_customer_id")).longValue());
+        Assertions.assertEquals("ROLE_ADMIN", entry.get("actor_role"));
+        Assertions.assertEquals(traceId, entry.get("trace_id"));
+        JsonNode details = objectMapper.readTree((String) entry.get("details"));
+        Assertions.assertEquals("REJECT", details.get("decision").asString());
+        Assertions.assertEquals("IN_ARBITRATION", details.get("from_status").asString());
+        Assertions.assertEquals("CLOSED", details.get("to_status").asString());
+        Assertions.assertEquals("audit-arbitrate-" + caseId, details.get("idempotency_key").asString());
+        Assertions.assertFalse(details.has("amount"), "a rejection approves no amount");
+        Assertions.assertEquals(
+                List.of("ADMIN|" + adminId() + "|" + traceId),
+                jdbcTemplate.queryForList("""
+                        SELECT actor_type || '|' || actor_id || '|' || trace_id
+                        FROM after_sales_case_history
+                        WHERE case_id = ? AND action = 'ADMIN_REJECT'
+                        """, String.class, caseId)
+        );
+    }
+
+
+    /**
+     * A refund retry is audited only when it restarts a FAILED refund, with the attempts and the error it leaves
+     * behind; a retry of a refund already PENDING and a refused one are not actions.
+     */
+    @Test
+    void refundRetry_shouldBeAuditedOnlyWhenItRestartsAFailedRefund() throws Exception {
+        long caseId = escalatedAfterSalesCase();
+        MockHttpSession admin = login(ADMIN_EMAIL, "demo123");
+        mockMvc.perform(post("/admin/after-sales/{id}/arbitrate", caseId)
+                        .session(admin)
+                        .header("Idempotency-Key", "audit-full-" + caseId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"decision\": \"FULL\", \"note\": \"Refund it.\"}"))
+                .andExpect(status().isOk());
+        jdbcTemplate.update("""
+                UPDATE refunds
+                SET status = 'FAILED', attempts = 8, next_attempt_at = NULL, last_error = 'card account closed',
+                    version = version + 1
+                WHERE case_id = ?
+                """, caseId);
+        long refundId = jdbcTemplate.queryForObject("SELECT id FROM refunds WHERE case_id = ?", Long.class, caseId);
+
+        for (int attempt = 0; attempt < 2; attempt++) {
+            mockMvc.perform(post("/admin/refunds/{id}/retry", refundId).session(admin))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("PENDING"));
+        }
+        jdbcTemplate.update("""
+                UPDATE refunds
+                SET status = 'SUCCEEDED', provider_reference = 'SIMREF-audit', succeeded_at = ?,
+                    version = version + 1
+                WHERE id = ?
+                """, LocalDateTime.now(), refundId);
+        mockMvc.perform(post("/admin/refunds/{id}/retry", refundId).session(admin))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("REFUND_STATUS_CONFLICT"));
+
+        List<Map<String, Object>> entries = entriesFor("REFUND", refundId);
+        Assertions.assertEquals(1, entries.size(), "only the retry that restarted the refund");
+        Assertions.assertEquals("refund.retry", entries.get(0).get("action"));
+        Assertions.assertEquals(adminId(), ((Number) entries.get(0).get("actor_customer_id")).longValue());
+        Assertions.assertEquals("ROLE_ADMIN", entries.get(0).get("actor_role"));
+        JsonNode details = objectMapper.readTree((String) entries.get(0).get("details"));
+        Assertions.assertEquals(caseId, details.get("case_id").asLong());
+        Assertions.assertEquals(8, details.get("previous_attempts").asInt());
+        Assertions.assertEquals("card account closed", details.get("last_error").asString());
+        Assertions.assertTrue(details.get("order_id").asLong() > 0);
+    }
+
+
     @Test
     void refusedAdminActions_shouldNotBeAudited() throws Exception {
         MockHttpSession admin = login(ADMIN_EMAIL, "demo123");
@@ -330,6 +446,42 @@ class AuditLogIntegrationTests {
         String email = "audit-" + System.nanoTime() + "@example.com";
         customerService.signUp(email, "demo123", "Audit", "Customer");
         return email;
+    }
+
+
+    /**
+     * A paid, completed order's whole-order request that the merchant rejected and the customer escalated: a case in
+     * the arbitration queue.
+     */
+    private long escalatedAfterSalesCase() throws Exception {
+        String email = signUp();
+        Long customerId = jdbcTemplate.queryForObject("SELECT id FROM customers WHERE email = ?", Long.class, email);
+        cartService.addMenuItemToCart(customerId, 1L);
+        OrderDto order = cartService.checkout(customerId, "PAID");
+        for (String status : List.of("ACCEPTED", "PREPARING", "COMPLETED")) {
+            orderService.transitionOrderStatus(order.id(), status);
+        }
+        MockHttpSession customer = login(email, "demo123");
+        String opened = mockMvc.perform(post("/orders/{id}/after-sales", order.id())
+                        .session(customer)
+                        .header("Idempotency-Key", "audit-open-" + order.id())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"scope": "WHOLE_ORDER", "reason_code": "MISSING_ITEM", "description": "Missing."}
+                                """))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        long caseId = objectMapper.readTree(opened).get("id").asLong();
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> Assertions.assertTrue(
+                afterSalesTransitions.fire(afterSalesCaseRepository.lockById(caseId), new AfterSalesTransitions.Command(
+                        AfterSalesTrigger.MERCHANT_REJECT, AfterSalesActor.MERCHANT, null, null,
+                        "The order was complete.", null)).applied()));
+        mockMvc.perform(post("/after-sales/cases/{id}/escalate", caseId)
+                        .session(customer)
+                        .header("Idempotency-Key", "audit-escalate-" + caseId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("IN_ARBITRATION"));
+        return caseId;
     }
 
 

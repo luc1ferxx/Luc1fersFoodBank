@@ -20,6 +20,8 @@ public final class AuditActions {
     public static final String RIDER_CREATE = "rider.create";
     public static final String RIDER_UPDATE = "rider.update";
     public static final String RIDER_AVAILABILITY = "rider.availability";
+    public static final String AFTER_SALES_CASE_ARBITRATE = "after_sales_case.arbitrate";
+    public static final String REFUND_RETRY = "refund.retry";
 
     public static final String TARGET_ORDER = "ORDER";
     public static final String TARGET_OUTBOX_EVENT = "OUTBOX_EVENT";
@@ -29,6 +31,8 @@ public final class AuditActions {
     public static final String TARGET_DELIVERY = "DELIVERY";
     public static final String TARGET_MERCHANT = "MERCHANT";
     public static final String TARGET_RIDER = "RIDER";
+    public static final String TARGET_AFTER_SALES_CASE = "AFTER_SALES_CASE";
+    public static final String TARGET_REFUND = "REFUND";
 
 
     private AuditActions() {

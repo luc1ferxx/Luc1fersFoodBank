@@ -95,6 +95,40 @@ class AfterSalesCaseViewsTests {
     }
 
 
+    /**
+     * The staff's views of the same case: the refund keeps its last_error, in the detail and in a page alike, and
+     * everything else is as the customer sees it.
+     */
+    @Test
+    void refundOfACase_asTheStaffSeeIt_shouldKeepItsLastError() {
+        AfterSalesCaseEntity refunding = caseRow(501L, 1001L, "REFUNDING");
+        RefundEntity failed = new RefundEntity(70L, 501L, 1001L, 3L, "after-sales-case:501", "SIMPAY-1",
+                new BigDecimal("9.00"), "USD", "FAILED", 8, null, null, null, "simulated gateway timeout", 9L, NOW,
+                NOW, null);
+        RefundDto expected = new RefundDto(70L, 501L, 1001L, 9001L, new BigDecimal("9.00"), "USD", "FAILED", 8,
+                "simulated gateway timeout", null, null, NOW, null);
+        Mockito.when(orderRepository.findOrderNoById(1001L)).thenReturn(Optional.of(9001L));
+        Mockito.when(orderRepository.findAllById(List.of(1001L))).thenReturn(List.of(order(1001L, 9001L)));
+        Mockito.when(refundRepository.findAllByCaseIdIn(List.of(501L))).thenReturn(List.of(failed));
+        Mockito.when(lineRepository.findAllByCaseIdIn(List.of(501L))).thenReturn(List.of(line(501L, 41L)));
+        AfterSalesCaseHistoryEntity opened = new AfterSalesCaseHistoryEntity(1L, 501L, null, "PENDING_MERCHANT",
+                "OPEN", "CUSTOMER", 3L, new BigDecimal("9.00"), "USD", null, "trace", NOW);
+        Mockito.when(historyRepository.findAllByCaseId(501L)).thenReturn(List.of(opened));
+
+        AfterSalesCaseDto detail = views.adminDetail(refunding);
+        List<AfterSalesCaseDto> page = views.adminSummaries(List.of(refunding));
+
+        Assertions.assertEquals(expected, detail.refund());
+        Assertions.assertEquals(1, detail.history().size());
+        Assertions.assertEquals(1, detail.lines().size());
+        Assertions.assertEquals(expected, page.get(0).refund());
+        Assertions.assertNull(page.get(0).history(), "lists carry no history");
+        Assertions.assertEquals(List.of(), views.adminSummaries(List.of()));
+        // The customer's view of the same rows leaves it out.
+        Assertions.assertNull(views.detail(refunding).refund().lastError());
+    }
+
+
     @Test
     void detail_ofACaseWithoutARefundOrAnOrderNumber_shouldLeaveThemOut() {
         Mockito.when(orderRepository.findOrderNoById(1001L)).thenReturn(Optional.empty());

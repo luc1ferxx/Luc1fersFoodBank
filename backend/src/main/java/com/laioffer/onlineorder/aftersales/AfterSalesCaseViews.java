@@ -10,12 +10,14 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiFunction;
 
 
 /**
- * Builds the customer's {@link AfterSalesCaseDto} of cases from their rows: lines, refund, order number and, for one
- * case, its history. The refund leaves out its last_error ({@link RefundDto#forCustomer}). Reads only, in the caller's
- * transaction (read-only for the queries, the command's own after a command).
+ * Builds the {@link AfterSalesCaseDto} of cases from their rows: lines, refund, order number and, for one case, its
+ * history. The customer's answers leave out the refund's last_error ({@link RefundDto#forCustomer}); the platform's
+ * staff see it ({@link #adminDetail}, {@link #adminSummaries}). Reads only, in the caller's transaction (read-only for
+ * the queries, the command's own after a command).
  */
 @Component
 public class AfterSalesCaseViews {
@@ -40,14 +42,51 @@ public class AfterSalesCaseViews {
 
 
     /**
-     * One case with its history.
+     * One case with its history, as its customer sees it.
      */
     public AfterSalesCaseDto detail(AfterSalesCaseEntity current) {
+        return detail(current, RefundDto::forCustomer);
+    }
+
+
+    /**
+     * One case with its history, as the platform's staff see it: the refund keeps its last_error.
+     */
+    public AfterSalesCaseDto adminDetail(AfterSalesCaseEntity current) {
+        return detail(current, RefundDto::new);
+    }
+
+
+    /**
+     * Several cases, in their order, without their history, as their customer sees them: a few queries for the whole
+     * page.
+     */
+    public List<AfterSalesCaseDto> summaries(List<AfterSalesCaseEntity> cases) {
+        return summaries(cases, RefundDto::forCustomer);
+    }
+
+
+    /**
+     * Several cases, in their order, without their history, as the platform's staff see them: the refunds keep their
+     * last_error.
+     */
+    public List<AfterSalesCaseDto> adminSummaries(List<AfterSalesCaseEntity> cases) {
+        return summaries(cases, RefundDto::new);
+    }
+
+
+    /**
+     * @param refundView the refund's answer from its row and its order number
+     */
+    private AfterSalesCaseDto detail(
+            AfterSalesCaseEntity current,
+            BiFunction<RefundEntity, Long, RefundDto> refundView
+    ) {
         List<Long> caseIds = List.of(current.id());
         Long orderNo = orderRepository.findOrderNoById(current.orderId()).orElse(null);
         RefundDto refund = refundRepository.findAllByCaseIdIn(caseIds).stream()
                 .findFirst()
-                .map(row -> RefundDto.forCustomer(row, orderNo))
+                .map(row -> refundView.apply(row, orderNo))
                 .orElse(null);
         return new AfterSalesCaseDto(
                 current,
@@ -59,10 +98,10 @@ public class AfterSalesCaseViews {
     }
 
 
-    /**
-     * Several cases, in their order, without their history: a few queries for the whole page.
-     */
-    public List<AfterSalesCaseDto> summaries(List<AfterSalesCaseEntity> cases) {
+    private List<AfterSalesCaseDto> summaries(
+            List<AfterSalesCaseEntity> cases,
+            BiFunction<RefundEntity, Long, RefundDto> refundView
+    ) {
         if (cases.isEmpty()) {
             return List.of();
         }
@@ -88,7 +127,7 @@ public class AfterSalesCaseViews {
                     current,
                     orderNo,
                     List.copyOf(linesByCase.getOrDefault(current.id(), List.of())),
-                    refund == null ? null : RefundDto.forCustomer(refund, orderNo),
+                    refund == null ? null : refundView.apply(refund, orderNo),
                     null
             ));
         }
