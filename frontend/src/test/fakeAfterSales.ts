@@ -776,7 +776,7 @@ export function afterSalesRoutes(context: FakeContext): FakeRoute[] {
       /^\/admin\/after-sales$/,
       requireRole(ROLES.admin, (request) => {
         const statusParam = request.query.get("status") ?? "IN_ARBITRATION";
-        const status = parseAfterSalesStatus(statusParam);
+        const status = parseAfterSalesStatus(statusParam.trim().toUpperCase());
         if (!status) {
           return badRequest(`Unsupported after-sales status: ${statusParam}`);
         }
@@ -863,7 +863,9 @@ export function afterSalesRoutes(context: FakeContext): FakeRoute[] {
       /^\/admin\/refunds$/,
       requireRole(ROLES.admin, (request) => {
         const statusParam = request.query.get("status") ?? "FAILED";
-        const status = REFUND_STATUSES.find((candidate) => candidate === statusParam);
+        const status = REFUND_STATUSES.find(
+          (candidate) => candidate === statusParam.trim().toUpperCase(),
+        );
         if (!status) {
           return badRequest(`Unsupported refund status: ${statusParam}`);
         }

@@ -408,11 +408,23 @@ class AfterSalesAdminServiceTests {
     @Test
     void getCases_ofAnUnknownStatus_shouldBeABadRequest() {
         BadRequestException refused = Assertions.assertThrows(BadRequestException.class,
-                () -> service.getCases("in_arbitration", 50));
+                () -> service.getCases("escalated", 50));
 
-        Assertions.assertEquals("Unsupported after-sales status: in_arbitration", refused.getMessage());
+        Assertions.assertEquals("Unsupported after-sales status: escalated", refused.getMessage());
         Assertions.assertThrows(BadRequestException.class, () -> service.getCases(null, 50));
+        Assertions.assertThrows(BadRequestException.class, () -> service.getCases(" ", 50));
         Mockito.verifyNoInteractions(caseRepository, views);
+    }
+
+
+    /**
+     * Section 27, follow-up 8: the status is trimmed and upper-cased first, like the merchant's filter.
+     */
+    @Test
+    void getCases_shouldTakeTheStatusInAnyCase() {
+        service.getCases(" in_Arbitration ", 50);
+
+        Mockito.verify(caseRepository).findQueueByStatus("IN_ARBITRATION", 50);
     }
 
 

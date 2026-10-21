@@ -363,6 +363,9 @@ abstract class AbstractAfterSalesAdminIntegrationTests {
                 .andExpect(status().isOk()));
         Assertions.assertEquals(List.of(sooner, later), ids(closed), "the newest case first");
         Assertions.assertEquals("WITHDRAWN", closed.get(0).get("close_reason").asString());
+        Assertions.assertEquals(List.of(sooner, later), ids(json(mockMvc.perform(get("/admin/after-sales")
+                        .param("status", " closed ").param("limit", "2").session(admin))
+                .andExpect(status().isOk()))), "the status in any case, like the merchant's filter");
         Assertions.assertFalse(ids(json(mockMvc.perform(get("/admin/after-sales").param("limit", "100")
                 .session(admin)).andExpect(status().isOk()))).contains(sooner));
         mockMvc.perform(get("/admin/after-sales").param("status", "ESCALATED").session(admin))
@@ -438,6 +441,8 @@ abstract class AbstractAfterSalesAdminIntegrationTests {
                 .andExpect(jsonPath("$.attempts").value(0));
         Assertions.assertEquals(pending.version(), refundRepository.findById(refundId).orElseThrow().version());
         Assertions.assertTrue(ids(json(mockMvc.perform(get("/admin/refunds").param("status", "PENDING")
+                .param("limit", "100").session(admin)).andExpect(status().isOk()))).contains(refundId));
+        Assertions.assertTrue(ids(json(mockMvc.perform(get("/admin/refunds").param("status", "Pending")
                 .param("limit", "100").session(admin)).andExpect(status().isOk()))).contains(refundId));
 
         jdbcTemplate.update("""

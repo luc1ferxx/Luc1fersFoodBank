@@ -22,6 +22,7 @@ import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -129,7 +130,7 @@ public class AfterSalesAdminService {
      * The cases in {@code status} (the queue defaults to IN_ARBITRATION), without their history. An open status lists
      * the nearest deadline first, the others the newest case first. Read-only.
      *
-     * @param status one of {@link AfterSalesStatus}; 400 otherwise
+     * @param status one of {@link AfterSalesStatus}, in any case; 400 otherwise
      * @param limit  the page size, kept between 1 and {@value #MAX_LIMIT}
      */
     @Transactional(readOnly = true)
@@ -209,7 +210,7 @@ public class AfterSalesAdminService {
     /**
      * The refunds in {@code status} (the list defaults to FAILED), the newest first, last_error included. Read-only.
      *
-     * @param status one of {@link RefundStatus}; 400 otherwise
+     * @param status one of {@link RefundStatus}, in any case; 400 otherwise
      * @param limit  the page size, kept between 1 and {@value #MAX_LIMIT}
      */
     @Transactional(readOnly = true)
@@ -321,7 +322,7 @@ public class AfterSalesAdminService {
 
     private static AfterSalesStatus caseStatus(String status) {
         try {
-            return AfterSalesStatus.valueOf(String.valueOf(status));
+            return AfterSalesStatus.valueOf(normalizeStatus(status));
         } catch (IllegalArgumentException ex) {
             throw new BadRequestException("Unsupported after-sales status: " + status);
         }
@@ -330,10 +331,16 @@ public class AfterSalesAdminService {
 
     private static RefundStatus refundStatus(String status) {
         try {
-            return RefundStatus.valueOf(String.valueOf(status));
+            return RefundStatus.valueOf(normalizeStatus(status));
         } catch (IllegalArgumentException ex) {
             throw new BadRequestException("Unsupported refund status: " + status);
         }
+    }
+
+
+    /** Trimmed and upper-cased like the merchant's filter, so {@code closed} lists the CLOSED ones. */
+    private static String normalizeStatus(String status) {
+        return String.valueOf(status).trim().toUpperCase(Locale.ROOT);
     }
 
 
