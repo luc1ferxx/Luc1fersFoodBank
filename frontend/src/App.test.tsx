@@ -336,7 +336,7 @@ describe("rate-limited requests", () => {
 
   it("reports a cart change where it was asked for: the menu card or the Cart tab", async () => {
     const backend = installFakeBackend({ user: demoUser, cartItems: [whopperLine] });
-    backend.on("PUT", "/cart/items/501", () => rateLimited(2, "trace-card"));
+    backend.on("PUT", "/cart/items/501", () => rateLimited(1, "trace-card"));
     backend.on("PUT", "/cart/items/501", () =>
       apiError(503, "Cart unavailable", { traceId: "trace-tab" }),
     );
@@ -346,7 +346,7 @@ describe("rate-limited requests", () => {
     const card = menuCard("Whopper");
     await user.click(within(card).getByRole("button", { name: "Decrease Whopper" }));
     expect(await within(card).findByRole("alert")).toHaveTextContent(
-      "429: Too many requests. Try again in 2 seconds. Trace trace-card.",
+      "429: Too many requests. Try again in 1 second. Trace trace-card.",
     );
     const cartTab = screen.getByRole("region", { name: "Cart and payment checkout" });
     expect(within(cartTab).queryByRole("alert")).not.toBeInTheDocument();
@@ -361,14 +361,14 @@ describe("rate-limited requests", () => {
 
   it("says when to retry a refused checkout and retries it with the same Idempotency-Key", async () => {
     const backend = installFakeBackend({ user: demoUser, cartItems: [whopperLine] });
-    backend.on("POST", "/payments/checkout", () => rateLimited(3, "trace-rl"));
+    backend.on("POST", "/payments/checkout", () => rateLimited(6, "trace-rl"));
     const user = renderApp();
 
     await screen.findByRole("button", { name: "Pay $12.78" });
     await fillPaymentForm(user);
     await user.click(screen.getByRole("button", { name: "Pay $12.78" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "429: Too many requests. Try again in 3 seconds. Trace trace-rl.",
+      "429: Too many requests. Try again in 6 seconds. Trace trace-rl.",
     );
 
     await user.click(screen.getByRole("button", { name: "Pay $12.78" }));
@@ -442,13 +442,13 @@ describe("menu card errors", () => {
     await waitFor(() => expect(backend.callsTo("GET", "/cart")).toHaveLength(2));
 
     // Another card's add is refused while the Whopper's re-read is still running.
-    backend.on("POST", "/cart", () => rateLimited(2, "trace-noodles"));
+    backend.on("POST", "/cart", () => rateLimited(1, "trace-noodles"));
     await user.click(screen.getByRole("button", { name: /Noodle Nook/ }));
     await screen.findByText("Dan Dan Noodles");
     const noodles = menuCard("Dan Dan Noodles");
     await user.click(within(noodles).getByRole("button", { name: "Add to cart" }));
     expect(await within(noodles).findByRole("alert")).toHaveTextContent(
-      "429: Too many requests. Try again in 2 seconds. Trace trace-noodles.",
+      "429: Too many requests. Try again in 1 second. Trace trace-noodles.",
     );
 
     await act(async () => {
@@ -456,7 +456,7 @@ describe("menu card errors", () => {
       await read.promise;
     });
     expect(await screen.findByRole("button", { name: "Pay $6.39" })).toBeInTheDocument();
-    expect(within(noodles).getByRole("alert")).toHaveTextContent("Try again in 2 seconds.");
+    expect(within(noodles).getByRole("alert")).toHaveTextContent("Try again in 1 second.");
 
     await user.click(within(cartTab()).getByRole("button", { name: "Clear cart" }));
     expect(
