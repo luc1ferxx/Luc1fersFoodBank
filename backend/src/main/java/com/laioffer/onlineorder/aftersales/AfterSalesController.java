@@ -20,6 +20,10 @@ import java.security.Principal;
  * ({@code anyRequest().authenticated()} in AppConfig): the service only shows and changes the caller's own orders and
  * cases, and answers 404 for anyone else's. Every command needs an Idempotency-Key; repeating a request with its key
  * answers with the case the first one opened or changed.
+ * <p>
+ * The commands take their ids as plain decimal digits only, the form the customer-after-sales rate limit
+ * ({@code RateLimitingFilter}) counts: converted to a {@code Long} unconstrained, a sign, hex, whitespace or non-ASCII
+ * digits would reach the same order or case without taking a token. Any other spelling is 404.
  */
 @RestController
 public class AfterSalesController {
@@ -48,7 +52,7 @@ public class AfterSalesController {
     }
 
 
-    @PostMapping("/orders/{orderId}/after-sales")
+    @PostMapping("/orders/{orderId:\\d+}/after-sales")
     public AfterSalesCaseDto open(
             Principal principal,
             @PathVariable Long orderId,
@@ -59,7 +63,7 @@ public class AfterSalesController {
     }
 
 
-    @PostMapping("/after-sales/cases/{caseId}/accept-offer")
+    @PostMapping("/after-sales/cases/{caseId:\\d+}/accept-offer")
     public AfterSalesCaseDto acceptOffer(
             Principal principal,
             @PathVariable Long caseId,
@@ -69,7 +73,7 @@ public class AfterSalesController {
     }
 
 
-    @PostMapping("/after-sales/cases/{caseId}/decline-offer")
+    @PostMapping("/after-sales/cases/{caseId:\\d+}/decline-offer")
     public AfterSalesCaseDto declineOffer(
             Principal principal,
             @PathVariable Long caseId,
@@ -82,7 +86,7 @@ public class AfterSalesController {
     /**
      * The body, with the customer's note for the platform, is optional.
      */
-    @PostMapping("/after-sales/cases/{caseId}/escalate")
+    @PostMapping("/after-sales/cases/{caseId:\\d+}/escalate")
     public AfterSalesCaseDto escalate(
             Principal principal,
             @PathVariable Long caseId,
@@ -94,7 +98,7 @@ public class AfterSalesController {
     }
 
 
-    @PostMapping("/after-sales/cases/{caseId}/withdraw")
+    @PostMapping("/after-sales/cases/{caseId:\\d+}/withdraw")
     public AfterSalesCaseDto withdraw(
             Principal principal,
             @PathVariable Long caseId,

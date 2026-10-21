@@ -445,6 +445,51 @@ abstract class AbstractAfterSalesApiIntegrationTests {
 
 
     /**
+     * The rate limit counts the commands by their path with plain decimal ids, so the commands take no other spelling
+     * that would convert to the same number (a sign, hex, whitespace, non-ASCII digits).
+     */
+    @Test
+    void idsSpelledOtherThanDecimalDigits_shouldNotReachTheCommands() throws Exception {
+        Customer erin = customer("after-sales-id-spelling-");
+        CompletedOrder open = completedOrder(erin, menuItem(BURGER_KING, 0));
+        long caseId = openWholeOrder(erin, open);
+        CompletedOrder unopened = completedOrder(erin, menuItem(BURGER_KING, 0));
+
+        for (String orderId : otherSpellings(unopened.orderId())) {
+            mockMvc.perform(post("/orders/{id}/after-sales", orderId)
+                            .session(erin.session())
+                            .header("Idempotency-Key", "spelled-open-" + orderId)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(wholeOrder()))
+                    .andExpect(status().isNotFound());
+        }
+        for (String spelledCaseId : otherSpellings(caseId)) {
+            for (String command : List.of("withdraw", "accept-offer", "decline-offer", "escalate")) {
+                mockMvc.perform(post("/after-sales/cases/{id}/" + command, spelledCaseId)
+                                .session(erin.session())
+                                .header("Idempotency-Key", "spelled-" + command + "-" + spelledCaseId))
+                        .andExpect(status().isNotFound());
+            }
+        }
+
+        Assertions.assertEquals(List.of(), caseRepository.findAllByOrderId(unopened.orderId()));
+        Assertions.assertEquals("PENDING_MERCHANT", caseRepository.findById(caseId).orElseThrow().status());
+        Assertions.assertEquals(1, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM idempotency_requests WHERE customer_id = ?", Integer.class, erin.id()));
+        command(erin, caseId, "withdraw", "withdraw-" + caseId)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CLOSED"));
+    }
+
+
+    private static List<String> otherSpellings(long id) {
+        StringBuilder arabicIndic = new StringBuilder();
+        String.valueOf(id).chars().forEach(digit -> arabicIndic.append((char) ('٠' + digit - '0')));
+        return List.of("+" + id, "0x" + Long.toHexString(id), " " + id, arabicIndic.toString());
+    }
+
+
+    /**
      * The open command picks the attempt number under the order's lock; uq_after_sales_case_attempt refuses a request
      * that would get in without it, and the service maps that refusal by the constraint's name.
      */

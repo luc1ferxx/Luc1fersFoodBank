@@ -1230,8 +1230,14 @@ version; a replayed older event counts in
 row: until `onlineorder-merchant-aftersales` has consumed the case's `aftersales.case_opened`, the merchant's commands
 on it answer 404 (`OnlineOrderKafkaConsumerLag` covers the group), while the merchant's deadline runs from the opening.
 
-Not covered yet: the after-sales `POST` endpoints have no rate-limit rule; the after-sales tables (cases, lines,
-history, refunds, payments) have no retention or partitioning; a customer is not notified when a refund is given up.
+**Rate limits.** Every after-sales `POST` has a per-login bucket in `RateLimitingFilter`: `customer-after-sales` (the
+customer's five commands, 20 and one every 3 s), `merchant-after-sales` (approve, reject, offer; 30 and one every 2 s),
+`after-sales-arbitrate` and `refund-retry` (10 and one every 6 s each). Refusals count in
+`onlineorder_security_rate_limit_rejected_total{route="..."}`. Replays of an `Idempotency-Key` take a token like any
+request; a refused one never reached the handler and can be retried with its key.
+
+Not covered yet: the after-sales tables (cases, lines, history, refunds, payments) have no retention or partitioning; a
+customer is not notified when a refund is given up.
 
 ### Rollout (V12-V12_3)
 

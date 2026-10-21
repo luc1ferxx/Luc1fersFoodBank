@@ -15,11 +15,17 @@ import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.security.Principal;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 class RateLimitingFilterTests {
 
@@ -281,6 +287,151 @@ class RateLimitingFilterTests {
     }
 
 
+    @Test
+    void shouldRateLimitCustomerAfterSalesCommandsInOneBucketByUserButNotReads() throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        allowRedisRequest(redisTemplate);
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                Mockito.mock(ApplicationMetricsService.class),
+                errorResponseWriter()
+        );
+
+        for (String[] request : List.of(
+                new String[]{"GET", "/after-sales/cases"},
+                new String[]{"GET", "/after-sales/cases/7"},
+                new String[]{"GET", "/orders/42/after-sales"},
+                new String[]{"GET", "/after-sales/cases/7/withdraw"},
+                new String[]{"POST", "/orders/abc/after-sales"},
+                new String[]{"POST", "/orders/42/after-sales/extra"},
+                new String[]{"POST", "/after-sales/cases"},
+                new String[]{"POST", "/after-sales/cases/7"},
+                new String[]{"POST", "/after-sales/cases/abc/withdraw"},
+                new String[]{"POST", "/after-sales/cases/7/approve"},
+                new String[]{"POST", "/after-sales/cases/7/offer"},
+                new String[]{"POST", "/after-sales/cases/7/withdrawn"},
+                new String[]{"POST", "/after-sales/cases/7/accept-offer/extra"},
+                new String[]{"POST", "/orders/42/after-salesx"},
+                new String[]{"POST", "/merchant/after-sales/5/withdraw"},
+                new String[]{"POST", "/admin/after-sales/9/accept-offer"},
+                new String[]{"PUT", "/orders/42/after-sales"},
+                new String[]{"DELETE", "/after-sales/cases/7/withdraw"}
+        )) {
+            filter.doFilter(new MockHttpServletRequest(request[0], request[1]), new MockHttpServletResponse(), new MockFilterChain());
+        }
+        Mockito.verifyNoInteractions(redisTemplate);
+
+        for (String path : List.of(
+                "/orders/42/after-sales",
+                "/after-sales/cases/7/accept-offer",
+                "/after-sales/cases/7/decline-offer",
+                "/after-sales/cases/7/escalate",
+                "/after-sales/cases/7/withdraw"
+        )) {
+            Mockito.clearInvocations(redisTemplate);
+            MockHttpServletRequest command = new MockHttpServletRequest("POST", path);
+            command.setRemoteAddr("10.0.0.5");
+            command.setUserPrincipal((Principal) () -> "Customer@Example.com");
+            command.addHeader("Idempotency-Key", "key-" + path);
+            filter.doFilter(command, new MockHttpServletResponse(), new MockFilterChain());
+
+            Assertions.assertEquals("onlineorder:rate-limit:customer-after-sales:user:customer@example.com", capturedRedisKey(redisTemplate), path);
+            Object[] args = capturedRedisArgs(redisTemplate);
+            Assertions.assertEquals("20", args[0], path);
+            Assertions.assertEquals("1", args[1], path);
+            Assertions.assertEquals("3000", args[2], path);
+            Assertions.assertEquals("1", args[3], path);
+            Assertions.assertEquals("120", args[5], path);
+        }
+    }
+
+
+    @Test
+    void shouldKeyCustomerAfterSalesCommandsByTheAuthenticatedLoginAndAnonymousOnesByIp() throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        allowRedisRequest(redisTemplate);
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                Mockito.mock(ApplicationMetricsService.class),
+                errorResponseWriter()
+        );
+
+        try {
+            SecurityContextHolder.getContext().setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
+                    "Customer@Example.com", null, List.of(new SimpleGrantedAuthority("ROLE_USER"))));
+            MockHttpServletRequest signedIn = new MockHttpServletRequest("POST", "/after-sales/cases/7/accept-offer");
+            signedIn.setRemoteAddr("10.0.0.5");
+            filter.doFilter(signedIn, new MockHttpServletResponse(), new MockFilterChain());
+            Assertions.assertEquals("onlineorder:rate-limit:customer-after-sales:user:customer@example.com", capturedRedisKey(redisTemplate));
+
+            Mockito.clearInvocations(redisTemplate);
+            SecurityContextHolder.getContext().setAuthentication(new AnonymousAuthenticationToken(
+                    "key", "anonymousUser", List.of(new SimpleGrantedAuthority("ROLE_ANONYMOUS"))));
+            MockHttpServletRequest anonymous = new MockHttpServletRequest("POST", "/orders/42/after-sales");
+            anonymous.setRemoteAddr("10.0.0.5");
+            anonymous.addHeader("X-Forwarded-For", "203.0.113.10");
+            filter.doFilter(anonymous, new MockHttpServletResponse(), new MockFilterChain());
+            Assertions.assertEquals("onlineorder:rate-limit:customer-after-sales:ip:10.0.0.5", capturedRedisKey(redisTemplate));
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+
+    /**
+     * The filter runs before the idempotency check and never reads the Idempotency-Key, like the checkout and order
+     * status rules: a replay with the same key takes a token as well. A request refused with 429 never reaches the
+     * handler, so retrying it with its key once the bucket refills is safe: it runs, or, if a request with that key
+     * already went through, answers with that key's case.
+     */
+    @Test
+    void shouldRefuseCustomerAfterSalesCommandsOnceTheBucketIsEmptyCountingReplaysOfTheSameKey() throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        ApplicationMetricsService metricsService = Mockito.mock(ApplicationMetricsService.class);
+        emulateTokenBucketWithoutRefill(redisTemplate);
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                metricsService,
+                errorResponseWriter()
+        );
+
+        for (int i = 0; i < 20; i++) {
+            MockFilterChain chain = new MockFilterChain();
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(customerCommand("customer@example.com", "/orders/42/after-sales", "open-42"), response, chain);
+            Assertions.assertEquals(HttpServletResponse.SC_OK, response.getStatus(), "request " + i);
+            Assertions.assertNotNull(chain.getRequest(), "request " + i);
+        }
+
+        for (String[] refused : List.of(
+                new String[]{"/orders/42/after-sales", "open-42"},
+                new String[]{"/orders/43/after-sales", "open-43"},
+                new String[]{"/after-sales/cases/7/accept-offer", "accept-7"},
+                new String[]{"/after-sales/cases/7/decline-offer", "decline-7"},
+                new String[]{"/after-sales/cases/7/escalate", "escalate-7"},
+                new String[]{"/after-sales/cases/7/withdraw", "withdraw-7"}
+        )) {
+            MockFilterChain chain = new MockFilterChain();
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(customerCommand("Customer@Example.com", refused[0], refused[1]), response, chain);
+            Assertions.assertEquals(429, response.getStatus(), refused[0]);
+            Assertions.assertTrue(response.getContentAsString().contains("\"code\":\"RATE_LIMITED\""), refused[0]);
+            Assertions.assertNull(chain.getRequest(), refused[0]);
+        }
+        Mockito.verify(metricsService, Mockito.times(6)).recordRateLimitRejection("customer-after-sales");
+
+        MockFilterChain otherCustomer = new MockFilterChain();
+        filter.doFilter(customerCommand("other@example.com", "/orders/42/after-sales", "open-42"), new MockHttpServletResponse(), otherCustomer);
+        Assertions.assertNotNull(otherCustomer.getRequest());
+    }
+
+
     @ParameterizedTest
     @CsvSource({
             "POST, /%6Cogin, login",
@@ -304,6 +455,13 @@ class RateLimitingFilterTests {
             "POST, /merchant/after-sales/5/%61pprove, merchant-after-sales",
             "POST, /merchant/after-sales/5/reject/, merchant-after-sales",
             "POST, /merchant//after-sales/5/offer, merchant-after-sales",
+            "POST, /orders/%34%32/after-sales, customer-after-sales",
+            "POST, /orders//42/after-sales/, customer-after-sales",
+            "POST, /after-sales/cases/%37/%77ithdraw, customer-after-sales",
+            "POST, /after-sales//cases/7/accept-offer/, customer-after-sales",
+            "POST, /after-sales/cases/7/decline-offer;x=1, customer-after-sales",
+            "POST, /after-sales/cases/7/./escalate, customer-after-sales",
+            "POST, /after-sales/cases/8/../7/withdraw, customer-after-sales",
             "PATCH, /orders/%34%32/status, order-status",
             "POST, /admin/%6Derchants, admin-provisioning",
             "POST, /admin//riders/, admin-provisioning",
@@ -415,6 +573,39 @@ class RateLimitingFilterTests {
                 Mockito.<List<String>>any(),
                 Mockito.any(Object[].class)
         )).thenReturn(1L);
+    }
+
+
+    /**
+     * Answers the token-bucket script like Redis would within one instant: every key starts with the rule's capacity
+     * and each request takes its cost until none is left.
+     */
+    private void emulateTokenBucketWithoutRefill(StringRedisTemplate redisTemplate) {
+        Map<String, Integer> tokens = new HashMap<>();
+        Mockito.when(redisTemplate.execute(
+                Mockito.<RedisScript<Long>>any(),
+                Mockito.<List<String>>any(),
+                Mockito.any(Object[].class)
+        )).thenAnswer(invocation -> {
+            String key = invocation.<List<String>>getArgument(1).get(0);
+            int capacity = Integer.parseInt(invocation.getArgument(2));
+            int cost = Integer.parseInt(invocation.getArgument(5));
+            int left = tokens.getOrDefault(key, capacity);
+            if (left < cost) {
+                return 0L;
+            }
+            tokens.put(key, left - cost);
+            return 1L;
+        });
+    }
+
+
+    private MockHttpServletRequest customerCommand(String login, String path, String idempotencyKey) {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", path);
+        request.setRemoteAddr("10.0.0.5");
+        request.setUserPrincipal((Principal) () -> login);
+        request.addHeader("Idempotency-Key", idempotencyKey);
+        return request;
     }
 
 

@@ -573,7 +573,7 @@ settings and failure modes: [docs/operations.md](docs/operations.md), section 11
 - Customer accounts track status, failed login count, lockout time, last login, and audit timestamps.
 - Login lookup is case-insensitive.
 - Anonymous routes are rate-limited by remote IP.
-- Authenticated checkout and admin routes (including merchant and rider provisioning) are rate-limited by user identity.
+- Authenticated checkout, the after-sales commands, and the admin's catalog edits, merchant and rider provisioning and status changes, manual order status change and outbox and dead-letter recovery are rate-limited by user identity.
 - Roles: `ROLE_USER` (customers), `ROLE_ADMIN`, `ROLE_MERCHANT` (`/merchant/**`, own restaurant only) and `ROLE_RIDER` (`/rider/**`, own deliveries only). Merchant and rider requests re-check the account's active flag, so a deactivation applies to existing sessions on their next request.
 - Redis rate-limit store failures fail open and emit metrics instead of blocking core flows.
 
@@ -1044,6 +1044,12 @@ and are checked for an active account on every request (`403`), like the merchan
   the case and command otherwise); its idempotency record is bound to the case it opened or changed, and a replay
   answers with that case as it is now. The same key with another request is `409 CONFLICT`. Merchant answers and the
   refund retry take no key: repeating one that already happened returns the case or refund unchanged.
+- **Rate limits.** Per login: the customer's five commands share one bucket (20, one more every 3 s, like the cart
+  checkout), the merchant's approve, reject and offer another (30, one every 2 s), and arbitration and the refund retry
+  have one each (10, one every 6 s). The limit runs before the idempotency check, so a replay with the same key takes a
+  token too; a command refused with `429 RATE_LIMITED` did not run, and retrying it later with its key is safe. The
+  customer's commands take their ids as decimal digits only (`+42`, `0x2A` and the like are `404`), so no spelling of
+  an id gets past the limit.
 - **Errors.** `409 AFTER_SALES_NOT_ELIGIBLE` (the order cannot get a request: not `COMPLETED`, no restaurant, no
   captured payment, the window closed, a request open or none left, or more than the capture allows),
   `409 AFTER_SALES_STATUS_CONFLICT`, `409 AFTER_SALES_DEADLINE_PASSED`, `409 REFUND_STATUS_CONFLICT`, and `400` for a
@@ -1303,7 +1309,6 @@ This project is intentionally strong on backend correctness patterns, but it is 
 
 - Payment is simulated with local request validation. There is no real payment provider, authorization, capture, webhook, or settlement flow. The recorded capture (`SIMPAY-...`) and the refunds (`SimulatedRefundGateway`, which always succeeds after its configured failures) are simulated the same way.
 - After-sales is refund-only: no returns, replacements or vouchers, one answer per restaurant per request, and at most two requests per order. A customer can still cancel an `ACCEPTED` order after the rider picked it up, and that cancel is refunded in full; restricting it is a follow-up (ADR 0002).
-- The after-sales commands (the customer's, the merchant's, arbitration and the refund retry) have no rate-limit rule yet.
 - Timestamps, after-sales deadlines included, are local date-times without a zone; the UI reads them in the browser's zone, so a countdown is off when the browser and the server are in different zones.
 - There is no inventory reservation or stock decrement model.
 - Amounts carry their currency, but there is no conversion: a restaurant prices in one currency and a cart or order stays in it. There are no taxes, discounts or tips, and no currencies with three minor digits.

@@ -187,6 +187,11 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         if (HttpMethod.POST.matches(method) && path.matches("^/merchant/after-sales/\\d+/(approve|reject|offer)$")) {
             return new RateLimitRule("merchant-after-sales", 30, 1, Duration.ofSeconds(2), 1, false);
         }
+        if (HttpMethod.POST.matches(method)
+                && (path.matches("^/orders/\\d+/after-sales$")
+                || path.matches("^/after-sales/cases/\\d+/(accept-offer|decline-offer|escalate|withdraw)$"))) {
+            return new RateLimitRule("customer-after-sales", 20, 1, Duration.ofSeconds(3), 1, false);
+        }
         if (HttpMethod.PATCH.matches(method) && path.matches("^/admin/(menu-items|restaurants)/\\d+$")) {
             return new RateLimitRule("admin-catalog", 30, 1, Duration.ofSeconds(2), 1, false);
         }
