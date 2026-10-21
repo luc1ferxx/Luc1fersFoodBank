@@ -5,6 +5,10 @@ import com.laioffer.onlineorder.aftersales.AfterSalesActor;
 import com.laioffer.onlineorder.aftersales.AfterSalesCaseRepository;
 import com.laioffer.onlineorder.aftersales.AfterSalesTransitions;
 import com.laioffer.onlineorder.aftersales.AfterSalesTrigger;
+import com.laioffer.onlineorder.fulfilment.merchant.MerchantAfterSalesInboxService;
+import com.laioffer.onlineorder.messaging.AfterSalesEventEnvelope;
+import com.laioffer.onlineorder.messaging.contract.EventContracts;
+import com.laioffer.onlineorder.messaging.contract.EventTopic;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.service.CartService;
@@ -88,6 +92,12 @@ class ApiContractIntegrationTests {
 
     @Autowired
     private PlatformTransactionManager transactionManager;
+
+    @Autowired
+    private MerchantAfterSalesInboxService merchantAfterSalesInboxService;
+
+    @Autowired
+    private EventContracts eventContracts;
 
 
     /**
@@ -303,7 +313,8 @@ class ApiContractIntegrationTests {
      * The after-sales bodies of ADR 0002 section 11.5 in declaration order (null fields omitted), every amount with a
      * sibling currency, and order numbers as strings: a request just opened, the same case once its counter-offer was
      * accepted (offer, approval, merchant answer and refund), its lines, history steps and refund, and the overview
-     * with an order that can get a request.
+     * with an order that can get a request. The merchant's view of the counter-offered case and the admin's refund list
+     * (last_error included) are locked the same way.
      */
     @Test
     void afterSalesBodies_shouldKeepTheFieldOrderOfTheirDeclaration() throws Exception {
@@ -356,6 +367,31 @@ class ApiContractIntegrationTests {
                 new AfterSalesTransitions.Command(AfterSalesTrigger.MERCHANT_OFFER, AfterSalesActor.MERCHANT,
                         merchantId, Money.of("4.89", "USD"), "One portion was there.", null)
         ));
+        // Kafka is off here: hand the case's events to the merchant's inbox in order, as its consumer would.
+        jdbcTemplate.queryForList("""
+                        SELECT payload
+                        FROM outbox_events
+                        WHERE aggregate_type = 'AFTER_SALES_CASE' AND aggregate_id = ?
+                        ORDER BY aggregate_sequence
+                        """, String.class, caseId)
+                .forEach(payload -> merchantAfterSalesInboxService.handle(
+                        eventContracts.read(EventTopic.AFTER_SALES_EVENTS, payload, AfterSalesEventEnvelope.class)));
+        JsonNode merchantCase = json(mockMvc.perform(get("/merchant/after-sales")
+                        .session(logIn("merchant.burgerking@laifood.com", "merchant123")))
+                .andExpect(status().isOk())).get(0);
+        Assertions.assertEquals(
+                List.of("case_id", "order_id", "order_no", "status", "reason_code", "description", "lines",
+                        "requested_amount", "offered_amount", "currency", "merchant_decision", "merchant_note",
+                        "deadline_at", "opened_at", "updated_at"),
+                List.copyOf(merchantCase.propertyNames())
+        );
+        Assertions.assertEquals(caseId, merchantCase.get("case_id").asLong());
+        Assertions.assertTrue(merchantCase.get("order_no").isString());
+        Assertions.assertEquals(4.89, merchantCase.get("offered_amount").asDouble());
+        Assertions.assertEquals("USD", merchantCase.get("currency").asString());
+        Assertions.assertEquals(List.of("order_item_id", "menu_item_name", "quantity", "unit_price", "amount",
+                "currency"), List.copyOf(merchantCase.get("lines").get(0).propertyNames()));
+        Assertions.assertEquals("USD", merchantCase.get("lines").get(0).get("currency").asString());
         JsonNode accepted = json(mockMvc.perform(post("/after-sales/cases/{id}/accept-offer", caseId)
                         .session(session)
                         .header("Idempotency-Key", "contract-accept-" + caseId))
@@ -388,6 +424,31 @@ class ApiContractIntegrationTests {
         Assertions.assertEquals(caseId, listed.get("id").asLong());
         Assertions.assertFalse(listed.has("history"), "lists carry no history");
         Assertions.assertTrue(listed.has("refund"));
+
+        long refundId = refund.get("id").asLong();
+        jdbcTemplate.update("UPDATE refunds SET last_error = 'simulated gateway timeout' WHERE id = ?", refundId);
+        JsonNode adminRefunds = json(mockMvc.perform(get("/admin/refunds")
+                        .param("status", "PENDING")
+                        .param("limit", "100")
+                        .session(logIn("demo@laifood.com", "demo123")))
+                .andExpect(status().isOk()));
+        Assertions.assertTrue(adminRefunds.isArray());
+        JsonNode adminRefund = null;
+        for (JsonNode candidate : adminRefunds) {
+            if (candidate.get("id").asLong() == refundId) {
+                adminRefund = candidate;
+            }
+        }
+        Assertions.assertNotNull(adminRefund, adminRefunds::toString);
+        Assertions.assertEquals(
+                List.of("id", "case_id", "order_id", "order_no", "amount", "currency", "status", "attempts",
+                        "last_error", "next_attempt_at", "created_at"),
+                List.copyOf(adminRefund.propertyNames())
+        );
+        Assertions.assertTrue(adminRefund.get("order_no").isString());
+        Assertions.assertEquals(4.89, adminRefund.get("amount").asDouble());
+        Assertions.assertEquals("USD", adminRefund.get("currency").asString());
+        Assertions.assertEquals("simulated gateway timeout", adminRefund.get("last_error").asString());
     }
 
 
@@ -408,9 +469,14 @@ class ApiContractIntegrationTests {
                                 {"email": "%s", "password": "demo123", "first_name": "Money", "last_name": "User"}
                                 """.formatted(email)))
                 .andExpect(status().isCreated());
+        return logIn(email, "demo123");
+    }
+
+
+    private MockHttpSession logIn(String email, String password) throws Exception {
         return (MockHttpSession) mockMvc.perform(post("/login")
                         .param("username", email)
-                        .param("password", "demo123"))
+                        .param("password", password))
                 .andExpect(status().isOk())
                 .andReturn()
                 .getRequest()
