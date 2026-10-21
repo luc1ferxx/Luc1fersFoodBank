@@ -470,9 +470,11 @@ event-schemas/
 |-- common/envelope/v1.json            event_id, event_version, event_type, aggregate_type, aggregate_id, sequence,
 |                                      occurred_at, correlation_id, idempotency_key, data
 |-- common/order-data/v1.json          order event data; money amounts with an optional ISO 4217 currency next to them
+|-- common/order-data/v2.json          v1 plus the optional order_no (the public order number, a string)
 |-- common/delivery-data/v1.json       delivery event data
 |-- common/after-sales-case-data/v1.json  the whole after-sales case after its step, lines with their currency
 |-- order-events/<event_type>/v1.json      order.created ... order.cancelled (data.status fixed per type)
+|-- order-events/<event_type>/v2.json      the same on order-data v2 (BACKWARD); what the producer writes since V14
 |-- delivery-events/<event_type>/v1.json   delivery.assigned ... delivery.reassigned
 |-- merchant-events/merchant.order_received/v1.json
 `-- after-sales-events/<event_type>/v1.json  aftersales.case_opened ... aftersales.case_closed
@@ -482,7 +484,11 @@ The JSON is snake_case with nulls omitted (the application ObjectMapper). `event
 the event's type the producer wrote; the payload records (`messaging.OrderEventPayload`, `OrderEventItem`,
 `DeliveryEventPayload`, `MerchantEventPayload`, `AfterSalesCasePayload`) belong to the contract and no longer reuse
 REST DTOs. V1 is the shape the events already had plus two optional fields: `sequence` (absent on events written
-before V9) and `currency` on the order total and on each item price (absent until orders carry a currency).
+before V9) and `currency` on the order total and on each item price (absent until orders carry a currency). The six
+order events are at v2, a `BACKWARD` version that adds the optional `data.order_no`: the order's public number as a
+JSON string (it exceeds 2^53), which the merchant inbox and dispatch keep so that the merchant and rider consoles can
+show it (V14). Consumers read a v1 event as one without a number, and a consumer that knows only v1 reads a v2 event
+as a v1 one (see the rules below); [docs/operations.md](docs/operations.md) section 8 has the rollout.
 
 The description of the published `aftersales.case_opened` v1 schema says an `ORDER_CANCELLED` case approves the order
 total. Since V12_4 that holds except for a customer's cancel after the pickup, whose case still requests the total but
@@ -752,6 +758,9 @@ and the customer notifications, which write no notice for a step the case has al
 Events without a sequence (written before V9) and positions older than the processed-events retention fall back on the
 rules below, which still hold for every module when the order of two events flips:
 
+- **Order number:** the public `order_no` of order events v2 never changes, so it is the one fact every event may
+  bring, stale or not: an event that carries it fills a merchant inbox row or a delivery that has none (created from a
+  v1 event), and none replaces a stored number.
 - **Merchant inbox:** an order event that finds no inbox row creates it with the status it reports (`order.cancelled`
   leaves a cancelled tombstone) and no `paid_at`. The merchant only sees rows with a `paid_at`; the late `order.paid`
   then only sets it (also when it is stale by sequence: the payment time is a fact no later event carries). A replayed
@@ -784,6 +793,11 @@ rules below, which still hold for every module when the order of two events flip
 | `POST` | `/admin/deliveries/{deliveryId}/picked-up` | `ADMIN` | Ops and tests: any delivery `ASSIGNED -> PICKED_UP` (audited as `delivery.picked_up`) |
 | `POST` | `/admin/deliveries/{deliveryId}/delivered` | `ADMIN` | Ops and tests: any delivery `PICKED_UP -> DELIVERED` (completes the order; audited as `delivery.delivered`) |
 | `POST` | `/admin/deliveries/{deliveryId}/reassign` | `ADMIN` | Move an open delivery to another rider, body `{"rider_id": 7}` (see below; audited as `delivery.reassign`) |
+
+Merchant orders, rider deliveries and the admin delivery list carry `order_no`, the public order number as a JSON
+string, right after `order_id` (the key the paths take). The merchant inbox and dispatch copy it from the order events
+(v2, V14); it is absent for a row that only v1 events reached, rows from before V14 included, and the consoles then show
+the order id.
 
 Merchant commands are scoped to the merchant's restaurant (another restaurant's order is a `404`) and are idempotent:
 repeating a command whose transition already happened returns the order unchanged. A reject of an order that was
@@ -1232,7 +1246,8 @@ when it is not enough:
   keeps plain tables. Gauges and alerts watch the months ahead and the default partitions.
 - **Public order numbers (V10_1).** `orders.order_no` is a 64-bit Snowflake id (timestamp, worker id, sequence)
   assigned at checkout, returned by the order APIs (as a string) and used in notifications; the customer UI names
-  orders by it, while the internal `id` stays the key of every table and API path.
+  orders by it, and so do the merchant and rider consoles, whose tables copy it from the order events (V14), while the
+  internal `id` stays the key of every table and API path.
   Existing orders were numbered from their creation time with a reserved worker id.
 - **Worker ids (V10_2).** Each instance needs its own worker id: configured (`APP_IDS_WORKER_ID`) for single
   instances and StatefulSets, or leased from `snowflake_worker_leases` on Kubernetes, where a timestamp fence keeps a
@@ -1404,7 +1419,7 @@ This project is intentionally strong on backend correctness patterns, but it is 
 - With read replicas on, a user sees other users' changes (a merchant's accept, a notification) up to `max-lag` (2s) late, a session's reads can go back by up to that much when its replica drops out and it moves to another, and a read that is running on a replica when it dies fails instead of being retried on the primary.
 - Catalog edits are limited to admin updates of existing restaurants and menu items. There is no create or delete API, so rows changed directly in the database show up once the cached entries expire. One exception: `GET /restaurant/{id}/menu` serves a directly inserted restaurant at once and evicts the stale list, because an id missing from the cached list is checked in the database (rate-limited) before the `404`. The demo seed matches rows by name, so renaming a demo restaurant or item makes the next startup with `db/demo` insert the original again.
 - The architecture is a deliberate monolith. Service decomposition is deferred until the core transaction is correct and observable.
-- The order data lives in one PostgreSQL database; sharding is planned ([ADR 0001](docs/adr/0001-order-sharding.md)), not built. Customers see only the public `order_no` (order history, checkout confirmation, notifications; the admin order tool shows both), but the merchant and rider consoles still name orders by the internal `id`: the order events do not carry `order_no` yet, so the merchant and dispatch projections cannot show it.
+- The order data lives in one PostgreSQL database; sharding is planned ([ADR 0001](docs/adr/0001-order-sharding.md)), not built. Customers see only the public `order_no` (order history, checkout confirmation, notifications; the admin order tool shows both). The merchant and rider consoles show it too, from the copy the merchant inbox and the deliveries take from the order events (v2, V14), but rows from before V14 (and rows that only v1 events reached during the rollout) have none and still show the internal `id`; nothing backfills them, since the fulfilment modules never read `orders` (an optional one-off backfill of the open rows is in [docs/operations.md](docs/operations.md) section 8).
 
 ---
 
