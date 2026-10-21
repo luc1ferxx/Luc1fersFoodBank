@@ -572,8 +572,29 @@ settings and failure modes: [docs/operations.md](docs/operations.md), section 11
 - Authentication uses server-side sessions backed by Redis, under a namespace that carries the session format version (`onlineorder:session:v2`), so pods of two releases never read each other's sessions during a rolling update or rollback.
 - Customer accounts track status, failed login count, lockout time, last login, and audit timestamps.
 - Login lookup is case-insensitive.
-- Anonymous routes are rate-limited by remote IP.
-- Authenticated checkout, the after-sales commands, and the admin's catalog edits, merchant and rider provisioning and status changes, manual order status change and outbox and dead-letter recovery are rate-limited by user identity. Their ids are decimal digits only (`{id:\d+}` in the mapping), so another spelling of the same number (`+42`, `0x2A`) is `404` instead of reaching the handler past the limit.
+- Every write endpoint except `POST /logout` has a token bucket in `RateLimitingFilter` (Redis): login and signup per remote IP, the rest per login (per IP when the request is anonymous, before its `401`). Each bucket refills fully in a minute; a refused request answers `429 RATE_LIMITED` before its handler runs, and counts in `onlineorder_security_rate_limit_rejected_total{route}`. A replay with the same `Idempotency-Key` takes a token like any request. The ids of these routes are decimal digits only (`{id:\d+}` in the mapping), so another spelling of the same number (`+42`, `0x2A`) is `404` instead of reaching the handler past the limit. `RateLimitedRouteMappingTests` checks both for every controller mapping.
+
+  | Bucket | Requests | Capacity, refill |
+  | --- | --- | --- |
+  | `login` (IP) | `POST /login` | 10, one every 6 s |
+  | `signup` (IP) | `POST /signup` | 5, one every 12 s |
+  | `cart` | `POST /cart`, `DELETE /cart`, `PUT` and `DELETE /cart/items/{id}` | 60, one every second |
+  | `cart-checkout` | `POST /cart/checkout` | 20, one every 3 s |
+  | `payment-checkout` | `POST /payments/checkout` | 10, one every 6 s |
+  | `order-cancel` | `POST /orders/{id}/cancel` | 20, one every 3 s |
+  | `customer-after-sales` | `POST /orders/{id}/after-sales`, `POST /after-sales/cases/{id}/accept-offer`, `decline-offer`, `escalate`, `withdraw` | 20, one every 3 s |
+  | `merchant-orders` | `POST /merchant/orders/{id}/accept`, `reject`, `preparing` | 30, one every 2 s |
+  | `merchant-after-sales` | `POST /merchant/after-sales/{id}/approve`, `reject`, `offer` | 30, one every 2 s |
+  | `rider-commands` | `POST /rider/deliveries/{id}/picked-up`, `delivered`, `PUT /rider/me/availability` | 30, one every 2 s |
+  | `order-status` | `PATCH /orders/{id}/status` (admin) | 30, one every 2 s |
+  | `admin-deliveries` | `POST /admin/deliveries/{id}/picked-up`, `delivered`, `reassign` | 30, one every 2 s |
+  | `admin-catalog` | `PATCH /admin/menu-items/{id}`, `PATCH /admin/restaurants/{id}` | 30, one every 2 s |
+  | `admin-provisioning` | `POST /admin/merchants`, `POST /admin/riders` | 10, one every 6 s |
+  | `admin-staff-status` | `PATCH /admin/merchants/{id}`, `PATCH /admin/riders/{id}` | 30, one every 2 s |
+  | `after-sales-arbitrate` | `POST /admin/after-sales/{id}/arbitrate` | 10, one every 6 s |
+  | `refund-retry` | `POST /admin/refunds/{id}/retry` | 10, one every 6 s |
+  | `outbox-retry`, `outbox-abandon` | `POST /admin/outbox/events/{id}/retry`, `abandon` (one bucket each) | 10, one every 6 s |
+  | `dead-letter-replay` | `POST /dead-letters/{id}/replay` | 10, one every 6 s |
 - Roles: `ROLE_USER` (customers), `ROLE_ADMIN`, `ROLE_MERCHANT` (`/merchant/**`, own restaurant only) and `ROLE_RIDER` (`/rider/**`, own deliveries only). Merchant and rider requests re-check the account's active flag, so a deactivation applies to existing sessions on their next request.
 - Redis rate-limit store failures fail open and emit metrics instead of blocking core flows.
 

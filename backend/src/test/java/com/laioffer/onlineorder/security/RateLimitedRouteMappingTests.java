@@ -39,7 +39,8 @@ import java.util.regex.Pattern;
  * non-ASCII digits, which miss the rule and reach the handler without taking a token. This reads the mapping of every
  * controller method on the classpath (conditional controllers included), finds the ones a rule covers, and checks
  * that their path variables are {@code \d+} and that other spellings do not match them. The list of covered mappings
- * is pinned, so a rule that stops matching its mapping shows up too.
+ * is pinned, so a rule that stops matching its mapping shows up too, and every write mapping must be covered
+ * ({@code POST /login} and {@code /logout} are Spring Security's filters, not controller mappings).
  */
 class RateLimitedRouteMappingTests {
 
@@ -52,11 +53,15 @@ class RateLimitedRouteMappingTests {
     @Test
     void everyRateLimitedMapping_shouldTakeItsIdsAsDecimalDigitsOnly() throws Exception {
         List<String> limited = new ArrayList<>();
+        List<String> unlimitedWrites = new ArrayList<>();
         for (RequestMappingInfo mapping : controllerMappings()) {
             Set<RequestMethod> methods = mapping.getMethodsCondition().getMethods();
             for (RequestMethod method : methods.isEmpty() ? ANY_METHOD : methods) {
                 for (String pattern : mapping.getPatternValues()) {
                     if (!isRateLimited(method.name(), withIds(pattern, "7"))) {
+                        if (method != RequestMethod.GET) {
+                            unlimitedWrites.add(method + " " + pattern);
+                        }
                         continue;
                     }
                     String route = method + " " + pattern;
@@ -77,12 +82,17 @@ class RateLimitedRouteMappingTests {
         }
 
         Assertions.assertEquals(List.of(
+                "DELETE /cart",
+                "DELETE /cart/items/{orderItemId:\\d+}",
                 "PATCH /admin/menu-items/{menuItemId:\\d+}",
                 "PATCH /admin/merchants/{merchantId:\\d+}",
                 "PATCH /admin/restaurants/{restaurantId:\\d+}",
                 "PATCH /admin/riders/{riderId:\\d+}",
                 "PATCH /orders/{orderId:\\d+}/status",
                 "POST /admin/after-sales/{caseId:\\d+}/arbitrate",
+                "POST /admin/deliveries/{deliveryId:\\d+}/delivered",
+                "POST /admin/deliveries/{deliveryId:\\d+}/picked-up",
+                "POST /admin/deliveries/{deliveryId:\\d+}/reassign",
                 "POST /admin/merchants",
                 "POST /admin/outbox/events/{eventId:\\d+}/abandon",
                 "POST /admin/outbox/events/{eventId:\\d+}/retry",
@@ -92,15 +102,25 @@ class RateLimitedRouteMappingTests {
                 "POST /after-sales/cases/{caseId:\\d+}/decline-offer",
                 "POST /after-sales/cases/{caseId:\\d+}/escalate",
                 "POST /after-sales/cases/{caseId:\\d+}/withdraw",
+                "POST /cart",
                 "POST /cart/checkout",
                 "POST /dead-letters/{deadLetterEventId:\\d+}/replay",
                 "POST /merchant/after-sales/{caseId:\\d+}/approve",
                 "POST /merchant/after-sales/{caseId:\\d+}/offer",
                 "POST /merchant/after-sales/{caseId:\\d+}/reject",
+                "POST /merchant/orders/{orderId:\\d+}/accept",
+                "POST /merchant/orders/{orderId:\\d+}/preparing",
+                "POST /merchant/orders/{orderId:\\d+}/reject",
                 "POST /orders/{orderId:\\d+}/after-sales",
+                "POST /orders/{orderId:\\d+}/cancel",
                 "POST /payments/checkout",
-                "POST /signup"
+                "POST /rider/deliveries/{deliveryId:\\d+}/delivered",
+                "POST /rider/deliveries/{deliveryId:\\d+}/picked-up",
+                "POST /signup",
+                "PUT /cart/items/{orderItemId:\\d+}",
+                "PUT /rider/me/availability"
         ), limited.stream().sorted().toList());
+        Assertions.assertEquals(List.of(), unlimitedWrites, "every write endpoint has a rate-limit rule");
     }
 
 

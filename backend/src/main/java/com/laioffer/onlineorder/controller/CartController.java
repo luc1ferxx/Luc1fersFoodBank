@@ -65,7 +65,7 @@ public class CartController {
     }
 
 
-    @PutMapping("/cart/items/{orderItemId}")
+    @PutMapping("/cart/items/{orderItemId:\\d+}")
     public void updateCartItem(
             Principal principal,
             @PathVariable("orderItemId") Long orderItemId,
@@ -76,7 +76,7 @@ public class CartController {
     }
 
 
-    @DeleteMapping("/cart/items/{orderItemId}")
+    @DeleteMapping("/cart/items/{orderItemId:\\d+}")
     public void removeCartItem(
             Principal principal,
             @PathVariable("orderItemId") Long orderItemId

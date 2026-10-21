@@ -69,7 +69,7 @@ public class OrderController {
         return orderService.idempotentTransitionOrderStatus(actor.id(), orderId, body.status(), idempotencyKey);
     }
 
-    @PostMapping("/orders/{orderId}/cancel")
+    @PostMapping("/orders/{orderId:\\d+}/cancel")
     public OrderDto cancelOrder(
             Principal principal,
             @PathVariable Long orderId,

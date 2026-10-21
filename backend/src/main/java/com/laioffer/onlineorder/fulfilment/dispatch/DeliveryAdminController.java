@@ -54,13 +54,13 @@ public class DeliveryAdminController {
     }
 
 
-    @PostMapping("/admin/deliveries/{deliveryId}/picked-up")
+    @PostMapping("/admin/deliveries/{deliveryId:\\d+}/picked-up")
     public DeliveryDto markPickedUp(Principal principal, @PathVariable Long deliveryId) {
         return deliveryAdminService.markPickedUp(deliveryId, auditActorResolver.resolve(principal));
     }
 
 
-    @PostMapping("/admin/deliveries/{deliveryId}/delivered")
+    @PostMapping("/admin/deliveries/{deliveryId:\\d+}/delivered")
     public DeliveryDto markDelivered(Principal principal, @PathVariable Long deliveryId) {
         return deliveryAdminService.markDelivered(deliveryId, auditActorResolver.resolve(principal));
     }
@@ -69,7 +69,7 @@ public class DeliveryAdminController {
     /**
      * Moves an open delivery to another active, on-duty rider (body {"rider_id": n}); idempotent for the same rider.
      */
-    @PostMapping("/admin/deliveries/{deliveryId}/reassign")
+    @PostMapping("/admin/deliveries/{deliveryId:\\d+}/reassign")
     public DeliveryDto reassign(
             Principal principal,
             @PathVariable Long deliveryId,

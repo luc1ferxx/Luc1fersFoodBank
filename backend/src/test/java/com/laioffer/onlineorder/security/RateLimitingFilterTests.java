@@ -432,6 +432,104 @@ class RateLimitingFilterTests {
     }
 
 
+    @Test
+    void shouldRateLimitOrderCancelCartEditsAndStaffDeliveryCommandsByUserButNotReads() throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        allowRedisRequest(redisTemplate);
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                Mockito.mock(ApplicationMetricsService.class),
+                errorResponseWriter()
+        );
+
+        for (String[] request : List.of(
+                new String[]{"GET", "/cart"},
+                new String[]{"PUT", "/cart"},
+                new String[]{"POST", "/cart/items/3"},
+                new String[]{"PUT", "/cart/items/abc"},
+                new String[]{"GET", "/orders/42/cancel"},
+                new String[]{"POST", "/orders/42/cancel/extra"},
+                new String[]{"GET", "/merchant/orders"},
+                new String[]{"POST", "/merchant/orders/42/delivered"},
+                new String[]{"GET", "/rider/deliveries"},
+                new String[]{"GET", "/rider/me/availability"},
+                new String[]{"POST", "/rider/deliveries/8/reassign"},
+                new String[]{"GET", "/admin/deliveries"},
+                new String[]{"POST", "/admin/deliveries/8/accept"}
+        )) {
+            filter.doFilter(new MockHttpServletRequest(request[0], request[1]), new MockHttpServletResponse(), new MockFilterChain());
+        }
+        Mockito.verifyNoInteractions(redisTemplate);
+
+        for (String[] expected : List.of(
+                new String[]{"POST", "/orders/42/cancel", "order-cancel", "20", "3000"},
+                new String[]{"POST", "/cart", "cart", "60", "1000"},
+                new String[]{"DELETE", "/cart", "cart", "60", "1000"},
+                new String[]{"PUT", "/cart/items/3", "cart", "60", "1000"},
+                new String[]{"DELETE", "/cart/items/3", "cart", "60", "1000"},
+                new String[]{"POST", "/merchant/orders/42/accept", "merchant-orders", "30", "2000"},
+                new String[]{"POST", "/merchant/orders/42/reject", "merchant-orders", "30", "2000"},
+                new String[]{"POST", "/merchant/orders/42/preparing", "merchant-orders", "30", "2000"},
+                new String[]{"POST", "/rider/deliveries/8/picked-up", "rider-commands", "30", "2000"},
+                new String[]{"POST", "/rider/deliveries/8/delivered", "rider-commands", "30", "2000"},
+                new String[]{"PUT", "/rider/me/availability", "rider-commands", "30", "2000"},
+                new String[]{"POST", "/admin/deliveries/8/picked-up", "admin-deliveries", "30", "2000"},
+                new String[]{"POST", "/admin/deliveries/8/delivered", "admin-deliveries", "30", "2000"},
+                new String[]{"POST", "/admin/deliveries/8/reassign", "admin-deliveries", "30", "2000"}
+        )) {
+            String route = expected[0] + " " + expected[1];
+            Mockito.clearInvocations(redisTemplate);
+            MockHttpServletRequest command = new MockHttpServletRequest(expected[0], expected[1]);
+            command.setRemoteAddr("10.0.0.5");
+            command.setUserPrincipal((Principal) () -> "Someone@Example.com");
+            filter.doFilter(command, new MockHttpServletResponse(), new MockFilterChain());
+
+            Assertions.assertEquals("onlineorder:rate-limit:" + expected[2] + ":user:someone@example.com", capturedRedisKey(redisTemplate), route);
+            Object[] args = capturedRedisArgs(redisTemplate);
+            Assertions.assertEquals(expected[3], args[0], route);
+            Assertions.assertEquals(expected[4], args[2], route);
+            Assertions.assertEquals("120", args[5], route);
+        }
+    }
+
+
+    /**
+     * Like the customer's after-sales commands, a replayed cancel with the same Idempotency-Key takes a token.
+     */
+    @Test
+    void shouldRefuseOrderCancelsOnceTheBucketIsEmptyCountingReplaysOfTheSameKey() throws Exception {
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        ApplicationMetricsService metricsService = Mockito.mock(ApplicationMetricsService.class);
+        emulateTokenBucketWithoutRefill(redisTemplate);
+        RateLimitingFilter filter = new RateLimitingFilter(
+                true,
+                Duration.ofMinutes(2),
+                redisTemplate,
+                metricsService,
+                errorResponseWriter()
+        );
+
+        for (int i = 0; i < 20; i++) {
+            MockFilterChain chain = new MockFilterChain();
+            filter.doFilter(customerCommand("customer@example.com", "/orders/42/cancel", "cancel-42"), new MockHttpServletResponse(), chain);
+            Assertions.assertNotNull(chain.getRequest(), "request " + i);
+        }
+
+        MockFilterChain refused = new MockFilterChain();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        filter.doFilter(customerCommand("customer@example.com", "/orders/43/cancel", "cancel-43"), response, refused);
+        Assertions.assertEquals(429, response.getStatus());
+        Assertions.assertNull(refused.getRequest());
+        Mockito.verify(metricsService).recordRateLimitRejection("order-cancel");
+
+        MockFilterChain afterSales = new MockFilterChain();
+        filter.doFilter(customerCommand("customer@example.com", "/after-sales/cases/7/withdraw", "withdraw-7"), new MockHttpServletResponse(), afterSales);
+        Assertions.assertNotNull(afterSales.getRequest(), "the after-sales bucket is separate");
+    }
+
+
     @ParameterizedTest
     @CsvSource({
             "POST, /%6Cogin, login",
@@ -463,6 +561,18 @@ class RateLimitingFilterTests {
             "POST, /after-sales/cases/7/./escalate, customer-after-sales",
             "POST, /after-sales/cases/8/../7/withdraw, customer-after-sales",
             "PATCH, /orders/%34%32/status, order-status",
+            "POST, /orders/%34%32/%63ancel, order-cancel",
+            "POST, /orders//42/cancel/, order-cancel",
+            "POST, /cart/, cart",
+            "DELETE, //cart, cart",
+            "PUT, /cart/items/%33, cart",
+            "DELETE, /cart//items/3/, cart",
+            "POST, /merchant/orders/%34%32/accept, merchant-orders",
+            "POST, /merchant//orders/42/preparing/, merchant-orders",
+            "POST, /rider/deliveries/%38/picked-up, rider-commands",
+            "PUT, /rider/me/availability/, rider-commands",
+            "POST, /admin/deliveries/8/%72eassign, admin-deliveries",
+            "POST, /admin//deliveries/8/delivered/, admin-deliveries",
             "POST, /admin/%6Derchants, admin-provisioning",
             "POST, /admin//riders/, admin-provisioning",
             "PATCH, /admin/merchants/%34, admin-staff-status",
