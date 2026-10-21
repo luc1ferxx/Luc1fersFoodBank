@@ -1,5 +1,6 @@
 package com.laioffer.onlineorder.security;
 
+import com.laioffer.onlineorder.controller.DeadLetterController;
 import com.laioffer.onlineorder.error.ApiErrorResponseFactory;
 import com.laioffer.onlineorder.error.ApiErrorResponseWriter;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
@@ -9,6 +10,7 @@ import org.mockito.Mockito;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 import org.springframework.context.support.StaticApplicationContext;
+import org.springframework.core.type.classreading.MetadataReader;
 import org.springframework.core.type.filter.AnnotationTypeFilter;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
@@ -24,6 +26,7 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
 import org.springframework.web.util.ServletRequestPathUtils;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -130,11 +133,19 @@ class RateLimitedRouteMappingTests {
      */
     private static List<RequestMappingInfo> controllerMappings() throws Exception {
         MappingReader reader = new MappingReader();
-        ClassPathScanningCandidateComponentProvider scanner = new ClassPathScanningCandidateComponentProvider(false);
-        scanner.addIncludeFilter(new AnnotationTypeFilter(Controller.class));
+        AnnotationTypeFilter controllers = new AnnotationTypeFilter(Controller.class);
+        ClassPathScanningCandidateComponentProvider scanner = new ClassPathScanningCandidateComponentProvider(false) {
+            @Override
+            protected boolean isCandidateComponent(MetadataReader metadataReader) throws IOException {
+                // The annotation only: the default also evaluates @Conditional and @Profile and skips what they exclude.
+                return controllers.match(metadataReader, getMetadataReaderFactory());
+            }
+        };
         List<RequestMappingInfo> mappings = new ArrayList<>();
+        List<Class<?>> types = new ArrayList<>();
         for (BeanDefinition candidate : scanner.findCandidateComponents("com.laioffer.onlineorder")) {
             Class<?> type = ClassUtils.forName(candidate.getBeanClassName(), RateLimitedRouteMappingTests.class.getClassLoader());
+            types.add(type);
             for (Method method : ReflectionUtils.getUniqueDeclaredMethods(type, ReflectionUtils.USER_DECLARED_METHODS)) {
                 RequestMappingInfo mapping = reader.mappingOf(method, type);
                 if (mapping != null) {
@@ -142,7 +153,7 @@ class RateLimitedRouteMappingTests {
                 }
             }
         }
-        Assertions.assertFalse(mappings.isEmpty());
+        Assertions.assertTrue(types.contains(DeadLetterController.class), "conditional controllers are read too");
         return mappings;
     }
 
