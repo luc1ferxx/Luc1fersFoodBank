@@ -1867,7 +1867,7 @@ P5 的文档提交在这个范围之后。
   - 状态机：`StateMachineTests`、`OrderStateMachineTests`、`DeliveryStateMachineTests`、`AfterSalesStateMachineTests`、`RefundStateMachineTests`。
   - 售后的 schema、顾客 API、管理员、截止时间、取消退款、退款执行器、商家和通知，各有 H2 和 PostgreSQL 两套集成测试。
   - 端到端：`AfterSalesFlowContainerTests`（第 25 节的 6 条流程）。
-- 前端：17 个测试文件，161 个测试，P4 之前是 111 个。
+- 前端：17 个测试文件，161 个测试，P4 之前是 111 个。后续事项第 20、21 条（65b229e、5aab969）之后是 164 个。
 
 **与原设计的主要偏差**（细节见括号里的节）
 1. **声明的位置和 actor 类型**：订单的 `OrderTrigger`、`OrderTransitionContext`、`OrderStateMachine` 在 `model` 包，不在 `service`（第 19.12 条、第 22 节）。售后和退款状态机用自己的 `AfterSalesActor`（CUSTOMER、MERCHANT、ADMIN、SYSTEM），不复用 `OrderActor.Type`（第 23 节）。
@@ -1897,7 +1897,7 @@ P5 的文档提交在这个范围之后。
     - 把旧键 `UNIQUE (order_id, event_type)` 加回去，只在没有任何订单有两条同类型通知时可行；一个订单的第二次售后申请就会产生这样的两条。所以优先前滚。
 13. **前端**：
     - 历史的 `action`、状态、kind、退款状态都严格解码。后端新增取值之前，必须先发布能识别它的前端。
-    - 顾客有开放或 REFUNDING 的单时每 10s 轮询，商家每 15s 轮询，管理员不轮询。
+    - 顾客有开放或 REFUNDING 的单时每 10s 轮询，商家每 15s 轮询，管理员不轮询。后续事项第 20 条之后，通知轮询读到新通知时，顾客的订单列表和售后 overview 也会重新读取。
     - fake backend 的数据结构与第 12.5 节不同（第 26 节）。
 
 **后续事项**（汇总第 19、22–26 节；"已完成"一栏已对照代码核实）
@@ -1923,7 +1923,7 @@ P5 的文档提交在这个范围之后。
 | 17 | 限制骑手取餐后的取消 | 第 19.18 条 | 未处理：`CUSTOMER_CANCEL` 仍允许从 ACCEPTED 取消，取消后全额自动退款 |
 | 18 | P2 留下的小问题：`completeDeliveredOrder` 忽略第一步的 `TransitionOutcome`；`firingOnlyFrom` 在同族出现两个相同的 from 和目标时有歧义；`DispatchService` 里 `from.holdsRider()` 为假的分支不可达；把 `OrderActor` 移到中立的包，解开 `model` ↔ `fulfilment.order` 的循环 | 第 22 节 | 未处理 |
 | 19 | 时间戳是不带时区的 LocalDateTime，浏览器和服务器不在同一时区时倒计时有偏差 | 第 26 节 | 未处理（现有的其他时间戳也一样） |
-| 20 | 订单刚变成 COMPLETED 时，"Request a refund" 要等页面重新显示或点 Refresh 才出现 | 第 26 节 | 未处理：顾客只在有开放或 REFUNDING 的单时轮询 |
-| 21 | 管理员仲裁是单 slot 的 key：两次重试之间去仲裁另一张单，会丢掉第一张单的 key | 第 26 节 | 未处理 |
+| 20 | 订单刚变成 COMPLETED 时，"Request a refund" 要等页面重新显示或点 Refresh 才出现 | 第 26 节 | 已完成（65b229e）：通知本来就每 15s 轮询。某次读取带来的通知 id 比之前所有读取都大时（`useNotifications` 的 `onNewNotifications`），`OrderingPage` 重新读取订单列表和售后 overview。第一次读取只记基线，没有新的定时器，也没有新的常态轮询；后端在订单变成 COMPLETED 之后才写 "Order completed" 通知。关掉通知轮询时，仍要点 Refresh 或重新显示页面。订单读取现在会在没有用户操作时发起，所以取消成功后也重新读取订单，丢掉在它之前发出、还没返回的读取（否则会把订单改回取消前的状态）。测试：`App.test.tsx` 的 "offers a refund once a polled notification says the order completed" 和 "keeps a cancel's result over an order read a notification started before it" |
+| 21 | 管理员仲裁是单 slot 的 key：两次重试之间去仲裁另一张单，会丢掉第一张单的 key | 第 26 节 | 已完成（5aab969）：`useAfterSalesAdmin` 按售后单保存 key（slot `arbitrate:{caseId}`），规则同 `useAfterSales`：payload 不变就复用 key，payload 变了就换新 key，成功后只删除这一单的 key。测试：`AdminConsole.test.tsx` 的 "keeps a failed arbitration's key per case while another case is arbitrated" |
 | 22 | 运行手册：FAILED 退款和 `backed_off`、少扣款的取消、V12 不能在线执行、V12_2 的外键检查、V12 之前的已付订单没有支付记录时的人工处理、新指标 | D16、第 23、25 节 | 由 P5 的 docs/operations.md 处理 |
 | 23 | README 的模块表和前端售后入口、h2 下商家售后收件箱为空、取消 `AFTER_SALES_CASE_EXISTS`、eligible 列表包含扣款 0.00 的订单（申请会返回 400）；AGENTS.md 的容器测试列表加上 `AfterSalesFlowContainerTests` | 第 23、25、26 节 | 由 P5 的 README.md 和 AGENTS.md 处理 |
