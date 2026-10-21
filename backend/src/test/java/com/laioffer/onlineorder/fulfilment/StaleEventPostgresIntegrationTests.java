@@ -43,6 +43,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 
 import static com.laioffer.onlineorder.fulfilment.FulfilmentTestEvents.orderEvent;
+import static com.laioffer.onlineorder.fulfilment.FulfilmentTestEvents.withOrderNo;
 
 
 /**
@@ -241,6 +242,54 @@ class StaleEventPostgresIntegrationTests {
 
 
     /**
+     * Order events version 2 carry the order's public number (V14). A version 1 event leaves the inbox row without one;
+     * any later event that carries it fills it, a stale one included (the number never changes), and none replaces it.
+     */
+    @Test
+    void merchantInbox_aMissingOrderNumber_shouldBeFilledByAnyEventThatCarriesItButNeverReplaced() {
+        long orderId = ORDER_IDS.incrementAndGet();
+        long orderNo = orderNo(orderId);
+
+        // order.cancelled (3) arrives first, as a version 1 event: a tombstone without a number.
+        merchantInboxService.handle(orderEvent("order.cancelled", orderId, BURGER_KING, "CANCELLED", 3));
+        Assertions.assertNull(inboxOrderNo(orderId));
+
+        // The dead-lettered order.accepted (2), replayed as a version 2 event: stale, but it brings the number.
+        merchantInboxService.handle(
+                withOrderNo(orderEvent("order.accepted", orderId, BURGER_KING, "ACCEPTED", 2), orderNo));
+        Assertions.assertEquals(orderNo, inboxOrderNo(orderId));
+        Assertions.assertEquals("CANCELLED", inboxStatus(orderId));
+
+        // Events with another number (no real order has two), a stale one and a later one, leave the stored number.
+        merchantInboxService.handle(
+                withOrderNo(orderEvent("order.paid", orderId, BURGER_KING, "PAID", 1), orderNo + 1));
+        merchantInboxService.handle(
+                withOrderNo(orderEvent("order.completed", orderId, BURGER_KING, "COMPLETED", 4), orderNo + 1));
+        Assertions.assertEquals(orderNo, inboxOrderNo(orderId));
+        Assertions.assertEquals("CANCELLED", inboxStatus(orderId));
+        Assertions.assertNotNull(paidAt(orderId), "the late order.paid still recorded the payment");
+        Assertions.assertEquals(4L, position("merchant-inbox-consumer", orderId));
+    }
+
+
+    @Test
+    void merchantInbox_aVersion2OrderPaid_shouldCreateTheRowWithTheNumberAndAVersion1OneWithout() {
+        long numbered = ORDER_IDS.incrementAndGet();
+        long unnumbered = ORDER_IDS.incrementAndGet();
+
+        merchantInboxService.handle(
+                withOrderNo(orderEvent("order.paid", numbered, BURGER_KING, "PAID", 1), orderNo(numbered)));
+        merchantInboxService.handle(orderEvent("order.paid", unnumbered, BURGER_KING, "PAID", 1));
+        // A later version 1 event has no number to give.
+        merchantInboxService.handle(orderEvent("order.accepted", unnumbered, BURGER_KING, "ACCEPTED", 2));
+
+        Assertions.assertEquals(orderNo(numbered), inboxOrderNo(numbered));
+        Assertions.assertNull(inboxOrderNo(unnumbered));
+        Assertions.assertEquals("ACCEPTED", inboxStatus(unnumbered));
+    }
+
+
+    /**
      * ADR 0002 section 27, follow-up 13: an order event replayed from the dead letters after a later event of its order
      * was notified would tell the customer about a step the order has left. It writes nothing and counts as skipped;
      * the next event still notifies.
@@ -259,6 +308,48 @@ class StaleEventPostgresIntegrationTests {
         Assertions.assertEquals(skippedBefore + 1, staleSkipped("order-notification-consumer"));
         orderEventHandlerService.handle(customerOrderEvent(order, "order.preparing", "PREPARING", 4));
         Assertions.assertEquals(List.of("order.accepted", "order.preparing"), notifications(order.id()));
+    }
+
+
+    /**
+     * The delivery takes the number from the order.accepted that creates it; one created from a version 1 event gets it
+     * from the next order.accepted or order.cancelled that carries it, stale or not, and keeps the first it got.
+     */
+    @Test
+    void dispatch_aMissingOrderNumber_shouldBeFilledByAnEventThatCarriesItButNeverReplaced() {
+        long staleFilled = ORDER_IDS.incrementAndGet();
+        long cancelFilled = ORDER_IDS.incrementAndGet();
+        long numbered = ORDER_IDS.incrementAndGet();
+
+        // A version 1 order.accepted (3) assigns a rider; the delivery has no number.
+        dispatchService.handle(orderEvent("order.accepted", staleFilled, BURGER_KING, "ACCEPTED", 3));
+        Assertions.assertEquals(List.of("ASSIGNED"), deliveries(staleFilled));
+        Assertions.assertNull(deliveryOrderNo(staleFilled));
+        // A version 2 copy with an older sequence is stale: no second rider, but the number.
+        dispatchService.handle(withOrderNo(
+                orderEvent("order.accepted", staleFilled, BURGER_KING, "ACCEPTED", 2), orderNo(staleFilled)));
+        Assertions.assertEquals(orderNo(staleFilled), deliveryOrderNo(staleFilled));
+        Assertions.assertEquals(List.of("ASSIGNED"), deliveries(staleFilled));
+        // order.cancelled (5) with another number cancels the delivery and keeps the stored number.
+        dispatchService.handle(withOrderNo(
+                orderEvent("order.cancelled", staleFilled, BURGER_KING, "CANCELLED", 5), orderNo(staleFilled) + 1));
+        Assertions.assertEquals(List.of("CANCELLED"), deliveries(staleFilled));
+        Assertions.assertEquals(orderNo(staleFilled), deliveryOrderNo(staleFilled));
+
+        // A version 2 order.cancelled fills the number of a delivery a version 1 order.accepted created.
+        dispatchService.handle(orderEvent("order.accepted", cancelFilled, BURGER_KING, "ACCEPTED", 3));
+        dispatchService.handle(withOrderNo(
+                orderEvent("order.cancelled", cancelFilled, BURGER_KING, "CANCELLED", 5), orderNo(cancelFilled)));
+        Assertions.assertEquals(List.of("CANCELLED"), deliveries(cancelFilled));
+        Assertions.assertEquals(orderNo(cancelFilled), deliveryOrderNo(cancelFilled));
+
+        // A version 2 order.accepted creates the delivery with its number; a version 1 cancel takes nothing away.
+        dispatchService.handle(
+                withOrderNo(orderEvent("order.accepted", numbered, BURGER_KING, "ACCEPTED", 3), orderNo(numbered)));
+        Assertions.assertEquals(orderNo(numbered), deliveryOrderNo(numbered));
+        dispatchService.handle(orderEvent("order.cancelled", numbered, BURGER_KING, "CANCELLED", 5));
+        Assertions.assertEquals(List.of("CANCELLED"), deliveries(numbered));
+        Assertions.assertEquals(orderNo(numbered), deliveryOrderNo(numbered));
     }
 
 
@@ -478,6 +569,25 @@ class StaleEventPostgresIntegrationTests {
 
     private List<String> deliveries(long orderId) {
         return jdbcTemplate.queryForList("SELECT status FROM deliveries WHERE order_id = ?", String.class, orderId);
+    }
+
+
+    /**
+     * A Snowflake-sized order number (past 2^53) for an order of these tests.
+     */
+    private static long orderNo(long orderId) {
+        return 7_254_189_912_000_000_000L + orderId * 10;
+    }
+
+
+    private Long inboxOrderNo(long orderId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT order_no FROM merchant_orders WHERE order_id = ?", Long.class, orderId);
+    }
+
+
+    private Long deliveryOrderNo(long orderId) {
+        return jdbcTemplate.queryForObject("SELECT order_no FROM deliveries WHERE order_id = ?", Long.class, orderId);
     }
 
 

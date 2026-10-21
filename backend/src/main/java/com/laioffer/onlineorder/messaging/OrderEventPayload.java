@@ -2,6 +2,7 @@ package com.laioffer.onlineorder.messaging;
 
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import com.laioffer.onlineorder.money.Money;
 
 
@@ -11,13 +12,15 @@ import java.util.List;
 
 
 /**
- * The data of an order event ({@code event-schemas/common/order-data/v1.json}): the order after the change.
+ * The data of an order event ({@code event-schemas/common/order-data/v2.json}): the order after the change.
  *
  * @param currency     the ISO 4217 currency of {@code totalPrice} and of every item price; null in events published
  *                     before orders carried a currency, which were all USD (see {@link #currencyCode()})
  * @param items        the order lines, priced in {@code currency}; their own currency is left null
  * @param restaurantId the restaurant the order belongs to; null for orders placed before single-restaurant carts
  * @param reason       why the order was cancelled (order.cancelled only), for example MERCHANT_TIMEOUT
+ * @param orderNo      the order's public number, written as a JSON string (Snowflake ids exceed 2^53); it never
+ *                     changes. Null in version 1 events, which do not carry it
  */
 public record OrderEventPayload(
         Long customerId,
@@ -27,11 +30,30 @@ public record OrderEventPayload(
         LocalDateTime createdAt,
         List<OrderEventItem> items,
         Long restaurantId,
-        String reason
+        String reason,
+        @JsonFormat(shape = JsonFormat.Shape.STRING)
+        Long orderNo
 ) {
 
     @JsonCreator
     public OrderEventPayload {
+    }
+
+
+    /**
+     * The data of a version 1 event, without the order number.
+     */
+    public OrderEventPayload(
+            Long customerId,
+            String status,
+            BigDecimal totalPrice,
+            String currency,
+            LocalDateTime createdAt,
+            List<OrderEventItem> items,
+            Long restaurantId,
+            String reason
+    ) {
+        this(customerId, status, totalPrice, currency, createdAt, items, restaurantId, reason, null);
     }
 
 
@@ -44,7 +66,7 @@ public record OrderEventPayload(
             Long restaurantId,
             String reason
     ) {
-        this(customerId, status, totalPrice, null, createdAt, items, restaurantId, reason);
+        this(customerId, status, totalPrice, null, createdAt, items, restaurantId, reason, null);
     }
 
 
@@ -55,7 +77,7 @@ public record OrderEventPayload(
             LocalDateTime createdAt,
             List<OrderEventItem> items
     ) {
-        this(customerId, status, totalPrice, null, createdAt, items, null, null);
+        this(customerId, status, totalPrice, null, createdAt, items, null, null, null);
     }
 
 

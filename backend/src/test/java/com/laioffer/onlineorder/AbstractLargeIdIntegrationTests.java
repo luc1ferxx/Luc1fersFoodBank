@@ -6,6 +6,7 @@ import com.laioffer.onlineorder.audit.AuditActor;
 import com.laioffer.onlineorder.fulfilment.dispatch.DeliveryDto;
 import com.laioffer.onlineorder.fulfilment.dispatch.DispatchService;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantInboxService;
+import com.laioffer.onlineorder.fulfilment.merchant.MerchantOrderDto;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantOrderService;
 import com.laioffer.onlineorder.fulfilment.order.DeliveryCompletionService;
 import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineProcessor;
@@ -37,8 +38,9 @@ import java.util.Map;
  * Proves V7 (64-bit keys) on a real database: no id column is 32-bit any more, and an order whose ids, and the ids of
  * everything around it, are past 2^31 goes through checkout, its idempotent retry, notifications, the merchant inbox
  * and accept, dispatch, delivery completion, a payment timeout, the order history, the audit log and the dead-letter
- * store. The cases have to hold on PostgreSQL and on H2 (the {@code h2} profile), so each database gets a subclass
- * that knows how to move its key generators.
+ * store, and its public number (past 2^53) reaches the merchant inbox and the delivery through the order events. The
+ * cases have to hold on PostgreSQL and on H2 (the {@code h2} profile), so each database gets a subclass that knows how
+ * to move its key generators.
  */
 abstract class AbstractLargeIdIntegrationTests {
 
@@ -213,10 +215,13 @@ abstract class AbstractLargeIdIntegrationTests {
                 idOf("SELECT MAX(id) FROM processed_events WHERE aggregate_id = ?", orderId));
 
         // Merchant accept, dispatch to the rider, pick-up and delivery, completion by the delivery event.
-        Assertions.assertEquals("ACCEPTED", merchantOrderService.accept(merchantCustomerId, orderId).status());
+        MerchantOrderDto accepted = merchantOrderService.accept(merchantCustomerId, orderId);
+        Assertions.assertEquals("ACCEPTED", accepted.status());
+        Assertions.assertEquals(order.orderNo(), accepted.orderNo());
         dispatchService.handle(latestOrderEvent(orderId, "order.accepted"));
         DeliveryDto delivery = dispatchService.getDeliveries(orderId, null, 1).get(0);
         Assertions.assertEquals(riderId, delivery.riderId());
+        Assertions.assertEquals(order.orderNo(), delivery.orderNo());
         assertBeyondInt(delivery.id(), idOf("SELECT order_id FROM dispatch_orders WHERE order_id = ?", orderId));
         dispatchService.markPickedUp(delivery.id());
         dispatchService.markDelivered(delivery.id());

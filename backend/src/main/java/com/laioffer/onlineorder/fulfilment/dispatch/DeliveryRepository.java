@@ -16,12 +16,13 @@ public interface DeliveryRepository extends ListCrudRepository<DeliveryEntity, L
     /**
      * Records the assignment unless the order already has a delivery, and returns the rows inserted: 1 or 0.
      * Target-less ON CONFLICT so that H2 (PostgreSQL mode) parses it; the only constraint an insert can violate is
-     * uq_delivery_order.
+     * uq_delivery_order. {@code orderNo} is null for a version 1 order.accepted.
      */
     @Modifying
     @Query("""
             INSERT INTO deliveries (
                 order_id,
+                order_no,
                 customer_id,
                 restaurant_id,
                 rider_id,
@@ -30,6 +31,7 @@ public interface DeliveryRepository extends ListCrudRepository<DeliveryEntity, L
                 updated_at
             ) VALUES (
                 :orderId,
+                :orderNo,
                 :customerId,
                 :restaurantId,
                 :riderId,
@@ -39,7 +41,29 @@ public interface DeliveryRepository extends ListCrudRepository<DeliveryEntity, L
             )
             ON CONFLICT DO NOTHING
             """)
-    int insertAssignedIfAbsent(Long orderId, Long customerId, Long restaurantId, Long riderId, LocalDateTime assignedAt);
+    int insertAssignedIfAbsent(
+            Long orderId,
+            Long orderNo,
+            Long customerId,
+            Long restaurantId,
+            Long riderId,
+            LocalDateTime assignedAt
+    );
+
+
+    /**
+     * An order event that carries the order's public number, stale ones included, for an order that already has a
+     * delivery: sets the number if the delivery has none (it was created from a version 1 order.accepted). An order's
+     * number never changes, so a stored one is never replaced. updated_at stays: the delivery did not change.
+     */
+    @Modifying
+    @Query("""
+            UPDATE deliveries
+            SET order_no = :orderNo
+            WHERE order_id = :orderId
+              AND order_no IS NULL
+            """)
+    int recordOrderNo(Long orderId, Long orderNo);
 
 
     @Query("SELECT * FROM deliveries WHERE order_id = :orderId")

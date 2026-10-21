@@ -560,7 +560,7 @@ runs the procedure for `orders` (a key other tables reference) and `idempotency_
    `after.txt`: `diff before.txt after.txt` must print nothing, which also proves that the `ON CONFLICT` targets are
    back. Then drop the old columns.
 
-## 8. Event contracts and per-aggregate order (V9-V9_2, V13)
+## 8. Event contracts and per-aggregate order (V9-V9_2, V13, V14)
 
 README "Event contracts" describes the schemas, the validation and the evolution rules; this section is the operator's
 side.
@@ -602,6 +602,44 @@ events [ids]; the others were no longer held by this publisher's claim"; several
 While pods of the previous release still run next to this one, their claims write no token and their outcomes stay unfenced, as before: they behave as they do
 today, and a row they claimed keeps the token of an earlier claim of this release, if any, so a late write under that
 token still applies. The fencing is complete once no older pod publishes.
+
+**Order events v2 and V14.** This release writes the six order events as version 2 (`ORDER_EVENT_VERSION` in
+`OrderEventOutboxService`), a `BACKWARD` version that adds the optional `data.order_no`, the order's public number as a
+string. V14 adds `merchant_orders.order_no` and `deliveries.order_no` (`BIGINT`, nullable, no default, no foreign key
+or unique constraint: catalog only on PostgreSQL, a brief `ACCESS EXCLUSIVE` lock on each table, no rewrite). The
+merchant inbox and dispatch store the number with the rows they create and fill it into a row that has none from any
+later event that carries it, a stale one included (the number never changes); they never replace one. The merchant
+inbox, the rider's deliveries and the admin delivery list return it as `order_no` after `order_id`. Nothing backfills
+the existing rows: they keep `NULL`, and the consoles show the order id for them.
+
+Pods of the previous release may run next to this one; the rollout needs no scale to zero:
+
+- A consumer of the previous release knows order events up to v1. `EventContracts.read` checks an event of a newer
+  version against the latest version it knows (`EventSchemaRegistry.validate`), so it checks a v2 event against v1,
+  which accepts it: the schemas are open and v2 only adds an optional property (`EventSchemaContractTests` checks the
+  v2 samples against v1). It then maps the event onto its own payload record, which has no `order_no`; the application
+  mapper ignores unknown properties. Nothing is dead-lettered, and `order_no` is dropped there
+  (`OrderEventVersionRolloutTests`).
+- Producers of the previous release keep writing v1 events, which this release reads as events without a number. An
+  inbox row or delivery that a v1 event, or a consumer of the previous release, created has no number until a later v2
+  event fills it. The merchant inbox sees every order event, so its open rows fill at the order's next step; dispatch
+  only handles `order.accepted` and `order.cancelled`, so such a delivery keeps showing the id unless it is cancelled.
+- A rollback leaves the two columns in place: the previous release neither writes nor reads them, and reads the v2
+  events still in the outbox, on the topics or among the dead letters as above. Rows it creates meanwhile have no
+  number.
+
+To give the open rows of the rollout their numbers at once, an operator may run this once after the rollout. It reads
+`orders` from the fulfilment tables, which the application never does, so it only works while they share one
+database (ADR 0001); the open rows are few, but run it in a quiet period:
+
+```sql
+UPDATE merchant_orders m SET order_no = o.order_no
+FROM orders o
+WHERE o.id = m.order_id AND m.order_no IS NULL AND m.status IN ('PAID', 'ACCEPTED', 'PREPARING');
+UPDATE deliveries d SET order_no = o.order_no
+FROM orders o
+WHERE o.id = d.order_id AND d.order_no IS NULL AND d.status IN ('ASSIGNED', 'PICKED_UP');
+```
 
 **A blocked aggregate** (`OnlineOrderOutboxAggregatesBlocked`): the publisher only claims the head of each aggregate,
 so a `FAILED` event holds back the later events of its order or delivery, on every topic it writes to, until it is
@@ -804,7 +842,8 @@ build a second one.
 at a random value below 2048 each millisecond). Checkout assigns it (`OrderNumberCallback`, on the insert of a new
 order); the order APIs return it as `order_no`, a JSON string because JavaScript numbers lose digits past 2^53;
 notifications name the order by it, and so does the customer UI (`orderLabel` in `frontend/src/lib/labels.ts`; the
-merchant and rider consoles still show the internal id, see README "Honest Boundaries"). The internal `id` stays the key of
+merchant and rider consoles show the copy that the order events bring to their tables since V14, section 8, and the
+internal id for rows without one, see README "Honest Boundaries"). The internal `id` stays the key of
 every table and API path. Order numbers do not
 reveal how many orders exist, but they are not secrets: every endpoint still checks who may read the order.
 

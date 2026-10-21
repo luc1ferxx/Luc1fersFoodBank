@@ -25,6 +25,7 @@ import java.util.List;
 
 import static com.laioffer.onlineorder.fulfilment.FulfilmentTestEvents.inCurrency;
 import static com.laioffer.onlineorder.fulfilment.FulfilmentTestEvents.orderEvent;
+import static com.laioffer.onlineorder.fulfilment.FulfilmentTestEvents.withOrderNo;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -32,6 +33,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @ExtendWith(MockitoExtension.class)
 class MerchantInboxServiceTests {
+
+    /**
+     * A Snowflake order number past 2^53.
+     */
+    private static final long ORDER_NO = 7_254_189_912_938_504_192L;
 
     @Mock
     private MerchantOrderRepository merchantOrderRepository;
@@ -76,14 +82,15 @@ class MerchantInboxServiceTests {
         OrderEventEnvelope paid = orderEvent("order.paid", 10L, 2L, "PAID");
         Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
         Mockito.when(merchantOrderRepository.insertPaidOrderIfAbsent(
-                Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(), Mockito.anyString(),
-                Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
+                Mockito.anyLong(), Mockito.any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(),
+                Mockito.anyString(), Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
 
         service.handle(paid);
 
         ArgumentCaptor<String> items = ArgumentCaptor.forClass(String.class);
         Mockito.verify(merchantOrderRepository).insertPaidOrderIfAbsent(
                 Mockito.eq(10L),
+                Mockito.isNull(),
                 Mockito.eq(2L),
                 Mockito.eq(3L),
                 Mockito.eq(new BigDecimal("10.59")),
@@ -121,13 +128,14 @@ class MerchantInboxServiceTests {
                 "order.cancelled", 10L, 3L, 2L, "CANCELLED", "CUSTOMER_CANCELLED", LocalDateTime.of(2026, 4, 4, 12, 5));
         Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", cancelled)).thenReturn(true);
         Mockito.when(merchantOrderRepository.insertUnpaidOrderIfAbsent(
-                Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyString(), Mockito.any(),
-                Mockito.anyString(), Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
+                Mockito.anyLong(), Mockito.any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyString(),
+                Mockito.any(), Mockito.anyString(), Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
 
         service.handle(cancelled);
 
         Mockito.verify(merchantOrderRepository).insertUnpaidOrderIfAbsent(
                 Mockito.eq(10L),
+                Mockito.isNull(),
                 Mockito.eq(2L),
                 Mockito.eq(3L),
                 Mockito.eq("CANCELLED"),
@@ -152,6 +160,7 @@ class MerchantInboxServiceTests {
         ArgumentCaptor<String> items = ArgumentCaptor.forClass(String.class);
         Mockito.verify(merchantOrderRepository).insertPaidOrderIfAbsent(
                 Mockito.eq(10L),
+                Mockito.isNull(),
                 Mockito.eq(2L),
                 Mockito.eq(3L),
                 Mockito.eq(new BigDecimal("10.59")),
@@ -173,8 +182,8 @@ class MerchantInboxServiceTests {
         service.handle(legacyPaid);
 
         Mockito.verify(merchantOrderRepository).insertPaidOrderIfAbsent(
-                Mockito.eq(10L), Mockito.eq(2L), Mockito.eq(3L), Mockito.eq(new BigDecimal("10.59")), Mockito.eq("USD"),
-                Mockito.anyString(), Mockito.any(), Mockito.any());
+                Mockito.eq(10L), Mockito.isNull(), Mockito.eq(2L), Mockito.eq(3L), Mockito.eq(new BigDecimal("10.59")),
+                Mockito.eq("USD"), Mockito.anyString(), Mockito.any(), Mockito.any());
     }
 
 
@@ -186,8 +195,8 @@ class MerchantInboxServiceTests {
         assertThrows(IllegalArgumentException.class, () -> service.handle(paid));
 
         Mockito.verify(merchantOrderRepository, Mockito.never()).insertPaidOrderIfAbsent(
-                Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(), Mockito.anyString(),
-                Mockito.anyString(), Mockito.any(), Mockito.any());
+                Mockito.anyLong(), Mockito.any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(),
+                Mockito.anyString(), Mockito.anyString(), Mockito.any(), Mockito.any());
     }
 
 
@@ -230,8 +239,8 @@ class MerchantInboxServiceTests {
         // The row exists (every insert below is a no-op), so the events only move it forward.
         for (String status : List.of("ACCEPTED", "PREPARING", "COMPLETED")) {
             Mockito.verify(merchantOrderRepository).insertUnpaidOrderIfAbsent(
-                    Mockito.eq(10L), Mockito.eq(2L), Mockito.eq(3L), Mockito.eq(status), Mockito.any(),
-                    Mockito.eq("USD"), Mockito.anyString(), Mockito.isNull(), Mockito.any());
+                    Mockito.eq(10L), Mockito.isNull(), Mockito.eq(2L), Mockito.eq(3L), Mockito.eq(status),
+                    Mockito.any(), Mockito.eq("USD"), Mockito.anyString(), Mockito.isNull(), Mockito.any());
         }
 
         Mockito.verify(merchantOrderRepository).advanceStatus(
@@ -240,6 +249,70 @@ class MerchantInboxServiceTests {
                 Mockito.eq(10L), Mockito.eq(List.of("PAID", "ACCEPTED")), Mockito.eq("PREPARING"), Mockito.any());
         Mockito.verify(merchantOrderRepository).advanceStatus(
                 Mockito.eq(10L), Mockito.eq(List.of("PAID", "ACCEPTED", "PREPARING")), Mockito.eq("COMPLETED"), Mockito.any());
+        // Version 1 events carry no order number, so there is none to record.
+        Mockito.verify(merchantOrderRepository, Mockito.never()).recordOrderNo(Mockito.anyLong(), Mockito.any());
+    }
+
+
+    @Test
+    void orderPaid_version2_shouldStoreTheOrderNumberWithTheNewRow() {
+        OrderEventEnvelope paid = withOrderNo(orderEvent("order.paid", 10L, 2L, "PAID"), ORDER_NO);
+        Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
+        Mockito.when(merchantOrderRepository.insertPaidOrderIfAbsent(
+                Mockito.anyLong(), Mockito.any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(),
+                Mockito.anyString(), Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
+
+        service.handle(paid);
+
+        Mockito.verify(merchantOrderRepository).insertPaidOrderIfAbsent(
+                Mockito.eq(10L), Mockito.eq(ORDER_NO), Mockito.eq(2L), Mockito.eq(3L), Mockito.any(),
+                Mockito.eq("USD"), Mockito.anyString(), Mockito.any(), Mockito.any());
+        // The insert wrote it; there is no other row to fill.
+        Mockito.verify(merchantOrderRepository, Mockito.never()).recordOrderNo(Mockito.anyLong(), Mockito.any());
+    }
+
+
+    @Test
+    void laterOrderEvents_version2_shouldStoreTheNumberWithARowTheyCreateOrFillARowWithoutOne() {
+        Mockito.when(processedEventService.markIfUnseen(
+                Mockito.eq("merchant-inbox-consumer"), Mockito.any(OrderEventEnvelope.class))).thenReturn(true);
+        // Lenient: order.accepted calls the same insert with another status, which returns 0 (the row exists).
+        Mockito.lenient().when(merchantOrderRepository.insertUnpaidOrderIfAbsent(
+                        Mockito.anyLong(), Mockito.any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.eq("CANCELLED"),
+                        Mockito.any(), Mockito.anyString(), Mockito.anyString(), Mockito.any(), Mockito.any()))
+                .thenReturn(1);
+
+        // The row exists for orders 10 and 11 (their inserts are no-ops); order.cancelled creates order 12's.
+        service.handle(withOrderNo(orderEvent("order.accepted", 10L, 2L, "ACCEPTED"), ORDER_NO));
+        service.handle(withOrderNo(orderEvent("order.paid", 11L, 2L, "PAID"), ORDER_NO + 1));
+        service.handle(withOrderNo(orderEvent("order.cancelled", 12L, 2L, "CANCELLED"), ORDER_NO + 2));
+
+        Mockito.verify(merchantOrderRepository).advanceStatus(
+                Mockito.eq(10L), Mockito.eq(List.of("PAID")), Mockito.eq("ACCEPTED"), Mockito.any());
+        Mockito.verify(merchantOrderRepository).recordOrderNo(10L, ORDER_NO);
+        Mockito.verify(merchantOrderRepository).recordPayment(Mockito.eq(11L), Mockito.any(), Mockito.any());
+        Mockito.verify(merchantOrderRepository).recordOrderNo(11L, ORDER_NO + 1);
+        Mockito.verify(merchantOrderRepository).insertUnpaidOrderIfAbsent(
+                Mockito.eq(12L), Mockito.eq(ORDER_NO + 2), Mockito.eq(2L), Mockito.eq(3L), Mockito.eq("CANCELLED"),
+                Mockito.any(), Mockito.eq("USD"), Mockito.anyString(), Mockito.any(), Mockito.any());
+        Mockito.verify(merchantOrderRepository, Mockito.never()).recordOrderNo(Mockito.eq(12L), Mockito.any());
+        Mockito.verifyNoInteractions(outboxService);
+    }
+
+
+    /**
+     * A stale event moves nothing but still fills a row that has no number yet: the number never changes.
+     */
+    @Test
+    void staleEvent_version2_shouldOnlyRecordTheOrderNumber() {
+        OrderEventEnvelope accepted = withOrderNo(orderEvent("order.accepted", 10L, 2L, "ACCEPTED", 2), ORDER_NO);
+        Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", accepted)).thenReturn(true);
+        Mockito.when(sequenceTracker.advance("merchant-inbox-consumer", accepted)).thenReturn(false);
+
+        service.handle(accepted);
+
+        Mockito.verify(merchantOrderRepository).recordOrderNo(10L, ORDER_NO);
+        Mockito.verifyNoMoreInteractions(merchantOrderRepository);
     }
 
 
@@ -265,8 +338,8 @@ class MerchantInboxServiceTests {
         OrderEventEnvelope paid = orderEvent("order.paid", 10L, 2L, "PAID");
         Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
         Mockito.when(merchantOrderRepository.insertPaidOrderIfAbsent(
-                Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(), Mockito.anyString(),
-                Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
+                Mockito.anyLong(), Mockito.any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(),
+                Mockito.anyString(), Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
         Mockito.when(merchantAccountRepository.countActiveByRestaurantId(2L)).thenReturn(2);
 
         service.handle(paid);
@@ -296,8 +369,8 @@ class MerchantInboxServiceTests {
         OrderEventEnvelope paid = orderEvent("order.paid", 10L, 2L, "PAID");
         Mockito.when(processedEventService.markIfUnseen("merchant-inbox-consumer", paid)).thenReturn(true);
         Mockito.when(merchantOrderRepository.insertPaidOrderIfAbsent(
-                Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(), Mockito.anyString(),
-                Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
+                Mockito.anyLong(), Mockito.any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any(),
+                Mockito.anyString(), Mockito.anyString(), Mockito.any(), Mockito.any())).thenReturn(1);
         Mockito.when(merchantAccountRepository.countActiveByRestaurantId(2L)).thenReturn(0);
 
         service.handle(paid);

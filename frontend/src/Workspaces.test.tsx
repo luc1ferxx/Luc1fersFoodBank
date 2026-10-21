@@ -114,7 +114,9 @@ describe("role-based workspaces", () => {
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
     expect(await screen.findByRole("heading", { name: "Burger Barn orders" })).toBeInTheDocument();
-    expect(await screen.findByRole("article", { name: "Order #7" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("article", { name: `Order #${orderNoFor(7)}` }),
+    ).toBeInTheDocument();
     expect(switcher()).not.toBeInTheDocument();
     // A merchant-only login never loads a customer cart.
     expect(backend.callsTo("GET", "/cart")).toHaveLength(0);

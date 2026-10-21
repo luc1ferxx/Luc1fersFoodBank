@@ -31,12 +31,18 @@ import java.util.function.Function;
 
 
 import static com.laioffer.onlineorder.fulfilment.FulfilmentTestEvents.orderEvent;
+import static com.laioffer.onlineorder.fulfilment.FulfilmentTestEvents.withOrderNo;
 
 
 @ExtendWith(MockitoExtension.class)
 class DispatchServiceTests {
 
     private static final long ORDER_ID = 10L;
+
+    /**
+     * A Snowflake order number past 2^53.
+     */
+    private static final long ORDER_NO = 7_254_189_912_938_504_192L;
 
     @Mock
     private DeliveryRepository deliveryRepository;
@@ -87,7 +93,8 @@ class DispatchServiceTests {
         Mockito.when(deliveryRepository.findByOrderId(ORDER_ID)).thenReturn(null, delivery(7L, "ASSIGNED"));
         Mockito.when(riderRepository.lockLeastLoadedUnlockedRider()).thenReturn(rider(3L, "Alice"));
         Mockito.when(deliveryRepository.insertAssignedIfAbsent(
-                Mockito.eq(ORDER_ID), Mockito.eq(3L), Mockito.eq(2L), Mockito.eq(3L), Mockito.any())).thenReturn(1);
+                Mockito.eq(ORDER_ID), Mockito.isNull(), Mockito.eq(3L), Mockito.eq(2L), Mockito.eq(3L), Mockito.any()))
+                .thenReturn(1);
 
         service.handle(accepted);
 
@@ -124,7 +131,9 @@ class DispatchServiceTests {
         Mockito.when(riderRepository.lockLeastLoadedUnlockedRider()).thenReturn(null);
         Mockito.when(riderRepository.lockLeastLoadedRider()).thenReturn(rider(4L, "Bob"));
         Mockito.when(deliveryRepository.insertAssignedIfAbsent(
-                Mockito.eq(ORDER_ID), Mockito.anyLong(), Mockito.anyLong(), Mockito.eq(4L), Mockito.any())).thenReturn(1);
+                Mockito.eq(ORDER_ID), Mockito.any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.eq(4L),
+                Mockito.any()))
+                .thenReturn(1);
 
         service.handle(accepted);
 
@@ -144,7 +153,8 @@ class DispatchServiceTests {
         // Counted per attempt: the listener retries the record and every attempt counts again.
         Mockito.verify(metricsService).recordDispatchAssignment("no_rider_attempt");
         Mockito.verify(deliveryRepository, Mockito.never())
-                .insertAssignedIfAbsent(Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any());
+                .insertAssignedIfAbsent(Mockito.anyLong(), Mockito.any(), Mockito.anyLong(), Mockito.anyLong(),
+                        Mockito.anyLong(), Mockito.any());
         Mockito.verifyNoInteractions(outboxService);
     }
 
@@ -197,12 +207,129 @@ class DispatchServiceTests {
         Mockito.when(deliveryRepository.findByOrderId(ORDER_ID)).thenReturn(null);
         Mockito.when(riderRepository.lockLeastLoadedUnlockedRider()).thenReturn(rider(3L, "Alice"));
         Mockito.when(deliveryRepository.insertAssignedIfAbsent(
-                Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any())).thenReturn(0);
+                Mockito.anyLong(), Mockito.any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.anyLong(),
+                Mockito.any()))
+                .thenReturn(0);
 
         service.handle(accepted);
 
         Mockito.verify(riderRepository, Mockito.never()).incrementLoad(Mockito.anyLong(), Mockito.any());
         Mockito.verifyNoInteractions(outboxService);
+    }
+
+
+    @Test
+    void orderAccepted_version2_shouldStoreTheOrderNumberWithTheDelivery() {
+        OrderEventEnvelope accepted = withOrderNo(acceptedEvent(), ORDER_NO);
+        Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", accepted)).thenReturn(true);
+        openDispatchOrder();
+        Mockito.when(deliveryRepository.findByOrderId(ORDER_ID)).thenReturn(null, numbered(delivery(7L, "ASSIGNED")));
+        Mockito.when(riderRepository.lockLeastLoadedUnlockedRider()).thenReturn(rider(3L, "Alice"));
+        Mockito.when(deliveryRepository.insertAssignedIfAbsent(
+                Mockito.eq(ORDER_ID), Mockito.eq(ORDER_NO), Mockito.eq(3L), Mockito.eq(2L), Mockito.eq(3L),
+                Mockito.any())).thenReturn(1);
+
+        service.handle(accepted);
+
+        Mockito.verify(riderRepository).incrementLoad(Mockito.eq(3L), Mockito.any());
+        // The insert wrote it; there is no other delivery to fill.
+        Mockito.verify(deliveryRepository, Mockito.never()).recordOrderNo(Mockito.anyLong(), Mockito.any());
+    }
+
+
+    @Test
+    void orderAccepted_version2_forAnOrderThatHasADelivery_shouldOnlyFillAMissingNumber() {
+        OrderEventEnvelope accepted = withOrderNo(acceptedEvent(), ORDER_NO);
+        Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", accepted)).thenReturn(true);
+        openDispatchOrder();
+        Mockito.when(deliveryRepository.findByOrderId(ORDER_ID)).thenReturn(delivery(7L, "ASSIGNED"));
+
+        service.handle(accepted);
+
+        Mockito.verify(deliveryRepository).recordOrderNo(ORDER_ID, ORDER_NO);
+        Mockito.verifyNoInteractions(riderRepository, outboxService);
+        Mockito.verify(metricsService).recordDispatchAssignment("duplicate");
+    }
+
+
+    @Test
+    void orderCancelled_version2_shouldFillAMissingNumberUnderTheLocksAndStillCancelTheDelivery() {
+        OrderEventEnvelope cancelled = withOrderNo(orderEvent("order.cancelled", ORDER_ID, 2L, "CANCELLED"), ORDER_NO);
+        Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", cancelled)).thenReturn(true);
+        openDispatchOrder();
+        Mockito.when(deliveryRepository.lockByOrderId(ORDER_ID)).thenReturn(delivery(7L, "ASSIGNED"));
+        Mockito.when(riderRepository.findById(3L)).thenReturn(Optional.of(rider(3L, "Alice")));
+        Mockito.when(deliveryRepository.compareAndSetStatus(
+                Mockito.eq(7L), Mockito.eq("ASSIGNED"), Mockito.eq(3L), Mockito.eq("CANCELLED"),
+                Mockito.isNull(), Mockito.isNull(), Mockito.any(), Mockito.any())).thenReturn(1);
+
+        service.handle(cancelled);
+
+        // The dispatch row, then the delivery row, as in every handler; the number is written under both locks.
+        org.mockito.InOrder writeOrder = Mockito.inOrder(dispatchOrderRepository, deliveryRepository);
+        writeOrder.verify(dispatchOrderRepository).lockByOrderId(ORDER_ID);
+        writeOrder.verify(deliveryRepository).lockByOrderId(ORDER_ID);
+        writeOrder.verify(deliveryRepository).recordOrderNo(ORDER_ID, ORDER_NO);
+        writeOrder.verify(deliveryRepository).compareAndSetStatus(
+                Mockito.eq(7L), Mockito.eq("ASSIGNED"), Mockito.eq(3L), Mockito.eq("CANCELLED"),
+                Mockito.isNull(), Mockito.isNull(), Mockito.any(), Mockito.any());
+        Mockito.verify(riderRepository).decrementLoad(Mockito.eq(3L), Mockito.any());
+    }
+
+
+    /**
+     * A stale event changes no delivery and assigns no rider, but still fills a missing number: it never changes.
+     */
+    @Test
+    void staleOrderEvent_version2_shouldOnlyFillAMissingNumber() {
+        OrderEventEnvelope accepted = withOrderNo(orderEvent("order.accepted", ORDER_ID, 2L, "ACCEPTED", 3), ORDER_NO);
+        Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", accepted)).thenReturn(true);
+        Mockito.when(sequenceTracker.advance("dispatch-consumer", accepted)).thenReturn(false);
+
+        service.handle(accepted);
+
+        Mockito.verify(deliveryRepository).recordOrderNo(ORDER_ID, ORDER_NO);
+        Mockito.verifyNoMoreInteractions(deliveryRepository);
+        Mockito.verifyNoInteractions(dispatchOrderRepository, riderRepository, outboxService);
+    }
+
+
+    @Test
+    void orderEvents_version1_shouldRecordNoOrderNumber() {
+        OrderEventEnvelope accepted = acceptedEvent();
+        Mockito.when(processedEventService.markIfUnseen("dispatch-consumer", accepted)).thenReturn(true);
+        openDispatchOrder();
+        Mockito.when(deliveryRepository.findByOrderId(ORDER_ID)).thenReturn(delivery(7L, "ASSIGNED"));
+
+        service.handle(accepted);
+
+        Mockito.verify(deliveryRepository, Mockito.never()).recordOrderNo(Mockito.anyLong(), Mockito.any());
+    }
+
+
+    /**
+     * Status moves and reassignments write neither the order id nor its number, and return the delivery with both.
+     */
+    @Test
+    void movesAndReassignment_shouldKeepTheDeliverysOrderNumber() {
+        Mockito.when(deliveryRepository.lockByIdAndRiderId(7L, 3L)).thenReturn(numbered(delivery(7L, "ASSIGNED")));
+        Mockito.when(deliveryRepository.lockById(8L)).thenReturn(numbered(delivery(8L, "PICKED_UP")));
+        Mockito.when(riderRepository.findById(3L)).thenReturn(Optional.of(rider(3L, "Alice")));
+        Mockito.when(riderRepository.lockById(3L)).thenReturn(rider(3L, "Alice"));
+        Mockito.when(riderRepository.lockById(4L)).thenReturn(rider(4L, "Bob"));
+        Mockito.when(deliveryRepository.compareAndSetStatus(
+                Mockito.eq(7L), Mockito.eq("ASSIGNED"), Mockito.eq(3L), Mockito.eq("PICKED_UP"),
+                Mockito.any(), Mockito.isNull(), Mockito.isNull(), Mockito.any())).thenReturn(1);
+        Mockito.when(deliveryRepository.compareAndSetRider(
+                Mockito.eq(8L), Mockito.eq(3L), Mockito.eq(4L), Mockito.any())).thenReturn(1);
+
+        DeliveryEntity pickedUp = service.advanceForRider(3L, 7L, DeliveryStatus.PICKED_UP);
+        DeliveryDto reassigned = service.reassign(8L, 4L);
+
+        Assertions.assertEquals(ORDER_NO, pickedUp.orderNo());
+        Assertions.assertEquals(ORDER_NO, reassigned.orderNo());
+        Assertions.assertEquals(ORDER_ID, reassigned.orderId());
+        Mockito.verify(deliveryRepository, Mockito.never()).recordOrderNo(Mockito.anyLong(), Mockito.any());
     }
 
 
@@ -720,9 +847,31 @@ class DispatchServiceTests {
         return new DeliveryEntity(
                 delivery.id(),
                 delivery.orderId(),
+                delivery.orderNo(),
                 delivery.customerId(),
                 delivery.restaurantId(),
                 riderId,
+                delivery.status(),
+                delivery.assignedAt(),
+                delivery.pickedUpAt(),
+                delivery.deliveredAt(),
+                delivery.cancelledAt(),
+                delivery.updatedAt()
+        );
+    }
+
+
+    /**
+     * {@code delivery} with the order number {@link #ORDER_NO}.
+     */
+    private static DeliveryEntity numbered(DeliveryEntity delivery) {
+        return new DeliveryEntity(
+                delivery.id(),
+                delivery.orderId(),
+                ORDER_NO,
+                delivery.customerId(),
+                delivery.restaurantId(),
+                delivery.riderId(),
                 delivery.status(),
                 delivery.assignedAt(),
                 delivery.pickedUpAt(),
@@ -738,6 +887,7 @@ class DispatchServiceTests {
         return new DeliveryEntity(
                 id,
                 ORDER_ID,
+                null,
                 3L,
                 2L,
                 3L,

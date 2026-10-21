@@ -78,7 +78,39 @@ public final class FulfilmentTestEvents {
                         data.createdAt(),
                         data.items(),
                         data.restaurantId(),
-                        data.reason()
+                        data.reason(),
+                        data.orderNo()
+                )
+        );
+    }
+
+
+    /**
+     * {@code event} as a version 2 event that carries the order's public number, like OrderEventOutboxService writes
+     * it now; the other builders here make version 1 events, which carry none.
+     */
+    public static OrderEventEnvelope withOrderNo(OrderEventEnvelope event, Long orderNo) {
+        OrderEventPayload data = event.data();
+        return new OrderEventEnvelope(
+                event.eventId(),
+                2,
+                event.eventType(),
+                event.aggregateType(),
+                event.aggregateId(),
+                event.sequence(),
+                event.occurredAt(),
+                event.correlationId(),
+                event.idempotencyKey(),
+                new OrderEventPayload(
+                        data.customerId(),
+                        data.status(),
+                        data.totalPrice(),
+                        data.currency(),
+                        data.createdAt(),
+                        data.items(),
+                        data.restaurantId(),
+                        data.reason(),
+                        orderNo
                 )
         );
     }

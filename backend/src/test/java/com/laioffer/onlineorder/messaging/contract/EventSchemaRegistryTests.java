@@ -40,13 +40,13 @@ class EventSchemaRegistryTests {
 
     @Test
     void validate_aNewerVersion_shouldUseTheLatestKnownSchemaSoACompatibleAdditionPasses() {
-        // A v7 producer added "tip"; this instance knows v1 only. Schemas are open, so the event passes.
+        // A v7 producer added "tip"; this instance knows v2 at most. Schemas are open, so the event passes.
         EventValidation validation = registry().validate(
                 EventTopic.ORDER_EVENTS, json(ORDER_PAID.formatted("7", ",\"tip\":1.5")));
 
         Assertions.assertTrue(validation.valid(), validation.violations()::toString);
         Assertions.assertFalse(validation.exactVersion());
-        Assertions.assertEquals("order-events/order.paid/v1.json", validation.schemaPath());
+        Assertions.assertEquals("order-events/order.paid/v2.json", validation.schemaPath());
     }
 
 
@@ -121,7 +121,8 @@ class EventSchemaRegistryTests {
         JsonNode event = json(ORDER_PAID.formatted("1", ""));
 
         Assertions.assertEquals(List.of(), registry().validate("order.paid", 1, event));
-        Assertions.assertThrows(IllegalArgumentException.class, () -> registry().validate("order.paid", 2, event));
+        Assertions.assertEquals(List.of(), registry().validate("order.paid", 2, event));
+        Assertions.assertThrows(IllegalArgumentException.class, () -> registry().validate("order.paid", 3, event));
         Assertions.assertThrows(IllegalArgumentException.class, () -> registry().validate("order.refunded", 1, event));
     }
 

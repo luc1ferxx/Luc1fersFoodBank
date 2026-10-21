@@ -53,6 +53,10 @@ import java.util.UUID;
  *
  * <p>A row keeps the order's currency from the event; an event published before orders carried one is USD, the
  * currency of every order of that time.
+ *
+ * <p>The order's public number (data.order_no, order events version 2) is stored with the row that an event creates.
+ * A row that has none yet (only version 1 events reached it) gets it from the next event that carries it, a stale one
+ * included: the number never changes, so no event order can make it wrong, and a stored one is never replaced.
  */
 @Service
 public class MerchantInboxService {
@@ -113,7 +117,8 @@ public class MerchantInboxService {
     /**
      * An event older (by sequence) than the last order event this consumer applied for the order is stale: the row
      * already reflects a later state, so its status stays. A stale order.paid still records the payment time when the
-     * row has none (a later event created it first), exactly like an order.paid without a sequence that finds a row.
+     * row has none (a later event created it first), exactly like an order.paid without a sequence that finds a row,
+     * and any stale event still records the order number when the row has none.
      */
     @Transactional
     public void handle(OrderEventEnvelope event) {
@@ -134,6 +139,7 @@ public class MerchantInboxService {
             if (FulfilmentEvents.ORDER_PAID.equals(event.eventType())) {
                 merchantOrderRepository.recordPayment(orderId, event.occurredAt() == null ? now : event.occurredAt(), now);
             }
+            recordOrderNo(orderId, data);
             return;
         }
         switch (event.eventType()) {
@@ -141,6 +147,7 @@ public class MerchantInboxService {
                 LocalDateTime paidAt = event.occurredAt() == null ? now : event.occurredAt();
                 int inserted = merchantOrderRepository.insertPaidOrderIfAbsent(
                         orderId,
+                        data.orderNo(),
                         data.restaurantId(),
                         data.customerId(),
                         data.totalPrice(),
@@ -151,6 +158,7 @@ public class MerchantInboxService {
                 );
                 if (inserted == 0) {
                     merchantOrderRepository.recordPayment(orderId, paidAt, now);
+                    recordOrderNo(orderId, data);
                 } else {
                     announceIfStaffed(event, orderId, data.restaurantId(), paidAt, now);
                 }
@@ -158,25 +166,39 @@ public class MerchantInboxService {
             case FulfilmentEvents.ORDER_ACCEPTED -> {
                 if (insertUnpaidIfAbsent(orderId, data, "ACCEPTED", null, now) == 0) {
                     merchantOrderRepository.advanceStatus(orderId, BEFORE_ACCEPTED, "ACCEPTED", now);
+                    recordOrderNo(orderId, data);
                 }
             }
             case FulfilmentEvents.ORDER_PREPARING -> {
                 if (insertUnpaidIfAbsent(orderId, data, "PREPARING", null, now) == 0) {
                     merchantOrderRepository.advanceStatus(orderId, BEFORE_PREPARING, "PREPARING", now);
+                    recordOrderNo(orderId, data);
                 }
             }
             case FulfilmentEvents.ORDER_COMPLETED -> {
                 if (insertUnpaidIfAbsent(orderId, data, "COMPLETED", null, now) == 0) {
                     merchantOrderRepository.advanceStatus(orderId, NOT_FINISHED, "COMPLETED", now);
+                    recordOrderNo(orderId, data);
                 }
             }
             case FulfilmentEvents.ORDER_CANCELLED -> {
                 if (insertUnpaidIfAbsent(orderId, data, "CANCELLED", data.reason(), now) == 0) {
                     merchantOrderRepository.cancel(orderId, NOT_FINISHED, data.reason(), now);
+                    recordOrderNo(orderId, data);
                 }
             }
             default -> {
             }
+        }
+    }
+
+
+    /**
+     * Gives an existing row the order number the event carries, unless the row has one already.
+     */
+    private void recordOrderNo(Long orderId, OrderEventPayload data) {
+        if (data.orderNo() != null) {
+            merchantOrderRepository.recordOrderNo(orderId, data.orderNo());
         }
     }
 
@@ -221,8 +243,8 @@ public class MerchantInboxService {
 
 
     /**
-     * @return 1 when this event created the order's row (it reached the group before order.paid), 0 when the order
-     * already has one
+     * @return 1 when this event created the order's row (it reached the group before order.paid), with the order
+     * number when the event carries one; 0 when the order already has one
      */
     private int insertUnpaidIfAbsent(
             Long orderId,
@@ -233,6 +255,7 @@ public class MerchantInboxService {
     ) {
         return merchantOrderRepository.insertUnpaidOrderIfAbsent(
                 orderId,
+                data.orderNo(),
                 data.restaurantId(),
                 data.customerId(),
                 status,

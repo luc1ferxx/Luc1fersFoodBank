@@ -16,7 +16,8 @@ public interface MerchantOrderRepository extends ListCrudRepository<MerchantOrde
 
     /**
      * Adds the inbox row of a paid order unless the order already has one, and returns the rows inserted: 1 or 0.
-     * Inbox rows are only shown to the merchant (listings and commands) once they have a paid_at.
+     * Inbox rows are only shown to the merchant (listings and commands) once they have a paid_at. {@code orderNo} is
+     * null for a version 1 event.
      * Target-less ON CONFLICT so that H2 (PostgreSQL mode) parses it; the only constraint an insert can violate is
      * uq_merchant_order_order.
      */
@@ -24,6 +25,7 @@ public interface MerchantOrderRepository extends ListCrudRepository<MerchantOrde
     @Query("""
             INSERT INTO merchant_orders (
                 order_id,
+                order_no,
                 restaurant_id,
                 customer_id,
                 status,
@@ -35,6 +37,7 @@ public interface MerchantOrderRepository extends ListCrudRepository<MerchantOrde
                 updated_at
             ) VALUES (
                 :orderId,
+                :orderNo,
                 :restaurantId,
                 :customerId,
                 'PAID',
@@ -49,6 +52,7 @@ public interface MerchantOrderRepository extends ListCrudRepository<MerchantOrde
             """)
     int insertPaidOrderIfAbsent(
             Long orderId,
+            Long orderNo,
             Long restaurantId,
             Long customerId,
             BigDecimal totalPrice,
@@ -69,6 +73,7 @@ public interface MerchantOrderRepository extends ListCrudRepository<MerchantOrde
     @Query("""
             INSERT INTO merchant_orders (
                 order_id,
+                order_no,
                 restaurant_id,
                 customer_id,
                 status,
@@ -80,6 +85,7 @@ public interface MerchantOrderRepository extends ListCrudRepository<MerchantOrde
                 updated_at
             ) VALUES (
                 :orderId,
+                :orderNo,
                 :restaurantId,
                 :customerId,
                 :status,
@@ -94,6 +100,7 @@ public interface MerchantOrderRepository extends ListCrudRepository<MerchantOrde
             """)
     int insertUnpaidOrderIfAbsent(
             Long orderId,
+            Long orderNo,
             Long restaurantId,
             Long customerId,
             String status,
@@ -118,6 +125,21 @@ public interface MerchantOrderRepository extends ListCrudRepository<MerchantOrde
               AND paid_at IS NULL
             """)
     int recordPayment(Long orderId, LocalDateTime paidAt, LocalDateTime updatedAt);
+
+
+    /**
+     * Any order event that carries the order's public number, stale ones included, for an order that already has a
+     * row: sets the number if the row has none (the events that reached it so far were version 1). An order's number
+     * never changes, so a stored one is never replaced. updated_at stays: the order did not change.
+     */
+    @Modifying
+    @Query("""
+            UPDATE merchant_orders
+            SET order_no = :orderNo
+            WHERE order_id = :orderId
+              AND order_no IS NULL
+            """)
+    int recordOrderNo(Long orderId, Long orderNo);
 
 
     /**
