@@ -14,6 +14,7 @@ How OnlineOrder is observed, packaged, deployed and gated. Paths are relative to
 | Event contracts, per-aggregate order | section 8 |
 | Partitions, order numbers, worker ids | section 9; the sharding plan in `docs/adr/0001-order-sharding.md` |
 | Money and currencies | section 10 |
+| After-sales refunds (runbook, V12 rollout, poller) | `backend/src/main/java/com/laioffer/onlineorder/aftersales/`, section 12 |
 
 ## 1. Telemetry in the application
 
@@ -104,6 +105,7 @@ Application metrics on top of Spring Boot's (HTTP, Hikari, Tomcat, JVM, Kafka cl
 | `onlineorder_partitions_created_total{table}`, `onlineorder_partitions_dropped_total{table}`, `onlineorder_partitions_maintenance_failures_total{table}` | Partition maintenance job |
 | `onlineorder_ids_worker_id`, `onlineorder_ids_clock_backward_total{outcome}`, `onlineorder_ids_lease_lost_total` | Snowflake order numbers (section 9): the worker id in use (-1 without a lease), clock steps back waited out or refused, leases taken over |
 | `onlineorder_db_routing_reads_total{target,reason}`, `onlineorder_db_replica_lag_seconds{replica}`, `onlineorder_db_replica_routable{replica}` | Read replicas (only with `DATABASE_REPLICA_URLS`; section 11) |
+| `onlineorder_aftersales_refunds_total{outcome}`, `onlineorder_aftersales_cancellations_undercaptured_total`, `onlineorder_aftersales_deadlines_total{trigger,outcome}`, `onlineorder_aftersales_steps_total{action,from,to}`, `onlineorder_aftersales_merchant_decisions_total{decision}` | After-sales refunds, deadlines, case steps and merchant answers (section 12) |
 
 `http.server.requests` publishes a percentiles histogram bounded to 5ms-10s plus exact SLO buckets at 50ms, 100ms,
 250ms, 500ms, 1s and 2s. The latency objective reads the `le="0.5"` bucket.
@@ -187,6 +189,9 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 | `OnlineOrderPartitionDefaultRows` | rows in a table's default partition for 1h (section 9) | warning |
 | `OnlineOrderDbReplicaLagging` | a read replica > 2s behind the primary for 5m (it gets no reads meanwhile; section 11) | warning |
 | `OnlineOrderDbReplicaUnavailable` | a read replica gets no reads for 5m (lagging, unreachable or not a standby) | warning |
+| `OnlineOrderRefundsGivenUp` | an after-sales refund became `FAILED` in the last 15m, including the first one after a start; retry with `POST /admin/refunds/{id}/retry` (section 12) | warning |
+| `OnlineOrderRefundsBackingOff` | refund claims failed (`outcome="backed_off"`) in every 5m window for 15m; such refunds never reach `FAILED` on their own (section 12) | warning |
+| `OnlineOrderCancellationsUndercaptured` | a paid order was cancelled with a total above its captured payment in the last 15m; its refund will be given up (section 12) | warning |
 
 On Kubernetes, load the same file into Prometheus (or wrap it in a `PrometheusRule` for the Prometheus Operator) and
 make sure the scrape job is named `onlineorder` or adjust `OnlineOrderTargetDown`.
@@ -271,8 +276,9 @@ kubectl apply -k deploy/k8s/overlays/staging
 kubectl -n onlineorder-staging rollout status deployment/onlineorder
 ```
 
-Keep `maxReplicas x DATABASE_POOL_MAX_SIZE` below PostgreSQL's `max_connections` (prod: 6 x 20). Flyway migrates on
-startup; concurrent pods wait on Flyway's lock. Demo seed data (`db/demo`) is not enabled in either overlay.
+Keep `maxReplicas x DATABASE_POOL_MAX_SIZE` below PostgreSQL's `max_connections` (prod: 6 x 20); section 12 compares
+the pool with the pod's Kafka consumer threads. Flyway migrates on startup; concurrent pods wait on Flyway's lock. Demo
+seed data (`db/demo`) is not enabled in either overlay.
 
 Validate the manifests:
 
@@ -304,6 +310,7 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
 | `APP_IDS_WORKER_ID_SOURCE` | `static` (with `APP_IDS_WORKER_ID`, default 0) | ConfigMap: `lease` (section 8) |
 | `CLEANUP_AUDIT_LOG_RETENTION`, `CLEANUP_ORDER_STATUS_HISTORY_RETENTION` | `0d` (kept forever) | - |
 | `PARTITIONS_MONTHS_AHEAD`, `PARTITIONS_LOCK_TIMEOUT`, `PARTITIONS_MAINTENANCE_ENABLED` | 3, 5s, true | - |
+| `AFTER_SALES_*` (time limits, poller, refunds, refund gateway, consumer groups), `KAFKA_AFTER_SALES_TOPIC`, `FULFILMENT_LISTENER_CONCURRENCY` | section 12 | - |
 
 ## 5. CI gates
 
@@ -877,10 +884,11 @@ read-only; the lazy proxy defers the physical connection to the first statement,
 - **Replica**: a read-only transaction declared by application code, `@Transactional(readOnly = true)` on a service
   method or `ReadOnlyTransactions.read(...)`. These are deliberately chosen read paths: catalog loads behind the cache
   (cache misses only; a hit opens no transaction), `GET /orders`, `GET /orders/{id}/history`, `GET /notifications`,
-  the merchant inbox (`GET /merchant/orders`), the rider's deliveries (`GET /rider/deliveries`) and the admin lists
-  (`/admin/audit-log`, `/admin/merchants`, `/admin/riders`, `/admin/deliveries`). The merchant's and rider's active
-  check runs before the read-only part, outside it, so a deactivation takes effect on the next request whatever the
-  lag.
+  the merchant inbox (`GET /merchant/orders`), the rider's deliveries (`GET /rider/deliveries`), the admin lists
+  (`/admin/audit-log`, `/admin/merchants`, `/admin/riders`, `/admin/deliveries`) and the after-sales reads
+  (`GET /after-sales/cases`, `/after-sales/cases/{caseId}`, `/merchant/after-sales`, `/admin/after-sales`,
+  `/admin/after-sales/{caseId}`, `/admin/refunds`; section 12). The merchant's and rider's active check runs before the
+  read-only part, outside it, so a deactivation takes effect on the next request whatever the lag.
 - **Primary**: everything else. Write transactions and everything in them: row locks (`FOR UPDATE`), idempotency
   checks, outbox claims and publishing, consumers, the deadline poller, DLT replay. Statements outside a transaction:
   login (`JdbcUserDetailsManager`), the customer lookup every controller does, the health check, the outbox metrics.
@@ -1013,3 +1021,282 @@ replica with Redis hung; `FulfilmentReplicaRoutingContainerTests` runs the whole
 `ReplicaTargetTests` (the deadline on a virtual clock, with check rounds up to 5s), `ReplicaRouterTests`,
 `ReplicaLagMonitorTests`, `WalPositionHistoryTests`, `ReadYourWritesTrackerTests` and
 `ReadWriteRoutingConfigurationTests` cover the parts.
+
+## 12. After-sales refunds (V12-V12_2)
+
+Refund requests on completed orders and the automatic refund of cancelled paid orders. Cases, refunds, the poller and
+the customer and admin API are in `backend/src/main/java/com/laioffer/onlineorder/aftersales/`, the merchant's side in
+`fulfilment.merchant`, the customer notifications in `fulfilment.notification`. The states, deadlines and amount rules
+are in [docs/adr/0002-after-sales-state-machine.md](adr/0002-after-sales-state-machine.md) (its sections 21-26 record
+what was built); this section is the operator's side.
+
+### How a refund is paid
+
+- A case reaches `REFUNDING` with an approved amount when the merchant approves, a counter-offer is accepted or times
+  out, the merchant or the platform does not answer in time, or an admin arbitrates. A paid order cancelled from `PAID`
+  or `ACCEPTED` opens an `ORDER_CANCELLED` case of its whole total, straight in `REFUNDING`, in the cancel's own
+  transaction. The step that enters `REFUNDING` inserts the case's `refunds` row: `PENDING`, due at once, with
+  `gateway_key` `after-sales-case:{caseId}`.
+- The after-sales poller (`AfterSalesPoller`, thread `after-sales-poller`, not the shared scheduler) runs on every
+  instance; its claims use `FOR UPDATE SKIP LOCKED`, so two instances never take the same case or refund. Each tick
+  fires the due deadlines, then executes the due refunds one at a time:
+  1. The claim transaction takes an expired lease first, else the most overdue `PENDING` refund, counts an attempt and
+     leases it (`PROCESSING`) for `refund.claim-timeout`. Before the lease it checks the refund against its case and
+     the order's `order_payments` row: the case is `REFUNDING`, the refund is its approved amount, and the payment it
+     names captured at least that much. A refund that fails the check is given up here, without a call.
+  2. The gateway call runs outside any transaction, on one of `refund-gateway.max-threads` threads (`refund-gateway-N`),
+     and is waited for at most `refund-gateway.timeout`.
+  3. The record transaction marks the refund `SUCCEEDED` and its case `REFUNDED` (event `aftersales.case_refunded`).
+     A retryable failure goes back to `PENDING` for `retry-backoff` x 2^(attempts - 1), at most `retry-backoff-max`; a
+     permanent failure, or the failure of the last of `max-attempts`, makes it `FAILED` with `last_error`. The case
+     stays `REFUNDING`; no event or notification is sent for a `FAILED` refund.
+- With the defaults a gateway that keeps failing gives a refund up about 21 minutes after its first attempt: 8 attempts,
+  10s, 20s, 40s, 80s, 160s, 320s and 600s apart.
+- The gateway must be idempotent per `gateway_key`: a call that outlived its timeout may still arrive, and a refund
+  whose executor died is reclaimed after its lease and called again with the same key. `SimulatedRefundGateway`, the
+  implementation in this repository, is idempotent: it answers `SIMREF-` and a hash of the key. It fails the first
+  `AFTER_SALES_REFUND_GATEWAY_FAIL_FIRST_ATTEMPTS` (0) attempts of every refund as retryable, for demos and tests. A
+  real gateway has to deduplicate on the key too.
+
+| Setting (`app.after-sales.*`) | Default | Variable |
+| --- | --- | --- |
+| `poller.enabled` | follows `app.kafka.enabled`: on, off in `h2`, on in `h2,demo` | `AFTER_SALES_POLLER_ENABLED` |
+| `poller.interval` | 1s between ticks | `AFTER_SALES_POLL_INTERVAL` |
+| `poller.batch-size` | at most 100 cases, then 100 refunds per tick | `AFTER_SALES_POLL_BATCH_SIZE` |
+| `poller.tick-budget` | 5s per tick, for the deadlines and then the refunds | `AFTER_SALES_POLL_TICK_BUDGET` |
+| `poller.retry-backoff` | 30s before a deadline that failed to fire is tried again | `AFTER_SALES_DEADLINE_RETRY_BACKOFF` |
+| `refund.max-attempts` | 8 gateway calls, a reclaim after an expired lease included | `AFTER_SALES_REFUND_MAX_ATTEMPTS` |
+| `refund.retry-backoff` | 10s, doubled after every further failed call; a failed claim waits 10s, never doubled | `AFTER_SALES_REFUND_RETRY_BACKOFF` |
+| `refund.retry-backoff-max` | 10m | `AFTER_SALES_REFUND_RETRY_BACKOFF_MAX` |
+| `refund.claim-timeout` | 60s lease of a claimed refund | `AFTER_SALES_REFUND_CLAIM_TIMEOUT` |
+| `refund-gateway.timeout` | 10s; must be below `refund.claim-timeout` | `AFTER_SALES_REFUND_GATEWAY_TIMEOUT` |
+| `refund-gateway.max-threads` | 4 gateway calls at once, calls that outlived their timeout included | `AFTER_SALES_REFUND_GATEWAY_MAX_THREADS` |
+| `request-window`, `merchant-response-timeout`, `customer-response-timeout`, `arbitration-timeout` | 24h, 24h, 48h, 72h | `AFTER_SALES_REQUEST_WINDOW`, `AFTER_SALES_MERCHANT_RESPONSE_TIMEOUT`, `AFTER_SALES_CUSTOMER_RESPONSE_TIMEOUT`, `AFTER_SALES_ARBITRATION_TIMEOUT` |
+| `topic`, `merchant-group`, `notification-group` | `after-sales-events`, `onlineorder-merchant-aftersales`, `onlineorder-aftersales-notification` | `KAFKA_AFTER_SALES_TOPIC`, `AFTER_SALES_MERCHANT_GROUP`, `AFTER_SALES_NOTIFICATION_GROUP` |
+
+The application does not start when `refund.max-attempts` or `refund-gateway.max-threads` is below 1, a time limit,
+backoff, timeout or the tick budget is not positive, `retry-backoff-max` is below `retry-backoff`, or
+`refund-gateway.timeout` is not below `refund.claim-timeout`. `poller.interval` and `poller.batch-size` are not checked:
+an interval below 1 ms runs as 1 ms, a batch size below 1 as 1. The tick budget bounds what a slow or hung gateway costs
+the deadlines: each job stops claiming once the budget is spent, after one case or refund at least, and a call already
+started runs to its timeout, so the next tick's deadlines wait about the budget plus one gateway timeout (15s with the
+defaults).
+
+**Demo profile.** `SPRING_PROFILES_ACTIVE=h2,demo` (`application-demo.yml`) sets a 2h request window, 2m for the
+merchant, 3m for the customer and 5m for the platform, and turns the poller on although `h2` has no Kafka; the variables
+above still override it. The steps are in README "After-sales demo". With `h2` nothing consumes `after-sales-events`, so
+the merchant inbox stays empty (merchant commands answer 404) and no notifications are written; the merchant timeout
+still fires from the database and approves the request. `demo` on the full local stack shortens the same limits with
+Kafka on. The Kubernetes overlays do not set it.
+
+### Metrics and alerts
+
+| Metric (Prometheus name) | Meaning |
+| --- | --- |
+| `onlineorder_aftersales_refunds_total{outcome}` | Refunds the executor handled, counted after their transaction committed: `succeeded`, `retried` (waits for its backoff), `failed` (given up), `superseded` (another instance reclaimed it after the lease ended; this result was discarded), `unrecorded` (the result could not be recorded, or the wait was interrupted at shutdown; reclaimed after the lease), `skipped` (claimed but not due after all; ends the run), `backed_off` (the claim transaction failed) |
+| `onlineorder_aftersales_cancellations_undercaptured_total` | Paid orders cancelled with a total above their captured payment |
+| `onlineorder_aftersales_deadlines_total{trigger,outcome}` | Deadlines the poller handled: `trigger` `merchant_timeout`, `offer_timeout`, `customer_timeout`, `arbitration_timeout` (`none` for a failure on a case whose status has none); `outcome` `fired`, `skipped` (refused, nothing written) or `failed` (rolled back, backs off) |
+| `onlineorder_aftersales_steps_total{action,from,to}` | Committed steps of cases: `action` `open`, `order_cancelled` or the trigger (`merchant_approve`, `customer_withdraw`, `admin_approve_partial`, `refund_succeeded`, ...), `from` `none` for an opening, statuses in lower case |
+| `onlineorder_aftersales_merchant_decisions_total{decision}` | Merchant answers that changed a case: `approved`, `rejected`, `offered` |
+
+Every series is registered by its first increment, so it starts at 1; `OnlineOrderRefundsGivenUp` and
+`OnlineOrderCancellationsUndercaptured` therefore also fire on a series that appeared within their 15-minute window,
+as `OnlineOrderDeadLettersGrowing` does. `OnlineOrderRefundsBackingOff` needs back-offs in every 5-minute window for
+15 minutes, so a database blip does not raise it. The alerts mark when something happened; a `FAILED` refund stays
+`FAILED` after the alert resolved. Tests are in `alerts.test.yml`.
+
+### Runbook
+
+**A refund was given up** (`OnlineOrderRefundsGivenUp`). List the refunds (the admin console's After-sales section shows
+the same table with a retry button):
+
+```sh
+curl -sf "$BASE_URL/admin/refunds?status=FAILED&limit=100" -b "$ADMIN_COOKIE"
+```
+
+`status` is `PENDING`, `PROCESSING`, `SUCCEEDED` or `FAILED` in upper case (`FAILED` when left out, 400 for anything
+else), `limit` 1-100 (50), newest first. Each entry has `case_id`, `order_id`, `order_no`, `attempts` and
+`last_error`; the ERROR log line "Refund ... gave up after N attempt(s): ..." has the same error. With read replicas
+the list may be up to `max-lag` behind (section 11).
+
+| `last_error` | Cause | What to do |
+| --- | --- | --- |
+| the gateway's error, for example "The refund gateway did not answer within 10000 ms" | a permanent failure, or the last of `max-attempts` retryable ones | fix the gateway side, then retry |
+| "The lease of attempt N expired without a result and no attempt is left" | the instance making the last attempt died or stalled; that call may have refunded | retry: the gateway answers the same key with the same refund |
+| "Case ... is ..., not REFUNDING", "The refund of ... is not the approved amount ...", "Order ... has no captured payment", "The refund names the payment ... but order ... was paid by ...", "The refund of ... exceeds the ... captured by payment ..." | the refund does not match its case or the order's payment; checked before every call, so nothing was paid | a retry fails the same way: correct the data, or refund the customer by hand |
+
+Then retry it:
+
+```sh
+curl -sf -X POST "$BASE_URL/admin/refunds/<id>/retry" -b "$ADMIN_COOKIE"
+```
+
+The refund becomes `PENDING`, due at once, with its attempts reset, and the next tick calls the gateway with the same
+`gateway_key`; `last_error` stays until that attempt. The audit log has `refund.retry` with `case_id`, `order_id`,
+`previous_attempts` and `last_error`. A refund that is already `PENDING` answers 200 unchanged and is not audited again;
+`PROCESSING` or `SUCCEEDED` answers 409 `REFUND_STATUS_CONFLICT`, an unknown id 404. The retry takes no
+`Idempotency-Key`.
+
+**Refunds that keep backing off** (`OnlineOrderRefundsBackingOff`, `outcome="backed_off"`). The claim transaction failed
+after it had claimed the refund, before any call: a database error (lock or statement timeout, a lost connection) or an
+exception while the refund was checked against its case and payment. Only that refund backs off, in a transaction of
+its own and only while it is still at the version claimed: its next attempt, or for an expired lease the lease's end,
+moves `retry-backoff` (10s) ahead and `last_error` becomes "The claim of attempt N failed: ...". The refunds behind it
+are still executed. It uses up no attempt, so it never reaches `FAILED` on its own, and an admin retry of a `PENDING`
+refund changes nothing. Find it in `GET /admin/refunds?status=PENDING` (or `PROCESSING`) by its `last_error`, or:
+
+```sql
+SELECT id, case_id, order_id, status, attempts, next_attempt_at, claimed_until, last_error
+FROM refunds
+WHERE status IN ('PENDING', 'PROCESSING') AND last_error LIKE 'The claim of attempt %'
+ORDER BY updated_at;
+```
+
+The WARN log "The claim of refund <id> of case <case> (order <order>) failed before attempt N; retrying at ..." carries
+the exception. Fix the cause; the next claim then proceeds as usual. A failure of the claim query itself (database
+unreachable) is not counted: the run ends, and the poller logs "After-sales refund poll failed; retrying every ..."
+with the stack trace once, then "After-sales refund poll failed N times in a row: ..." per failed tick, and "After-sales
+refund poll resumed after N failed poll(s)" once it works again.
+
+**A hung gateway.** A call that does not answer within `refund-gateway.timeout` counts as a retryable failure and is
+interrupted; one that ignores the interrupt keeps its thread. Once all `max-threads` threads are held that way, no
+refund is claimed, so none uses up an attempt, until one of them returns: WARN "All 4 refund gateway threads are held
+by calls that did not return within their timeout; ...", then INFO "A refund gateway thread is free again; ...". No
+metric shows this state: `PENDING` refunds whose `next_attempt_at` has passed pile up while
+`onlineorder_aftersales_refunds_total` stands still.
+
+**An undercaptured cancellation** (`OnlineOrderCancellationsUndercaptured`). A paid order was cancelled with a total
+above what its `order_payments` row captured. Checkout records the order's total as captured, so this points at a row
+changed outside the application. The `ORDER_CANCELLED` case is opened anyway, and the WARN "Order <id> was cancelled
+with a total of ... but its payment ... captured only ...; the refund of case <case> will be given up ..." names the
+order, the payment and the case. The refund becomes `FAILED` at its first claim with "The refund of ... exceeds the ...
+captured by payment ..." (`OnlineOrderRefundsGivenUp` fires too), and a retry fails the same check. Refund the customer
+by hand, outside the application; the case stays `REFUNDING` and its refund `FAILED`, since no endpoint closes either.
+
+**Paid orders without a payment record.** Checkout writes `order_payments` (`CAPTURED`, provider reference `SIMPAY-...`)
+in the transaction that creates a `PAID` order. Orders paid before V12 have no row, nor do orders checked out as
+`PLACED` and moved to `PAID` by an admin, nor orders that a pod of the previous release took during the rollout or
+after a rollback. Such an order gets no automatic refund when it is cancelled (WARN "Order <id> was cancelled after
+payment without a captured payment; no automatic refund"; no case, no metric), and it cannot be submitted for
+after-sales: it is left out of `eligible_orders`, and `POST /orders/{orderId}/after-sales` answers 409
+`AFTER_SALES_NOT_ELIGIBLE` "Order has no captured payment". Refund those customers by hand. The paid orders cancelled
+without a refund since the release:
+
+```sql
+SELECT o.id, o.order_no, o.total_price, o.currency, h.occurred_at AS cancelled_at
+FROM orders o
+JOIN order_status_history h ON h.order_id = o.id
+WHERE o.status = 'CANCELLED' AND o.total_price > 0
+  AND h.to_status = 'CANCELLED' AND h.from_status IN ('PAID', 'ACCEPTED')
+  AND h.occurred_at >= '<V12 rollout, UTC>'
+  AND NOT EXISTS (SELECT 1 FROM order_payments p WHERE p.order_id = o.id);
+```
+
+**Deadlines.** A deadline whose step rolled back (`onlineorder_aftersales_deadlines_total{outcome="failed"}`, WARN
+"After-sales deadline <trigger> of case <id> (order <order>) failed (attempt N); retrying at ...") is tried again after
+`poller.retry-backoff` (30s), with no limit on the tries. Its `deadline_at` does not move, so the customer's and the
+merchant's answers stay refused meanwhile. No alert covers it. A case whose deadline passed minutes ago means the poller
+is off, stopped or keeps failing (the application writes UTC in the image, as in section 9):
+
+```sql
+SELECT id, order_id, status, deadline_at, deadline_retry_at, deadline_attempts
+FROM after_sales_cases
+WHERE deadline_at < (now() AT TIME ZONE 'UTC') - INTERVAL '5 minutes'
+ORDER BY deadline_at;
+```
+
+**Arbitration queue.** `GET /admin/after-sales` lists `IN_ARBITRATION` cases by default (another status with
+`?status=`, upper case), the nearest deadline first. A case nobody arbitrates within `arbitration-timeout` (72h) is
+refunded the amount requested. `POST /admin/after-sales/{caseId}/arbitrate` takes an `Idempotency-Key` and is audited as
+`after_sales_case.arbitrate`.
+
+**Events.** After-sales events go through the outbox to `after-sales-events` (aggregate type `AFTER_SALES_CASE`), so a
+`FAILED` after-sales event holds back its case's later events like any other (`OnlineOrderOutboxAggregatesBlocked`,
+section 8): that case's merchant inbox row and notifications stop moving, while the case itself still moves in the
+database. The two consumer groups use `orderEventKafkaListenerContainerFactory`; a record they cannot handle goes to the
+order DLT and is replayed with `POST /dead-letters/{id}/replay`. The merchant inbox only moves forward by the case's
+version; a replayed older event counts in
+`onlineorder_events_stale_skipped_total{consumer="merchant-aftersales-consumer"}`. Merchant commands need the inbox
+row: until `onlineorder-merchant-aftersales` has consumed the case's `aftersales.case_opened`, the merchant's commands
+on it answer 404 (`OnlineOrderKafkaConsumerLag` covers the group), while the merchant's deadline runs from the opening.
+
+Not covered yet: the after-sales `POST` endpoints have no rate-limit rule; the after-sales tables (cases, lines,
+history, refunds, payments) have no retention or partitioning; a customer is not notified when a refund is given up.
+
+### Rollout (V12-V12_2)
+
+**V12** creates `order_payments`, `after_sales_cases`, `after_sales_case_lines`, `after_sales_case_history`, `refunds`
+and `merchant_after_sales_cases`, all empty, and changes one existing table: `order_notifications` gets
+`dedup_scope TEXT NOT NULL DEFAULT ''` (catalog only) and its unique key `uq_notification_order_event (order_id,
+event_type)` is replaced by `uq_notification_order_event_scope (order_id, event_type, dedup_scope)`. Adding that
+constraint builds a unique index over the whole table under the `ACCESS EXCLUSIVE` lock the `ADD COLUMN` took: reads and
+writes of `order_notifications` wait. The foreign keys of the new tables take `SHARE ROW EXCLUSIVE` on `orders` and
+`order_history_items` at the start of V12, and Flyway holds every lock until V12 commits, so inserts and updates of
+orders (checkouts, every status change) wait for the index build as well. On a large `order_notifications` (several rows
+per order) V12 is therefore not online-safe. Measured on PostgreSQL 15 in Docker on a laptop, table in cache: 2 million
+rows in 0.4 s; a colder or larger table takes longer. V12 cannot be prepared ahead like V7: it adds the column and the
+constraint without `IF NOT EXISTS` and always builds its own index.
+
+**V12_1** adds the currency checks of the six new tables (empty, nothing scanned). **V12_2** adds the nullable
+`idempotency_requests.case_id` (catalog only) and its foreign key `fk_idempotency_after_sales_case` to
+`after_sales_cases (id) ON DELETE CASCADE`. The key is validated at once (it is not added `NOT VALID`): one scan of
+`idempotency_requests`, which finds every `case_id` NULL and so looks nothing up, under the `ACCESS EXCLUSIVE` lock of
+the column change until V12_2 commits. Checkouts and every idempotent command write that table and wait. It only keeps
+`CLEANUP_IDEMPOTENCY_RETENTION` (3d) of requests; 500,000 rows took 26 ms in the same setup.
+
+How to run it: time V12 against a restored copy of production first (`SELECT COUNT(*),
+pg_size_pretty(pg_total_relation_size('order_notifications')) FROM order_notifications`), then follow steps 1-4 of
+"Deploying the release with V7-V7_2" (section 7): `SPRING_FLYWAY_INITSQLS` with a `lock_timeout`, scale to zero, one
+replica that migrates alone, then the autoscaler's `minReplicas`. Then no application traffic waits on these locks, and
+only the migrations' duration matters: it must fit the `startupProbe` allowance (about three minutes); raise its
+`failureThreshold` for this release, or plan a maintenance window, when it does not. Create `after-sales-events`
+beforehand where the application may not create topics (it uses `KAFKA_ORDER_TOPIC_PARTITIONS` partitions and
+`KAFKA_ORDER_TOPIC_REPLICAS` replicas); until it exists, after-sales events fail to publish (section 8).
+
+No pod of the previous release may run next to this one:
+
+- The previous release inserts notifications with `ON CONFLICT (order_id, event_type)`. Once V12 has dropped that key,
+  PostgreSQL rejects the statement ("there is no unique or exclusion constraint matching the ON CONFLICT
+  specification"), so the old pods' consumers fail, and dead-letter, every event they write a notification for: every
+  order event, and `delivery.assigned`, `delivery.picked_up` and `delivery.delivered`. Replay those dead letters once
+  only pods of this release run.
+- The previous release writes no `order_payments` row at checkout and opens no refund when it cancels a paid order: the
+  orders it takes or cancels get no automatic refund (see "Paid orders without a payment record").
+
+A rollback after V12 has the same two effects for as long as the previous release runs: every event that writes an
+order or delivery notification is dead-lettered (replay them after rolling forward), and paid orders it cancels get no
+refund case. Open cases stop meanwhile, since only this release fires their deadlines and executes their refunds; they
+continue once it is back. Giving the previous release its key back (`UNIQUE (order_id, event_type)`) only works while
+no order has two notifications of the same event type, which an order's second after-sales request produces. Prefer
+rolling forward.
+
+### Connections: listener threads and the pool
+
+With Kafka on, a pod runs 10 listener containers: the order consumer and the dead-letter listener
+(`KAFKA_LISTENER_CONCURRENCY`, 3), and the six fulfilment and two after-sales listeners
+(`FULFILMENT_LISTENER_CONCURRENCY`, which defaults to the same 3). That is 30 consumer threads per pod, up from 24
+before this release. A consumer thread holds a connection of the primary pool (`onlineorder-db`) while it handles a
+record. The same pool serves the shared scheduler (`TASK_SCHEDULING_POOL_SIZE`, 4 threads: outbox publisher, cleanup,
+partition maintenance), the fulfilment deadline poller and the after-sales poller (one transaction at a time each; the
+refund gateway call holds no connection) and every HTTP request.
+
+| | `DATABASE_POOL_MAX_SIZE` per pod | Consumer threads per pod | Pods |
+| --- | --- | --- | --- |
+| local (`application.yml`) | 30 | 30 | 1 |
+| base | 30 | 30 | 2-3 (HPA) |
+| staging | 30 (from base) | 30 | 1-2 |
+| prod | 20 | 30 | 3-6 |
+
+Kafka limits how many of them have work: every topic has `KAFKA_ORDER_TOPIC_PARTITIONS` (3) partitions, and a group's
+partitions are spread over its consumers on all pods, so the whole cluster has at most 30 consumer threads with
+partitions (10 x 3), however many pods run: 5-10 per pod when prod's 3-6 pods share them evenly. The risk is a pod that
+holds most partitions (the only pod up, the others restarting, or an uneven assignment) while every topic has a
+backlog, for example after a Kafka or database outage. Its consumer threads alone can then take every connection of a
+30-connection pool, and outnumber prod's 20 by 10. Requests wait up to `DATABASE_POOL_CONNECTION_TIMEOUT_MS` (2000)
+and answer 503; a consumer that times out waiting retries the record as a transient failure for up to
+`KAFKA_LISTENER_TRANSIENT_RETRY_TIMEOUT` (5m) before it dead-letters it. `OnlineOrderHikariPendingSustained` and
+`OnlineOrderHikariConnectionTimeouts` show it. The k6 order flow has not been run again with 10 listeners. Two ways
+to bound it: `FULFILMENT_LISTENER_CONCURRENCY=1` caps the eight fulfilment and after-sales listeners at one thread
+each, 14 consumer threads per pod; with 3 or more pods every partition still gets a consumer of its own, with fewer
+one consumer takes several partitions. Or raise the pool, keeping `maxReplicas x DATABASE_POOL_MAX_SIZE` below
+`max_connections` (prod: 6 x 20 = 120 today).
