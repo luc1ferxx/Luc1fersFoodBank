@@ -39,6 +39,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 
@@ -67,9 +68,11 @@ class RefundExecutorTests {
 
     static final int MAX_ATTEMPTS = 8;
 
+    static final int GATEWAY_THREADS = 4;
+
     static final RefundExecutor.Settings SETTINGS = new RefundExecutor.Settings(
             100, MAX_ATTEMPTS, Duration.ofSeconds(10), Duration.ofMinutes(10), Duration.ofSeconds(60),
-            Duration.ofSeconds(10));
+            Duration.ofSeconds(10), GATEWAY_THREADS);
 
     @Mock
     private RefundRepository refundRepository;
@@ -219,7 +222,7 @@ class RefundExecutorTests {
         Assertions.assertEquals(Duration.ofMinutes(10), refundExecutor.backoff(Integer.MAX_VALUE));
         RefundExecutor flat = executor(new RefundExecutor.Settings(
                 100, MAX_ATTEMPTS, Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(60),
-                Duration.ofSeconds(10)));
+                Duration.ofSeconds(10), GATEWAY_THREADS));
         Assertions.assertEquals(Duration.ofSeconds(5), flat.backoff(1));
         Assertions.assertEquals(Duration.ofSeconds(5), flat.backoff(3));
     }
@@ -383,18 +386,109 @@ class RefundExecutorTests {
     }
 
 
+    /**
+     * Section 24: a claim transaction that fails after the claim (here a refund without its case) rolls back and backs
+     * off that refund alone, in a transaction of its own at the version claimed: its next attempt one retry backoff
+     * ahead, the failure as last_error, its status and attempts as they were. The refund behind it is still executed
+     * in the same run instead of waiting behind it.
+     */
     @Test
-    void refundWithoutACase_shouldEndTheRunWithoutAWrite() {
-        due(pending(0));
+    void claimThatFailsAfterTheClaim_shouldBackOffThatRefundAloneAndGoOn() {
+        RefundEntity failing = pending(0);
+        RefundEntity next = otherRefund();
+        Mockito.when(refundRepository.claimNextDue(NOW)).thenReturn(failing).thenReturn(next).thenReturn(null);
+        rows.put(failing.id(), failing);
+        rows.put(next.id(), next);
         Mockito.when(caseRepository.findById(CASE_ID)).thenReturn(Optional.empty());
+        Mockito.when(caseRepository.findById(next.caseId())).thenReturn(Optional.of(caseFor(next)));
+        Mockito.when(orderPaymentRepository.findByOrderId(next.orderId())).thenReturn(Optional.of(paymentFor(next)));
+        String error = "The claim of attempt 1 failed: java.lang.IllegalStateException: Refund 70 has no case";
+        Mockito.when(refundRepository.backOffPending(REFUND_ID, 2L, NOW.plusSeconds(10), error, NOW)).thenReturn(1);
+        Mockito.when(gateway.refund(Mockito.any()))
+                .thenReturn(new RefundGatewayResult.RetryableFailure("gateway unavailable"));
 
-        IllegalStateException failure = Assertions.assertThrows(
-                IllegalStateException.class, () -> executor(SETTINGS).runDueRefunds());
+        Assertions.assertEquals(2, executor(SETTINGS).runDueRefunds());
 
-        Assertions.assertEquals("Refund 70 has no case", failure.getMessage());
+        InOrder steps = Mockito.inOrder(transactionManager, refundRepository, gateway, metricsService);
+        steps.verify(refundRepository).claimNextDue(NOW);
+        steps.verify(transactionManager).rollback(Mockito.any(TransactionStatus.class));
+        steps.verify(transactionManager).getTransaction(Mockito.any());
+        steps.verify(refundRepository).backOffPending(REFUND_ID, 2L, NOW.plusSeconds(10), error, NOW);
+        steps.verify(transactionManager).commit(Mockito.any(TransactionStatus.class));
+        steps.verify(metricsService).recordAfterSalesRefund(RefundExecutor.BACKED_OFF);
+        steps.verify(refundRepository).claimNextDue(NOW);
+        steps.verify(gateway).refund(Mockito.any());
+        steps.verify(metricsService).recordAfterSalesRefund(RefundExecutor.RETRIED);
+        Mockito.verify(transactionManager, Mockito.times(1)).rollback(Mockito.any());
+        // Only the next refund was saved: its claim and its retry.
+        Assertions.assertEquals(List.of(next.id(), next.id()), writes.stream().map(RefundEntity::id).toList());
+        Mockito.verify(refundRepository, Mockito.never()).backOffExpiredLease(
+                Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+    }
+
+
+    /**
+     * An expired lease whose reclaim fails after the claim stays PROCESSING with its attempts, and the end of its lease
+     * moves one retry backoff ahead so that it is not reclaimed before.
+     */
+    @Test
+    void reclaimThatFailsAfterTheClaim_shouldMoveTheEndOfTheExpiredLease() {
+        due(processing(3, NOW.minusSeconds(1)));
+        Mockito.when(orderPaymentRepository.findByOrderId(ORDER_ID))
+                .thenThrow(new CannotAcquireLockException("lock timeout"));
+        String error = "The claim of attempt 4 failed: org.springframework.dao.CannotAcquireLockException: "
+                + "lock timeout";
+        Mockito.when(refundRepository.backOffExpiredLease(REFUND_ID, 2L, NOW.plusSeconds(10), error, NOW))
+                .thenReturn(1);
+
+        Assertions.assertEquals(1, executor(SETTINGS).runDueRefunds());
+
+        Mockito.verify(refundRepository).backOffExpiredLease(REFUND_ID, 2L, NOW.plusSeconds(10), error, NOW);
+        Mockito.verify(refundRepository, Mockito.never()).backOffPending(
+                Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
         Assertions.assertTrue(writes.isEmpty());
-        Mockito.verify(transactionManager).rollback(Mockito.any());
-        Mockito.verifyNoInteractions(gateway, metricsService);
+        Mockito.verifyNoInteractions(gateway, transitions);
+        Mockito.verify(metricsService).recordAfterSalesRefund(RefundExecutor.BACKED_OFF);
+        Mockito.verify(refundRepository, Mockito.times(2)).claimNextDue(NOW);
+    }
+
+
+    /**
+     * The refund moved on between the rolled-back claim and the back-off (another executor claimed it): the back-off
+     * changes nothing, still counts, and the run goes on.
+     */
+    @Test
+    void backOffOfARefundThatMovedOn_shouldChangeNothingAndGoOn() {
+        due(pending(0));
+        Mockito.when(caseRepository.findById(CASE_ID)).thenThrow(new IllegalStateException("broken row"));
+        Mockito.when(refundRepository.backOffPending(Mockito.eq(REFUND_ID), Mockito.eq(2L), Mockito.any(),
+                Mockito.any(), Mockito.any())).thenReturn(0);
+
+        Assertions.assertEquals(1, executor(SETTINGS).runDueRefunds());
+
+        Mockito.verify(metricsService).recordAfterSalesRefund(RefundExecutor.BACKED_OFF);
+        Mockito.verify(refundRepository, Mockito.times(2)).claimNextDue(NOW);
+        Mockito.verifyNoInteractions(gateway);
+    }
+
+
+    /**
+     * A back-off that fails too (the database is gone) ends the run with its exception, after counting the refund.
+     */
+    @Test
+    void failingBackOff_shouldStillCountTheRefundAndEndTheRun() {
+        RefundEntity failing = pending(0);
+        Mockito.when(refundRepository.claimNextDue(NOW)).thenReturn(failing);
+        rows.put(failing.id(), failing);
+        Mockito.when(caseRepository.findById(CASE_ID)).thenThrow(new CannotAcquireLockException("lock timeout"));
+        Mockito.when(refundRepository.backOffPending(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(),
+                Mockito.any())).thenThrow(new DataAccessResourceFailureException("database unavailable"));
+
+        Assertions.assertThrows(DataAccessResourceFailureException.class, () -> executor(SETTINGS).runDueRefunds());
+
+        Mockito.verify(metricsService).recordAfterSalesRefund(RefundExecutor.BACKED_OFF);
+        Mockito.verify(refundRepository, Mockito.times(1)).claimNextDue(NOW);
+        Mockito.verifyNoInteractions(gateway);
     }
 
 
@@ -453,7 +547,7 @@ class RefundExecutorTests {
         });
         RefundExecutor refundExecutor = executor(new RefundExecutor.Settings(
                 100, MAX_ATTEMPTS, Duration.ofSeconds(10), Duration.ofMinutes(10), Duration.ofSeconds(60),
-                Duration.ofMillis(100)));
+                Duration.ofMillis(100), GATEWAY_THREADS));
 
         try {
             Assertions.assertEquals(1, refundExecutor.runDueRefunds());
@@ -655,9 +749,97 @@ class RefundExecutorTests {
 
         Assertions.assertEquals(1, executor(new RefundExecutor.Settings(
                 0, MAX_ATTEMPTS, Duration.ofSeconds(10), Duration.ofMinutes(10), Duration.ofSeconds(60),
-                Duration.ofSeconds(10))).runDueRefunds());
+                Duration.ofSeconds(10), GATEWAY_THREADS)).runDueRefunds());
 
         Mockito.verify(refundRepository, Mockito.times(1)).claimNextDue(NOW);
+    }
+
+
+    /**
+     * Within a poller tick the run stops claiming once the tick's budget is spent, but always handles one refund: a
+     * slow gateway call that uses the budget up ends the run although another refund is due.
+     */
+    @Test
+    void run_shouldStopClaimingOnceTheTickBudgetIsSpent() {
+        RefundEntity first = pending(0);
+        RefundEntity second = otherRefund();
+        Mockito.when(refundRepository.claimNextDue(NOW)).thenReturn(first).thenReturn(second);
+        rows.put(first.id(), first);
+        rows.put(second.id(), second);
+        AtomicBoolean spent = new AtomicBoolean();
+        Mockito.when(gateway.refund(Mockito.any())).thenAnswer(invocation -> {
+            spent.set(true);
+            return new RefundGatewayResult.RetryableFailure("gateway slow");
+        });
+
+        Assertions.assertEquals(1, executor(SETTINGS).runDueRefundsWithin(spent::get));
+
+        Mockito.verify(refundRepository, Mockito.times(1)).claimNextDue(NOW);
+        Mockito.verify(metricsService).recordAfterSalesRefund(RefundExecutor.RETRIED);
+
+        // A budget spent from the start still lets the first refund through.
+        Mockito.clearInvocations(refundRepository);
+        rows.clear();
+        writes.clear();
+        due(pending(0));
+        Assertions.assertEquals(1, executor(SETTINGS).runDueRefundsWithin(() -> true));
+        Mockito.verify(refundRepository, Mockito.times(1)).claimNextDue(NOW);
+    }
+
+
+    /**
+     * Section 24: a call that ignores its interrupt after the timeout keeps its gateway thread. With every thread held
+     * that way a run claims nothing (so the next due refund uses up no attempt) until the call returns; then the next
+     * refund is claimed again.
+     */
+    @Test
+    void callsHoldingEveryGatewayThread_shouldLeaveTheNextRefundUnclaimedUntilOneReturns() throws Exception {
+        RefundEntity hanging = pending(0);
+        RefundEntity next = otherRefund();
+        Mockito.when(refundRepository.claimNextDue(NOW)).thenReturn(hanging).thenReturn(next).thenReturn(null);
+        rows.put(hanging.id(), hanging);
+        rows.put(next.id(), next);
+        Mockito.when(caseRepository.findById(next.caseId())).thenReturn(Optional.of(caseFor(next)));
+        Mockito.when(orderPaymentRepository.findByOrderId(next.orderId())).thenReturn(Optional.of(paymentFor(next)));
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch interrupted = new CountDownLatch(1);
+        Mockito.when(gateway.refund(Mockito.any())).thenAnswer(invocation -> {
+            if (!GATEWAY_KEY.equals(invocation.<RefundGatewayRequest>getArgument(0).gatewayKey())) {
+                return new RefundGatewayResult.RetryableFailure("gateway unavailable");
+            }
+            // Hangs past its timeout and ignores the interrupt, as a stuck socket read would.
+            while (true) {
+                try {
+                    if (release.await(30, TimeUnit.SECONDS)) {
+                        return new RefundGatewayResult.Succeeded(PROVIDER_REFERENCE);
+                    }
+                } catch (InterruptedException ex) {
+                    interrupted.countDown();
+                }
+            }
+        });
+        RefundExecutor oneThread = executor(new RefundExecutor.Settings(
+                100, MAX_ATTEMPTS, Duration.ofSeconds(10), Duration.ofMinutes(10), Duration.ofSeconds(60),
+                Duration.ofMillis(100), 1));
+
+        try {
+            Assertions.assertEquals(1, oneThread.runDueRefunds());
+            Assertions.assertTrue(interrupted.await(5, TimeUnit.SECONDS), "the timed-out call was not interrupted");
+            Assertions.assertEquals(0, oneThread.runDueRefunds(), "the only thread is still held");
+            Assertions.assertEquals(0, oneThread.freeGatewayThreads());
+        } finally {
+            release.countDown();
+        }
+
+        Mockito.verify(refundRepository, Mockito.times(1)).claimNextDue(NOW);
+        Assertions.assertEquals("PENDING|1|2026-10-21T12:00:40|null|null|The refund gateway did not answer within "
+                + "100 ms|v3|2026-10-21T12:00:30|null", summary(writes.get(1)));
+        Assertions.assertEquals(next, rows.get(next.id()), "the next refund was not claimed");
+        awaitFreeGatewayThreads(oneThread, 1);
+        Assertions.assertEquals(1, oneThread.runDueRefunds());
+        Assertions.assertEquals("PENDING", rows.get(next.id()).status());
+        Assertions.assertEquals(1, rows.get(next.id()).attempts());
+        Mockito.verify(metricsService, Mockito.times(2)).recordAfterSalesRefund(RefundExecutor.RETRIED);
     }
 
 
@@ -741,18 +923,30 @@ class RefundExecutorTests {
     ) {
         IllegalArgumentException refused = Assertions.assertThrows(IllegalArgumentException.class, () ->
                 new RefundExecutor.Settings(100, maxAttempts, duration(retryBackoff), duration(retryBackoffMax),
-                        duration(claimTimeout), duration(gatewayTimeout)));
+                        duration(claimTimeout), duration(gatewayTimeout), GATEWAY_THREADS));
 
         Assertions.assertEquals(message, refused.getMessage());
     }
 
 
     @Test
+    void settings_shouldRefuseFewerThanOneGatewayThread() {
+        for (int gatewayThreads : new int[] {0, -1}) {
+            IllegalArgumentException refused = Assertions.assertThrows(IllegalArgumentException.class, () ->
+                    new RefundExecutor.Settings(100, MAX_ATTEMPTS, Duration.ofSeconds(10), Duration.ofMinutes(10),
+                            Duration.ofSeconds(60), Duration.ofSeconds(10), gatewayThreads));
+            Assertions.assertEquals("app.after-sales.refund-gateway.max-threads must be at least 1, got "
+                    + gatewayThreads, refused.getMessage());
+        }
+    }
+
+
+    @Test
     void settings_shouldRefuseMissingDurationsAndRaiseTheBatchSizeToOne() {
         Assertions.assertThrows(IllegalArgumentException.class, () -> new RefundExecutor.Settings(
-                100, 8, null, Duration.ofMinutes(10), Duration.ofSeconds(60), Duration.ofSeconds(10)));
+                100, 8, null, Duration.ofMinutes(10), Duration.ofSeconds(60), Duration.ofSeconds(10), GATEWAY_THREADS));
         Assertions.assertEquals(1, new RefundExecutor.Settings(
-                -5, 1, Duration.ofSeconds(1), Duration.ofSeconds(1), Duration.ofSeconds(2), Duration.ofSeconds(1))
+                -5, 1, Duration.ofSeconds(1), Duration.ofSeconds(1), Duration.ofSeconds(2), Duration.ofSeconds(1), 1)
                 .batchSize());
     }
 
@@ -765,6 +959,18 @@ class RefundExecutorTests {
                 transitions, gateway, metricsService, transactionManager, settings, () -> NOW);
         executors.add(refundExecutor);
         return refundExecutor;
+    }
+
+
+    /**
+     * Waits until a call that ignored its timeout has returned and given its thread back.
+     */
+    private static void awaitFreeGatewayThreads(RefundExecutor refundExecutor, int free) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (refundExecutor.freeGatewayThreads() < free) {
+            Assertions.assertTrue(System.nanoTime() < deadline, "the gateway thread was never given back");
+            Thread.onSpinWait();
+        }
     }
 
 

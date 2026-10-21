@@ -268,6 +268,10 @@ app:
       # Delay before a case whose deadline failed to fire (for example a lock timeout) is tried again. Its deadline_at
       # stays as it was, so the customer's and the merchant's answers stay refused meanwhile.
       retry-backoff: ${AFTER_SALES_DEADLINE_RETRY_BACKOFF:30s}
+      # Time a tick may spend claiming work, shared by the deadlines and then the refunds; each stops claiming once it
+      # is spent, after one case or refund at least, and a gateway call already started runs to its timeout. A slow or
+      # hung refund gateway so delays the next tick's deadlines by about this plus refund-gateway.timeout at most.
+      tick-budget: ${AFTER_SALES_POLL_TICK_BUDGET:5s}
     refund:
       # Gateway calls a refund may make (a reclaim after an expired lease counts as one) before it is given up
       # (FAILED, its case stays REFUNDING) for an admin to retry.
@@ -279,9 +283,16 @@ app:
       # after this long and calls the gateway again with the same key.
       claim-timeout: ${AFTER_SALES_REFUND_CLAIM_TIMEOUT:60s}
     refund-gateway:
-      # How long a gateway call is waited for before it counts as a retryable failure. Must be shorter than
-      # refund.claim-timeout (checked at startup), so that no refund is reclaimed while its call may still succeed.
+      # How long a gateway call is waited for before it counts as a retryable failure; the call is then interrupted.
+      # Must be shorter than refund.claim-timeout (checked at startup), so that no refund is reclaimed while the call
+      # is still waited for. A call that ignores the interrupt may still be in flight when the refund is retried or,
+      # once its lease ended, reclaimed: the gateway must be idempotent per gateway_key (one key per case, the same for
+      # every attempt), which is what keeps a refund from being paid twice.
       timeout: ${AFTER_SALES_REFUND_GATEWAY_TIMEOUT:10s}
+      # Gateway calls running at once at most, calls that outlived their timeout included. While all of them are held
+      # by such calls no refund is claimed: a hung gateway ties up this many threads at most, and the refunds that
+      # wait meanwhile use up no attempt.
+      max-threads: ${AFTER_SALES_REFUND_GATEWAY_MAX_THREADS:4}
       # The simulated gateway fails the first N attempts of every refund (retryable), for demos and tests.
       fail-first-attempts: ${AFTER_SALES_REFUND_GATEWAY_FAIL_FIRST_ATTEMPTS:0}
   cleanup:

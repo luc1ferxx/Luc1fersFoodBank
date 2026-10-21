@@ -24,6 +24,7 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 /**
@@ -119,10 +120,15 @@ class AfterSalesDeadlineProcessorTests {
     }
 
 
+    /**
+     * The machine refuses the timeout only when the clock read after the claim is behind the claim's. The case is then
+     * still due and the claim keeps returning it, as here: the run ends after the first refusal instead of claiming it
+     * again up to the batch size (ADR 0002 section 24).
+     */
     @Test
-    void refusedTimeout_shouldCountAsSkippedAndBackNothingOff() {
+    void refusedTimeout_shouldCountAsSkippedBackNothingOffAndEndTheRun() {
         AfterSalesCaseEntity due = dueCase(501L, AfterSalesStatus.REJECTED, 0);
-        Mockito.when(caseRepository.claimNextDue(NOW)).thenReturn(due).thenReturn(null);
+        Mockito.when(caseRepository.claimNextDue(NOW)).thenReturn(due);
         Mockito.when(transitions.fire(Mockito.eq(due), Mockito.any())).thenReturn(new AfterSalesTransitions.Step(
                 new Decision.Rejected<>(
                         AfterSalesTrigger.CUSTOMER_TIMEOUT,
@@ -135,12 +141,38 @@ class AfterSalesDeadlineProcessorTests {
 
         Assertions.assertEquals(1, processor.fireDueDeadlines());
 
-        Mockito.verify(metricsService)
+        Mockito.verify(caseRepository, Mockito.times(1)).claimNextDue(NOW);
+        Mockito.verify(transitions, Mockito.times(1)).fire(Mockito.eq(due), Mockito.any());
+        Mockito.verify(metricsService, Mockito.times(1))
                 .recordAfterSalesDeadline("CUSTOMER_TIMEOUT", AfterSalesDeadlineProcessor.SKIPPED);
         Mockito.verify(metricsService, Mockito.never())
                 .recordAfterSalesDeadline(Mockito.anyString(), Mockito.eq(AfterSalesDeadlineProcessor.FIRED));
         Mockito.verify(caseRepository, Mockito.never())
                 .rescheduleDeadline(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+    }
+
+
+    /**
+     * Within a poller tick the run stops claiming once the tick's budget is spent, but always handles one case: here
+     * the budget runs out after the second case although a third is due.
+     */
+    @Test
+    void run_shouldStopClaimingOnceTheTickBudgetIsSpent() {
+        Mockito.when(caseRepository.claimNextDue(NOW)).thenReturn(dueCase(501L, AfterSalesStatus.REJECTED, 0),
+                dueCase(502L, AfterSalesStatus.REJECTED, 0), dueCase(503L, AfterSalesStatus.REJECTED, 0));
+        Mockito.when(transitions.fire(Mockito.any(), Mockito.any())).thenAnswer(invocation -> applied(
+                invocation.getArgument(0), AfterSalesTrigger.CUSTOMER_TIMEOUT, AfterSalesStatus.CLOSED));
+        AtomicInteger checks = new AtomicInteger();
+
+        Assertions.assertEquals(2, processor.fireDueDeadlinesWithin(() -> checks.incrementAndGet() >= 2));
+
+        Assertions.assertEquals(2, checks.get(), "checked before every claim but the first");
+        Mockito.verify(caseRepository, Mockito.times(2)).claimNextDue(NOW);
+
+        // A budget spent from the start still lets the first case through.
+        Mockito.clearInvocations(caseRepository);
+        Assertions.assertEquals(1, processor.fireDueDeadlinesWithin(() -> true));
+        Mockito.verify(caseRepository, Mockito.times(1)).claimNextDue(NOW);
     }
 
 

@@ -43,4 +43,17 @@ class ApplicationMetricsServiceTests {
         Assertions.assertEquals(1.0, meterRegistry.counter("onlineorder.aftersales.refunds", "outcome", "superseded")
                 .count());
     }
+
+
+    @Test
+    void afterSalesUndercapturedCancellationMetric_shouldCountEachOpening() {
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+        ApplicationMetricsService metricsService = new ApplicationMetricsService(meterRegistry);
+
+        metricsService.recordAfterSalesUndercapturedCancellation();
+        metricsService.recordAfterSalesUndercapturedCancellation();
+
+        Assertions.assertEquals(2.0, meterRegistry.counter("onlineorder.aftersales.cancellations.undercaptured")
+                .count());
+    }
 }

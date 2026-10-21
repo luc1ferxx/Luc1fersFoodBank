@@ -20,29 +20,33 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 
 /**
- * Executes the refunds of the cases in REFUNDING (ADR 0002 D8, sections 5.4 and 9, with 19.4, 19.9 and 19.10), one
+ * Executes the refunds of the cases in REFUNDING (ADR 0002 D8, sections 5.4 and 9, with 19.4, 19.9, 19.10 and 24), one
  * refund at a time and each in three parts:
  * <ol>
- *     <li>The claim transaction takes the oldest due refund with FOR UPDATE SKIP LOCKED
- *     ({@link RefundRepository#claimNextDue}): a PENDING refund whose next attempt is due (CLAIM), or a PROCESSING one
- *     whose lease expired because its executor died or stalled (RECLAIM). Either counts an attempt and leases the
- *     refund for app.after-sales.refund.claim-timeout. Before the gateway is called the refund is checked against its
- *     case and the order's payment (19.4): its case is in REFUNDING, its amount is the case's approved amount, and the
- *     payment it names captured that much at least. A refund that fails the check, or whose lease expired with no
- *     attempt left (19.9), is given up (FAILED) in this transaction instead of being called.</li>
+ *     <li>The claim transaction takes the next due refund with FOR UPDATE SKIP LOCKED
+ *     ({@link RefundRepository#claimNextDue}): a PROCESSING refund whose lease expired because its executor died or
+ *     stalled (RECLAIM), or else a PENDING one whose next attempt is due (CLAIM). Either counts an attempt and leases
+ *     the refund for app.after-sales.refund.claim-timeout. Before the gateway is called the refund is checked against
+ *     its case and the order's payment (19.4): its case is in REFUNDING, its amount is the case's approved amount, and
+ *     the payment it names captured that much at least. A refund that fails the check, or whose lease expired with no
+ *     attempt left (19.9), is given up (FAILED) in this transaction instead of being called. When this transaction
+ *     fails after the claim (it rolls back), only that refund backs off: in a transaction of its own and at the version
+ *     claimed, its next attempt (or its expired lease's end) moves app.after-sales.refund.retry-backoff ahead with the
+ *     failure as last_error, and the refunds behind it are still executed.</li>
  *     <li>The gateway is called outside any transaction and waited for at most app.after-sales.refund-gateway.timeout,
  *     which must be shorter than the lease (19.10, checked at startup), so another executor does not reclaim a refund
- *     whose call may still succeed. A timeout, an exception and no answer count as retryable failures.</li>
+ *     whose call may still succeed. A timeout, an exception and no answer count as retryable failures. A timed-out
+ *     call is interrupted; if it ignores that, it may still reach the gateway after the refund was reclaimed, which the
+ *     gateway's idempotency per gateway_key makes harmless. The calls run on at most
+ *     app.after-sales.refund-gateway.max-threads threads ({@link RefundGatewayThreads}), one reserved before each
+ *     claim: while every thread is held by a call that outlived its timeout, a run claims nothing.</li>
  *     <li>The record transaction locks the refund. A refund whose version moved since the claim was reclaimed by
  *     another executor after this lease expired; this result is discarded (superseded), and the gateway, idempotent per
  *     key, gives the other attempt the same answer. Otherwise a success marks the refund SUCCEEDED and then, under the
@@ -74,6 +78,8 @@ public final class RefundExecutor implements DisposableBean {
 
     static final String SKIPPED = "skipped";
 
+    static final String BACKED_OFF = "backed_off";
+
     /**
      * The longest last_error kept (section 9).
      */
@@ -92,7 +98,12 @@ public final class RefundExecutor implements DisposableBean {
     private final TransactionTemplate transactionTemplate;
     private final Settings settings;
     private final Supplier<LocalDateTime> clock;
-    private final ExecutorService gatewayCalls;
+    private final RefundGatewayThreads gatewayThreads;
+    /**
+     * Whether the last run ended because every gateway thread was held, so that only the start and the end of such a
+     * stretch are logged.
+     */
+    private final AtomicBoolean gatewayThreadsHeld = new AtomicBoolean();
 
 
     @Autowired
@@ -109,11 +120,13 @@ public final class RefundExecutor implements DisposableBean {
             @Value("${app.after-sales.refund.retry-backoff:10s}") Duration retryBackoff,
             @Value("${app.after-sales.refund.retry-backoff-max:10m}") Duration retryBackoffMax,
             @Value("${app.after-sales.refund.claim-timeout:60s}") Duration claimTimeout,
-            @Value("${app.after-sales.refund-gateway.timeout:10s}") Duration gatewayTimeout
+            @Value("${app.after-sales.refund-gateway.timeout:10s}") Duration gatewayTimeout,
+            @Value("${app.after-sales.refund-gateway.max-threads:4}") int gatewayThreads
     ) {
         this(refundRepository, caseRepository, orderPaymentRepository, transitions, gateway, metricsService,
                 transactionManager,
-                new Settings(batchSize, maxAttempts, retryBackoff, retryBackoffMax, claimTimeout, gatewayTimeout),
+                new Settings(batchSize, maxAttempts, retryBackoff, retryBackoffMax, claimTimeout, gatewayTimeout,
+                        gatewayThreads),
                 LocalDateTime::now);
     }
 
@@ -138,60 +151,54 @@ public final class RefundExecutor implements DisposableBean {
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.settings = Objects.requireNonNull(settings, "settings");
         this.clock = clock;
-        AtomicInteger threads = new AtomicInteger();
-        // A thread per call in flight: a call that ignores the interrupt after its timeout keeps its own thread, not
-        // the next refund's. The poller makes one call at a time, so this holds one thread unless a gateway hangs.
-        this.gatewayCalls = Executors.newCachedThreadPool(runnable -> {
-            Thread thread = new Thread(runnable, GATEWAY_THREAD_PREFIX + threads.incrementAndGet());
-            thread.setDaemon(true);
-            return thread;
-        });
+        this.gatewayThreads = RefundGatewayThreads.create(this.settings.gatewayThreads(), GATEWAY_THREAD_PREFIX);
     }
 
 
     /**
-     * Executes the due refunds, oldest first, until none is due, the batch size is reached or the thread is
-     * interrupted. A claim that fails ends the run with its exception; a result that cannot be recorded does not.
+     * Executes the due refunds, expired leases first, until none is due, the batch size is reached or the thread is
+     * interrupted. A claim that fails ends the run with its exception; a refund that fails after its claim, or whose
+     * result cannot be recorded, does not.
      *
      * @return the number of refunds claimed, whatever their outcome, at most the batch size
      */
     public int runDueRefunds() {
+        return runDueRefundsWithin(TickBudget.UNLIMITED);
+    }
+
+
+    /**
+     * {@link #runDueRefunds()} within a poller tick: no further refund is claimed once {@code budget} is spent, after
+     * the first one. Nor once every gateway thread is held by a call that outlived its timeout.
+     */
+    int runDueRefundsWithin(TickBudget budget) {
         int handled = 0;
-        while (handled < settings.batchSize() && !Thread.currentThread().isInterrupted()) {
-            Claim claim = transactionTemplate.execute(status -> claimNextDue());
-            if (claim == null) {
+        while (handled < settings.batchSize() && !Thread.currentThread().isInterrupted()
+                && (handled == 0 || !budget.spent())) {
+            RefundGatewayThreads.Reservation thread = gatewayThreads.reserve();
+            if (thread == null) {
+                if (gatewayThreadsHeld.compareAndSet(false, true)) {
+                    LOGGER.warn("All {} refund gateway threads are held by calls that did not return within their "
+                            + "timeout; no refund is claimed until one of them returns", settings.gatewayThreads());
+                }
+                return handled;
+            }
+            if (gatewayThreadsHeld.compareAndSet(true, false)) {
+                LOGGER.info("A refund gateway thread is free again; due refunds are claimed again");
+            }
+            Next next;
+            try {
+                next = executeNext(thread);
+            } finally {
+                thread.release();
+            }
+            if (next == Next.NONE_DUE) {
                 return handled;
             }
             handled++;
-            if (claim.outcome() != null) {
-                metricsService.recordAfterSalesRefund(claim.outcome());
-                if (SKIPPED.equals(claim.outcome())) {
-                    // Claimed again at once otherwise; the next run has a later clock.
-                    return handled;
-                }
-                continue;
-            }
-            RefundEntity claimed = claim.refund();
-            RefundGatewayResult result;
-            try {
-                result = call(claimed);
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
-                LOGGER.info("Refund {} stopped waiting for the gateway on attempt {}; it is reclaimed after its lease "
-                        + "ends at {}", claimed.id(), claimed.attempts(), claimed.claimedUntil());
-                metricsService.recordAfterSalesRefund(UNRECORDED);
+            if (next == Next.END_RUN) {
                 return handled;
             }
-            String outcome;
-            try {
-                outcome = transactionTemplate.execute(status -> record(claimed, result));
-            } catch (RuntimeException ex) {
-                LOGGER.warn("The result {} of refund {} (case {}, attempt {}) could not be recorded; it is reclaimed "
-                                + "after its lease ends at {}",
-                        result, claimed.id(), claimed.caseId(), claimed.attempts(), claimed.claimedUntil(), ex);
-                outcome = UNRECORDED;
-            }
-            metricsService.recordAfterSalesRefund(outcome);
         }
         return handled;
     }
@@ -199,7 +206,7 @@ public final class RefundExecutor implements DisposableBean {
 
     @Override
     public void destroy() {
-        gatewayCalls.shutdownNow();
+        gatewayThreads.shutdownNow();
     }
 
 
@@ -209,12 +216,73 @@ public final class RefundExecutor implements DisposableBean {
 
 
     /**
+     * @return the gateway threads neither running nor reserved for a call
+     */
+    int freeGatewayThreads() {
+        return gatewayThreads.freeThreads();
+    }
+
+
+    /**
+     * Claims the next due refund and, unless the claim transaction finished it, calls the gateway for it on the
+     * reserved thread and records the answer. Counts its outcome.
+     */
+    private Next executeNext(RefundGatewayThreads.Reservation thread) {
+        AtomicReference<RefundEntity> claimedRow = new AtomicReference<>();
+        Claim claim;
+        try {
+            claim = transactionTemplate.execute(status -> claimNextDue(claimedRow));
+        } catch (RuntimeException ex) {
+            RefundEntity due = claimedRow.get();
+            if (due == null) {
+                // The claim itself failed (database unavailable): leave the rest to the next run.
+                throw ex;
+            }
+            backOff(due, ex);
+            return Next.GO_ON;
+        }
+        if (claim == null) {
+            return Next.NONE_DUE;
+        }
+        if (claim.outcome() != null) {
+            metricsService.recordAfterSalesRefund(claim.outcome());
+            // A skipped refund would be claimed again at once; the next run has a later clock.
+            return SKIPPED.equals(claim.outcome()) ? Next.END_RUN : Next.GO_ON;
+        }
+        RefundEntity claimed = claim.refund();
+        RefundGatewayResult result;
+        try {
+            result = call(thread, claimed);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            LOGGER.info("Refund {} stopped waiting for the gateway on attempt {}; it is reclaimed after its lease "
+                    + "ends at {}", claimed.id(), claimed.attempts(), claimed.claimedUntil());
+            metricsService.recordAfterSalesRefund(UNRECORDED);
+            return Next.END_RUN;
+        }
+        String outcome;
+        try {
+            outcome = transactionTemplate.execute(status -> record(claimed, result));
+        } catch (RuntimeException ex) {
+            LOGGER.warn("The result {} of refund {} (case {}, attempt {}) could not be recorded; it is reclaimed "
+                            + "after its lease ends at {}",
+                    result, claimed.id(), claimed.caseId(), claimed.attempts(), claimed.claimedUntil(), ex);
+            outcome = UNRECORDED;
+        }
+        metricsService.recordAfterSalesRefund(outcome);
+        return Next.GO_ON;
+    }
+
+
+    /**
      * The claim transaction: claims the next due refund and either leases it for a gateway call or, when it must not
      * be called, finishes it here.
      *
+     * @param claimedRow receives the claimed refund as read, for a back-off should this transaction fail after the
+     *                   claim
      * @return null when no refund is due
      */
-    private Claim claimNextDue() {
+    private Claim claimNextDue(AtomicReference<RefundEntity> claimedRow) {
         // The claim skips locked rows instead of waiting, so the time read before it is the time of its lock; the
         // query and the guards see the same lease.
         LocalDateTime now = clock.get();
@@ -222,6 +290,7 @@ public final class RefundExecutor implements DisposableBean {
         if (due == null) {
             return null;
         }
+        claimedRow.set(due);
         RefundStatus status = RefundStatus.valueOf(due.status());
         RefundTrigger trigger = status == RefundStatus.PROCESSING ? RefundTrigger.RECLAIM : RefundTrigger.CLAIM;
         Decision<RefundStatus, RefundTrigger> decision = decide(status, trigger, due, now);
@@ -287,11 +356,40 @@ public final class RefundExecutor implements DisposableBean {
 
 
     /**
-     * The gateway call, outside any transaction, waited for at most the gateway timeout.
+     * Backs off a refund whose claim transaction failed after the claim, in a transaction of its own: the claim's
+     * transaction rolled back. Its next attempt, or the end of its expired lease, moves the retry backoff ahead with
+     * the failure as last_error, only while the refund is still at the version that was claimed; one that moved on
+     * meanwhile (an admin, or another executor once this one's claim was rolled back) is left as it is. No call was
+     * made, so its status and attempts stay. Counted as backed_off.
+     */
+    private void backOff(RefundEntity due, RuntimeException failure) {
+        LocalDateTime now = clock.get();
+        LocalDateTime retryAt = now.plus(settings.retryBackoff());
+        String error = truncate("The claim of attempt " + (due.attempts() + 1) + " failed: " + failure);
+        LOGGER.warn("The claim of refund {} of case {} (order {}) failed before attempt {}; retrying at {}", due.id(),
+                due.caseId(), due.orderId(), due.attempts() + 1, retryAt, failure);
+        try {
+            Integer rows = transactionTemplate.execute(status ->
+                    RefundStatus.PROCESSING.name().equals(due.status())
+                            ? refundRepository.backOffExpiredLease(due.id(), due.version(), retryAt, error, now)
+                            : refundRepository.backOffPending(due.id(), due.version(), retryAt, error, now));
+            if (!Objects.equals(rows, 1)) {
+                LOGGER.info("Refund {} moved on from version {} before its failed claim backed off; it is left as "
+                        + "it is", due.id(), due.version());
+            }
+        } finally {
+            metricsService.recordAfterSalesRefund(BACKED_OFF);
+        }
+    }
+
+
+    /**
+     * The gateway call, on the reserved thread and outside any transaction, waited for at most the gateway timeout.
      *
      * @throws InterruptedException when the thread was interrupted while waiting; the call is cancelled
      */
-    private RefundGatewayResult call(RefundEntity claimed) throws InterruptedException {
+    private RefundGatewayResult call(RefundGatewayThreads.Reservation thread, RefundEntity claimed)
+            throws InterruptedException {
         RefundGatewayRequest request = new RefundGatewayRequest(
                 claimed.gatewayKey(),
                 claimed.orderId(),
@@ -299,14 +397,15 @@ public final class RefundExecutor implements DisposableBean {
                 claimed.attempts(),
                 claimed.paymentReference()
         );
-        Future<RefundGatewayResult> call = gatewayCalls.submit(() -> gateway.refund(request));
+        RefundGatewayThreads.Call call = thread.submit(() -> gateway.refund(request));
         try {
-            RefundGatewayResult result = call.get(settings.gatewayTimeout().toNanos(), TimeUnit.NANOSECONDS);
+            RefundGatewayResult result = call.get(settings.gatewayTimeout());
             return result == null
                     ? new RefundGatewayResult.RetryableFailure("The refund gateway answered nothing")
                     : result;
         } catch (TimeoutException ex) {
-            call.cancel(true);
+            // Interrupted; a call that ignores it keeps its thread until it returns.
+            call.cancel();
             return new RefundGatewayResult.RetryableFailure(
                     "The refund gateway did not answer within " + settings.gatewayTimeout().toMillis() + " ms");
         } catch (ExecutionException ex) {
@@ -317,7 +416,7 @@ public final class RefundExecutor implements DisposableBean {
             }
             return new RefundGatewayResult.RetryableFailure(String.valueOf(failure));
         } catch (InterruptedException ex) {
-            call.cancel(true);
+            call.cancel();
             throw ex;
         }
     }
@@ -470,15 +569,18 @@ public final class RefundExecutor implements DisposableBean {
 
 
     /**
-     * The executor's settings (app.after-sales.refund.*, app.after-sales.refund-gateway.timeout and the poller's
-     * batch size), checked at startup.
+     * The executor's settings (app.after-sales.refund.*, app.after-sales.refund-gateway.timeout and max-threads, and
+     * the poller's batch size), checked at startup.
      *
      * @param batchSize       refunds handled per run at most; at least 1
      * @param maxAttempts     gateway calls a refund may make, reclaims included, before it is given up
-     * @param retryBackoff    the wait after the first failed attempt; it doubles with every further one
+     * @param retryBackoff    the wait after the first failed attempt; it doubles with every further one. Also the
+     *                        wait after a claim that failed before its call
      * @param retryBackoffMax the longest wait between attempts
      * @param claimTimeout    the lease of a claim: after it another executor may reclaim the refund
      * @param gatewayTimeout  how long a gateway call is waited for; shorter than the lease (section 19.10)
+     * @param gatewayThreads  the most gateway calls running at once, calls that outlived their timeout included; at
+     *                        least 1
      */
     record Settings(
             int batchSize,
@@ -486,7 +588,8 @@ public final class RefundExecutor implements DisposableBean {
             Duration retryBackoff,
             Duration retryBackoffMax,
             Duration claimTimeout,
-            Duration gatewayTimeout
+            Duration gatewayTimeout,
+            int gatewayThreads
     ) {
 
         Settings {
@@ -494,6 +597,10 @@ public final class RefundExecutor implements DisposableBean {
             if (maxAttempts < 1) {
                 throw new IllegalArgumentException(
                         "app.after-sales.refund.max-attempts must be at least 1, got " + maxAttempts);
+            }
+            if (gatewayThreads < 1) {
+                throw new IllegalArgumentException(
+                        "app.after-sales.refund-gateway.max-threads must be at least 1, got " + gatewayThreads);
             }
             requirePositive(retryBackoff, "app.after-sales.refund.retry-backoff");
             requirePositive(retryBackoffMax, "app.after-sales.refund.retry-backoff-max");
@@ -528,5 +635,24 @@ public final class RefundExecutor implements DisposableBean {
      *                there is a call to make
      */
     private record Claim(RefundEntity refund, String outcome) {
+    }
+
+
+    /**
+     * What a run does after one claim.
+     */
+    private enum Next {
+        /**
+         * Nothing was due: the run ends without a refund handled.
+         */
+        NONE_DUE,
+        /**
+         * A refund was handled; the run goes on.
+         */
+        GO_ON,
+        /**
+         * A refund was handled and the run ends (skipped, or interrupted while waiting for the gateway).
+         */
+        END_RUN
     }
 }

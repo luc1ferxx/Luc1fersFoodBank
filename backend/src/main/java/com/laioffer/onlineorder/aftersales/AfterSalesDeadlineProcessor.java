@@ -32,7 +32,8 @@ import java.util.function.Supplier;
  * </ol>
  * The step, its history row, its refund and its event commit together, and onlineorder.aftersales.deadlines counts
  * the step once it committed. A step the after-sales machine refuses (only when the clock read after the claim went
- * back before the deadline) writes nothing and counts as skipped.
+ * back before the deadline) writes nothing, counts as skipped and ends the run, as in the refund executor: the case
+ * is still due, and the claim would otherwise take it again for the rest of the batch.
  *
  * <p>Deadlines are hard for the customer's and the merchant's answers: from deadline_at on the machine refuses them
  * whether this poller ran or not (section 19.1). An answer that locks the case first is refused and the timeout fires
@@ -109,14 +110,23 @@ public final class AfterSalesDeadlineProcessor {
 
 
     /**
-     * Fires the due deadlines, most overdue first, until none is due, the batch size is reached or the thread is
-     * interrupted.
+     * Fires the due deadlines, most overdue first, until none is due, the batch size is reached, a step is skipped or
+     * the thread is interrupted.
      *
      * @return the number of cases handled (fired, skipped, or backed off after a failure), at most the batch size
      */
     public int fireDueDeadlines() {
+        return fireDueDeadlinesWithin(TickBudget.UNLIMITED);
+    }
+
+
+    /**
+     * {@link #fireDueDeadlines()} within a poller tick: no further case is claimed once {@code budget} is spent, after
+     * the first one.
+     */
+    int fireDueDeadlinesWithin(TickBudget budget) {
         int handled = 0;
-        while (handled < batchSize && !Thread.currentThread().isInterrupted()) {
+        while (handled < batchSize && !Thread.currentThread().isInterrupted() && (handled == 0 || !budget.spent())) {
             AtomicReference<AfterSalesCaseEntity> claimed = new AtomicReference<>();
             AtomicReference<AfterSalesTrigger> timeout = new AtomicReference<>();
             Fired fired;
@@ -143,8 +153,11 @@ public final class AfterSalesDeadlineProcessor {
             if (fired == null) {
                 return handled;
             }
-            record(fired);
             handled++;
+            if (!record(fired)) {
+                // The refused case is still due and would be claimed again at once; the next run has a later clock.
+                return handled;
+            }
         }
         return handled;
     }
@@ -163,8 +176,10 @@ public final class AfterSalesDeadlineProcessor {
 
     /**
      * Counts and logs a step that committed or was refused.
+     *
+     * @return whether the step was applied; false when it was refused (skipped)
      */
-    private void record(Fired fired) {
+    private boolean record(Fired fired) {
         AfterSalesCaseEntity due = fired.due();
         if (fired.step().decision() instanceof Decision.Apply<AfterSalesStatus, AfterSalesTrigger> applied) {
             metricsService.recordAfterSalesDeadline(fired.trigger().name(), FIRED);
@@ -181,7 +196,7 @@ public final class AfterSalesDeadlineProcessor {
                     moved.approvedAmount(),
                     moved.currency()
             );
-            return;
+            return true;
         }
         metricsService.recordAfterSalesDeadline(fired.trigger().name(), SKIPPED);
         LOGGER.warn(
@@ -192,6 +207,7 @@ public final class AfterSalesDeadlineProcessor {
                 due.deadlineAt(),
                 fired.step().decision()
         );
+        return false;
     }
 
 

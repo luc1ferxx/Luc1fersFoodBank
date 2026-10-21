@@ -6,6 +6,8 @@ import com.laioffer.onlineorder.messaging.contract.EventContracts;
 import com.laioffer.onlineorder.messaging.contract.EventTopic;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.money.Money;
+import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.repository.OrderPaymentRepository;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.CustomerService;
 import com.laioffer.onlineorder.service.OrderService;
@@ -13,6 +15,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.mockito.AdditionalAnswers;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,10 +47,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * refunded_amount, history and aftersales.case_refunded); a retryable failure waits for an exponential backoff and
  * succeeds later; a permanent failure gives the refund up and leaves its case in REFUNDING; an expired lease is
  * reclaimed with the same gateway key, or given up once the attempts are used up; a refund above the order's capture
- * is given up before the gateway is called; and the customer never sees the gateway's error. The refunds come from
- * the two ways a case enters REFUNDING: the cancel of a paid order and a merchant's approval. The cases have to hold on
- * PostgreSQL and on H2 (the {@code h2} profile), so each database gets a subclass; every test leaves no refund due, so
- * that each run of the executor only meets the test's own refunds.
+ * is given up before the gateway is called; the customer never sees the gateway's error; expired leases are claimed
+ * before due PENDING refunds; and a refund whose claim transaction fails backs off alone (section 24). The refunds
+ * come from the two ways a case enters REFUNDING: the cancel of a paid order and a merchant's approval. The cases have
+ * to hold on PostgreSQL and on H2 (the {@code h2} profile), so each database gets a subclass; every test leaves no
+ * refund due, so that each run of the executor only meets the test's own refunds.
  */
 abstract class AbstractRefundExecutorIntegrationTests {
 
@@ -103,6 +107,12 @@ abstract class AbstractRefundExecutorIntegrationTests {
 
     @Autowired
     PlatformTransactionManager transactionManager;
+
+    @Autowired
+    OrderPaymentRepository orderPaymentRepository;
+
+    @Autowired
+    ApplicationMetricsService metricsService;
 
     /**
      * The simulated gateway, which a test can make fail.
@@ -304,6 +314,85 @@ abstract class AbstractRefundExecutorIntegrationTests {
         Assertions.assertEquals("REFUNDING", reload(overCaptured.id()).status());
         Assertions.assertEquals("REFUNDING", reload(uncaptured.id()).status());
         Assertions.assertEquals(failedBefore + 2, refundCount(RefundExecutor.FAILED));
+    }
+
+
+    /**
+     * Section 24: the claim takes expired leases before due PENDING refunds, whatever their ids (here the PENDING
+     * refund is the older one), so a steady stream of PENDING refunds cannot starve a stalled refund.
+     */
+    @Test
+    void expiredLeases_shouldBeClaimedBeforeDuePendingRefunds() {
+        Customer grace = customer("refund-claim-order-");
+        AfterSalesCaseEntity pending = cancelledCase(grace);
+        AfterSalesCaseEntity stalled = cancelledCase(grace);
+        RefundEntity stalledRefund = refundOf(stalled.id());
+        leaseAsIfClaimed(stalledRefund.id(), 1, LocalDateTime.now().minusSeconds(1));
+
+        Assertions.assertEquals(2, refundExecutor.runDueRefunds());
+
+        ArgumentCaptor<RefundGatewayRequest> calls = ArgumentCaptor.forClass(RefundGatewayRequest.class);
+        Mockito.verify(gateway, Mockito.times(2)).refund(calls.capture());
+        Assertions.assertEquals(List.of(stalledRefund.gatewayKey(), refundOf(pending.id()).gatewayKey()),
+                calls.getAllValues().stream().map(RefundGatewayRequest::gatewayKey).toList());
+        assertSucceeded(stalled, 2);
+        assertSucceeded(pending, 1);
+    }
+
+
+    /**
+     * Section 24: a refund whose claim transaction fails after the claim (here the lookup of its order's payment) rolls
+     * back and backs off alone, at the version it was claimed at and without using up an attempt: an expired lease's
+     * end and a PENDING refund's next attempt move one retry backoff ahead, with the failure as last_error. The
+     * refund behind them is still executed in the same run.
+     */
+    @Test
+    void refundsWhoseClaimFails_shouldBackOffAloneWhileTheNextOneSucceeds() {
+        Customer heidi = customer("refund-claim-fails-");
+        AfterSalesCaseEntity failingPending = cancelledCase(heidi);
+        AfterSalesCaseEntity failingLease = cancelledCase(heidi);
+        AfterSalesCaseEntity healthy = cancelledCase(heidi);
+        RefundEntity pendingBefore = refundOf(failingPending.id());
+        leaseAsIfClaimed(refundOf(failingLease.id()).id(), 1, LocalDateTime.now().minusSeconds(1));
+        RefundEntity leaseBefore = refundOf(failingLease.id());
+        OrderPaymentRepository payments = Mockito.mock(
+                OrderPaymentRepository.class, AdditionalAnswers.delegatesTo(orderPaymentRepository));
+        for (AfterSalesCaseEntity failing : List.of(failingPending, failingLease)) {
+            Mockito.doThrow(new IllegalStateException("payments unavailable"))
+                    .when(payments).findByOrderId(failing.orderId());
+        }
+        RefundExecutor failingLookups = new RefundExecutor(refundRepository, caseRepository, payments, transitions,
+                gateway, metricsService, transactionManager, refundExecutor.settings(), LocalDateTime::now);
+        String error = "The claim of attempt %d failed: java.lang.IllegalStateException: payments unavailable";
+        double backedOffBefore = refundCount(RefundExecutor.BACKED_OFF);
+        try {
+            LocalDateTime before = LocalDateTime.now();
+            Assertions.assertEquals(3, failingLookups.runDueRefunds());
+            LocalDateTime after = LocalDateTime.now();
+
+            RefundEntity backedOffLease = refundOf(failingLease.id());
+            Assertions.assertEquals("PROCESSING|1|" + error.formatted(2) + "|null", state(backedOffLease));
+            Assertions.assertEquals(leaseBefore.version(), backedOffLease.version());
+            assertAbout(backedOffLease.claimedUntil(), before.plus(RETRY_BACKOFF), after.plus(RETRY_BACKOFF));
+            RefundEntity backedOffPending = refundOf(failingPending.id());
+            Assertions.assertEquals("PENDING|0|" + error.formatted(1) + "|null", state(backedOffPending));
+            Assertions.assertEquals(pendingBefore.version(), backedOffPending.version());
+            assertAbout(backedOffPending.nextAttemptAt(), before.plus(RETRY_BACKOFF), after.plus(RETRY_BACKOFF));
+            assertSucceeded(healthy, 1);
+            Mockito.verify(gateway, Mockito.times(1)).refund(Mockito.any());
+            Assertions.assertEquals(backedOffBefore + 2, refundCount(RefundExecutor.BACKED_OFF));
+            Assertions.assertEquals(0, failingLookups.runDueRefunds(), "neither is due before its backoff");
+        } finally {
+            failingLookups.destroy();
+        }
+
+        // Due again with the payments readable, both go through: the expired lease as its second attempt.
+        makeDue(pendingBefore.id());
+        Assertions.assertEquals(1, jdbcTemplate.update("UPDATE refunds SET claimed_until = ? WHERE id = ?",
+                LocalDateTime.now().minusSeconds(1), leaseBefore.id()));
+        Assertions.assertEquals(2, refundExecutor.runDueRefunds());
+        assertSucceeded(failingLease, 2);
+        assertSucceeded(failingPending, 1);
     }
 
 

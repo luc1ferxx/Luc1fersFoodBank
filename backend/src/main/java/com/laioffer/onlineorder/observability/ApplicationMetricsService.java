@@ -89,14 +89,24 @@ public class ApplicationMetricsService {
      *                the refund waits for its backoff), failed (given up: a permanent failure, the attempts used up or a
      *                refund that no longer matches its case or payment), superseded (another executor reclaimed it
      *                after the lease expired, so this result was discarded), unrecorded (the result could not be
-     *                recorded; the refund is reclaimed once its lease expires) or skipped (claimed but not due after
-     *                all)
+     *                recorded; the refund is reclaimed once its lease expires), skipped (claimed but not due after
+     *                all) or backed_off (its claim transaction failed before the gateway call; the refund waits for
+     *                the retry backoff without using up an attempt)
      */
     public void recordAfterSalesRefund(String outcome) {
         meterRegistry.counter(
                 "onlineorder.aftersales.refunds",
                 "outcome", normalize(outcome)
         ).increment();
+    }
+
+
+    /**
+     * The automatic refund of a cancelled order whose total is more than its payment captured: the case was opened,
+     * and the refund executor will give its refund up before calling the gateway, for support to refund by hand.
+     */
+    public void recordAfterSalesUndercapturedCancellation() {
+        meterRegistry.counter("onlineorder.aftersales.cancellations.undercaptured").increment();
     }
 
 

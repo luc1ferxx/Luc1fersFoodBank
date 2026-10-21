@@ -3,6 +3,7 @@ package com.laioffer.onlineorder.aftersales;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.SmartLifecycle;
@@ -14,6 +15,8 @@ import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 
 
 /**
@@ -28,8 +31,11 @@ import java.util.concurrent.TimeUnit;
  * auto-configured scheduler for every @Scheduled job.
  *
  * <p>Each tick runs the jobs one after the other, each failing on its own: a failed job is logged and the next one
- * still runs. On by default wherever Kafka is (app.after-sales.poller.enabled follows app.kafka.enabled in
- * application.yml); every instance runs one, since claims use SKIP LOCKED.
+ * still runs. The jobs share the tick's time budget (app.after-sales.poller.tick-budget, {@link TickBudget}): each
+ * stops claiming once it is spent, after one item at least, so that a slow or hung refund gateway delays the next
+ * tick's deadlines by about the budget plus one gateway timeout at most. On by default wherever Kafka is
+ * (app.after-sales.poller.enabled follows app.kafka.enabled in application.yml); every instance runs one, since claims
+ * use SKIP LOCKED.
  */
 @Component
 @ConditionalOnProperty(name = "app.after-sales.poller.enabled", havingValue = "true", matchIfMissing = true)
@@ -41,21 +47,43 @@ public final class AfterSalesPoller implements SmartLifecycle {
 
     private final List<Job> jobs;
     private final Duration interval;
+    private final Duration tickBudget;
+    private final LongSupplier nanoTime;
     private ScheduledExecutorService executor;
 
 
+    @Autowired
     public AfterSalesPoller(
             AfterSalesDeadlineProcessor deadlineProcessor,
             RefundExecutor refundExecutor,
-            @Value("${app.after-sales.poller.interval:1s}") Duration interval
+            @Value("${app.after-sales.poller.interval:1s}") Duration interval,
+            @Value("${app.after-sales.poller.tick-budget:5s}") Duration tickBudget
     ) {
+        this(deadlineProcessor, refundExecutor, interval, tickBudget, System::nanoTime);
+    }
+
+
+    AfterSalesPoller(
+            AfterSalesDeadlineProcessor deadlineProcessor,
+            RefundExecutor refundExecutor,
+            Duration interval,
+            Duration tickBudget,
+            LongSupplier nanoTime
+    ) {
+        if (tickBudget == null || tickBudget.isNegative() || tickBudget.isZero()) {
+            // A budget of nothing would cut every job to one item per tick.
+            throw new IllegalArgumentException(
+                    "app.after-sales.poller.tick-budget must be positive, got " + tickBudget);
+        }
         // The jobs of a tick, in order: the refunds come after the deadlines, so that a refund a timeout created is
         // executed in the same tick.
         this.jobs = List.of(
-                new Job("deadline", deadlineProcessor::fireDueDeadlines),
-                new Job("refund", refundExecutor::runDueRefunds)
+                new Job("deadline", deadlineProcessor::fireDueDeadlinesWithin),
+                new Job("refund", refundExecutor::runDueRefundsWithin)
         );
         this.interval = interval;
+        this.tickBudget = tickBudget;
+        this.nanoTime = nanoTime;
     }
 
 
@@ -75,13 +103,19 @@ public final class AfterSalesPoller implements SmartLifecycle {
 
 
     /**
-     * One tick: every job in turn. Never throws: an exception would cancel all later runs of a
-     * ScheduledExecutorService task.
+     * One tick: every job in turn, within one time budget from the start of the tick. Never throws: an exception would
+     * cancel all later runs of a ScheduledExecutorService task.
      */
     void poll() {
+        TickBudget budget = TickBudget.startingNow(tickBudget, nanoTime);
         for (Job job : jobs) {
-            job.run(interval);
+            job.run(budget, interval);
         }
+    }
+
+
+    Duration tickBudget() {
+        return tickBudget;
     }
 
 
@@ -116,20 +150,20 @@ public final class AfterSalesPoller implements SmartLifecycle {
     private static final class Job {
 
         private final String name;
-        private final Runnable work;
+        private final Consumer<TickBudget> work;
         // Only touched by the single poller thread.
         private int consecutiveFailures;
 
 
-        Job(String name, Runnable work) {
+        Job(String name, Consumer<TickBudget> work) {
             this.name = name;
             this.work = work;
         }
 
 
-        void run(Duration interval) {
+        void run(TickBudget budget, Duration interval) {
             try {
-                work.run();
+                work.accept(budget);
                 if (consecutiveFailures > 0) {
                     LOGGER.info("After-sales {} poll resumed after {} failed poll(s)", name, consecutiveFailures);
                     consecutiveFailures = 0;

@@ -3,6 +3,9 @@ package com.laioffer.onlineorder.aftersales;
 
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderPaymentEntity;
+import com.laioffer.onlineorder.fulfilment.AfterCommit;
+import com.laioffer.onlineorder.money.Money;
+import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderPaymentRepository;
 import com.laioffer.onlineorder.service.CancellationRefunds;
@@ -25,6 +28,11 @@ import java.util.Optional;
  * one, so a 0.00 order or an order an admin marked PAID can still be cancelled (and its accept timeout still fires).
  * A completed order cannot be cancelled and a cancelled one cannot complete, so the case never meets a customer's
  * request on the same order.
+ *
+ * <p>The case refunds the order's total, which is not checked against the capture here (ADR 0002 section 24,
+ * deviation 2): a total above the capture still opens the case, and the refund executor gives its refund up before
+ * calling the gateway (section 19.4). So that support sees such an order before then, its opening is logged as a WARN
+ * and counted in onlineorder.aftersales.cancellations.undercaptured once the cancel committed.
  */
 @Service
 public class OrderCancellationRefunds implements CancellationRefunds {
@@ -34,16 +42,19 @@ public class OrderCancellationRefunds implements CancellationRefunds {
     private final OrderPaymentRepository orderPaymentRepository;
     private final OrderHistoryItemRepository orderHistoryItemRepository;
     private final AfterSalesTransitions transitions;
+    private final ApplicationMetricsService metricsService;
 
 
     public OrderCancellationRefunds(
             OrderPaymentRepository orderPaymentRepository,
             OrderHistoryItemRepository orderHistoryItemRepository,
-            AfterSalesTransitions transitions
+            AfterSalesTransitions transitions,
+            ApplicationMetricsService metricsService
     ) {
         this.orderPaymentRepository = orderPaymentRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
         this.transitions = transitions;
+        this.metricsService = metricsService;
     }
 
 
@@ -61,11 +72,23 @@ public class OrderCancellationRefunds implements CancellationRefunds {
                     cancelledOrder.id());
             return;
         }
-        transitions.openOrderCancelled(new AfterSalesTransitions.OrderCancellation(
+        AfterSalesCaseEntity opened = transitions.openOrderCancelled(new AfterSalesTransitions.OrderCancellation(
                 cancelledOrder,
                 payment.get(),
                 orderHistoryItemRepository.findAllByOrderIdOrderByIdAsc(cancelledOrder.id()),
                 cancelledAt
         ));
+        Money total = cancelledOrder.total();
+        Money captured = payment.get().captured();
+        // The opening refused a capture in another currency; only a smaller amount is left to see.
+        if (total.currency().equals(captured.currency()) && total.isGreaterThan(captured)) {
+            AfterCommit.run(() -> {
+                LOGGER.warn("Order {} was cancelled with a total of {} but its payment {} captured only {}; the "
+                                + "refund of case {} will be given up before the gateway is called, for support to "
+                                + "refund by hand",
+                        cancelledOrder.id(), total, payment.get().providerReference(), captured, opened.id());
+                metricsService.recordAfterSalesUndercapturedCancellation();
+            });
+        }
     }
 }

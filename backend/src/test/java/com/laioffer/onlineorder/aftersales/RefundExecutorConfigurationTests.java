@@ -43,7 +43,7 @@ class RefundExecutorConfigurationTests {
             Assertions.assertNull(context.getStartupFailure());
             Assertions.assertEquals(
                     new RefundExecutor.Settings(100, 8, Duration.ofSeconds(10), Duration.ofMinutes(10),
-                            Duration.ofSeconds(60), Duration.ofSeconds(10)),
+                            Duration.ofSeconds(60), Duration.ofSeconds(10), 4),
                     context.getBean(RefundExecutor.class).settings()
             );
             // The simulated gateway fails no attempt by default.
@@ -63,12 +63,13 @@ class RefundExecutorConfigurationTests {
                         "AFTER_SALES_REFUND_RETRY_BACKOFF_MAX=1m",
                         "AFTER_SALES_REFUND_CLAIM_TIMEOUT=2m",
                         "AFTER_SALES_REFUND_GATEWAY_TIMEOUT=30s",
-                        "AFTER_SALES_REFUND_GATEWAY_FAIL_FIRST_ATTEMPTS=1"
+                        "AFTER_SALES_REFUND_GATEWAY_FAIL_FIRST_ATTEMPTS=1",
+                        "AFTER_SALES_REFUND_GATEWAY_MAX_THREADS=2"
                 )
                 .run(context -> {
                     Assertions.assertEquals(
                             new RefundExecutor.Settings(7, 3, Duration.ofSeconds(2), Duration.ofMinutes(1),
-                                    Duration.ofMinutes(2), Duration.ofSeconds(30)),
+                                    Duration.ofMinutes(2), Duration.ofSeconds(30), 2),
                             context.getBean(RefundExecutor.class).settings()
                     );
                     Assertions.assertInstanceOf(RefundGatewayResult.RetryableFailure.class,
@@ -97,6 +98,20 @@ class RefundExecutorConfigurationTests {
         // A shorter lease with the default gateway timeout fails the same way.
         contextRunner.withPropertyValues("AFTER_SALES_REFUND_CLAIM_TIMEOUT=5s").run(context ->
                 Assertions.assertInstanceOf(IllegalArgumentException.class, rootCause(context.getStartupFailure())));
+    }
+
+
+    /**
+     * Section 24: the gateway calls need one thread at least.
+     */
+    @Test
+    void noGatewayThread_shouldFailStartup() {
+        contextRunner.withPropertyValues("AFTER_SALES_REFUND_GATEWAY_MAX_THREADS=0").run(context -> {
+            Throwable cause = rootCause(context.getStartupFailure());
+            Assertions.assertInstanceOf(IllegalArgumentException.class, cause);
+            Assertions.assertEquals("app.after-sales.refund-gateway.max-threads must be at least 1, got 0",
+                    cause.getMessage());
+        });
     }
 
 

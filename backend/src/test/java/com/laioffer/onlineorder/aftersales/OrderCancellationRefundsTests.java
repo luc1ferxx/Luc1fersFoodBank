@@ -3,14 +3,20 @@ package com.laioffer.onlineorder.aftersales;
 
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderPaymentEntity;
+import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderPaymentRepository;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 
 import java.math.BigDecimal;
@@ -33,12 +39,16 @@ class OrderCancellationRefundsTests {
     @Mock
     private AfterSalesTransitions transitions;
 
+    @Mock
+    private ApplicationMetricsService metricsService;
+
     private OrderCancellationRefunds refunds;
 
 
     @BeforeEach
     void setup() {
-        refunds = new OrderCancellationRefunds(orderPaymentRepository, orderHistoryItemRepository, transitions);
+        refunds = new OrderCancellationRefunds(
+                orderPaymentRepository, orderHistoryItemRepository, transitions, metricsService);
     }
 
 
@@ -55,6 +65,72 @@ class OrderCancellationRefundsTests {
         Mockito.verify(transitions).openOrderCancelled(new AfterSalesTransitions.OrderCancellation(
                 order, payment, AfterSalesTransitionsTests.ORDER_ITEMS, AfterSalesTransitionsTests.NOW));
         Mockito.verifyNoMoreInteractions(transitions);
+        Mockito.verifyNoInteractions(metricsService);
+    }
+
+
+    /**
+     * ADR 0002 section 24: a total above the capture still opens the case (the refund executor gives its refund up
+     * before the gateway), but the opening is logged as a WARN and counted, so that support sees it first. Without a
+     * transaction (as here) both happen at once; in the cancel's transaction, once it committed.
+     */
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void aCancelledOrderAboveItsCapture_shouldStillOpenTheRefundButWarnAndCountIt(CapturedOutput output) {
+        OrderEntity order = AfterSalesTransitionsTests.cancelledOrder("USD");
+        OrderPaymentEntity payment = AfterSalesTransitionsTests.payment("16.08", "USD");
+        Mockito.when(orderPaymentRepository.findByOrderId(order.id())).thenReturn(Optional.of(payment));
+        Mockito.when(orderHistoryItemRepository.findAllByOrderIdOrderByIdAsc(order.id()))
+                .thenReturn(AfterSalesTransitionsTests.ORDER_ITEMS);
+        Mockito.when(transitions.openOrderCancelled(Mockito.any())).thenReturn(opened(order));
+
+        refunds.refundCancelledOrder(order, AfterSalesTransitionsTests.NOW);
+
+        Mockito.verify(transitions).openOrderCancelled(new AfterSalesTransitions.OrderCancellation(
+                order, payment, AfterSalesTransitionsTests.ORDER_ITEMS, AfterSalesTransitionsTests.NOW));
+        Mockito.verify(metricsService).recordAfterSalesUndercapturedCancellation();
+        Assertions.assertTrue(output.getOut().contains("WARN"), output.getOut());
+        Assertions.assertTrue(output.getOut().contains("Order " + order.id() + " was cancelled with a total of "
+                + "16.09 USD but its payment " + payment.providerReference() + " captured only 16.08 USD; the "
+                + "refund of case 9001 will be given up before the gateway is called"), output.getOut());
+    }
+
+
+    /**
+     * The metric counts only once the cancel commits: a cancel that rolls back opened nothing.
+     */
+    @Test
+    void aCancelledOrderAboveItsCapture_shouldBeCountedOnlyOnceTheCancelCommits() {
+        OrderEntity order = AfterSalesTransitionsTests.cancelledOrder("USD");
+        Mockito.when(orderPaymentRepository.findByOrderId(order.id()))
+                .thenReturn(Optional.of(AfterSalesTransitionsTests.payment("10.00", "USD")));
+        Mockito.when(transitions.openOrderCancelled(Mockito.any())).thenReturn(opened(order));
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            refunds.refundCancelledOrder(order, AfterSalesTransitionsTests.NOW);
+            Mockito.verifyNoInteractions(metricsService);
+
+            TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
+            Mockito.verify(metricsService).recordAfterSalesUndercapturedCancellation();
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+
+    /**
+     * A capture of exactly the total, compared as money (16.090 is 16.09), is no warning.
+     */
+    @Test
+    void aCancelledOrderCapturedInFull_shouldNotBeCounted() {
+        OrderEntity order = AfterSalesTransitionsTests.cancelledOrder("USD");
+        Mockito.when(orderPaymentRepository.findByOrderId(order.id()))
+                .thenReturn(Optional.of(AfterSalesTransitionsTests.payment("16.090", "USD")));
+
+        refunds.refundCancelledOrder(order, AfterSalesTransitionsTests.NOW);
+
+        Mockito.verify(transitions).openOrderCancelled(Mockito.any());
+        Mockito.verifyNoInteractions(metricsService);
     }
 
 
@@ -86,5 +162,16 @@ class OrderCancellationRefundsTests {
         refunds.refundCancelledOrder(free, AfterSalesTransitionsTests.NOW);
 
         Mockito.verifyNoInteractions(orderPaymentRepository, orderHistoryItemRepository, transitions);
+    }
+
+
+    /**
+     * The case the single writer opened for {@code order}, with id 9001.
+     */
+    private static AfterSalesCaseEntity opened(OrderEntity order) {
+        return new AfterSalesCaseEntity(9001L, order.id(), order.customerId(), order.restaurantId(), "ORDER_CANCELLED",
+                1, "REFUNDING", null, null, order.totalPrice(), order.totalPrice(), null, order.totalPrice(), null,
+                order.currency(), null, null, "ORDER_CANCELLED", null, null, null, null, 0, 0L,
+                AfterSalesTransitionsTests.NOW, AfterSalesTransitionsTests.NOW);
     }
 }

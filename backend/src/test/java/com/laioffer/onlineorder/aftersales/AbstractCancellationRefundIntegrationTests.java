@@ -12,6 +12,8 @@ import com.laioffer.onlineorder.repository.OrderRepository;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.CustomerService;
 import com.laioffer.onlineorder.service.OrderService;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -84,6 +86,9 @@ abstract class AbstractCancellationRefundIntegrationTests {
     @Autowired
     PlatformTransactionManager transactionManager;
 
+    @Autowired
+    MeterRegistry meterRegistry;
+
 
     @Test
     void customerCancel_ofAPaidOrder_shouldOpenTheRefundOfTheWholeOrder() throws Exception {
@@ -154,6 +159,32 @@ abstract class AbstractCancellationRefundIntegrationTests {
 
         assertNothingOpened(markedPaid.id());
         assertNothingOpened(free.id());
+    }
+
+
+    /**
+     * ADR 0002 section 24: the cancel of an order whose total is more than its payment captured still opens the refund
+     * of the whole order (the refund executor gives it up before the gateway), and counts it in
+     * onlineorder.aftersales.cancellations.undercaptured once the cancel committed, for support to see first. A cancel
+     * captured in full is not counted.
+     */
+    @Test
+    void cancel_ofAnOrderAboveItsCapture_shouldOpenTheRefundAndCountIt() throws Exception {
+        Customer erin = customer("cancel-refund-undercaptured-");
+        OrderDto shortPaid = paidOrder(erin, menuItem(BURGER_KING, 0));
+        OrderDto fullyPaid = paidOrder(erin, menuItem(BURGER_KING, 1));
+        Assertions.assertEquals(1, jdbcTemplate.update(
+                "UPDATE order_payments SET amount = amount - 0.01 WHERE order_id = ?", shortPaid.id()));
+        double before = undercapturedCount();
+
+        cancel(erin, shortPaid.id(), "cancel-" + shortPaid.id()).andExpect(status().isOk());
+
+        assertRefundOpened(shortPaid.id());
+        Assertions.assertEquals(before + 1, undercapturedCount());
+
+        cancel(erin, fullyPaid.id(), "cancel-" + fullyPaid.id()).andExpect(status().isOk());
+        assertRefundOpened(fullyPaid.id());
+        Assertions.assertEquals(before + 1, undercapturedCount());
     }
 
 
@@ -318,6 +349,12 @@ abstract class AbstractCancellationRefundIntegrationTests {
         Assertions.assertEquals(total, Money.of(event.data().approvedAmount(), event.data().currency()));
         Assertions.assertEquals(orderLines.size(), event.data().lines().size());
         return opened;
+    }
+
+
+    double undercapturedCount() {
+        Counter counter = meterRegistry.find("onlineorder.aftersales.cancellations.undercaptured").counter();
+        return counter == null ? 0 : counter.count();
     }
 
 
