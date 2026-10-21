@@ -38,12 +38,12 @@ import java.util.function.Supplier;
  * changes after_sales_cases.status. A case is opened, in its caller's transaction and under the order's row lock, by
  * a customer's request ({@link #open}) or by the cancel of a paid order ({@link #openOrderCancelled}, straight into
  * REFUNDING with its refund). A step is decided by {@link AfterSalesStateMachine} on the case the caller locked
- * ({@code FOR UPDATE}, or claimed with SKIP LOCKED), with the time read after that lock. An applied step is written
- * with a compare-and-set on the status and version it was decided on, which raises the version and sets the deadline
- * of the status entered ({@link AfterSalesDeadlines}); then come, in the same transaction, the history row with its
- * actor, the refund when the case enters REFUNDING, and the after-sales event to the outbox. A step that already
- * happened, or that the machine refuses, writes nothing; the caller maps it to its own answer
- * ({@link AfterSalesErrors#refused}).
+ * ({@code FOR UPDATE}, or claimed with SKIP LOCKED), with the time read after that lock, in microseconds as every time
+ * it writes ({@link AfterSalesClock}). An applied step is written with a compare-and-set on the status and version it
+ * was decided on, which raises the version and sets the deadline of the status entered ({@link AfterSalesDeadlines});
+ * then come, in the same transaction, the history row with its actor, the refund when the case enters REFUNDING, and
+ * the after-sales event to the outbox. A step that already happened, or that the machine refuses, writes nothing; the
+ * caller maps it to its own answer ({@link AfterSalesErrors#refused}).
  *
  * <p>Lock order: the case row (for an opening, the order row its caller locked, then the new case), then (entering
  * REFUNDING) a new refunds row, then the outbox sequence row of the case. The cancel of a paid order has already taken
@@ -137,7 +137,7 @@ public class AfterSalesTransitions {
         this.deadlines = deadlines;
         this.tracer = tracer;
         this.topic = topic;
-        this.clock = clock;
+        this.clock = AfterSalesClock.inMicros(clock);
     }
 
 
@@ -153,7 +153,8 @@ public class AfterSalesTransitions {
     @Transactional(propagation = Propagation.MANDATORY)
     public AfterSalesCaseEntity open(CustomerRequest request) {
         OrderEntity order = request.order();
-        LocalDateTime now = request.now();
+        // In microseconds whatever clock the caller read (AfterSalesClock): the rows and the event carry one instant.
+        LocalDateTime now = AfterSalesClock.inMicros(request.now());
         order.total().requireSameCurrency(request.requested());
         AfterSalesStatus status = AfterSalesStatus.PENDING_MERCHANT;
         AfterSalesCaseEntity opened = caseRepository.save(new AfterSalesCaseEntity(
@@ -228,7 +229,7 @@ public class AfterSalesTransitions {
     @Transactional(propagation = Propagation.MANDATORY)
     public AfterSalesCaseEntity openOrderCancelled(OrderCancellation cancellation) {
         OrderEntity order = cancellation.order();
-        LocalDateTime now = cancellation.cancelledAt();
+        LocalDateTime now = AfterSalesClock.inMicros(cancellation.cancelledAt());
         Money total = order.total();
         total.requireSameCurrency(cancellation.payment().captured());
         AfterSalesStatus status = AfterSalesStatus.REFUNDING;

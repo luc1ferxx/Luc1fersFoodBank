@@ -114,7 +114,7 @@ public class AfterSalesCustomerService {
         this.idempotentRequests = idempotentRequests;
         this.views = views;
         this.deadlines = deadlines;
-        this.clock = clock;
+        this.clock = AfterSalesClock.inMicros(clock);
     }
 
 

@@ -209,6 +209,29 @@ class RefundExecutorTests {
     }
 
 
+    /**
+     * A clock with nanoseconds (Linux) is read in microseconds, what the database keeps: the claim, the lease, the next
+     * attempt and updated_at the executor writes, and keeps for its logs, are the stored ones.
+     */
+    @Test
+    void clockWithNanoseconds_shouldBeReadInMicroseconds() {
+        Mockito.when(refundRepository.claimNextDue(NOW.withNano(123_456_000))).thenReturn(pending(2)).thenReturn(null);
+        rows.put(REFUND_ID, pending(2));
+        Mockito.when(gateway.refund(Mockito.any()))
+                .thenReturn(new RefundGatewayResult.RetryableFailure("gateway unavailable"));
+        RefundExecutor nanosecondClock = new RefundExecutor(refundRepository, caseRepository, orderPaymentRepository,
+                transitions, gateway, metricsService, transactionManager, SETTINGS, () -> NOW.withNano(123_456_789));
+        executors.add(nanosecondClock);
+
+        Assertions.assertEquals(1, nanosecondClock.runDueRefunds());
+
+        Assertions.assertEquals(List.of(
+                "PROCESSING|3|null|2026-10-21T12:01:30.123456|null|earlier failure|v2|2026-10-21T12:00:30.123456|null",
+                "PENDING|3|2026-10-21T12:01:10.123456|null|null|gateway unavailable|v3|2026-10-21T12:00:30.123456|null"
+        ), writes.stream().map(RefundExecutorTests::summary).toList());
+    }
+
+
     @Test
     void backoff_shouldDoubleWithEveryAttemptUpToItsMaximum() {
         RefundExecutor refundExecutor = executor(SETTINGS);

@@ -313,6 +313,29 @@ class AfterSalesDeadlineProcessorTests {
     }
 
 
+    /**
+     * A clock with nanoseconds (Linux) is read in microseconds, what the database keeps: the claim and the back-off's
+     * deadline_retry_at get the time without them.
+     */
+    @Test
+    void clockWithNanoseconds_shouldBeReadInMicroseconds() {
+        LocalDateTime inMicros = NOW.withNano(123_456_000);
+        AfterSalesCaseEntity failing = dueCase(501L, AfterSalesStatus.PENDING_MERCHANT, 0);
+        Mockito.when(caseRepository.claimNextDue(inMicros)).thenReturn(failing).thenReturn(null);
+        Mockito.when(transitions.fire(Mockito.eq(failing), Mockito.any()))
+                .thenThrow(new CannotAcquireLockException("lock timeout"));
+        Mockito.when(caseRepository.rescheduleDeadline(501L, failing.version(), inMicros.plus(RETRY_BACKOFF), 1))
+                .thenReturn(1);
+        AfterSalesDeadlineProcessor nanosecondClock = new AfterSalesDeadlineProcessor(caseRepository, transitions,
+                metricsService, transactionManager, 100, RETRY_BACKOFF, () -> NOW.withNano(123_456_789));
+
+        Assertions.assertEquals(1, nanosecondClock.fireDueDeadlines());
+
+        Mockito.verify(caseRepository, Mockito.times(2)).claimNextDue(inMicros);
+        Mockito.verify(caseRepository).rescheduleDeadline(501L, failing.version(), inMicros.plus(RETRY_BACKOFF), 1);
+    }
+
+
     @Test
     void retryBackoff_shouldBePositive() {
         for (Duration backoff : new Duration[]{Duration.ZERO, Duration.ofSeconds(-1), null}) {

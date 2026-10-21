@@ -105,7 +105,7 @@ public final class AfterSalesDeadlineProcessor {
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.batchSize = Math.max(1, batchSize);
         this.retryBackoff = retryBackoff;
-        this.clock = clock;
+        this.clock = AfterSalesClock.inMicros(clock);
     }
 
 

@@ -82,6 +82,16 @@ class AfterSalesTransitionsTests {
      */
     static final LocalDateTime FUTURE = NOW.plusHours(1);
 
+    /**
+     * {@link #NOW} as a Linux clock reads it, with nanoseconds below the microsecond.
+     */
+    static final LocalDateTime NOW_WITH_NANOS = NOW.withNano(123_456_789);
+
+    /**
+     * {@link #NOW_WITH_NANOS} in microseconds, as a timestamp column keeps it.
+     */
+    static final LocalDateTime NOW_IN_MICROS = NOW.withNano(123_456_000);
+
     static final List<AfterSalesCaseLineEntity> LINES = List.of(
             new AfterSalesCaseLineEntity(9L, CASE_ID, 41L, "Whopper Meal", new BigDecimal("10.59"), 1,
                     new BigDecimal("10.59"), "USD"),
@@ -128,6 +138,11 @@ class AfterSalesTransitionsTests {
 
     private final AtomicInteger clockReads = new AtomicInteger();
 
+    /**
+     * What the writer's clock reads: {@link #NOW} unless a test sets it.
+     */
+    private LocalDateTime clockTime = NOW;
+
     private AfterSalesTransitions transitions;
 
 
@@ -161,7 +176,7 @@ class AfterSalesTransitionsTests {
                 "after-sales-events",
                 () -> {
                     clockReads.incrementAndGet();
-                    return NOW;
+                    return clockTime;
                 }
         );
     }
@@ -408,6 +423,34 @@ class AfterSalesTransitionsTests {
     }
 
 
+    /**
+     * A clock with nanoseconds (Linux) is read in microseconds, which is what the database keeps of the case and its
+     * history row: the event carries those times, not the clock's 1 us off them.
+     */
+    @Test
+    void fire_atAClockWithNanoseconds_shouldWriteTheStepAndItsEventInMicroseconds() {
+        clockTime = NOW_WITH_NANOS;
+        stubCompareAndSet(1);
+        Mockito.when(lineRepository.findAllByCaseIdIn(List.of(CASE_ID))).thenReturn(LINES);
+        Mockito.when(orderRepository.findOrderNoById(ORDER_ID)).thenReturn(Optional.of(ORDER_NO));
+
+        AfterSalesTransitions.Step step = transitions.fire(
+                new CaseRow().build(), merchant(AfterSalesTrigger.MERCHANT_REJECT, null, "Nothing was missing."));
+
+        LocalDateTime deadline = NOW_IN_MICROS.plusHours(48);
+        Assertions.assertEquals(NOW_IN_MICROS, step.current().updatedAt());
+        Assertions.assertEquals(deadline, step.current().deadlineAt());
+        Mockito.verify(caseRepository).compareAndSetStep(CASE_ID, "PENDING_MERCHANT", 3L, "REJECTED", null, null,
+                null, "REJECTED", "Nothing was missing.", null, null, null, deadline, NOW_IN_MICROS);
+        Mockito.verify(historyRepository).save(new AfterSalesCaseHistoryEntity(null, CASE_ID, "PENDING_MERCHANT",
+                "REJECTED", "MERCHANT_REJECT", "MERCHANT", MERCHANT_ID, null, "USD", "Nothing was missing.", null,
+                NOW_IN_MICROS));
+        AfterSalesEventEnvelope event = storedEvent();
+        Assertions.assertEquals(NOW_IN_MICROS, event.occurredAt());
+        Assertions.assertEquals(deadline, event.data().deadlineAt());
+    }
+
+
     @Test
     void open_shouldInsertTheRequestInPendingMerchantWithItsLinesHistoryAndEvent() {
         OrderEntity order = completedOrder("USD");
@@ -470,6 +513,39 @@ class AfterSalesTransitionsTests {
                 new AfterSalesTransitions.CustomerRequest(completedOrder("USD"), 1, AfterSalesReason.OTHER, "x",
                         List.of(), Money.of("1.00", "EUR"), NOW, null)));
         Mockito.verifyNoInteractions(caseRepository, lineRepository, historyRepository, outboxEventRepository);
+    }
+
+
+    /**
+     * The time a caller read with nanoseconds is written in microseconds: the opening's event carries the case's
+     * created_at and deadline_at as the database keeps them.
+     */
+    @Test
+    void open_atATimeWithNanoseconds_shouldWriteTheCaseAndItsEventInMicroseconds() {
+        stubCaseAndLineInserts();
+
+        AfterSalesCaseEntity opened = transitions.open(new AfterSalesTransitions.CustomerRequest(
+                completedOrder("USD"),
+                1,
+                AfterSalesReason.MISSING_ITEM,
+                "The fries were missing.",
+                LINES.stream().map(line -> new AfterSalesCaseLineEntity(null, null, line.orderItemId(),
+                        line.menuItemName(), line.unitPrice(), line.quantity(), line.amount(), line.currency()))
+                        .toList(),
+                Money.of("16.09", "USD"),
+                NOW_WITH_NANOS,
+                "open-1"
+        ));
+
+        Assertions.assertEquals(NOW_IN_MICROS, opened.createdAt());
+        Assertions.assertEquals(NOW_IN_MICROS, opened.updatedAt());
+        Assertions.assertEquals(NOW_IN_MICROS.plusHours(24), opened.deadlineAt());
+        Mockito.verify(historyRepository).save(new AfterSalesCaseHistoryEntity(null, CASE_ID, null, "PENDING_MERCHANT",
+                "OPEN", "CUSTOMER", CUSTOMER_ID, new BigDecimal("16.09"), "USD", null, null, NOW_IN_MICROS));
+        AfterSalesEventEnvelope event = storedEvent();
+        Assertions.assertEquals(NOW_IN_MICROS, event.occurredAt());
+        Assertions.assertEquals(opened.createdAt(), event.data().openedAt());
+        Assertions.assertEquals(opened.deadlineAt(), event.data().deadlineAt());
     }
 
 
@@ -605,6 +681,29 @@ class AfterSalesTransitionsTests {
         Assertions.assertEquals(0, new BigDecimal("8.04").compareTo(opened.approvedAmount()));
         Assertions.assertEquals("REFUNDING", opened.status());
         Assertions.assertEquals("ORDER_CANCELLED", opened.resolution());
+    }
+
+
+    /**
+     * A cancel time with nanoseconds is written in microseconds: the case, its refund (due at once) and its event carry
+     * one instant, the one the database keeps.
+     */
+    @Test
+    void openOrderCancelled_atATimeWithNanoseconds_shouldWriteTheCaseRefundAndEventInMicroseconds() {
+        stubCaseAndLineInserts();
+
+        AfterSalesCaseEntity opened = transitions.openOrderCancelled(new AfterSalesTransitions.OrderCancellation(
+                cancelledOrder("USD"), payment("16.09", "USD"), ORDER_ITEMS, FULL_REFUND, NOW_WITH_NANOS));
+
+        Assertions.assertEquals(NOW_IN_MICROS, opened.createdAt());
+        Assertions.assertEquals(NOW_IN_MICROS, opened.updatedAt());
+        ArgumentCaptor<RefundEntity> refund = ArgumentCaptor.forClass(RefundEntity.class);
+        Mockito.verify(refundRepository).save(refund.capture());
+        Assertions.assertEquals(List.of(NOW_IN_MICROS, NOW_IN_MICROS, NOW_IN_MICROS), List.of(
+                refund.getValue().nextAttemptAt(), refund.getValue().createdAt(), refund.getValue().updatedAt()));
+        AfterSalesEventEnvelope event = storedEvent();
+        Assertions.assertEquals(NOW_IN_MICROS, event.occurredAt());
+        Assertions.assertEquals(opened.createdAt(), event.data().openedAt());
     }
 
 

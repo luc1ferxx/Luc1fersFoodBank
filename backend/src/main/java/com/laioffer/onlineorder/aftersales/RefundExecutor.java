@@ -167,7 +167,7 @@ public final class RefundExecutor implements DisposableBean, MeterBinder {
         this.metricsService = metricsService;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.settings = Objects.requireNonNull(settings, "settings");
-        this.clock = clock;
+        this.clock = AfterSalesClock.inMicros(clock);
         this.gatewayThreads = RefundGatewayThreads.create(this.settings.gatewayThreads(), GATEWAY_THREAD_PREFIX);
     }
 

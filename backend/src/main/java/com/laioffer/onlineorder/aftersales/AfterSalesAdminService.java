@@ -122,7 +122,7 @@ public class AfterSalesAdminService {
         this.idempotentRequests = idempotentRequests;
         this.views = views;
         this.auditLogService = auditLogService;
-        this.clock = clock;
+        this.clock = AfterSalesClock.inMicros(clock);
     }
 
 

@@ -2,14 +2,23 @@ package com.laioffer.onlineorder.aftersales;
 
 
 import com.laioffer.onlineorder.exception.ConflictException;
+import com.laioffer.onlineorder.messaging.AfterSalesEventEnvelope;
+import com.laioffer.onlineorder.messaging.contract.EventContracts;
+import com.laioffer.onlineorder.messaging.contract.EventTopic;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.money.Money;
+import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
+import com.laioffer.onlineorder.repository.OrderPaymentRepository;
+import com.laioffer.onlineorder.repository.OrderRepository;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.CustomerService;
+import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.OrderService;
 import com.laioffer.onlineorder.statemachine.Decision;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.tracing.Tracer;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +40,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.function.Supplier;
 
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -45,7 +55,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * no deadline are left alone; a failure backs the case off without moving its deadline, and a back-off of a stale
  * version changes nothing; the customer's and the merchant's answers are refused from the deadline on even before the
  * poller ran, while withdrawing and arbitrating are not. The merchant's and the admin's commands, which have no
- * endpoints yet, go through the single writer under the case's row lock, as their services will. The cases have to hold
+ * endpoints yet, go through the single writer under the case's row lock, as their services will. The times of an
+ * opening and a step taken at a clock with nanoseconds are the stored ones in their events. The cases have to hold
  * on PostgreSQL and on H2 (the {@code h2} profile), so each database gets a subclass; every test leaves no case due,
  * so that each run of the processor only meets the test's own cases.
  */
@@ -339,6 +350,67 @@ abstract class AbstractAfterSalesDeadlineIntegrationTests {
     }
 
 
+    /**
+     * A clock with nanoseconds, as on Linux, is read in microseconds, what the timestamp columns keep (the database
+     * would round the rest): the opening's and the step's events carry the times of the stored case, occurred_at its
+     * created_at or updated_at, data.opened_at and data.deadline_at its own, and the history rows have them too.
+     */
+    @Test
+    void openingAndStepAtAClockWithNanoseconds_shouldCarryTheStoredTimesInTheirEvents() throws Exception {
+        // After the order's completion and long before its window closes, with nanoseconds below the microsecond.
+        LocalDateTime withNanos = LocalDateTime.now().plusSeconds(1).withNano(123_456_789);
+        LocalDateTime inMicros = withNanos.withNano(123_456_000);
+        AfterSalesTransitions writer = transitionsAt(() -> withNanos);
+        Customer frank = customer("after-sales-micros-");
+        OrderDto paid = paidOrder(frank);
+        for (String next : List.of("ACCEPTED", "PREPARING", "COMPLETED")) {
+            orderService.transitionOrderStatus(paid.id(), next);
+        }
+        AfterSalesCustomerService customers = new AfterSalesCustomerService(
+                caseRepository,
+                applicationContext.getBean(OrderRepository.class),
+                applicationContext.getBean(OrderHistoryItemRepository.class),
+                applicationContext.getBean(OrderPaymentRepository.class),
+                writer,
+                applicationContext.getBean(IdempotentRequests.class),
+                applicationContext.getBean(AfterSalesCaseViews.class),
+                applicationContext.getBean(AfterSalesDeadlines.class),
+                () -> withNanos
+        );
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+
+        Long caseId = transaction.execute(status -> customers.open(frank.id(), paid.id(), new OpenAfterSalesBody(
+                "WHOLE_ORDER", List.of(), "MISSING_ITEM", "The fries were missing."), "open-" + paid.id()).id());
+
+        AfterSalesCaseEntity opened = reload(caseId);
+        Assertions.assertEquals(List.of(inMicros, inMicros), List.of(opened.createdAt(), opened.updatedAt()));
+        AfterSalesEventEnvelope openedEvent = lastEvent(caseId);
+        Assertions.assertEquals("aftersales.case_opened", openedEvent.eventType());
+        Assertions.assertEquals(opened.createdAt(), openedEvent.occurredAt());
+        Assertions.assertEquals(opened.createdAt(), openedEvent.data().openedAt());
+        Assertions.assertEquals(opened.deadlineAt(), openedEvent.data().deadlineAt());
+
+        Long merchantId = customerIdOf(BURGER_KING_MERCHANT);
+        transaction.executeWithoutResult(status -> Assertions.assertTrue(writer.fire(
+                caseRepository.lockById(caseId),
+                new AfterSalesTransitions.Command(AfterSalesTrigger.MERCHANT_REJECT, AfterSalesActor.MERCHANT,
+                        merchantId, null, "Nothing was missing.", null)
+        ).applied()));
+
+        AfterSalesCaseEntity rejected = reload(caseId);
+        Assertions.assertEquals("REJECTED", rejected.status());
+        Assertions.assertEquals(inMicros, rejected.updatedAt());
+        AfterSalesEventEnvelope rejectedEvent = lastEvent(caseId);
+        Assertions.assertEquals("aftersales.request_rejected", rejectedEvent.eventType());
+        Assertions.assertEquals(rejected.updatedAt(), rejectedEvent.occurredAt());
+        Assertions.assertEquals(rejected.createdAt(), rejectedEvent.data().openedAt());
+        Assertions.assertEquals(rejected.deadlineAt(), rejectedEvent.data().deadlineAt());
+        Assertions.assertEquals(List.of(inMicros, inMicros), jdbcTemplate.queryForList(
+                "SELECT occurred_at FROM after_sales_case_history WHERE case_id = ? ORDER BY id",
+                LocalDateTime.class, caseId));
+    }
+
+
     // ---- helpers ----
 
 
@@ -585,6 +657,44 @@ abstract class AbstractAfterSalesDeadlineIntegrationTests {
     String lastStep(long caseId) {
         List<String> steps = history(caseId);
         return steps.get(steps.size() - 1);
+    }
+
+
+    /**
+     * The case's latest event, read back with its contract as a consumer reads it.
+     */
+    AfterSalesEventEnvelope lastEvent(long caseId) {
+        String payload = jdbcTemplate.queryForObject("""
+                SELECT payload
+                FROM outbox_events
+                WHERE aggregate_type = 'AFTER_SALES_CASE'
+                  AND aggregate_id = ?
+                ORDER BY aggregate_sequence DESC
+                LIMIT 1
+                """, String.class, caseId);
+        return applicationContext.getBean(EventContracts.class)
+                .read(EventTopic.AFTER_SALES_EVENTS, payload, AfterSalesEventEnvelope.class);
+    }
+
+
+    /**
+     * The single writer of this context at {@code clock} instead of the system clock.
+     */
+    AfterSalesTransitions transitionsAt(Supplier<LocalDateTime> clock) {
+        return new AfterSalesTransitions(
+                caseRepository,
+                applicationContext.getBean(AfterSalesCaseLineRepository.class),
+                applicationContext.getBean(AfterSalesCaseHistoryRepository.class),
+                applicationContext.getBean(RefundRepository.class),
+                applicationContext.getBean(OrderRepository.class),
+                applicationContext.getBean(OrderPaymentRepository.class),
+                applicationContext.getBean(OrderEventOutboxService.class),
+                applicationContext.getBean(ApplicationMetricsService.class),
+                applicationContext.getBean(AfterSalesDeadlines.class),
+                applicationContext.getBeanProvider(Tracer.class),
+                applicationContext.getEnvironment().getProperty("app.after-sales.topic", "after-sales-events"),
+                clock
+        );
     }
 
 

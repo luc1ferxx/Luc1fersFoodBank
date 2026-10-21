@@ -514,6 +514,31 @@ class AfterSalesAdminServiceTests {
     }
 
 
+    /**
+     * A clock with nanoseconds (Linux) is read in microseconds: the retry writes and answers the time the database
+     * keeps, the one a later read of the refund shows.
+     */
+    @Test
+    void retryRefund_atAClockWithNanoseconds_shouldTakeTheTimeInMicroseconds() {
+        Mockito.when(refundRepository.lockById(REFUND_ID))
+                .thenReturn(refund(RefundStatus.FAILED, 8, "simulated gateway timeout"));
+        Mockito.when(clock.get()).thenReturn(NOW.withNano(123_456_789));
+        Mockito.when(refundRepository.save(Mockito.any())).thenAnswer(invocation -> withVersion(
+                invocation.getArgument(0), 10L));
+        Mockito.when(orderRepository.findOrderNoById(ORDER_ID)).thenReturn(Optional.of(ORDER_NO));
+
+        RefundDto retried = service.retryRefund(REFUND_ID, ADMIN);
+
+        LocalDateTime inMicros = NOW.withNano(123_456_000);
+        ArgumentCaptor<RefundEntity> saved = ArgumentCaptor.forClass(RefundEntity.class);
+        Mockito.verify(refundRepository).save(saved.capture());
+        Assertions.assertEquals(List.of(inMicros, inMicros),
+                List.of(saved.getValue().nextAttemptAt(), saved.getValue().updatedAt()));
+        Assertions.assertEquals(new RefundDto(REFUND_ID, CASE_ID, ORDER_ID, ORDER_NO, new BigDecimal("16.09"), "USD",
+                "PENDING", 0, "simulated gateway timeout", null, inMicros, NOW.minusHours(2), null), retried);
+    }
+
+
     @Test
     void retryRefund_ofARefundAlreadyPending_shouldAnswerItUnchangedWithoutAnAuditEntry() {
         RefundEntity pending = refund(RefundStatus.PENDING, 0, "simulated gateway timeout");

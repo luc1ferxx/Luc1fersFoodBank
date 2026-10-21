@@ -272,6 +272,20 @@ class AfterSalesCustomerServiceTests {
     }
 
 
+    /**
+     * A clock with nanoseconds (Linux) is read in microseconds, what the database keeps of the case's times.
+     */
+    @Test
+    void open_atAClockWithNanoseconds_shouldTakeTheTimeInMicroseconds() {
+        eligibleOrderOpens(order(), List.of());
+        Mockito.when(clock.get()).thenReturn(NOW.withNano(123_456_789));
+
+        service.open(CUSTOMER_ID, ORDER_ID, wholeOrder(), "open-1");
+
+        Assertions.assertEquals(NOW.withNano(123_456_000), openedRequest().now());
+    }
+
+
     static Stream<Arguments> earlierCases() {
         AfterSalesCaseEntity withdrawn = closedRequest(1, AfterSalesCloseReason.WITHDRAWN);
         return Stream.of(
