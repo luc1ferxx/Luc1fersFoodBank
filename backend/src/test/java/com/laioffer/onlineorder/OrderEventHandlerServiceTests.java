@@ -3,6 +3,7 @@ package com.laioffer.onlineorder;
 
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
+import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventHandlerService;
 import com.laioffer.onlineorder.service.OrderNotificationService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
@@ -27,10 +28,14 @@ class OrderEventHandlerServiceTests {
     @Mock
     private ProcessedEventService processedEventService;
 
+    @Mock
+    private EventSequenceTracker sequenceTracker;
+
 
     @Test
     void handle_shouldSkipAlreadyProcessedEvent() {
-        OrderEventHandlerService service = new OrderEventHandlerService(orderNotificationService, processedEventService);
+        OrderEventHandlerService service = new OrderEventHandlerService(
+                orderNotificationService, processedEventService, sequenceTracker);
         OrderEventEnvelope event = buildEvent();
 
         Mockito.when(processedEventService.markIfUnseen("order-notification-consumer", event)).thenReturn(false);
@@ -38,19 +43,37 @@ class OrderEventHandlerServiceTests {
         service.handle(event);
 
         Mockito.verify(orderNotificationService, Mockito.never()).recordOrderEvent(Mockito.any());
+        Mockito.verifyNoInteractions(sequenceTracker);
     }
 
 
     @Test
     void handle_shouldRecordNotificationForNewEvent() {
-        OrderEventHandlerService service = new OrderEventHandlerService(orderNotificationService, processedEventService);
+        OrderEventHandlerService service = new OrderEventHandlerService(
+                orderNotificationService, processedEventService, sequenceTracker);
         OrderEventEnvelope event = buildEvent();
 
         Mockito.when(processedEventService.markIfUnseen("order-notification-consumer", event)).thenReturn(true);
+        Mockito.when(sequenceTracker.advance("order-notification-consumer", event)).thenReturn(true);
 
         service.handle(event);
 
         Mockito.verify(orderNotificationService).recordOrderEvent(event);
+    }
+
+
+    @Test
+    void handle_shouldNotNotifyOfAStaleEvent() {
+        OrderEventHandlerService service = new OrderEventHandlerService(
+                orderNotificationService, processedEventService, sequenceTracker);
+        OrderEventEnvelope event = buildEvent();
+
+        Mockito.when(processedEventService.markIfUnseen("order-notification-consumer", event)).thenReturn(true);
+        Mockito.when(sequenceTracker.advance("order-notification-consumer", event)).thenReturn(false);
+
+        service.handle(event);
+
+        Mockito.verify(orderNotificationService, Mockito.never()).recordOrderEvent(Mockito.any());
     }
 
 
