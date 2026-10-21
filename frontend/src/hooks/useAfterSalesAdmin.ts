@@ -57,6 +57,8 @@ export function useAfterSalesAdmin() {
   const [refundError, setRefundError] = useState("");
   // The status of the list on screen, for the reads that keep it (`loadQueue()`).
   const statusRef = useRef<AfterSalesStatus>("IN_ARBITRATION");
+  // The case whose details are on screen or loading, for the answers that may replace them.
+  const selectedIdRef = useRef<number | null>(null);
   const arbitrateKeyRef = useRef<string | null>(null);
   const arbitratePayloadRef = useRef("");
   const nextQueueSignal = useLatestRequest();
@@ -97,6 +99,7 @@ export function useAfterSalesAdmin() {
   const select = useCallback(
     (caseId: number) => {
       const signal = nextDetailSignal();
+      selectedIdRef.current = caseId;
       setSelectedId(caseId);
       setArbitrateError("");
       setDetail((current) => ({
@@ -143,21 +146,25 @@ export function useAfterSalesAdmin() {
       });
   }, [nextRefundsSignal]);
 
-  /** Shows a case an arbitration returned in the details and the list, over any read in flight. */
+  /**
+   * Shows a case an arbitration returned: in the details when that case is still the
+   * selected one (over its read in flight, which may predate the decision; another
+   * case's read is left alone), and in the list, which is read again since a read in
+   * flight may predate the decision too and a decided case leaves the queue.
+   */
   const applyCase = useCallback(
     (updated: AfterSalesCase) => {
-      nextDetailSignal();
-      nextQueueSignal();
-      setDetail((current) =>
-        current.data?.id === updated.id ? { data: updated, loading: false, error: "" } : current,
-      );
+      if (selectedIdRef.current === updated.id) {
+        nextDetailSignal();
+        setDetail({ data: updated, loading: false, error: "" });
+      }
       setQueue((current) => ({
+        ...current,
         data: current.data?.map((item) => (item.id === updated.id ? updated : item)) ?? null,
-        loading: false,
-        error: current.error,
       }));
+      void loadQueue();
     },
-    [nextDetailSignal, nextQueueSignal],
+    [nextDetailSignal, loadQueue],
   );
 
   /**
@@ -232,12 +239,12 @@ export function useAfterSalesAdmin() {
       setNotice("");
       try {
         const retried = await retryRefundRequest(refund.id);
-        nextRefundsSignal();
+        // Off the FAILED list at once; the re-read replaces a read that predates the retry.
         setRefunds((current) => ({
           ...current,
           data: current.data?.filter((item) => item.id !== retried.id) ?? null,
-          loading: false,
         }));
+        void loadRefunds();
         setDetail((current) =>
           current.data?.refund?.id === retried.id
             ? { ...current, data: { ...current.data, refund: retried } }
@@ -260,7 +267,7 @@ export function useAfterSalesAdmin() {
         });
       }
     },
-    [loadRefunds, nextRefundsSignal],
+    [loadRefunds],
   );
 
   return {

@@ -503,7 +503,10 @@ describe("merchant after-sales", () => {
     const rejected = await requestCard(101);
     expect(rejected).toHaveTextContent("Not agreed");
     expect(rejected).toHaveTextContent("Your noteIt left the kitchen hot");
-    expect(within(rejected).getByText(/^Customer can escalate in 1d 23h/)).toBeInTheDocument();
+    // 48 hours from the rejection; the countdown's clock may lag the fake's by a tick.
+    expect(
+      within(rejected).getByText(/^Customer can escalate in (1d 23h|2d 0h)/),
+    ).toBeInTheDocument();
     expect(within(rejected).queryByRole("button", { name: "Reject" })).toBeNull();
   });
 

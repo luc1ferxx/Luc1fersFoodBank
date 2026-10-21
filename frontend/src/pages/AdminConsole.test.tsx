@@ -576,4 +576,34 @@ describe("admin console: after-sales", () => {
       "true",
     );
   });
+
+  it("keeps loading another case selected while an arbitration was answered", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.afterSalesCases = [escalatedCase(900), escalatedCase(901)];
+    const arbitration = deferred();
+    const otherCase = deferred();
+    const user = renderApp();
+    const section = await openAfterSales(user);
+
+    const details = await viewCase(section, user, 900);
+    backend.on("POST", "/admin/after-sales/900/arbitrate", () => arbitration.promise);
+    await decide(details, user, "Reject", "Not supported by the photos");
+    backend.on("GET", "/admin/after-sales/901", () => otherCase.promise);
+    await user.click(within(section).getByRole("button", { name: "View case #901" }));
+
+    const queueReads = backend.callsTo("GET", "/admin/after-sales").length;
+    arbitration.resolve(
+      json(escalatedCase(900, { status: "CLOSED", close_reason: "ARBITRATION_REJECTED" })),
+    );
+    await flushPromises();
+    otherCase.resolve(json(escalatedCase(901)));
+
+    // The answer about #900 neither drops #901's read nor shows #900 again.
+    expect(
+      await within(section).findByRole("article", { name: "Case #901 details" }),
+    ).toBeVisible();
+    expect(within(section).queryByRole("article", { name: "Case #900 details" })).toBeNull();
+    // The queue is read again: a read in flight may predate the decision.
+    expect(backend.callsTo("GET", "/admin/after-sales")).toHaveLength(queueReads + 1);
+  });
 });
