@@ -5,9 +5,9 @@
 -- existed when it ran.
 --
 -- Not a Flyway migration (nothing runs it automatically). PostgreSQL only. Idempotent: a second run changes nothing.
--- Run it after the rollout has finished, as one transaction, with the session in the application's time zone (the
--- repair time below is LOCALTIMESTAMP, and the application writes local time):
---   PGTZ=<the application's time zone> psql -X -v ON_ERROR_STOP=1 --single-transaction -f repair_order_history.sql
+-- Run it after the rollout has finished, as one transaction, with the session in UTC like the application's (the
+-- repair time below is LOCALTIMESTAMP, and the application writes UTC wall-clock time):
+--   PGTZ=UTC psql -X -v ON_ERROR_STOP=1 --single-transaction -f repair_order_history.sql
 -- REPEATABLE READ: if the application changes an order this repairs while it runs, the run fails with a serialization
 -- error and changes nothing; run it again. Each repaired order row stays locked until the commit, so a status change
 -- that comes after the repair also lands after it in the history.

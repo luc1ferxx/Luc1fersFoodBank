@@ -106,6 +106,14 @@ tasks.named('test') {
     // Spring caches one context per distinct test configuration (Testcontainers, Kafka and Redis clients included);
     // Gradle's 512 MB default ran out once the after-sales suites joined.
     maxHeapSize = '1g'
+    // The server runs in UTC (OnlineOrderApplication.main sets it); tests do not run main, so their JVM starts in UTC.
+    systemProperty 'user.timezone', 'UTC'
+}
+
+
+// bootRun and bootTestRun call main, which sets UTC anyway; the property makes the JVM start in it.
+tasks.withType(org.springframework.boot.gradle.tasks.run.BootRun).configureEach {
+    systemProperty 'user.timezone', 'UTC'
 }
 
 
