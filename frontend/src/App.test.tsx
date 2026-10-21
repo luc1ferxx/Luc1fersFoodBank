@@ -18,12 +18,20 @@ import {
   menusFixture,
   orderFixture,
   orderNoFor,
+  rateLimited,
   refundFixture,
   requestJson,
   settleAfterSalesRefund,
   USD,
 } from "./test/fakeBackend";
-import { flushPromises, formOf, renderApp, resetVisibility, setVisibility } from "./test/helpers";
+import {
+  flushPromises,
+  formOf,
+  menuCard,
+  renderApp,
+  resetVisibility,
+  setVisibility,
+} from "./test/helpers";
 
 const whopperLine: CartItem = {
   order_item_id: 501,
@@ -294,6 +302,185 @@ describe("cart and checkout", () => {
     expect(keys).toHaveLength(2);
     expect(keys[0]).toEqual(expect.any(String));
     expect(keys[1]).toBe(keys[0]);
+  });
+});
+
+describe("rate-limited requests", () => {
+  it("shows a refused add on the menu card the customer used, with any tab open", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.on("POST", "/cart", () => rateLimited(1, "trace-rl"));
+    const user = renderApp();
+
+    await signedInLabel();
+    // The Cart tab is not shown while the customer adds from the menu.
+    await user.click(screen.getByRole("button", { name: "Orders" }));
+    await user.click(await screen.findByRole("button", { name: "Add to cart" }));
+
+    const card = menuCard("Whopper");
+    expect(await within(card).findByRole("alert")).toHaveTextContent(
+      "429: Too many requests. Try again in 1 second. Trace trace-rl.",
+    );
+    // The Cart tab does not repeat it.
+    await user.click(screen.getByRole("button", { name: "Cart (0)" }));
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+
+    // Once the bucket refilled the same add goes through and the error is gone.
+    await user.click(within(card).getByRole("button", { name: "Add to cart" }));
+    const stepper = await within(card).findByLabelText("Whopper quantity");
+    expect(within(stepper).getByText("1")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(backend.callsTo("POST", "/cart").map(requestJson)).toEqual([
+      { menu_id: 10 },
+      { menu_id: 10 },
+    ]);
+  });
+
+  it("reports a cart change where it was asked for: the menu card or the Cart tab", async () => {
+    const backend = installFakeBackend({ user: demoUser, cartItems: [whopperLine] });
+    backend.on("PUT", "/cart/items/501", () => rateLimited(1, "trace-card"));
+    backend.on("PUT", "/cart/items/501", () =>
+      apiError(503, "Cart unavailable", { traceId: "trace-tab" }),
+    );
+    const user = renderApp();
+
+    await screen.findByRole("button", { name: "Pay $12.78" });
+    const card = menuCard("Whopper");
+    await user.click(within(card).getByRole("button", { name: "Decrease Whopper" }));
+    expect(await within(card).findByRole("alert")).toHaveTextContent(
+      "429: Too many requests. Try again in 1 second. Trace trace-card.",
+    );
+    const cartTab = screen.getByRole("region", { name: "Cart and payment checkout" });
+    expect(within(cartTab).queryByRole("alert")).not.toBeInTheDocument();
+
+    await user.click(within(cartTab).getByRole("button", { name: "Increase Whopper" }));
+    expect(await within(cartTab).findByRole("alert")).toHaveTextContent(
+      "503: Cart unavailable Trace trace-tab.",
+    );
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    expect(backend.state.cart.order_items).toEqual([whopperLine]);
+  });
+
+  it("says when to retry a refused checkout and retries it with the same Idempotency-Key", async () => {
+    const backend = installFakeBackend({ user: demoUser, cartItems: [whopperLine] });
+    backend.on("POST", "/payments/checkout", () => rateLimited(6, "trace-rl"));
+    const user = renderApp();
+
+    await screen.findByRole("button", { name: "Pay $12.78" });
+    await fillPaymentForm(user);
+    await user.click(screen.getByRole("button", { name: "Pay $12.78" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "429: Too many requests. Try again in 6 seconds. Trace trace-rl.",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Pay $12.78" }));
+    expect(await screen.findByText(`Order #${orderNoFor(100)} · PAID`)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    const keys = idempotencyKeys(backend.callsTo("POST", "/payments/checkout"));
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toEqual(expect.any(String));
+    expect(keys[1]).toBe(keys[0]);
+  });
+});
+
+describe("menu card errors", () => {
+  const cartTab = () => screen.getByRole("region", { name: "Cart and payment checkout" });
+
+  it("shows a failed re-read after a card's change on that card until a later read succeeds", async () => {
+    const backend = installFakeBackend({ user: demoUser, cartItems: [whopperLine] });
+    const user = renderApp();
+
+    await screen.findByRole("button", { name: "Pay $12.78" });
+    backend.on("GET", "/cart", () => apiError(503, "Cart unavailable", { traceId: "trace-read" }));
+    const card = menuCard("Whopper");
+    await user.click(within(card).getByRole("button", { name: "Decrease Whopper" }));
+
+    // The decrease went through; only the read after it failed, and the card says so.
+    expect(await within(card).findByRole("alert")).toHaveTextContent(
+      "503: Cart unavailable Trace trace-read.",
+    );
+    expect(within(cartTab()).queryByRole("alert")).not.toBeInTheDocument();
+    expect(backend.state.cart.order_items[0]?.quantity).toBe(1);
+
+    // A Cart tab edit of the same dish re-reads the cart: the card's message is stale.
+    await user.click(within(cartTab()).getByRole("button", { name: "Increase Whopper" }));
+    expect(await screen.findByRole("button", { name: "Pay $19.17" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("drops a refused add once another card's change re-read the cart", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.on("POST", "/cart", () => rateLimited(1, "trace-rl"));
+    const user = renderApp();
+
+    await user.click(await screen.findByRole("button", { name: "Add to cart" }));
+    expect(await within(menuCard("Whopper")).findByRole("alert")).toHaveTextContent(
+      "429: Too many requests. Try again in 1 second. Trace trace-rl.",
+    );
+
+    await user.click(screen.getByRole("button", { name: /Noodle Nook/ }));
+    await screen.findByText("Dan Dan Noodles");
+    await user.click(
+      within(menuCard("Dan Dan Noodles")).getByRole("button", { name: "Add to cart" }),
+    );
+    expect(await screen.findByRole("button", { name: "Pay $11.00" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Burger Barn/ }));
+    await screen.findByText("Whopper");
+    expect(within(menuCard("Whopper")).queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps a card's error through a read that was already running, and drops it on Clear cart", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    const read = deferred();
+    const user = renderApp();
+
+    const whopperAdd = await screen.findByRole("button", { name: "Add to cart" });
+    await waitFor(() => expect(backend.callsTo("GET", "/cart")).toHaveLength(1));
+    backend.on("GET", "/cart", () => read.promise);
+    await user.click(whopperAdd);
+    await waitFor(() => expect(backend.callsTo("GET", "/cart")).toHaveLength(2));
+
+    // Another card's add is refused while the Whopper's re-read is still running.
+    backend.on("POST", "/cart", () => rateLimited(1, "trace-noodles"));
+    await user.click(screen.getByRole("button", { name: /Noodle Nook/ }));
+    await screen.findByText("Dan Dan Noodles");
+    const noodles = menuCard("Dan Dan Noodles");
+    await user.click(within(noodles).getByRole("button", { name: "Add to cart" }));
+    expect(await within(noodles).findByRole("alert")).toHaveTextContent(
+      "429: Too many requests. Try again in 1 second. Trace trace-noodles.",
+    );
+
+    await act(async () => {
+      read.resolve(json(backend.state.cart));
+      await read.promise;
+    });
+    expect(await screen.findByRole("button", { name: "Pay $6.39" })).toBeInTheDocument();
+    expect(within(noodles).getByRole("alert")).toHaveTextContent("Try again in 1 second.");
+
+    await user.click(within(cartTab()).getByRole("button", { name: "Clear cart" }));
+    expect(
+      await screen.findByText("Your cart is empty. Checkout is disabled."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("drops a card's error when checkout empties the cart", async () => {
+    const backend = installFakeBackend({ user: demoUser, cartItems: [whopperLine] });
+    backend.on("PUT", "/cart/items/501", () => rateLimited(1, "trace-rl"));
+    const user = renderApp();
+
+    await screen.findByRole("button", { name: "Pay $12.78" });
+    const card = menuCard("Whopper");
+    await user.click(within(card).getByRole("button", { name: "Decrease Whopper" }));
+    expect(await within(card).findByRole("alert")).toHaveTextContent("Try again in 1 second.");
+
+    await fillPaymentForm(user);
+    await user.click(screen.getByRole("button", { name: "Pay $12.78" }));
+    expect(await screen.findByText(`Order #${orderNoFor(100)} · PAID`)).toBeInTheDocument();
+    expect(within(card).queryByRole("alert")).not.toBeInTheDocument();
+    expect(backend.callsTo("GET", "/cart")).toHaveLength(1);
   });
 });
 

@@ -199,6 +199,24 @@ groups:
           summary: Kafka consumer {{ $labels.client_id }} is falling behind
           description: Consumer {{ $labels.client_id }} on {{ $labels.instance }} has been more than 1000 records behind for 10 minutes ({{ $value | humanize }} now).
 
+      # RateLimitingFilter fails open per request: a request whose token-bucket check fails in Redis (down, unreachable,
+      # timing out, out of memory, or refusing the EVAL of the bucket script) goes through unchecked and counts once in
+      # onlineorder.security.rate_limit.store_failure{route}. When every check fails (Redis down for all instances) no
+      # bucket refuses anything, login and signup included. The series of a route is registered by its first failure,
+      # so it starts at 1 and increase() cannot see that one. A half-minute counts when the counter rose within the 2
+      # minutes before it, so each failure counts in 3-4 of them at a 10s scrape; the alert fires when 8 of the last 20
+      # half-minutes count. The count is the duration guard (no `for`), and unlike a `for` it is not reset by a gap
+      # between failures: a dense outage fires about 4 minutes in, sparse traffic whose rate-limited requests keep
+      # failing (one every 3 minutes) within about 8 minutes, and a blip of up to about a minute and a half never does.
+      # It resolves about 8.5 minutes after the last failure.
+      - alert: OnlineOrderRateLimiterFailingOpen
+        expr: count_over_time((sum(increase(onlineorder_security_rate_limit_store_failure_total{application="OnlineOrder"}[2m])) > 0)[10m:30s]) >= 8
+        labels:
+          severity: warning
+        annotations:
+          summary: The rate limiter is failing open
+          description: 'The rate-limit store (Redis) failed bucket checks in {{ $value | humanize }} of the last 20 half-minutes (8 raise this alert), and the rate-limited requests whose check failed went through unchecked; when every check fails no bucket refuses anything (README "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
+
       # Monthly partitions of audit_log, order_status_history and processed_events (PostgreSQL, V10). The partition
       # maintenance job keeps app.partitions.months-ahead (3) partitions past the current month, so a healthy table
       # reports 2-3 here. Fewer means the job has missed a month boundary; at 0, rows of the next month land in the

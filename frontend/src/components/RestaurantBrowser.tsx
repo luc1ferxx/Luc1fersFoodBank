@@ -41,6 +41,13 @@ export function RestaurantBrowser({
     return keyword ? menuItems.filter((item) => matchesSearch(item, keyword)) : menuItems;
   }, [menuItems, searchValue]);
 
+  // A card's error shows on the card; one whose card is not on screen (another
+  // restaurant, filtered out, or the menu still loading) shows above the menu instead.
+  const offScreenErrors = useMemo(() => {
+    const shown = new Set(menuLoading ? [] : filteredMenuItems.map((item) => item.id));
+    return cart.menuItemErrorList.filter((notice) => !shown.has(notice.menuItemId));
+  }, [cart.menuItemErrorList, filteredMenuItems, menuLoading]);
+
   return (
     <section className="primary-workspace" aria-label="Restaurant and menu browsing">
       <div className="workspace-header">
@@ -102,6 +109,13 @@ export function RestaurantBrowser({
       ) : null}
 
       <Alert tone="danger">{menuError}</Alert>
+      {offScreenErrors.map((notice) => (
+        <Alert key={notice.menuItemId} tone="danger">
+          {notice.message.includes(notice.name)
+            ? notice.message
+            : `${notice.name}: ${notice.message}`}
+        </Alert>
+      ))}
       {menuLoading ? (
         <div className="loading-row">Loading menu...</div>
       ) : filteredMenuItems.length === 0 ? (
@@ -117,6 +131,7 @@ export function RestaurantBrowser({
               signedIn={signedIn}
               quantity={cart.itemsByMenuId.get(item.id)?.quantity ?? 0}
               pending={cart.pendingMenuItemId === item.id}
+              error={cart.menuItemErrors.get(item.id)}
               onAdd={cart.addItem}
               onDecrease={cart.decreaseItem}
             />

@@ -13,6 +13,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.script.RedisScript;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
@@ -112,6 +113,8 @@ public class RateLimitingFilter extends OncePerRequestFilter {
 
         if (!allow(request, rule)) {
             metricsService.recordRateLimitRejection(rule.routeKey());
+            // Before the body: a header set once the writer has committed the response is dropped.
+            response.setHeader(HttpHeaders.RETRY_AFTER, String.valueOf(rule.retryAfterSeconds()));
             apiErrorResponseWriter.write(
                     request,
                     response,
@@ -294,5 +297,17 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             int cost,
             boolean ipBound
     ) {
+
+        /**
+         * The {@code Retry-After} of a refused request: the time for one request's cost to refill, rounded up to
+         * whole seconds and at least 1. A refusal takes no tokens and leaves the bucket holding less than the cost,
+         * so this is an upper bound; the request may succeed earlier.
+         */
+        long retryAfterSeconds() {
+            long refillMillis = Math.max(refillPeriod.toMillis(), 1L);
+            long perSecondOfTokens = Math.max(refillTokens, 1) * 1000L;
+            long costMillis = (long) Math.max(cost, 1) * refillMillis;
+            return Math.max(1L, (costMillis + perSecondOfTokens - 1) / perSecondOfTokens);
+        }
     }
 }

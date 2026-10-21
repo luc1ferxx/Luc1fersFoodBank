@@ -520,3 +520,129 @@ tests:
       - eval_time: 20m
         alertname: OnlineOrderCancellationsUndercaptured
         exp_alerts: []
+
+  # Redis stops answering the bucket checks from minute 5 to minute 30: every rate-limited request fails open. Each
+  # route's series is registered by its first failure, at 1, so the half-minutes count from 6m and the eighth is 9m30s.
+  - name: a sustained rate limiter outage fires
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_security_rate_limit_store_failure_total{application="OnlineOrder", instance="app:8081", route="cart"}'
+        values: '_x5 1+20x25 501x20'
+      - series: 'onlineorder_security_rate_limit_store_failure_total{application="OnlineOrder", instance="app:8081", route="login"}'
+        values: '_x5 1+10x25 251x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: The rate limiter is failing open
+              description: 'The rate-limit store (Redis) failed bucket checks in 19 of the last 20 half-minutes (8 raise this alert), and the rate-limited requests whose check failed went through unchecked; when every check fails no bucket refuses anything (README "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
+      # The last failure is at 30m; its half-minutes leave the 10m window by 37m.
+      - eval_time: 40m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []
+
+  # Redis is down from minute 5 but traffic is sparse: one rate-limited request every 3 minutes, each failing open (10s
+  # scrapes). A `for` on increase(...[2m]) > 0 would restart at every 3-minute gap and never fire; here each failure
+  # counts in 4 half-minutes, and with the failures at 8m and 11m the eighth is 12m30s. The last failure is at 26m, and
+  # fewer than 8 of its window's half-minutes count from 33m.
+  - name: sparse failing requests fire
+    interval: 10s
+    input_series:
+      - series: 'onlineorder_security_rate_limit_store_failure_total{application="OnlineOrder", instance="app:8081", route="login"}'
+        values: '_x30 1x17 2x17 3x17 4x17 5x17 6x17 7x17 8x17 8x60'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: The rate limiter is failing open
+              description: 'The rate-limit store (Redis) failed bucket checks in 8 of the last 20 half-minutes (8 raise this alert), and the rate-limited requests whose check failed went through unchecked; when every check fails no bucket refuses anything (README "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
+      - eval_time: 20m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: The rate limiter is failing open
+              description: 'The rate-limit store (Redis) failed bucket checks in 13 of the last 20 half-minutes (8 raise this alert), and the rate-limited requests whose check failed went through unchecked; when every check fails no bucket refuses anything (README "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
+      - eval_time: 35m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []
+
+  # A Redis blip: three requests fail open within a minute, then the buckets work again. Ranges are left-open (t-2m,
+  # t], so only the half-minutes at 6m and 6m30s see the rise: 2 of 20. The checks fail when the `>= 8` guard is
+  # removed (the count is then an alert of its own from 6m to 16m).
+  - name: a short rate limiter blip raises nothing
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_security_rate_limit_store_failure_total{application="OnlineOrder", instance="app:8081", route="cart"}'
+        values: '_x5 1 3x30'
+    alert_rule_test:
+      - eval_time: 6m30s
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []
+
+  # Redis gone for a minute at the scrape interval of deploy/observability (10s): failures in 7 scrapes, seen by the
+  # half-minutes from 5m30s to 7m30s: 5 of 20.
+  - name: a Redis outage of a minute raises nothing
+    interval: 10s
+    input_series:
+      - series: 'onlineorder_security_rate_limit_store_failure_total{application="OnlineOrder", instance="app:8081", route="cart"}'
+        values: '_x30 1 20 40 60 80 100 120 120x150'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []
+      - eval_time: 10m30s
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []
+
+  # Failures from before the range leave a flat counter; refusals (429) are the limiter working, not failing.
+  - name: a flat store failure counter raises nothing
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_security_rate_limit_store_failure_total{application="OnlineOrder", instance="app:8081", route="login"}'
+        values: '4x40'
+      - series: 'onlineorder_security_rate_limit_rejected_total{application="OnlineOrder", instance="app:8081", route="login"}'
+        values: '1+30x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []
+
+  # No store failure since the start: the counter has no series at all.
+  - name: an absent store failure counter raises nothing
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_security_rate_limit_rejected_total{application="OnlineOrder", instance="app:8081", route="signup"}'
+        values: '1+5x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: OnlineOrderRateLimiterFailingOpen
+        exp_alerts: []

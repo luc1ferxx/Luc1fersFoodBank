@@ -1,5 +1,6 @@
 import type { MenuItem } from "../api/dto";
 import { formatMoney } from "../lib/format";
+import { Alert } from "./Alert";
 import { MediaImage } from "./MediaImage";
 
 interface MenuCardProps {
@@ -7,11 +8,21 @@ interface MenuCardProps {
   signedIn: boolean;
   quantity: number;
   pending: boolean;
+  /** Why this card's last add or decrease failed, shown on the card the customer used. */
+  error?: string | undefined;
   onAdd: (item: MenuItem) => void;
   onDecrease: (menuItemId: number) => void;
 }
 
-export function MenuCard({ item, signedIn, quantity, pending, onAdd, onDecrease }: MenuCardProps) {
+export function MenuCard({
+  item,
+  signedIn,
+  quantity,
+  pending,
+  error,
+  onAdd,
+  onDecrease,
+}: MenuCardProps) {
   return (
     <article className="menu-card">
       <div className="menu-card__media">
@@ -26,6 +37,8 @@ export function MenuCard({ item, signedIn, quantity, pending, onAdd, onDecrease 
           <h3>{item.name}</h3>
           <p>{item.description || "No description provided by the backend."}</p>
         </div>
+
+        <Alert tone="danger">{error}</Alert>
 
         <div className="menu-actions">
           {signedIn && quantity > 0 ? (

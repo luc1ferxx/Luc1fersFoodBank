@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hasErrorCode, isAbortError } from "../api/client";
 import { type Cart, type CartItem, type CurrentUser, ERROR_CODES, type MenuItem } from "../api/dto";
 import {
@@ -9,12 +9,30 @@ import {
   updateCartItem,
 } from "../api/endpoints";
 import { EMPTY_CART, buildCartItemMap, countCartItems, errorCopy } from "../lib/format";
+import { withEntry, withoutEntry } from "../lib/maps";
 import { useLatestRequest } from "./useLatestRequest";
 
 /** An add the backend refused because the cart holds another restaurant's items. */
 export interface CartConflict {
   item: MenuItem;
 }
+
+/** A menu card's error, numbered in the order the hook recorded it. */
+interface MenuItemError {
+  message: string;
+  /** The item's name, for showing the error where its card is not on screen. */
+  name: string;
+  seq: number;
+}
+
+/** A menu card's error with the card it belongs to, for `menuItemErrorList`. */
+export interface MenuItemErrorNotice {
+  menuItemId: number;
+  name: string;
+  message: string;
+}
+
+const NO_MENU_ITEM_ERRORS: ReadonlyMap<number, MenuItemError> = new Map();
 
 /**
  * The signed-in user's cart. Every mutation re-reads the cart from the server, and
@@ -26,10 +44,26 @@ export interface CartConflict {
  * and then retries the add; `dismissConflict()` leaves the cart alone. While one
  * conflict is open, adds are refused and a second 409 never replaces it, so the
  * dialog's confirm always adds the item it names.
+ *
+ * An error is reported where the change was asked for: `error` (the Cart tab) for
+ * reading the cart, its line edits and Clear cart; `menuItemErrors` (the menu card,
+ * keyed by menu item id) for a menu card's add or decrease and the dialog's add,
+ * including a failed re-read after them. `menuItemErrorList` names the item, so the
+ * page can show the error of a card that is not on screen (another restaurant
+ * selected, or filtered out by the search). The dialog's failed add empties the cart
+ * without adding the item, so it also goes to `error`. A card's error stays until that card's next
+ * change, or until the hook learns the cart's contents after it: a cart read that
+ * started after the error succeeds (the re-read of any change, Clear cart, coming back
+ * to the workspace) or checkout empties the cart. A read already running when the
+ * error came does not drop it, so a card refused during another card's re-read keeps
+ * its message.
  */
 export function useCart(user: CurrentUser | null, requireSession: (message: string) => void) {
   const [cart, setCart] = useState<Cart>(EMPTY_CART);
   const [error, setError] = useState("");
+  const [menuItemErrorEntries, setMenuItemErrorEntries] = useState(NO_MENU_ITEM_ERRORS);
+  // The seq of the newest card error recorded; a cart read notes it when it starts.
+  const lastMenuItemErrorSeq = useRef(0);
   const [pendingMenuItemId, setPendingMenuItemId] = useState<number | null>(null);
   const [pendingCartItemId, setPendingCartItemId] = useState<number | null>(null);
   const [clearing, setClearing] = useState(false);
@@ -38,21 +72,71 @@ export function useCart(user: CurrentUser | null, requireSession: (message: stri
   const [conflictError, setConflictError] = useState("");
   const nextCartSignal = useLatestRequest();
 
-  const refresh = useCallback(() => {
-    const signal = nextCartSignal();
-    return getCart({ signal })
-      .then((data) => {
-        if (!signal.aborted) {
-          setCart(data);
-          setError("");
-        }
-      })
-      .catch((requestError: unknown) => {
-        if (!signal.aborted && !isAbortError(requestError)) {
-          setError(errorCopy(requestError, "Unable to load the cart."));
-        }
-      });
-  }, [nextCartSignal]);
+  /** Drops the card errors recorded up to `seq`; the later ones stay. */
+  const dropMenuItemErrors = useCallback((seq: number) => {
+    setMenuItemErrorEntries((current) => {
+      const kept = [...current].filter(([, entry]) => entry.seq > seq);
+      return kept.length === current.size ? current : new Map(kept);
+    });
+  }, []);
+
+  /**
+   * Re-reads the cart; a failed read goes to `reportError`. A successful one replaces
+   * the card errors recorded before it started.
+   */
+  const load = useCallback(
+    (reportError: (message: string) => void) => {
+      const signal = nextCartSignal();
+      const errorsBefore = lastMenuItemErrorSeq.current;
+      return getCart({ signal })
+        .then((data) => {
+          if (!signal.aborted) {
+            setCart(data);
+            setError("");
+            dropMenuItemErrors(errorsBefore);
+          }
+        })
+        .catch((requestError: unknown) => {
+          if (!signal.aborted && !isAbortError(requestError)) {
+            reportError(errorCopy(requestError, "Unable to load the cart."));
+          }
+        });
+    },
+    [dropMenuItemErrors, nextCartSignal],
+  );
+
+  const refresh = useCallback(() => load(setError), [load]);
+
+  /** Records `message` on the menu card of `menuItemId`, or clears it when empty. */
+  const setMenuItemError = useCallback((menuItemId: number, name: string, message: string) => {
+    if (!message) {
+      setMenuItemErrorEntries((current) => withoutEntry(current, menuItemId));
+      return;
+    }
+    lastMenuItemErrorSeq.current += 1;
+    const entry = { message, name, seq: lastMenuItemErrorSeq.current };
+    setMenuItemErrorEntries((current) => withEntry(current, menuItemId, entry));
+  }, []);
+
+  const menuItemErrors = useMemo<ReadonlyMap<number, string>>(
+    () => new Map([...menuItemErrorEntries].map(([id, entry]) => [id, entry.message])),
+    [menuItemErrorEntries],
+  );
+
+  const menuItemErrorList = useMemo<readonly MenuItemErrorNotice[]>(
+    () =>
+      [...menuItemErrorEntries]
+        .sort(([, a], [, b]) => a.seq - b.seq)
+        .map(([menuItemId, { name, message }]) => ({ menuItemId, name, message })),
+    [menuItemErrorEntries],
+  );
+
+  /** Re-reads the cart after a change made on the menu card of `menuItemId`. */
+  const refreshForMenuItem = useCallback(
+    (menuItemId: number, name: string) =>
+      load((message) => setMenuItemError(menuItemId, name, message)),
+    [load, setMenuItemError],
+  );
 
   useEffect(() => {
     if (user) {
@@ -66,14 +150,17 @@ export function useCart(user: CurrentUser | null, requireSession: (message: stri
   const cartRestaurantId = cart.order_items[0]?.restaurant_id ?? null;
 
   const runMenuItemChange = useCallback(
-    (menuItemId: number, change: () => Promise<void>, fallback: string) => {
+    (menuItemId: number, name: string, change: () => Promise<void>, fallback: string) => {
       setPendingMenuItemId(menuItemId);
+      setMenuItemError(menuItemId, name, "");
       return change()
-        .then(refresh)
-        .catch((requestError: unknown) => setError(errorCopy(requestError, fallback)))
+        .then(() => refreshForMenuItem(menuItemId, name))
+        .catch((requestError: unknown) =>
+          setMenuItemError(menuItemId, name, errorCopy(requestError, fallback)),
+        )
         .finally(() => setPendingMenuItemId(null));
     },
-    [refresh],
+    [refreshForMenuItem, setMenuItemError],
   );
 
   const addItem = useCallback(
@@ -86,21 +173,22 @@ export function useCart(user: CurrentUser | null, requireSession: (message: stri
         return Promise.resolve();
       }
       setPendingMenuItemId(item.id);
+      setMenuItemError(item.id, item.name, "");
       return addItemToCart(item.id)
-        .then(refresh)
+        .then(() => refreshForMenuItem(item.id, item.name))
         .catch((requestError: unknown) => {
           if (hasErrorCode(requestError, ERROR_CODES.cartRestaurantConflict)) {
             // Two adds in flight can both come back 409: the first one asks.
             setConflict((current) => current ?? { item });
             // The cart on screen may be stale (another tab); show the one the server has.
-            return refresh();
+            return refreshForMenuItem(item.id, item.name);
           }
-          setError(errorCopy(requestError, "Unable to add item."));
+          setMenuItemError(item.id, item.name, errorCopy(requestError, "Unable to add item."));
           return undefined;
         })
         .finally(() => setPendingMenuItemId(null));
     },
-    [conflict, refresh, requireSession, user],
+    [conflict, refreshForMenuItem, requireSession, setMenuItemError, user],
   );
 
   const dismissConflict = useCallback(() => {
@@ -134,15 +222,15 @@ export function useCart(user: CurrentUser | null, requireSession: (message: stri
       addError = requestError;
     }
     // The cart is empty or holds the new item now; show it before reporting a failed add.
-    await refresh();
+    await refreshForMenuItem(item.id, item.name);
     setConflict(null);
     setConflictPending(false);
     if (addError !== null) {
-      setError(
-        `Your cart was cleared, but ${item.name} was not added. ${errorCopy(addError, "Unable to add item.")}`,
-      );
+      const message = `Your cart was cleared, but ${item.name} was not added. ${errorCopy(addError, "Unable to add item.")}`;
+      setMenuItemError(item.id, item.name, message);
+      setError(message);
     }
-  }, [conflict, conflictPending, refresh]);
+  }, [conflict, conflictPending, refreshForMenuItem, setMenuItemError]);
 
   const decreaseItem = useCallback(
     (menuItemId: number) => {
@@ -152,13 +240,17 @@ export function useCart(user: CurrentUser | null, requireSession: (message: stri
         return Promise.resolve();
       }
 
+      const name =
+        cart.order_items.find((line) => line.menu_item_id === menuItemId)?.menu_item_name ??
+        "A cart item";
       return runMenuItemChange(
         menuItemId,
+        name,
         () => updateCartItem(cartItem.orderItemId, Math.max(cartItem.quantity - 1, 0)),
         "Unable to update item.",
       );
     },
-    [itemsByMenuId, runMenuItemChange],
+    [cart, itemsByMenuId, runMenuItemChange],
   );
 
   const setLineQuantity = useCallback(
@@ -190,15 +282,19 @@ export function useCart(user: CurrentUser | null, requireSession: (message: stri
       .finally(() => setClearing(false));
   }, [refresh]);
 
-  // Checkout empties the cart on the server; drop any read that is still in flight.
+  // Checkout empties the cart on the server; drop any read that is still in flight, and
+  // the card errors of the changes before it.
   const clear = useCallback(() => {
     nextCartSignal();
     setCart(EMPTY_CART);
-  }, [nextCartSignal]);
+    dropMenuItemErrors(lastMenuItemErrorSeq.current);
+  }, [dropMenuItemErrors, nextCartSignal]);
 
   return {
     cart,
     error,
+    menuItemErrors,
+    menuItemErrorList,
     itemCount,
     itemsByMenuId,
     cartRestaurantId,

@@ -7,16 +7,31 @@ export const json = (body: unknown, init: ResponseInit = {}): Response =>
     ...init,
   });
 
-/** An error body shaped like the backend's ApiErrorResponse. */
+/**
+ * An error body shaped like the backend's ApiErrorResponse; `headers` are sent with it
+ * (e.g. the Retry-After of a 429).
+ */
 export const apiError = (
   status: number,
   message: string,
-  { traceId, code = "ERROR" }: { traceId?: string; code?: string } = {},
+  {
+    traceId,
+    code = "ERROR",
+    headers = {},
+  }: { traceId?: string; code?: string; headers?: Record<string, string> } = {},
 ): Response =>
   json(
     { code, message, status, trace_id: traceId },
-    { status, headers: { "Content-Type": "application/json" } },
+    { status, headers: { "Content-Type": "application/json", ...headers } },
   );
+
+/** The rate limiter's refusal: 429 RATE_LIMITED with a Retry-After of `retryAfter` seconds. */
+export const rateLimited = (retryAfter: number, traceId?: string): Response =>
+  apiError(429, "Too many requests", {
+    code: "RATE_LIMITED",
+    headers: { "Retry-After": String(retryAfter) },
+    traceId,
+  });
 
 export const noContent = (status = 204) => new Response(null, { status });
 

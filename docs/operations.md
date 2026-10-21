@@ -107,6 +107,7 @@ Application metrics on top of Spring Boot's (HTTP, Hikari, Tomcat, JVM, Kafka cl
 | `onlineorder_ids_worker_id`, `onlineorder_ids_clock_backward_total{outcome}`, `onlineorder_ids_lease_lost_total` | Snowflake order numbers (section 9): the worker id in use (-1 without a lease), clock steps back waited out or refused, leases taken over |
 | `onlineorder_db_routing_reads_total{target,reason}`, `onlineorder_db_replica_lag_seconds{replica}`, `onlineorder_db_replica_routable{replica}` | Read replicas (only with `DATABASE_REPLICA_URLS`; section 11) |
 | `onlineorder_aftersales_refunds_total{outcome}`, `onlineorder_aftersales_cancellations_undercaptured_total`, `onlineorder_aftersales_deadlines_total{trigger,outcome}`, `onlineorder_aftersales_steps_total{action,from,to}`, `onlineorder_aftersales_merchant_decisions_total{decision}` | After-sales refunds, deadlines, case steps and merchant answers (section 12) |
+| `onlineorder_security_rate_limit_rejected_total{route}`, `onlineorder_security_rate_limit_store_failure_total{route}` | Requests refused with `429 RATE_LIMITED` per bucket, and requests let through unchecked because the bucket check failed in Redis (fail open; `OnlineOrderRateLimiterFailingOpen`) |
 
 `http.server.requests` publishes a percentiles histogram bounded to 5ms-10s plus exact SLO buckets at 50ms, 100ms,
 250ms, 500ms, 1s and 2s. The latency objective reads the `le="0.5"` bucket.
@@ -166,6 +167,8 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 - Outbox, Kafka, dead letters: backlog by status, oldest pending age, publish results, consumer lag (max per client
   and per partition), dead letters stored and by replay status.
 - JVM and Tomcat: heap, GC pause share, CPU, threads, connections.
+- Rate limits: `429` refusals per bucket, and in red the requests let through because the rate-limit store failed
+  (above zero means requests went through unchecked, all of them when Redis is down; `OnlineOrderRateLimiterFailingOpen`).
 
 ### Alerts
 
@@ -186,6 +189,7 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 | `OnlineOrderHikariPendingSustained` | threads waiting for a connection for 5m | warning |
 | `OnlineOrderHikariConnectionTimeouts` | connection requests timed out (503) in the last 5m | warning |
 | `OnlineOrderKafkaConsumerLag` | a consumer client > 1000 records behind for 10m | warning |
+| `OnlineOrderRateLimiterFailingOpen` | rate-limit store failures in 8 of the last 20 half-minutes (a half-minute counts when a failure falls in the 2 minutes before it): those requests went through unchecked, all of them when Redis is down (runbook below) | warning |
 | `OnlineOrderPartitionsAheadLow` / `...Missing` | fewer than 2 monthly partitions past the current month for 1h / none for 10m (section 9) | warning / critical |
 | `OnlineOrderPartitionDefaultRows` | rows in a table's default partition for 1h (section 9) | warning |
 | `OnlineOrderDbReplicaLagging` | a read replica > 2s behind the primary for 5m (it gets no reads meanwhile; section 11) | warning |
@@ -227,6 +231,30 @@ Fulfilment staffing (README "Provisioning merchants and riders"):
 - Who changed a staff account or a delivery is in `GET /admin/audit-log`: `merchant.create`, `merchant.update`,
   `rider.create`, `rider.update` and `delivery.reassign` with the admin, `rider.availability` and the rider's own
   `delivery.picked_up` / `delivery.delivered` with the rider's login (`ROLE_RIDER`).
+
+Rate limiter failing open (`OnlineOrderRateLimiterFailingOpen`, README "Security and Abuse Controls"):
+
+- What it means: the token-bucket check of rate-limited requests (every write endpoint) failed in Redis, for some or all
+  requests, in 8 of the last 20 half-minutes (a half-minute counts when a failure falls in the 2 minutes before it):
+  Redis down or unreachable, slower than `REDIS_TIMEOUT` (500ms), out of memory, or refusing the bucket script. A dense
+  outage fires it about 4 minutes in; sparse traffic whose rate-limited requests keep failing (one every 3 minutes)
+  within about 8 minutes, since a gap between failures does not restart the count; a blip of up to about a minute and a
+  half does not fire it. `RateLimitingFilter` fails open per request, so those requests reached their handlers without
+  taking a token; when every check fails, login and signup have no per-IP limit meanwhile (the per-account lockout after
+  failed logins still applies), nor do checkout, payment and the staff commands. The first failure of a route only
+  registers its series, so one failure never fires.
+- Where: `sum by (instance, route) (increase(onlineorder_security_rate_limit_store_failure_total[2m]))`, or the
+  dashboard's "Rate limits" row. Every instance failing points at Redis, one instance at its network path. The WARN log
+  "Rate-limit store unavailable for route ... Failing open." carries the exception (connection refused, command
+  timeout, `OOM command not allowed`, `NOPERM`); a script that returned no result counts without a log line.
+- Check Redis: `redis-cli PING`; `INFO memory` (`used_memory` against `maxmemory`; with `maxmemory-policy noeviction`
+  a full Redis refuses the script's `HSET`); `redis-cli --latency` and `LATENCY LATEST`; `INFO clients` against
+  `maxclients`; and that the application's Redis user may run `EVALSHA` and `EVAL` (`ACL GETUSER <user>`). Redis also
+  holds the sessions and the catalog's L2 cache, so a full outage shows in the readiness probe and the 5xx rate too; a
+  failure that only the script hits shows only here.
+- It resolves about 8.5 minutes after the last failure. Nothing needs replaying: the requests let through ran normally.
+  Buckets refuse again from the first successful check (a bucket whose key is gone starts full). Do not silence the
+  alert with `SECURITY_RATE_LIMIT_ENABLED=false`: that removes the limits for good and hides the next failure.
 
 ## 3. Container image
 
@@ -321,6 +349,8 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
 | `SESSION_COOKIE_SECURE` | false | ConfigMap: true |
 | `SERVER_FORWARD_HEADERS_STRATEGY` | unset (Boot picks native on Kubernetes) | ConfigMap: native, stated explicitly (client IP for rate limits from `X-Forwarded-For`) |
 | `SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE` | 30s | ConfigMap |
+| `SECURITY_RATE_LIMIT_ENABLED` | true (the `h2` profile turns it off) | - (`false` only for load tests: `load-tests/order-flow.js` signs up and logs in from one IP and pays faster than `payment-checkout` refills) |
+| `SECURITY_RATE_LIMIT_BUCKET_TTL` | 2m (legacy name `SECURITY_RATE_LIMIT_WINDOW`): expiry of a bucket's Redis key after its last request, never shorter than the bucket's full refill plus one interval | - |
 | `JAVA_OPTS` | see the image | image |
 | `APP_IDS_WORKER_ID_SOURCE` | `static` (with `APP_IDS_WORKER_ID`, default 0) | ConfigMap: `lease` (section 8) |
 | `CLEANUP_AUDIT_LOG_RETENTION`, `CLEANUP_ORDER_STATUS_HISTORY_RETENTION` | `0d` (kept forever) | - |

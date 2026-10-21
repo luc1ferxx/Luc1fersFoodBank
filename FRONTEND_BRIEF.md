@@ -246,7 +246,7 @@ Known event types:
 - Side effects: successful login records `last_login_at`, clears failed login state, and uses a session cookie.
 - Errors:
   - `401 Unauthorized` for bad credentials, disabled account, or account locked after repeated failures.
-  - `429 Too Many Requests` after 10 login attempts per rate-limit window per IP.
+  - `429 Too Many Requests` after 10 login attempts, one more every 6 s, per IP.
 
 Example:
 
@@ -282,7 +282,7 @@ username=demo%40laifood.com&password=demo123
 - Side effects: creates customer, assigns `ROLE_USER`, creates empty cart.
 - Errors:
   - `409 Conflict` when email already exists.
-  - `429 Too Many Requests` after 5 signup attempts per rate-limit window per IP.
+  - `429 Too Many Requests` after 5 signup attempts, one more every 12 s, per IP.
   - Backend currently does not explicitly validate blank/null signup fields before calling service; frontend should validate required fields.
 
 ### Restaurants and Menu
@@ -365,6 +365,17 @@ username=demo%40laifood.com&password=demo123
 - Response `200`: no body.
 - Side effects: same as setting quantity to `0`.
 - Notes: deleting a missing/not-owned item is idempotent and returns success after syncing total.
+- Errors:
+  - `401 Unauthorized`.
+  - `429 Too Many Requests` once the shared cart bucket is empty.
+
+#### `DELETE /cart`
+
+- Auth: required.
+- Response `204 No Content`: empties the user's cart (the clear-cart dialog).
+- Errors:
+  - `401 Unauthorized`.
+  - `429 Too Many Requests` once the shared cart bucket is empty.
 
 #### `POST /cart/checkout`
 
@@ -381,7 +392,7 @@ username=demo%40laifood.com&password=demo123
 - Errors:
   - `400 Bad Request` when `Idempotency-Key` is missing/blank or cart is empty.
   - `409 Conflict` when key is reused with a different cart/request fingerprint or prior operation is inconsistent.
-  - `429 Too Many Requests` after 20 checkout attempts per rate-limit window per authenticated user.
+  - `429 Too Many Requests` after 20 checkout attempts, one more every 3 s, per user; a retry with the same key takes a token too and is safe to repeat later.
 
 ### Payment Checkout
 
@@ -411,7 +422,7 @@ username=demo%40laifood.com&password=demo123
 - Errors:
   - `400 Bad Request` for missing payment details, invalid card fields, missing idempotency key, or empty cart.
   - `409 Conflict` when idempotency key is reused with a different logical request.
-  - `429 Too Many Requests` after 10 payment checkout attempts per rate-limit window per authenticated user.
+  - `429 Too Many Requests` after 10 payment checkout attempts, one more every 6 s, per user; a retry with the same key takes a token too and is safe to repeat later.
 - Security note: this is a demo/local validation flow, not a real payment processor integration. Do not persist or log card details in the frontend.
 
 ### Orders
@@ -472,7 +483,7 @@ username=demo%40laifood.com&password=demo123
   - `403 Forbidden` if authenticated without `ROLE_ADMIN`.
   - `404 Not Found` if order does not exist.
   - `409 Conflict` for invalid transition or idempotency conflict.
-  - `429 Too Many Requests` after 30 requests per rate-limit window per authenticated user.
+  - `429 Too Many Requests` after 30 status changes, one more every 2 s, per admin.
 
 ### Notifications
 
@@ -505,7 +516,7 @@ username=demo%40laifood.com&password=demo123
   - `401 Unauthorized`.
   - `403 Forbidden` without `ROLE_ADMIN`.
   - `404 Not Found` when event ID does not exist.
-  - `429 Too Many Requests` after 10 replay attempts per rate-limit window per authenticated user.
+  - `429 Too Many Requests` after 10 replay attempts, one more every 6 s, per admin.
   - `500 Internal Server Error` when Kafka send/replay fails.
 
 ### Operational / Non-Product Endpoints
@@ -530,7 +541,7 @@ There is no custom global error DTO. Most application exceptions use Spring `@Re
 
 Spring Boot's default JSON error body can vary by environment. Do not design the frontend around a guaranteed `message` field for these errors. Prefer status-driven copy, with optional raw body shown in debug views.
 
-Rate-limit responses are custom:
+Rate-limit responses are custom and carry a `Retry-After` header in whole seconds:
 
 ```json
 {
@@ -554,7 +565,7 @@ Common status handling:
 | `403` | Authenticated but lacks admin role | Hide/admin-deny privileged actions. |
 | `404` | Resource not found or not owned | Show missing item/order state; for owned order cancel this can mean not owned. |
 | `409` | Business conflict | Show retry/conflict copy: invalid status transition, empty/stale cart assumptions, or idempotency key reused for different request. |
-| `429` | Rate limited | Disable submit briefly and ask user to retry later. |
+| `429` | Rate limited (`RATE_LIMITED`); the request did not run | Show "Too many requests. Try again in N seconds." ("1 second" when N is 1), N from the `Retry-After` header: the time one token takes to come back, an upper bound. Without the header, "Too many requests. Wait a moment and try again." Keep the trace id suffix of the other error messages. A retry with the same `Idempotency-Key` is safe. |
 | `500` | Server/infrastructure failure | Show generic failure and include `X-Trace-Id` in support/debug details. |
 
 ## 8. Authentication Details

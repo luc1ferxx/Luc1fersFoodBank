@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { json } from "../test/fakeBackend";
-import { ApiError, createIdempotencyKey, hasErrorCode, onUnauthorized, request } from "./client";
+import {
+  ApiError,
+  createIdempotencyKey,
+  hasErrorCode,
+  onUnauthorized,
+  parseRetryAfter,
+  request,
+} from "./client";
 import * as api from "./endpoints";
 import { API_PROXY_PATTERN } from "./proxyPaths";
 
@@ -576,7 +583,51 @@ describe("request", () => {
       status: 429,
       message: "Too many requests. Wait a moment and try again.",
       traceId: "trace-body",
+      retryAfter: null,
     });
+  });
+
+  it("reads the Retry-After seconds of a rate-limited response", async () => {
+    stubFetch(() =>
+      Promise.resolve(
+        json(
+          {
+            code: "RATE_LIMITED",
+            message: "Too many requests",
+            status: 429,
+            trace_id: "trace-rl",
+          },
+          { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "3" } },
+        ),
+      ),
+    );
+
+    const failure: unknown = await api.addItemToCart(10).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure).toMatchObject({
+      status: 429,
+      code: "RATE_LIMITED",
+      message: "Too many requests",
+      traceId: "trace-rl",
+      retryAfter: 3,
+    });
+    expect(hasErrorCode(failure, "RATE_LIMITED")).toBe(true);
+  });
+
+  it("ignores a Retry-After that is not a whole number of seconds", async () => {
+    const refusalWith = (retryAfter: string) =>
+      json(
+        { code: "RATE_LIMITED", message: "Too many requests" },
+        { status: 429, headers: { "Content-Type": "application/json", "Retry-After": retryAfter } },
+      );
+
+    for (const value of ["Wed, 21 Oct 2026 07:28:00 GMT", "-1", "1.5", "soon", ""]) {
+      stubFetch(() => Promise.resolve(refusalWith(value)));
+      await expect(request("/cart", { method: "POST" })).rejects.toMatchObject({
+        status: 429,
+        retryAfter: null,
+      });
+    }
   });
 
   it("reports a 401 from a protected endpoint to unauthorized listeners", async () => {
@@ -623,5 +674,22 @@ describe("request", () => {
     const abortError = new DOMException("The operation was aborted.", "AbortError");
     stubFetch(() => Promise.reject(abortError));
     await expect(api.getRestaurants()).rejects.toBe(abortError);
+  });
+});
+
+describe("parseRetryAfter", () => {
+  it("accepts delay seconds only", () => {
+    expect(parseRetryAfter("0")).toBe(0);
+    expect(parseRetryAfter("1")).toBe(1);
+    expect(parseRetryAfter(" 12 ")).toBe(12);
+    expect(parseRetryAfter(null)).toBeNull();
+    expect(parseRetryAfter("")).toBeNull();
+    expect(parseRetryAfter("Wed, 21 Oct 2026 07:28:00 GMT")).toBeNull();
+    expect(parseRetryAfter("-1")).toBeNull();
+    expect(parseRetryAfter("+3")).toBeNull();
+    expect(parseRetryAfter("1.5")).toBeNull();
+    expect(parseRetryAfter("1e3")).toBeNull();
+    expect(parseRetryAfter("3 seconds")).toBeNull();
+    expect(parseRetryAfter("99999999999999999999")).toBeNull();
   });
 });

@@ -170,7 +170,7 @@ between them with the tabs under the header; guests and logins without a known r
 
 | Role | Workspace |
 | --- | --- |
-| `ROLE_USER`, guests | Order food: menus, cart, checkout, orders with their status history (`GET /orders/{id}/history`), notifications. Adding another restaurant's item (`409 CART_RESTAURANT_CONFLICT`) asks whether to clear the cart (`DELETE /cart`) and add it. Signed-in customers also get "Request a refund" on a completed order within the request window (whole order or chosen lines), their refund cases with a countdown, accept or decline a counter-offer, escalate, withdraw (a first request withdrawn before a rejection then offers "Request a refund again (1 left)"), and the automatic refund of a cancelled paid order. |
+| `ROLE_USER`, guests | Order food: menus, cart, checkout, orders with their status history (`GET /orders/{id}/history`), notifications. Adding another restaurant's item (`409 CART_RESTAURANT_CONFLICT`) asks whether to clear the cart (`DELETE /cart`) and add it. A failed add or decrease shows its error on the menu card used. Signed-in customers also get "Request a refund" on a completed order within the request window (whole order or chosen lines), their refund cases with a countdown, accept or decline a counter-offer, escalate, withdraw (a first request withdrawn before a rejection then offers "Request a refund again (1 left)"), and the automatic refund of a cancelled paid order. |
 | `ROLE_MERCHANT` | Merchant console, "Orders" tab: the restaurant's orders (`GET /merchant/orders`, status filter), accept, reject with a reason, mark preparing. "After-sales" tab: the restaurant's refund requests; approve, reject with a reason, or offer less than requested, until the deadline. |
 | `ROLE_RIDER` | Rider console: on-duty switch, the rider's own deliveries, picked up and delivered. |
 | `ROLE_ADMIN` | Admin console: list, create, and deactivate merchants (restaurant picked from the catalog) and riders; the manual order-status change and dead-letter replay; the after-sales queue by status, a case's history with its refund attempts and last error, arbitration, and the failed refunds with Retry. |
@@ -182,7 +182,8 @@ shown and a case is still open or refunding, and together with the order list wh
 seconds) brings a new notification, so an order that completes gets "Request a refund" without a refresh; the admin's
 after-sales section reads when opened and on Refresh. A
 deactivated merchant or rider (the backend answers `403` on `/merchant/**` and `/rider/**`) gets a notice instead of
-the raw error, polling stops, and Refresh checks again.
+the raw error, polling stops, and Refresh checks again. A request the rate limiter refused (`429 RATE_LIMITED`) says
+"Too many requests. Try again in N seconds." in every workspace, N from its `Retry-After`.
 
 ### Demo Account
 
@@ -600,7 +601,7 @@ settings and failure modes: [docs/operations.md](docs/operations.md), section 11
 - Authentication uses server-side sessions backed by Redis, under a namespace that carries the session format version (`onlineorder:session:v2`), so pods of two releases never read each other's sessions during a rolling update or rollback.
 - Customer accounts track status, failed login count, lockout time, last login, and audit timestamps.
 - Login lookup is case-insensitive.
-- Every write endpoint of the API controllers has a token bucket (`POST /logout` and the dev-only H2 console have none) in `RateLimitingFilter` (Redis): login and signup per remote IP, the rest per login (per IP when the request is anonymous, before its `401`). Each bucket refills fully in a minute; a refused request answers `429 RATE_LIMITED` before its handler runs, and counts in `onlineorder_security_rate_limit_rejected_total{route}`. A replay with the same `Idempotency-Key` takes a token like any request. The ids of these routes are decimal digits only (`{id:\d+}` in the mapping), so another spelling of the same number (`+42`, `0x2A`) is `404` instead of reaching the handler past the limit. `RateLimitedRouteMappingTests` checks both for every controller mapping.
+- Every write endpoint of the API controllers has a token bucket (`POST /logout` and the dev-only H2 console have none) in `RateLimitingFilter` (Redis): login and signup per remote IP, the rest per login (per IP when the request is anonymous, before its `401`). Each bucket refills fully in a minute; a refused request answers `429 RATE_LIMITED` before its handler runs, with `Retry-After` in seconds, and counts in `onlineorder_security_rate_limit_rejected_total{route}`. `Retry-After` is the time one request's tokens take to come back, ceil(cost x refill period / refill tokens) in whole seconds and at least 1, so with every request costing one token it is the refill interval of the table below (1 for `cart`, 3 for `cart-checkout`, 6 for `login`, 12 for `signup`). It is an upper bound: the refusal takes no token, and the bucket may already hold part of one. The UI tells the user to try again in that many seconds. A replay with the same `Idempotency-Key` takes a token like any request. The ids of these routes are decimal digits only (`{id:\d+}` in the mapping), so another spelling of the same number (`+42`, `0x2A`) is `404` instead of reaching the handler past the limit. `RateLimitedRouteMappingTests` checks both for every controller mapping.
 
   | Bucket | Requests | Capacity, refill |
   | --- | --- | --- |
@@ -625,7 +626,7 @@ settings and failure modes: [docs/operations.md](docs/operations.md), section 11
   | `outbox-retry`, `outbox-abandon` | `POST /admin/outbox/events/{id}/retry`, `abandon` (one bucket each) | 10, one every 6 s |
   | `dead-letter-replay` | `POST /dead-letters/{id}/replay` | 10, one every 6 s |
 - Roles: `ROLE_USER` (customers), `ROLE_ADMIN`, `ROLE_MERCHANT` (`/merchant/**`, own restaurant only) and `ROLE_RIDER` (`/rider/**`, own deliveries only). Merchant and rider requests re-check the account's active flag, so a deactivation applies to existing sessions on their next request.
-- Redis rate-limit store failures fail open and emit metrics instead of blocking core flows.
+- Redis rate-limit store failures fail open and emit metrics instead of blocking core flows: when the bucket check fails (Redis down, unreachable, slower than `REDIS_TIMEOUT`, or refusing the script), the request goes through unchecked, logs a WARN and counts in `onlineorder_security_rate_limit_store_failure_total{route}`. Only the requests whose check failed go unlimited; when every check fails (Redis down for all instances) no bucket refuses anything, login and signup included. Failures seen in 8 of the last 20 half-minutes raise `OnlineOrderRateLimiterFailingOpen`: about 4 minutes into an outage, or within about 8 minutes when sparse traffic keeps failing (one rate-limited request every 3 minutes); a blip of up to about a minute and a half does not, and it resolves about 8.5 minutes after the last failure (runbook in [docs/operations.md](docs/operations.md) section 2).
 
 ---
 
@@ -1254,7 +1255,7 @@ Type-check, lint, test, and build the React app:
 (cd frontend && npm run typecheck && npm run lint && npm test && npm run build)
 ```
 
-`npm run typecheck` runs `tsc --noEmit` (strict TypeScript). `npm test` runs Vitest with jsdom and React Testing Library against an in-memory fake API (login, cart and the clear-cart dialog, checkout success and failure, Idempotency-Key reuse on retry, session expiry, stale responses, polling, order status history, role-based workspaces, the merchant, rider, and admin consoles, and the after-sales screens of all three, with the customer's and the admin's Idempotency-Key reuse across workspace switches). `npm run build` writes `frontend/build` and fails if `index.html` contains an inline script, which the backend CSP would block.
+`npm run typecheck` runs `tsc --noEmit` (strict TypeScript). `npm test` runs Vitest with jsdom and React Testing Library against an in-memory fake API (login, cart and the clear-cart dialog, checkout success and failure, Idempotency-Key reuse on retry, session expiry, stale responses, rate-limited requests (the `Retry-After` copy, errors on the menu card used, a refused checkout retried with its key), polling, order status history, role-based workspaces, the merchant, rider, and admin consoles, and the after-sales screens of all three, with the customer's and the admin's Idempotency-Key reuse across workspace switches). `npm run build` writes `frontend/build` and fails if `index.html` contains an inline script, which the backend CSP would block.
 
 Build the backend jar with embedded frontend assets:
 
@@ -1270,7 +1271,10 @@ The test suite covers:
 - Kafka consumer deduplication and notification idempotency
 - dead-letter replay behavior
 - two-level catalog cache: L1/L2 hits, single-flight loading, TTL jitter, typed Redis round trips, pub/sub invalidation between instances, eviction only after commit, HTTP `ETag`/`304`, fallback to the database when Redis refuses connections, and latency bounds when Redis hangs (paused container)
-- authentication, login lockout, session handling, and rate limiting
+- authentication, login lockout, session handling, and rate limiting: every write mapping covered by a bucket and
+  taking its ids as `\d+` (`RateLimitedRouteMappingTests`), each bucket's `Retry-After` (`RateLimitingFilterTests`),
+  and on a real Redis the capacity, the refusal with `Retry-After`, the refill, separate buckets per login, address
+  and route, and the key's expiry (`RateLimitingFilterRedisIntegrationTests`)
 - API contract and operational metrics behavior
 - order fulfilment: merchant scoping and authz, accept-versus-timeout races, concurrent deadline pollers and rider
   assignment, duplicate and out-of-order (replayed) event deliveries (`FulfilmentPostgresIntegrationTests`), and end
@@ -1368,7 +1372,7 @@ The backend runs on Spring Boot 4.1; [docs/spring-boot-4-migration.md](docs/spri
 | Build frontend | `cd frontend && npm run build` |
 | Copy frontend build into backend | `cd frontend && npm run deploy:backend` |
 | Build executable jar | `cd backend && ./gradlew bootJar --no-daemon` |
-| Run load test | `k6 run load-tests/order-flow.js` |
+| Run load test | `k6 run load-tests/order-flow.js`, against a backend started with `SECURITY_RATE_LIMIT_ENABLED=false` (the `signup` and `login` buckets per IP and `payment-checkout` per user refuse it otherwise) |
 | Backend CI gates | `cd backend && ./gradlew test jacocoTestReport jacocoTestCoverageVerification spotbugsMain -x buildFrontend -x syncFrontendBuild --no-daemon` |
 | Observability stack + app | `ONLINEORDER_SCRAPE_TARGETS=./prometheus/targets/compose docker compose -f deploy/observability/docker-compose.yml --profile app up -d --build` (Grafana on 3001) |
 | Build the image | `docker build -t onlineorder:local .` |

@@ -5,6 +5,8 @@ export interface ApiErrorDetails {
   /** The backend's machine-readable error code, e.g. CART_RESTAURANT_CONFLICT. */
   code?: string | undefined;
   traceId?: string | undefined;
+  /** The response's Retry-After in seconds (see parseRetryAfter), null without one. */
+  retryAfter?: number | null | undefined;
   body?: string | undefined;
   cause?: unknown;
 }
@@ -13,17 +15,40 @@ export class ApiError extends Error {
   readonly status: number | undefined;
   readonly code: string | undefined;
   readonly traceId: string | undefined;
+  /**
+   * Seconds the server asked the client to wait before retrying (the Retry-After
+   * header the rate limiter sends with every 429), null when it sent none.
+   */
+  readonly retryAfter: number | null;
   readonly body: string | undefined;
 
-  constructor(message: string, { status, code, traceId, body, cause }: ApiErrorDetails = {}) {
+  constructor(
+    message: string,
+    { status, code, traceId, retryAfter = null, body, cause }: ApiErrorDetails = {},
+  ) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.traceId = traceId;
+    this.retryAfter = retryAfter;
     this.body = body;
   }
 }
+
+/**
+ * The delay-seconds form of a Retry-After header ("3"), or null. The HTTP-date form,
+ * a negative or fractional number and anything else are ignored: the backend sends
+ * whole seconds.
+ */
+export const parseRetryAfter = (value: string | null): number | null => {
+  const trimmed = value?.trim() ?? "";
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+  const seconds = Number(trimmed);
+  return Number.isSafeInteger(seconds) ? seconds : null;
+};
 
 /** True when `error` is an ApiError the backend tagged with `code`. */
 export const hasErrorCode = (error: unknown, code: string): boolean =>
@@ -103,7 +128,8 @@ export interface RequestOptions {
  * fetch wrapper for the backend JSON API.
  *
  * - Sends the session cookie and forwards `signal`, so callers can abort stale requests.
- * - Throws ApiError for non-2xx responses, carrying the status, error code, and X-Trace-Id.
+ * - Throws ApiError for non-2xx responses, carrying the status, error code, X-Trace-Id
+ *   and Retry-After.
  * - A 401 from an endpoint that requires a session tells every onUnauthorized listener
  *   that the session is gone. `/login` and `/me` opt out with reportUnauthorized: false
  *   because a 401 there means bad credentials or a guest visitor.
@@ -153,6 +179,7 @@ export const request = async (
       status: response.status,
       code: stringField(parsed, "code"),
       traceId: response.headers.get("X-Trace-Id") || stringField(parsed, "trace_id"),
+      retryAfter: parseRetryAfter(response.headers.get("Retry-After")),
       body: text,
     });
 
