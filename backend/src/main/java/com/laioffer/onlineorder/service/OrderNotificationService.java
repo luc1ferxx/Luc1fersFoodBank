@@ -59,6 +59,12 @@ public class OrderNotificationService {
     /**
      * The after-sales event types with a notification of a customer request.
      */
+    private static final Set<String> DELIVERY_NOTICE_TYPES = Set.of(
+            FulfilmentEvents.DELIVERY_ASSIGNED,
+            FulfilmentEvents.DELIVERY_PICKED_UP,
+            FulfilmentEvents.DELIVERY_DELIVERED
+    );
+
     private static final Set<String> AFTER_SALES_NOTICE_TYPES = Set.of(
             FulfilmentEvents.AFTER_SALES_CASE_OPENED,
             FulfilmentEvents.AFTER_SALES_OFFER_MADE,
@@ -172,6 +178,16 @@ public class OrderNotificationService {
                 message,
                 LocalDateTime.now()
         );
+    }
+
+
+    /**
+     * Whether {@link #recordDeliveryEvent} notifies the customer of {@code event}: the rider was assigned, picked the
+     * order up or delivered it. The delivery notification consumer moves its position in the delivery's events only for
+     * these.
+     */
+    public boolean notifiesOf(DeliveryEventEnvelope event) {
+        return event != null && DELIVERY_NOTICE_TYPES.contains(event.eventType());
     }
 
 
