@@ -28,6 +28,22 @@ const COMMAND_COPY: Readonly<Record<MerchantCommand, { done: string; failed: str
 const fetchMerchantOrders = (filter: MerchantStatusFilter, signal: AbortSignal) =>
   getMerchantOrders({ status: filter === "ALL" ? undefined : filter, signal });
 
+/**
+ * Where the count of orders waiting for acceptance comes from: the list itself when its
+ * filter shows every PAID order, otherwise a read of the PAID orders of its own.
+ */
+type WaitingSource = "list" | "PAID";
+
+const NO_ORDERS: readonly MerchantOrder[] = [];
+
+const fetchWaiting = (
+  source: WaitingSource,
+  signal: AbortSignal,
+): Promise<readonly MerchantOrder[]> =>
+  source === "PAID" ? getMerchantOrders({ status: "PAID", signal }) : Promise.resolve(NO_ORDERS);
+
+const isWaiting = (order: MerchantOrder) => order.status === "PAID";
+
 const sendCommand = (orderId: number, command: MerchantCommand, reason: string) => {
   switch (command) {
     case "accept":
@@ -42,6 +58,9 @@ const sendCommand = (orderId: number, command: MerchantCommand, reason: string) 
 /**
  * The merchant console's orders: GET /merchant/orders for the chosen status filter,
  * polled every 15 seconds while the tab is visible, plus accept / reject / preparing.
+ * `waiting` counts the PAID orders, which the accept timeout cancels when nobody
+ * answers: from the list while the filter shows them all (ALL or PAID), from a PAID
+ * read polled with the list otherwise.
  *
  * The commands are idempotent on the server (a repeat returns the order unchanged),
  * so a retry needs no Idempotency-Key. A command's result replaces the order on
@@ -60,11 +79,27 @@ export function useMerchantOrders() {
   const [commandErrors, setCommandErrors] = useState<ReadonlyMap<number, string>>(new Map());
   const [notice, setNotice] = useState("");
   const orders = useLiveResource(filter, fetchMerchantOrders, "Unable to load the orders.");
-  const { reload, applyAndReload } = orders;
+  const { reload: reloadList, applyAndReload } = orders;
   const forbidden = orders.errorStatus === FORBIDDEN;
+  const waitingSource: WaitingSource = filter === "ALL" || filter === "PAID" ? "list" : "PAID";
+  const waitingOrders = useLiveResource(
+    waitingSource,
+    fetchWaiting,
+    "Unable to count the new orders.",
+  );
+  const reloadWaiting = waitingOrders.reload;
+  const reload = useCallback(() => {
+    reloadList();
+    if (waitingSource === "PAID") {
+      reloadWaiting();
+    }
+  }, [reloadList, reloadWaiting, waitingSource]);
 
   // Polling a 403 would only repeat it; Refresh checks again.
   usePolling(reload, { enabled: polling && !forbidden, intervalMs: MERCHANT_POLL_MS });
+
+  const waitingList = waitingSource === "list" ? orders.data : waitingOrders.data;
+  const waiting = forbidden || waitingList === null ? null : waitingList.filter(isWaiting).length;
 
   const run = useCallback(
     (order: MerchantOrder, command: MerchantCommand, reason = ""): Promise<boolean> => {
@@ -124,6 +159,8 @@ export function useMerchantOrders() {
     loading: orders.loading,
     /** The list read came back 403: the account is deactivated (or not bound). */
     forbidden,
+    /** How many orders wait for acceptance (PAID); null before it is known and while forbidden. */
+    waiting,
     error: forbidden ? "" : orders.error,
     reload,
     polling,

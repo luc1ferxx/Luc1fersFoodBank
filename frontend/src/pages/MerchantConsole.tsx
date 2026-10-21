@@ -14,6 +14,7 @@ import {
 } from "../hooks/useMerchantAfterSales";
 import {
   type MerchantCommand,
+  type MerchantOrdersState,
   type MerchantStatusFilter,
   useMerchantOrders,
 } from "../hooks/useMerchantOrders";
@@ -202,8 +203,11 @@ interface SectionProps {
 }
 
 /** The orders of the login's restaurant and the merchant decisions. */
-function MerchantOrdersSection({ binding, restaurantName }: SectionProps) {
-  const merchant = useMerchantOrders();
+function MerchantOrdersSection({
+  binding,
+  restaurantName,
+  merchant,
+}: SectionProps & { merchant: MerchantOrdersState }) {
   // GET /me describes the account at sign-in; a 403 from /merchant/orders is newer, and
   // so is a list that loaded after an admin reactivated the account.
   const locked = merchant.forbidden || (!merchant.loaded && binding?.active === false);
@@ -285,8 +289,16 @@ function MerchantOrdersSection({ binding, restaurantName }: SectionProps) {
   );
 }
 
-/** The restaurant's refund requests and the merchant's one answer to each (ADR 0002 section 12.3). */
-function MerchantAfterSalesSection({ binding, restaurantName }: SectionProps) {
+/**
+ * The restaurant's refund requests and the merchant's one answer to each (ADR 0002 section
+ * 12.3). Its Refresh also re-reads the orders behind the Orders tab's count, so a merchant
+ * reactivated meanwhile gets that count (and its polling) back without leaving the tab.
+ */
+function MerchantAfterSalesSection({
+  binding,
+  restaurantName,
+  onRefreshOrders,
+}: SectionProps & { onRefreshOrders: () => void }) {
   const afterSales = useMerchantAfterSales();
   const locked = afterSales.forbidden || (!afterSales.loaded && binding?.active === false);
 
@@ -301,7 +313,10 @@ function MerchantAfterSalesSection({ binding, restaurantName }: SectionProps) {
           className="ghost-button"
           type="button"
           disabled={afterSales.loading}
-          onClick={afterSales.reload}
+          onClick={() => {
+            afterSales.reload();
+            onRefreshOrders();
+          }}
         >
           {afterSales.loading ? "Refreshing..." : "Refresh"}
         </button>
@@ -361,12 +376,17 @@ function MerchantAfterSalesSection({ binding, restaurantName }: SectionProps) {
 }
 
 /**
- * ROLE_MERCHANT: the orders of the login's restaurant and its refund requests. Only the
- * shown section is mounted, so only it reads and polls; the console holds no
- * Idempotency-Keys (the merchant commands are idempotent by state).
+ * ROLE_MERCHANT: the orders of the login's restaurant and its refund requests. The orders
+ * are read here and keep polling whichever section is shown, and the Orders tab counts
+ * the PAID ones: a new order must not go unseen behind the After-sales tab until the
+ * accept timeout cancels it. The refund requests are read and polled only while their
+ * section is shown. The console holds no Idempotency-Keys (the merchant commands are
+ * idempotent by state).
  */
 export function MerchantConsole({ user }: { user: CurrentUser }) {
   const [section, setSection] = useState<MerchantSection>("orders");
+  const merchant = useMerchantOrders();
+  const waiting = merchant.waiting ?? 0;
   const binding = user.merchant;
   const restaurantName = binding?.restaurant_name ?? "Your restaurant";
 
@@ -374,22 +394,35 @@ export function MerchantConsole({ user }: { user: CurrentUser }) {
     <main className="console">
       <section className="primary-workspace console__panel" aria-label="Merchant console">
         <div className="panel-tabs merchant-tabs" role="group" aria-label="Merchant sections">
-          {SECTIONS.map(([key, label]) => (
-            <button
-              key={key}
-              className={section === key ? "active" : ""}
-              type="button"
-              aria-pressed={section === key}
-              onClick={() => setSection(key)}
-            >
-              {label}
-            </button>
-          ))}
+          {SECTIONS.map(([key, label]) => {
+            const counted = key === "orders" && waiting > 0;
+            return (
+              <button
+                key={key}
+                className={section === key ? "active" : ""}
+                type="button"
+                aria-pressed={section === key}
+                aria-label={counted ? `${label}, ${waiting} to accept` : undefined}
+                onClick={() => setSection(key)}
+              >
+                {label}
+                {counted ? <span className="tab-badge">{waiting}</span> : null}
+              </button>
+            );
+          })}
         </div>
         {section === "orders" ? (
-          <MerchantOrdersSection binding={binding} restaurantName={restaurantName} />
+          <MerchantOrdersSection
+            binding={binding}
+            restaurantName={restaurantName}
+            merchant={merchant}
+          />
         ) : (
-          <MerchantAfterSalesSection binding={binding} restaurantName={restaurantName} />
+          <MerchantAfterSalesSection
+            binding={binding}
+            restaurantName={restaurantName}
+            onRefreshOrders={merchant.reload}
+          />
         )}
       </section>
     </main>

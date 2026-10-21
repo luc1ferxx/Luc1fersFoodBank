@@ -44,6 +44,19 @@ const ordersRequests = (backend: ReturnType<typeof installFakeBackend>) =>
 const selectStatus = (user: UserEvent, label: string) =>
   user.selectOptions(screen.getByLabelText("Status"), label);
 
+const openAfterSales = async (user: UserEvent) => {
+  await user.click(await screen.findByRole("button", { name: "After-sales" }));
+  expect(
+    await screen.findByRole("heading", { name: "Burger Barn refund requests" }),
+  ).toBeInTheDocument();
+};
+
+/** The Orders tab; its name counts the PAID orders ("Orders, 2 to accept"). */
+const ordersTab = () =>
+  within(screen.getByRole("group", { name: "Merchant sections" })).getByRole("button", {
+    name: /^Orders/,
+  });
+
 describe("merchant console", () => {
   afterEach(() => {
     resetVisibility();
@@ -64,7 +77,9 @@ describe("merchant console", () => {
     await selectStatus(user, "Accepted");
     await waitFor(() => expect(screen.queryByRole("article", { name: "Order #7" })).toBeNull());
     expect(await card(8)).toBeInTheDocument();
-    expect(ordersRequests(backend).at(-1)?.url).toBe("/merchant/orders?limit=50&status=ACCEPTED");
+    expect(ordersRequests(backend).map((call) => call.url)).toContain(
+      "/merchant/orders?limit=50&status=ACCEPTED",
+    );
 
     await selectStatus(user, "Completed");
     expect(await screen.findByText("No completed orders.")).toBeInTheDocument();
@@ -412,13 +427,6 @@ describe("merchant after-sales", () => {
   const caseRequests = (backend: ReturnType<typeof installFakeBackend>) =>
     backend.callsTo("GET", "/merchant/after-sales");
 
-  const openAfterSales = async (user: UserEvent) => {
-    await user.click(await screen.findByRole("button", { name: "After-sales" }));
-    expect(
-      await screen.findByRole("heading", { name: "Burger Barn refund requests" }),
-    ).toBeInTheDocument();
-  };
-
   it("lists the restaurant's refund requests on their own tab and filters them by status", async () => {
     const backend = afterSalesBackend();
     const user = renderApp();
@@ -436,7 +444,7 @@ describe("merchant after-sales", () => {
     expect(refunded).toHaveTextContent("Refund$6.39");
     expect(within(refunded).queryByRole("button", { name: "Approve refund" })).toBeNull();
     expect(caseRequests(backend)[0]?.url).toBe("/merchant/after-sales?limit=50");
-    // Only the shown section reads: the orders tab is not mounted any more.
+    // The orders stay with the console: switching tabs does not read them again.
     expect(backend.callsTo("GET", "/merchant/orders")).toHaveLength(1);
 
     await selectStatus(user, "Refunded");
@@ -736,5 +744,127 @@ describe("merchant after-sales", () => {
     expect(within(waiting).getByText("Refunding")).toBeInTheDocument();
     expect(within(waiting).queryByRole("button", { name: "Approve refund" })).toBeNull();
     expect(caseRequests(backend)[1]?.signal?.aborted).toBe(true);
+  });
+});
+
+describe("merchant orders behind the After-sales tab", () => {
+  afterEach(() => {
+    resetVisibility();
+    vi.useRealTimers();
+  });
+
+  it("keeps polling the orders and counts the new ones on the Orders tab", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const backend = merchantBackend();
+    const user = renderApp();
+
+    await card(7);
+    expect(ordersTab()).toHaveAccessibleName("Orders, 1 to accept");
+    await openAfterSales(user);
+    expect(ordersRequests(backend)).toHaveLength(1);
+
+    // A customer pays while the merchant reads the refund requests.
+    backend.state.merchantOrders.unshift(merchantOrderFixture({ order_id: 9, status: "PAID" }));
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS);
+    });
+    await waitFor(() => expect(ordersRequests(backend)).toHaveLength(2));
+    await waitFor(() => expect(ordersTab()).toHaveAccessibleName("Orders, 2 to accept"));
+    expect(screen.getByRole("heading", { name: "Burger Barn refund requests" })).toBeVisible();
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS);
+    });
+    await waitFor(() => expect(ordersRequests(backend)).toHaveLength(3));
+
+    // Back on the Orders tab the new order is on screen; accepting it lowers the count.
+    await user.click(ordersTab());
+    await user.click(within(await card(9)).getByRole("button", { name: "Accept" }));
+    expect(await screen.findByText("Order #9 accepted.")).toBeInTheDocument();
+    expect(ordersTab()).toHaveAccessibleName("Orders, 1 to accept");
+    await user.click(within(await card(7)).getByRole("button", { name: "Accept" }));
+    expect(await screen.findByText("Order #7 accepted.")).toBeInTheDocument();
+    expect(ordersTab()).toHaveAccessibleName("Orders");
+    expect(ordersTab().querySelector(".tab-badge")).toBeNull();
+  });
+
+  it("counts the new orders with a read of their own while the list shows another status", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const backend = merchantBackend();
+    const user = renderApp();
+
+    await card(7);
+    await selectStatus(user, "Accepted");
+    await waitFor(() => expect(screen.queryByRole("article", { name: "Order #7" })).toBeNull());
+    await waitFor(() =>
+      expect(ordersRequests(backend).map((call) => call.url)).toEqual([
+        "/merchant/orders?limit=50",
+        "/merchant/orders?limit=50&status=ACCEPTED",
+        "/merchant/orders?limit=50&status=PAID",
+      ]),
+    );
+    expect(ordersTab()).toHaveAccessibleName("Orders, 1 to accept");
+
+    await openAfterSales(user);
+    backend.state.merchantOrders.unshift(merchantOrderFixture({ order_id: 9, status: "PAID" }));
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS);
+    });
+    await waitFor(() => expect(ordersTab()).toHaveAccessibleName("Orders, 2 to accept"));
+    expect(
+      ordersRequests(backend)
+        .slice(3)
+        .map((call) => call.url),
+    ).toEqual([
+      "/merchant/orders?limit=50&status=ACCEPTED",
+      "/merchant/orders?limit=50&status=PAID",
+    ]);
+
+    // The whole list shows the PAID orders again: the count needs no read of its own.
+    await user.click(ordersTab());
+    await selectStatus(user, "All orders");
+    expect(await card(9)).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS);
+    });
+    await waitFor(() => expect(ordersRequests(backend)).toHaveLength(7));
+    await flushPromises();
+    expect(
+      ordersRequests(backend)
+        .slice(5)
+        .map((call) => call.url),
+    ).toEqual(["/merchant/orders?limit=50", "/merchant/orders?limit=50"]);
+    expect(ordersTab()).toHaveAccessibleName("Orders, 2 to accept");
+  });
+
+  it("stops polling the orders once the account is deactivated and recovers on Refresh", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const backend = merchantBackend();
+    const user = renderApp();
+
+    await card(7);
+    await openAfterSales(user);
+    // An admin deactivates the merchant; the backend answers 403 from the next request.
+    backend.state.user = withMerchantActive(false);
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS);
+    });
+
+    expect(await screen.findByText(DEACTIVATED)).toBeInTheDocument();
+    await waitFor(() => expect(ordersTab()).toHaveAccessibleName("Orders"));
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS * 3);
+    });
+    await flushPromises();
+    expect(ordersRequests(backend)).toHaveLength(2);
+
+    // The After-sales tab's Refresh checks the orders again too.
+    backend.state.user = withMerchantActive(true);
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(ordersTab()).toHaveAccessibleName("Orders, 1 to accept"));
+    expect(ordersRequests(backend)).toHaveLength(3);
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS);
+    });
+    await waitFor(() => expect(ordersRequests(backend)).toHaveLength(4));
   });
 });
