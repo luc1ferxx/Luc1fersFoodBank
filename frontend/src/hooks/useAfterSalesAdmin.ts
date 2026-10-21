@@ -16,7 +16,7 @@ import {
   retryRefund as retryRefundRequest,
 } from "../api/endpoints";
 import { errorCopy, formatMoney } from "../lib/format";
-import { isPartialAmount, parseAmountInput } from "../lib/forms";
+import { amountInputRule, isPartialAmount, parseAmountInput } from "../lib/forms";
 import { useLatestRequest } from "./useLatestRequest";
 
 /** The longest arbitration note the backend accepts. */
@@ -192,10 +192,10 @@ export function useAfterSalesAdmin() {
       }
       const body: ArbitrateAfterSalesRequest = { decision, note };
       if (decision === "PARTIAL") {
-        const amount = parseAmountInput(amountInput);
+        const amount = parseAmountInput(amountInput, current.currency);
         if (amount === null || !isPartialAmount(amount, current.requested_amount)) {
           setArbitrateError(
-            `Enter an amount more than 0 and less than ${formatMoney(current.requested_amount, current.currency)}, with at most two decimals.`,
+            `Enter an amount more than 0 and less than ${formatMoney(current.requested_amount, current.currency)}, ${amountInputRule(current.currency)}.`,
           );
           return false;
         }

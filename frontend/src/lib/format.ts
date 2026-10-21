@@ -13,18 +13,29 @@ const MONEY_LOCALE = "en-US";
 
 const moneyFormats = new Map<CurrencyCode, Intl.NumberFormat>();
 
-/**
- * `amount` in `currency`, with the currency's symbol and its own number of decimals
- * (two for USD and EUR, none for JPY). The one place the UI formats money.
- */
-export const formatMoney = (amount: number, currency: CurrencyCode): string => {
+const moneyFormat = (currency: CurrencyCode): Intl.NumberFormat => {
   let format = moneyFormats.get(currency);
   if (!format) {
     format = new Intl.NumberFormat(MONEY_LOCALE, { style: "currency", currency });
     moneyFormats.set(currency, format);
   }
-  return format.format(amount);
+  return format;
 };
+
+/**
+ * `amount` in `currency`, with the currency's symbol and its own number of decimals
+ * (two for USD and EUR, none for JPY). The one place the UI formats money.
+ */
+export const formatMoney = (amount: number, currency: CurrencyCode): string =>
+  moneyFormat(currency).format(amount);
+
+/**
+ * The decimals of an amount in `currency`, as ISO 4217 has them and the backend's `Money`
+ * checks them: two for USD and EUR, none for JPY and KRW.
+ */
+export const minorDigits = (currency: CurrencyCode): number =>
+  // A currency format always resolves its decimals; the lib types them as optional.
+  moneyFormat(currency).resolvedOptions().maximumFractionDigits ?? 2;
 
 /**
  * `price` times `quantity`, computed in integer hundredths: amounts have two decimals,

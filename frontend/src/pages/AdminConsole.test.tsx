@@ -1,6 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
+import { currencyCode } from "../api/currency";
 import type { AfterSalesCase } from "../api/dto";
 import {
   AFTER_SALES_TIMEOUTS,
@@ -486,6 +487,42 @@ describe("admin console: after-sales", () => {
       );
     }
     expect(backend.callsTo("POST", "/admin/after-sales/900/arbitrate")).toHaveLength(0);
+  });
+
+  it("takes only a whole partial amount for a case in a currency without minor unit", async () => {
+    const jpy = currencyCode("JPY");
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.afterSalesCases = [
+      escalatedCase(900, {
+        requested_amount: 1900,
+        currency: jpy,
+        lines: [
+          {
+            order_item_id: 5,
+            menu_item_name: "Whopper",
+            quantity: 2,
+            unit_price: 950,
+            amount: 1900,
+            currency: jpy,
+          },
+        ],
+      }),
+    ];
+    const user = renderApp();
+    const details = await viewCase(await openAfterSales(user), user, 900);
+
+    // The backend refuses decimals the yen does not have (400).
+    await decide(details, user, "Partial refund", "Partly", "950.50");
+    expect(within(details).getByRole("alert")).toHaveTextContent(
+      "Enter an amount more than 0 and less than ¥1,900, as a whole number.",
+    );
+    expect(backend.callsTo("POST", "/admin/after-sales/900/arbitrate")).toHaveLength(0);
+
+    await decide(details, user, "Partial refund", "Partly", "950");
+    expect(await screen.findByText("Case #900 arbitrated: it is REFUNDING now.")).toBeVisible();
+    expect(backend.callsTo("POST", "/admin/after-sales/900/arbitrate").map(requestJson)).toEqual([
+      { decision: "PARTIAL", amount: 950, note: "Partly" },
+    ]);
   });
 
   it("retries a failed arbitration with its key and takes a new key for a changed payload", async () => {

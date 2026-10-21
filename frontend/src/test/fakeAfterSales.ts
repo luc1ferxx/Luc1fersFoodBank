@@ -15,6 +15,7 @@ import {
   type Refund,
   parseAfterSalesStatus,
 } from "../api/dto";
+import { minorDigits } from "../lib/format";
 import { USD, orderNoFor } from "./fixtures";
 import type { FakeState } from "./fakeBackend";
 import type { FakeContext } from "./fakeFulfilment";
@@ -123,6 +124,17 @@ const amountOutOfRange = (current: AfterSalesCase) =>
   badRequest(
     `The amount must be more than 0 and less than the requested ${current.requested_amount.toFixed(2)} ${current.currency}`,
   );
+/**
+ * The 400 of an amount with more decimals than the case's currency has (none for JPY), or
+ * null when it fits (AfterSalesMerchantDecisions.offerAmount, AfterSalesAdminService.amountIn).
+ */
+const tooManyDecimals = (current: AfterSalesCase, amount: number) => {
+  const digits = minorDigits(current.currency);
+  const scaled = amount * 10 ** digits;
+  return Math.abs(Math.round(scaled) - scaled) > 1e-6
+    ? badRequest(`Amount must have at most ${digits} decimal places`)
+    : null;
+};
 const notEligible = (message: string) =>
   apiError(409, message, { code: "AFTER_SALES_NOT_ELIGIBLE" });
 
@@ -746,8 +758,9 @@ export function afterSalesRoutes(context: FakeContext): FakeRoute[] {
         if (amount === null || (note !== null && note.length > 500)) {
           return validationFailed();
         }
-        if (Math.abs(cents(amount) - amount * 100) > 1e-6) {
-          return badRequest("Amount must have at most 2 decimal places");
+        const decimals = tooManyDecimals(current, amount);
+        if (decimals) {
+          return decimals;
         }
         const repeated =
           current.merchant_decision === "OFFERED" &&
@@ -825,6 +838,10 @@ export function afterSalesRoutes(context: FakeContext): FakeRoute[] {
             }
             if (decision !== "PARTIAL" && amount !== null) {
               return badRequest(`A ${decision} decision takes no amount`);
+            }
+            const decimals = amount === null ? null : tooManyDecimals(current, amount);
+            if (decimals) {
+              return decimals;
             }
             if (!firesFrom(current.status, "arbitrate")) {
               return statusConflict(current.status, "arbitrate");

@@ -7,7 +7,12 @@ import {
 } from "../hooks/useMerchantAfterSales";
 import { useNow } from "../hooks/useNow";
 import { formatDateTime, formatMoney, timeLeft } from "../lib/format";
-import { isPartialAmount, parseAmountInput } from "../lib/forms";
+import {
+  amountInputExample,
+  amountInputRule,
+  isPartialAmount,
+  parseAmountInput,
+} from "../lib/forms";
 import { AFTER_SALES_REASON_LABELS, AFTER_SALES_STATUS_LABELS } from "../lib/labels";
 import { Alert } from "./Alert";
 import { Countdown } from "./Countdown";
@@ -84,9 +89,11 @@ function MerchantAfterSalesCard({
 
   const submitOffer = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const offered = parseAmountInput(amount);
+    const offered = parseAmountInput(amount, current.currency);
     if (offered === null) {
-      setFormError("Enter the amount with at most two decimals, like 4.50.");
+      setFormError(
+        `Enter the amount ${amountInputRule(current.currency)}, like ${amountInputExample(current.currency)}.`,
+      );
       return;
     }
     if (!isPartialAmount(offered, current.requested_amount)) {

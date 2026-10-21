@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { LEGACY_CURRENCY, currencyCode, isCurrencyCode } from "../api/currency";
-import { EMPTY_CART, formatMoney, lineTotal, timeLeft } from "./format";
-import { isPartialAmount, parseAmountInput } from "./forms";
+import { EMPTY_CART, formatMoney, lineTotal, minorDigits, timeLeft } from "./format";
+import { amountInputExample, amountInputRule, isPartialAmount, parseAmountInput } from "./forms";
 
 describe("formatMoney", () => {
   it("writes an amount with its currency's symbol and decimals", () => {
@@ -59,13 +59,30 @@ describe("timeLeft", () => {
 });
 
 describe("amount inputs", () => {
+  const usd = currencyCode("USD");
+  const jpy = currencyCode("JPY");
+
   it("accept digits with at most two decimals", () => {
-    expect(parseAmountInput(" 4.5 ")).toBe(4.5);
-    expect(parseAmountInput("4.50")).toBe(4.5);
-    expect(parseAmountInput("12")).toBe(12);
+    expect(parseAmountInput(" 4.5 ", usd)).toBe(4.5);
+    expect(parseAmountInput("4.50", usd)).toBe(4.5);
+    expect(parseAmountInput("12", usd)).toBe(12);
     ["", "4.567", "-1", "1e2", "4,50", ".5", "abc"].forEach((input) =>
-      expect(parseAmountInput(input)).toBeNull(),
+      expect(parseAmountInput(input, usd)).toBeNull(),
     );
+  });
+
+  it("accept only whole amounts in a currency without minor unit", () => {
+    expect(minorDigits(jpy)).toBe(0);
+    expect(minorDigits(currencyCode("KRW"))).toBe(0);
+    expect(minorDigits(currencyCode("EUR"))).toBe(2);
+    expect(parseAmountInput(" 450 ", jpy)).toBe(450);
+    ["4.50", "4.5", "4.", "", "abc"].forEach((input) =>
+      expect(parseAmountInput(input, jpy)).toBeNull(),
+    );
+    expect(amountInputRule(jpy)).toBe("as a whole number");
+    expect(amountInputExample(jpy)).toBe("5");
+    expect(amountInputRule(usd)).toBe("with at most two decimals");
+    expect(amountInputExample(usd)).toBe("4.50");
   });
 
   it("compare a partial amount with the total in hundredths", () => {

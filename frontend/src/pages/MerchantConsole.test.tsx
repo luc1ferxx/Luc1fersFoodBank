@@ -1,6 +1,7 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { currencyCode } from "../api/currency";
 import { MERCHANT_POLL_MS } from "../hooks/useMerchantOrders";
 import type { AfterSalesStatus } from "../api/dto";
 import {
@@ -550,6 +551,53 @@ describe("merchant after-sales", () => {
     expect(offered).toHaveTextContent("Partial refund offered");
     expect(offered).toHaveTextContent("Offered$3.50");
     expect(within(offered).getByText(/^Customer's answer due in/)).toBeInTheDocument();
+  });
+
+  it("offers only whole amounts for a case in a currency without minor unit", async () => {
+    const jpy = currencyCode("JPY");
+    const backend = installFakeBackend({ user: merchantUser });
+    backend.state.afterSalesCases = [
+      afterSalesCaseFixture({
+        id: 900,
+        order_id: 101,
+        requested_amount: 950,
+        currency: jpy,
+        lines: [
+          {
+            order_item_id: 1,
+            menu_item_name: "Whopper",
+            quantity: 1,
+            unit_price: 950,
+            amount: 950,
+            currency: jpy,
+          },
+        ],
+      }),
+    ];
+    const user = renderApp();
+
+    await openAfterSales(user);
+    const waiting = await requestCard(101);
+    await user.click(within(waiting).getByRole("button", { name: "Offer partial refund" }));
+    const amount = within(waiting).getByLabelText(`Partial refund for Order #${orderNoFor(101)}`);
+
+    // The backend refuses decimals the yen does not have (400).
+    await user.type(amount, "4.50");
+    await user.click(within(waiting).getByRole("button", { name: "Send offer" }));
+    expect(within(waiting).getByRole("alert")).toHaveTextContent(
+      "Enter the amount as a whole number, like 5.",
+    );
+    expect(backend.callsTo("POST", "/merchant/after-sales/900/offer")).toHaveLength(0);
+
+    await user.clear(amount);
+    await user.type(amount, "450");
+    await user.click(within(waiting).getByRole("button", { name: "Send offer" }));
+
+    expect(
+      await screen.findByText(`Order #${orderNoFor(101)}: partial refund of ¥450 offered.`),
+    ).toBeInTheDocument();
+    const calls = backend.callsTo("POST", "/merchant/after-sales/900/offer");
+    expect(calls.map(requestJson)).toEqual([{ amount: 450 }]);
   });
 
   it("re-reads the requests when the case moved on meanwhile (409)", async () => {
