@@ -4,7 +4,7 @@ package com.laioffer.onlineorder.fulfilment.merchant;
 import com.laioffer.onlineorder.datasource.ReadOnlyTransactions;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.fulfilment.AfterCommit;
-import com.laioffer.onlineorder.fulfilment.order.OrderActor;
+import com.laioffer.onlineorder.model.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.RestaurantOrderTransition;
 import com.laioffer.onlineorder.model.OrderDto;

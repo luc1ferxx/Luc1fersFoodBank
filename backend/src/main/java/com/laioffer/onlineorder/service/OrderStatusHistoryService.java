@@ -2,7 +2,7 @@ package com.laioffer.onlineorder.service;
 
 
 import com.laioffer.onlineorder.entity.OrderStatusHistoryEntity;
-import com.laioffer.onlineorder.fulfilment.order.OrderActor;
+import com.laioffer.onlineorder.model.OrderActor;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.model.OrderStatusHistoryDto;
 import com.laioffer.onlineorder.observability.TraceIds;

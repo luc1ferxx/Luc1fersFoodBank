@@ -4,7 +4,7 @@ package com.laioffer.onlineorder.aftersales;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
-import com.laioffer.onlineorder.fulfilment.order.OrderActor;
+import com.laioffer.onlineorder.model.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.AfterSalesDecision;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.AfterSalesResponse;

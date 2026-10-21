@@ -404,7 +404,7 @@ public class DispatchService {
 
     /**
      * Writes the move with a compare-and-set on the status and rider of the locked row, releases the rider when the
-     * delivery leaves a status that holds one, and writes the delivery event; all with the same time.
+     * delivery leaves the statuses that hold one, and writes the delivery event; all with the same time.
      */
     private DeliveryEntity applyTransition(
             DeliveryEntity delivery,
@@ -438,7 +438,9 @@ public class DispatchService {
                 now
         );
         CompareAndSet.expectOneRow(rows, DELIVERY_ROW, updated.id(), from + " with rider " + riderId);
-        if (from.holdsRider() && !to.holdsRider()) {
+        // Every move starts from a status that holds the rider (DeliveryStatusTransitionTableTests), so leaving those
+        // statuses frees it.
+        if (!to.holdsRider()) {
             riderRepository.decrementLoad(riderId, now);
         }
         enqueueDeliveryEvent(updated, riderName(riderId), now);

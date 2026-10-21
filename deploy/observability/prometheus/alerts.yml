@@ -316,6 +316,19 @@ groups:
           summary: Refund gateway threads are all held by hung calls
           description: 'No refund was claimed in {{ $value | humanize }} poller run(s) of the last 5 minutes because every refund gateway thread is held by a call that did not return within its timeout, and this has lasted 10 minutes. Due refunds wait without using up attempts. Check the payment gateway; onlineorder_aftersales_refund_gateway_threads_busy shows the held threads (docs/operations.md section 12, "A hung gateway").'
 
+      # A deadline whose step rolled back (a lock timeout, a database error) is tried again after
+      # app.after-sales.poller.retry-backoff (30s), with no limit on the tries, and its deadline_at does not move: the
+      # customer's and the merchant's answers stay refused, and the case stays in its status past its deadline. One case
+      # that keeps failing counts about twice a minute; a blip that clears within 15 minutes raises nothing.
+      - alert: OnlineOrderAfterSalesDeadlinesFailing
+        expr: sum(increase(onlineorder_aftersales_deadlines_total{application="OnlineOrder", outcome="failed"}[5m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: After-sales deadlines keep failing to fire
+          description: '{{ $value | humanize }} after-sales deadline(s) failed and backed off in the last 5 minutes, and deadlines have kept failing for 15 minutes. Their cases stay in their status past the deadline, and the customer''s and the merchant''s answers are refused meanwhile. The WARN log "After-sales deadline ... failed (attempt N)" names the cases; the overdue cases query is in docs/operations.md section 12, "Deadlines".'
+
       # A paid order was cancelled with a refund above its captured payment. Its ORDER_CANCELLED case is open, and the
       # refund executor gives its refund up before calling the gateway (OnlineOrderRefundsGivenUp follows). The counter
       # is registered by the first such cancellation, hence the second branch.

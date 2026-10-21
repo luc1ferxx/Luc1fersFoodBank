@@ -1,8 +1,8 @@
 package com.laioffer.onlineorder.fulfilment.timeout;
 
 
-import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
+import com.laioffer.onlineorder.model.OrderActor;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.money.Money;

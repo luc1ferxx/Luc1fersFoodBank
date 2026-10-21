@@ -6,7 +6,7 @@ import tools.jackson.databind.ObjectMapper;
 import com.laioffer.onlineorder.PostgresRowLocks;
 import com.laioffer.onlineorder.fulfilment.dispatch.DispatchService;
 import com.laioffer.onlineorder.fulfilment.dispatch.RiderService;
-import com.laioffer.onlineorder.fulfilment.order.OrderActor;
+import com.laioffer.onlineorder.model.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.model.OrderDto;

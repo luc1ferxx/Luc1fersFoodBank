@@ -4,6 +4,7 @@ package com.laioffer.onlineorder.fulfilment.order;
 import com.laioffer.onlineorder.fulfilment.FulfilmentEvents;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.DeliveryCompletion;
 import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
+import com.laioffer.onlineorder.model.OrderActor;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

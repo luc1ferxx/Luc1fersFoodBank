@@ -1,4 +1,4 @@
-package com.laioffer.onlineorder.fulfilment.order;
+package com.laioffer.onlineorder.model;
 
 
 import java.util.Objects;

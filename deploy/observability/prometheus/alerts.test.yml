@@ -499,6 +499,42 @@ tests:
         alertname: OnlineOrderRefundGatewaySaturated
         exp_alerts: []
 
+  # One case's deadline keeps rolling back, retried every 30s, from minute 5 to minute 35, then the cause is fixed.
+  - name: after-sales deadlines failing for 15 minutes
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_aftersales_deadlines_total{application="OnlineOrder", instance="app:8081", trigger="merchant_timeout", outcome="failed"}'
+        values: '_x5 1+2x30 61x20'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: OnlineOrderAfterSalesDeadlinesFailing
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: OnlineOrderAfterSalesDeadlinesFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: After-sales deadlines keep failing to fire
+              description: '10 after-sales deadline(s) failed and backed off in the last 5 minutes, and deadlines have kept failing for 15 minutes. Their cases stay in their status past the deadline, and the customer''s and the merchant''s answers are refused meanwhile. The WARN log "After-sales deadline ... failed (attempt N)" names the cases; the overdue cases query is in docs/operations.md section 12, "Deadlines".'
+      - eval_time: 45m
+        alertname: OnlineOrderAfterSalesDeadlinesFailing
+        exp_alerts: []
+
+  # A lock timeout: two deadlines back off once, then fire.
+  - name: a short burst of failed deadlines raises nothing
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_aftersales_deadlines_total{application="OnlineOrder", instance="app:8081", trigger="merchant_timeout", outcome="failed"}'
+        values: '_x5 1 3 4x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OnlineOrderAfterSalesDeadlinesFailing
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: OnlineOrderAfterSalesDeadlinesFailing
+        exp_alerts: []
+
   # onlineorder.aftersales.cancellations.undercaptured has no tags and is registered by the first such cancellation.
   - name: first undercaptured cancellation after a start
     interval: 1m
