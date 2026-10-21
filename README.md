@@ -457,6 +457,12 @@ the event's type the producer wrote; the payload records (`messaging.OrderEventP
 REST DTOs. V1 is the shape the events already had plus two optional fields: `sequence` (absent on events written
 before V9) and `currency` on the order total and on each item price (absent until orders carry a currency).
 
+The description of the published `aftersales.case_opened` v1 schema says an `ORDER_CANCELLED` case approves the order
+total. Since V12_4 that holds except for a customer's cancel after the pickup, whose case still requests the total but
+approves and refunds only a share (ADR 0002 section 27, follow-up 17). No property changed, so no new version was
+published (a published schema file never changes): read what a case refunds from `approved_amount` and
+`refunded_amount`, never from `requested_amount`.
+
 **Validation.** `EventContracts` (networknt json-schema-validator 3.x, the line built on Jackson 3, so events are
 checked as `tools.jackson` trees without a second JSON library; schemas refer to each other by `$id` under
 `https://onlineorder.example/event-schemas/`, mapped to the classpath, so nothing is fetched over the network):
@@ -609,7 +615,7 @@ own tables:
 
 | Module | Package | Owns | Reacts to |
 | --- | --- | --- | --- |
-| Order | `fulfilment.order` (+ `service.OrderService`) | `orders`, the order state machine | `delivery.delivered` |
+| Order | `fulfilment.order` (+ `service.OrderService`) | `orders`, the order state machine | `delivery.picked_up` (records `orders.picked_up_at`), `delivery.delivered` |
 | Merchant | `fulfilment.merchant` | `merchant_accounts`, `merchant_orders` (inbox), `merchant_after_sales_cases` (after-sales inbox) | `order.paid` and later order events; after-sales events of customer requests |
 | Timeout | `fulfilment.timeout` | `order_deadlines` | `order.created`, `order.paid`, later order events, `merchant.order_received` |
 | Dispatch | `fulfilment.dispatch` | `riders` (rider logins, on duty), `deliveries`, `dispatch_orders` | `order.accepted`, `order.cancelled` |
@@ -635,7 +641,8 @@ their events.
 > restaurant was staffed still fires if its merchant is deactivated afterwards. The payment timeout for unpaid `PLACED`
 > orders runs as before. A paid order (`PAID` or `ACCEPTED`) that is cancelled, by anyone, gets an automatic refund:
 > the cancel opens an `ORDER_CANCELLED` after-sales case and its refund of the order total in the same transaction
-> (ADR 0002 D12), and its cancellation notice, whoever cancelled, says the payment will be refunded automatically.
+> (ADR 0002 D12), and its cancellation notice, whoever cancelled, says the payment will be refunded automatically
+> (after the pickup, the customer's own cancel names the share instead).
 > Once the rider picked the order up (`delivery.picked_up`, recorded as `orders.picked_up_at` by the order-delivery
 > consumer), a customer who cancels the still `ACCEPTED` order gets only
 > `AFTER_SALES_PICKED_UP_CANCEL_REFUND_PERCENT` (50) percent of the total back, rounded half-even; the case still
@@ -661,7 +668,9 @@ POST /merchant/orders/{id}/accept  order ACCEPTED ------------------ order.accep
                                                                         |-> timeout: deadline dropped
                                                                         `-> merchant inbox, notifications
 POST /merchant/orders/{id}/preparing  order PREPARING -------------- order.preparing
-POST /rider/deliveries/{id}/picked-up delivery PICKED_UP ----------- delivery.picked_up -> notifications: "Order on the way"
+POST /rider/deliveries/{id}/picked-up delivery PICKED_UP ----------- delivery.picked_up
+                                                                        |-> order: orders.picked_up_at (a customer cancel refunds a share)
+                                                                        `-> notifications: "Order on the way"
 POST /rider/deliveries/{id}/delivered delivery DELIVERED ----------- delivery.delivered
                                                                         |-> order: PREPARING -> COMPLETED ---- order.completed
                                                                         `-> notifications: "Order delivered"
@@ -882,7 +891,8 @@ cancelled is refunded through the same cases. The module is `com.laioffer.online
 (cases, refunds, the deadline and refund poller, the customer and admin APIs); the merchant's side lives in
 `fulfilment.merchant` and the customer notifications in `fulfilment.notification`. Migrations: `V12` (the tables,
 `order_payments` included), `V12_1` (currency checks, Java), `V12_2` (idempotency records bound to a case) and
-`V12_3` (a refund's failed claims in a row). Design
+`V12_3` (a refund's failed claims in a row) and `V12_4` (`orders.picked_up_at`, the pickup that makes a customer's
+cancel refund only a share). Design
 and the record of what was built: [ADR 0002](docs/adr/0002-after-sales-state-machine.md). To try it on H2, see
 [After-sales demo](#after-sales-demo).
 
@@ -999,14 +1009,18 @@ on it is `400` "Refund amount must be greater than zero".
 When a `PAID` or `ACCEPTED` order is cancelled (the customer's cancel, the merchant's reject, the accept timeout or an
 admin's `PATCH`), `OrderService` calls `CancellationRefunds` in the cancel's transaction, under the order's row lock and
 after the order's own event: an `ORDER_CANCELLED` case opens straight in `REFUNDING` with every order line, the order
-total requested and approved (resolution `ORDER_CANCELLED`), and its refund. A failure there rolls the cancel back.
+total requested, and its refund of what it approves (resolution `ORDER_CANCELLED`): the whole total, except after the
+pickup for a customer's cancel, which approves `AFTER_SALES_PICKED_UP_CANCEL_REFUND_PERCENT` (50) of it, half-even, and
+opens nothing when that is 0.00. A failure there rolls the cancel back.
 
 - **It needs an `order_payments` row.** `POST /payments/checkout` records the capture (`CAPTURED`, a `SIMPAY-`
   reference) in the transaction that creates the `PAID` order. `POST /cart/checkout` creates a `PLACED` order without
   one, so an order an admin later moved to `PAID` has none, nor do orders paid before V12. Such an order, or one with a
   total of 0.00, is cancelled without a case (a missing capture is logged as a WARN) and keeps the old cancellation
-  notices; with a capture above 0.00 every cancellation notice says the payment will be refunded automatically.
-- A total above the capture still opens the case, logs a WARN and counts
+  notices; with a capture above 0.00 every cancellation notice says the payment will be refunded automatically, and
+  a customer's cancel after the pickup says how much ("8.04 USD of your 16.09 USD payment will be refunded
+  automatically.", or that nothing is).
+- A refund above the capture still opens the case, logs a WARN and counts
   `onlineorder.aftersales.cancellations.undercaptured`; the refund executor then gives that refund up before calling
   the gateway (see below), for support to refund by hand.
 - `ORDER_CANCELLED` cases never reach the merchant and notify the customer only once refunded ("Refund completed").
@@ -1339,7 +1353,7 @@ The backend runs on Spring Boot 4.1; [docs/spring-boot-4-migration.md](docs/spri
 This project is intentionally strong on backend correctness patterns, but it is still a demo application:
 
 - Payment is simulated with local request validation. There is no real payment provider, authorization, capture, webhook, or settlement flow. The recorded capture (`SIMPAY-...`) and the refunds (`SimulatedRefundGateway`, which always succeeds after its configured failures) are simulated the same way.
-- After-sales is refund-only: no returns, replacements or vouchers, one answer per restaurant per request, and at most two requests per order. A customer can still cancel an `ACCEPTED` order after the rider picked it up, and that cancel is refunded in full; restricting it is a follow-up (ADR 0002).
+- After-sales is refund-only: no returns, replacements or vouchers, one answer per restaurant per request, and at most two requests per order. A customer can still cancel an `ACCEPTED` order after the rider picked it up; that cancel refunds only a share (50% by default), and a cancel in the moment between the pickup and its event reaching the order module (the outbox delay) is still refunded in full (ADR 0002 section 27, follow-up 17).
 - Timestamps, after-sales deadlines included, are local date-times without a zone; the UI reads them in the browser's zone, so a countdown is off when the browser and the server are in different zones.
 - There is no inventory reservation or stock decrement model.
 - Amounts carry their currency, but there is no conversion: a restaurant prices in one currency and a cart or order stays in it. There are no taxes, discounts or tips, and no currencies with three minor digits.

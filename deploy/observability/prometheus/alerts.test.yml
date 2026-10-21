@@ -515,8 +515,8 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
-              summary: Paid orders were cancelled with less captured than their total
-              description: The automatic refund of these cancellations will be given up before the gateway is called, and an admin retry fails the same way. The WARN log "Order ... was cancelled with a total of ..." names the order, the payment and the case; support refunds them by hand (docs/operations.md section 12).
+              summary: Paid orders were cancelled with less captured than their refund
+              description: The automatic refund of these cancellations will be given up before the gateway is called, and an admin retry fails the same way. The WARN log "Order ... was cancelled with a refund of ..." names the order, the payment and the case; support refunds them by hand (docs/operations.md section 12).
       - eval_time: 20m
         alertname: OnlineOrderCancellationsUndercaptured
         exp_alerts: []

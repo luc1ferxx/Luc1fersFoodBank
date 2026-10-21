@@ -192,7 +192,7 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 | `OnlineOrderRefundsGivenUp` | an after-sales refund became `FAILED` in the last 15m, including the first one after a start; retry with `POST /admin/refunds/{id}/retry` (section 12) | warning |
 | `OnlineOrderRefundsBackingOff` | refund claims failed (`outcome="backed_off"`) in every 5m window for 15m; a refund is given up only after 10 failed claims in a row (section 12) | warning |
 | `OnlineOrderRefundGatewaySaturated` | every refund gateway thread was held by a hung call in every 5m window for 10m; no refund is claimed meanwhile (section 12, "A hung gateway") | warning |
-| `OnlineOrderCancellationsUndercaptured` | a paid order was cancelled with a total above its captured payment in the last 15m; its refund will be given up (section 12) | warning |
+| `OnlineOrderCancellationsUndercaptured` | a paid order was cancelled with a refund above its captured payment in the last 15m; its refund will be given up (section 12) | warning |
 
 On Kubernetes, load the same file into Prometheus (or wrap it in a `PrometheusRule` for the Prometheus Operator) and
 make sure the scrape job is named `onlineorder` or adjust `OnlineOrderTargetDown`.
@@ -1100,7 +1100,7 @@ Kafka on. The Kubernetes overlays do not set it.
 | Metric (Prometheus name) | Meaning |
 | --- | --- |
 | `onlineorder_aftersales_refunds_total{outcome}` | Refunds the executor handled, counted after their transaction committed: `succeeded`, `retried` (waits for its backoff), `failed` (given up), `superseded` (another instance reclaimed it after the lease ended; this result was discarded), `unrecorded` (the result could not be recorded, or the wait was interrupted at shutdown; reclaimed after the lease), `skipped` (claimed but not due after all; ends the run), `backed_off` (the claim transaction failed) |
-| `onlineorder_aftersales_cancellations_undercaptured_total` | Paid orders cancelled with a total above their captured payment |
+| `onlineorder_aftersales_cancellations_undercaptured_total` | Paid orders cancelled with a refund (the total, or a share after the pickup) above their captured payment |
 | `onlineorder_aftersales_refund_gateway_threads_busy`, `..._threads_max` | Refund gateway threads running or reserved for a call (calls that outlived their timeout included), and `refund-gateway.max-threads` |
 | `onlineorder_aftersales_refund_gateway_saturated_total` | Executor runs that claimed nothing because every gateway thread was held; registered at 0 on startup |
 | `onlineorder_aftersales_deadlines_total{trigger,outcome}` | Deadlines the poller handled: `trigger` `merchant_timeout`, `offer_timeout`, `customer_timeout`, `arbitration_timeout` (`none` for a failure on a case whose status has none); `outcome` `fired`, `skipped` (refused, nothing written) or `failed` (rolled back, backs off) |
@@ -1207,7 +1207,7 @@ refunds whose calls were cut off are reclaimed once their leases end, with the s
 **An undercaptured cancellation** (`OnlineOrderCancellationsUndercaptured`). A paid order was cancelled with a total
 above what its `order_payments` row captured. Checkout records the order's total as captured, so this points at a row
 changed outside the application. The `ORDER_CANCELLED` case is opened anyway, and the WARN "Order <id> was cancelled
-with a total of ... but its payment ... captured only ...; the refund of case <case> will be given up ..." names the
+with a refund of ... but its payment ... captured only ...; the refund of case <case> will be given up ..." names the
 order, the payment and the case. The refund becomes `FAILED` at its first claim with "The refund of ... exceeds the ...
 captured by payment ..." (`OnlineOrderRefundsGivenUp` fires too), and a retry fails the same check. Refund the customer
 by hand, outside the application; the case stays `REFUNDING` and its refund `FAILED`, since no endpoint closes either.

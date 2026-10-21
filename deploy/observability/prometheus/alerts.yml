@@ -298,7 +298,7 @@ groups:
           summary: Refund gateway threads are all held by hung calls
           description: 'No refund was claimed in {{ $value | humanize }} poller run(s) of the last 5 minutes because every refund gateway thread is held by a call that did not return within its timeout, and this has lasted 10 minutes. Due refunds wait without using up attempts. Check the payment gateway; onlineorder_aftersales_refund_gateway_threads_busy shows the held threads (docs/operations.md section 12, "A hung gateway").'
 
-      # A paid order was cancelled with a total above its captured payment. Its ORDER_CANCELLED case is open, and the
+      # A paid order was cancelled with a refund above its captured payment. Its ORDER_CANCELLED case is open, and the
       # refund executor gives its refund up before calling the gateway (OnlineOrderRefundsGivenUp follows). The counter
       # is registered by the first such cancellation, hence the second branch.
       - alert: OnlineOrderCancellationsUndercaptured
@@ -313,5 +313,5 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: Paid orders were cancelled with less captured than their total
-          description: The automatic refund of these cancellations will be given up before the gateway is called, and an admin retry fails the same way. The WARN log "Order ... was cancelled with a total of ..." names the order, the payment and the case; support refunds them by hand (docs/operations.md section 12).
+          summary: Paid orders were cancelled with less captured than their refund
+          description: The automatic refund of these cancellations will be given up before the gateway is called, and an admin retry fails the same way. The WARN log "Order ... was cancelled with a refund of ..." names the order, the payment and the case; support refunds them by hand (docs/operations.md section 12).
