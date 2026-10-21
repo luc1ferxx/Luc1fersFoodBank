@@ -1116,13 +1116,16 @@ Metrics (tag values are lower case):
   refused (only when the clock went back), `failed` one that rolled back and backs off.
 - `onlineorder.aftersales.refunds{outcome=succeeded|retried|failed|superseded|unrecorded|skipped|backed_off}`:
   `failed` refunds wait for an admin retry; `backed_off` is a claim transaction that failed.
+- `onlineorder.aftersales.refund_gateway.threads.busy` and `.threads.max` (gauges), and
+  `onlineorder.aftersales.refund_gateway.saturated`: runs that claimed nothing because every gateway thread was held by
+  a call past its timeout (alert `OnlineOrderRefundGatewaySaturated`).
 - `onlineorder.aftersales.merchant_decisions{decision=approved|rejected|offered}`: answers that changed a case (not
   retries).
 - `onlineorder.aftersales.cancellations.undercaptured`: automatic refunds whose order total exceeds the capture.
 
-The alerts `OnlineOrderRefundsGivenUp`, `OnlineOrderRefundsBackingOff` and `OnlineOrderCancellationsUndercaptured`
-watch these refunds; [docs/operations.md](docs/operations.md) section 12 has their runbook, the V12-V12_3 rollout and
-the connection pool sizing for the after-sales listeners.
+The alerts `OnlineOrderRefundsGivenUp`, `OnlineOrderRefundsBackingOff`, `OnlineOrderRefundGatewaySaturated` and
+`OnlineOrderCancellationsUndercaptured` watch these refunds; [docs/operations.md](docs/operations.md) section 12 has
+their runbook, the V12-V12_3 rollout and the connection pool sizing for the after-sales listeners.
 
 ---
 

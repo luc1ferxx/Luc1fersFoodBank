@@ -6,6 +6,7 @@ import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.OrderPaymentRepository;
 import com.laioffer.onlineorder.statemachine.Decision;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -905,7 +906,8 @@ class RefundExecutorTests {
     /**
      * Section 24: a call that ignores its interrupt after the timeout keeps its gateway thread. With every thread held
      * that way a run claims nothing (so the next due refund uses up no attempt) until the call returns; then the next
-     * refund is claimed again.
+     * refund is claimed again. Section 27, follow-up 10: the busy gauge shows the held thread, and every run that found
+     * none free counts as saturated.
      */
     @Test
     void callsHoldingEveryGatewayThread_shouldLeaveTheNextRefundUnclaimedUntilOneReturns() throws Exception {
@@ -936,12 +938,19 @@ class RefundExecutorTests {
         RefundExecutor oneThread = executor(new RefundExecutor.Settings(
                 100, MAX_ATTEMPTS, Duration.ofSeconds(10), Duration.ofMinutes(10), Duration.ofSeconds(60),
                 Duration.ofMillis(100), 1));
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        oneThread.bindTo(registry);
 
         try {
             Assertions.assertEquals(1, oneThread.runDueRefunds());
             Assertions.assertTrue(interrupted.await(5, TimeUnit.SECONDS), "the timed-out call was not interrupted");
+            // The first run ends there too: the next refund finds no free thread.
+            Mockito.verify(metricsService).recordAfterSalesRefundGatewaySaturated();
             Assertions.assertEquals(0, oneThread.runDueRefunds(), "the only thread is still held");
             Assertions.assertEquals(0, oneThread.freeGatewayThreads());
+            Assertions.assertEquals(1.0, registry.get(RefundExecutor.GATEWAY_THREADS_BUSY).gauge().value());
+            Assertions.assertEquals(1.0, registry.get(RefundExecutor.GATEWAY_THREADS_MAX).gauge().value());
+            Mockito.verify(metricsService, Mockito.times(2)).recordAfterSalesRefundGatewaySaturated();
         } finally {
             release.countDown();
         }
@@ -951,10 +960,28 @@ class RefundExecutorTests {
                 + "100 ms|v3|2026-10-21T12:00:30|null", summary(writes.get(1)));
         Assertions.assertEquals(next, rows.get(next.id()), "the next refund was not claimed");
         awaitFreeGatewayThreads(oneThread, 1);
+        Assertions.assertEquals(0.0, registry.get(RefundExecutor.GATEWAY_THREADS_BUSY).gauge().value());
         Assertions.assertEquals(1, oneThread.runDueRefunds());
         Assertions.assertEquals("PENDING", rows.get(next.id()).status());
         Assertions.assertEquals(1, rows.get(next.id()).attempts());
         Mockito.verify(metricsService, Mockito.times(2)).recordAfterSalesRefund(RefundExecutor.RETRIED);
+        Mockito.verify(metricsService, Mockito.times(2)).recordAfterSalesRefundGatewaySaturated();
+    }
+
+
+    /**
+     * The gauges read the threads of this executor, and the saturation counter exists at zero from the start, so that
+     * its first run without a free thread is an increase.
+     */
+    @Test
+    void bindTo_shouldShowTheGatewayThreadsAndRegisterTheSaturationCounterAtZero() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        executor(SETTINGS).bindTo(registry);
+
+        Assertions.assertEquals(0.0, registry.get(RefundExecutor.GATEWAY_THREADS_BUSY).gauge().value());
+        Assertions.assertEquals(GATEWAY_THREADS, registry.get(RefundExecutor.GATEWAY_THREADS_MAX).gauge().value());
+        Assertions.assertEquals(0.0, registry.get(ApplicationMetricsService.AFTER_SALES_REFUND_GATEWAY_SATURATED)
+                .counter().count());
     }
 
 

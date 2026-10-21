@@ -461,6 +461,20 @@ abstract class AbstractRefundExecutorIntegrationTests {
     }
 
 
+    /**
+     * Section 27, follow-up 10: the application's registry shows the gateway threads and has the saturation counter
+     * from the start.
+     */
+    @Test
+    void gatewayThreadMeters_shouldBeBoundToTheApplicationRegistry() {
+        Assertions.assertEquals(refundExecutor.settings().gatewayThreads(),
+                meterRegistry.get(RefundExecutor.GATEWAY_THREADS_MAX).gauge().value());
+        Assertions.assertEquals(0.0, meterRegistry.get(RefundExecutor.GATEWAY_THREADS_BUSY).gauge().value());
+        Assertions.assertNotNull(meterRegistry.get(ApplicationMetricsService.AFTER_SALES_REFUND_GATEWAY_SATURATED)
+                .counter());
+    }
+
+
     // ---- helpers ----
 
 

@@ -6,6 +6,9 @@ import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.OrderPaymentRepository;
 import com.laioffer.onlineorder.statemachine.Decision;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.binder.MeterBinder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
@@ -62,10 +65,12 @@ import java.util.function.Supplier;
  *
  * <p>A result that cannot be recorded (its transaction failed) leaves the refund PROCESSING until its lease expires,
  * when it is reclaimed and the gateway called again with the same key. Every refund handled counts once in
- * onlineorder.aftersales.refunds, after its transaction committed.
+ * onlineorder.aftersales.refunds, after its transaction committed. The gateway threads show as the gauges
+ * {@value #GATEWAY_THREADS_BUSY} and {@value #GATEWAY_THREADS_MAX}, and every run that claimed nothing because all of
+ * them were held counts in onlineorder.aftersales.refund_gateway.saturated.
  */
 @Service
-public final class RefundExecutor implements DisposableBean {
+public final class RefundExecutor implements DisposableBean, MeterBinder {
 
     static final String SUCCEEDED = "succeeded";
 
@@ -87,6 +92,16 @@ public final class RefundExecutor implements DisposableBean {
     static final int MAX_ERROR_LENGTH = 1000;
 
     static final String GATEWAY_THREAD_PREFIX = "refund-gateway-";
+
+    /**
+     * The gateway threads running or reserved for a call, those held by calls that outlived their timeout included.
+     */
+    static final String GATEWAY_THREADS_BUSY = "onlineorder.aftersales.refund_gateway.threads.busy";
+
+    /**
+     * app.after-sales.refund-gateway.max-threads: once {@value #GATEWAY_THREADS_BUSY} reaches it, no refund is claimed.
+     */
+    static final String GATEWAY_THREADS_MAX = "onlineorder.aftersales.refund_gateway.threads.max";
 
     private static final Logger LOGGER = LoggerFactory.getLogger(RefundExecutor.class);
 
@@ -179,6 +194,7 @@ public final class RefundExecutor implements DisposableBean {
                 && (handled == 0 || !budget.spent())) {
             RefundGatewayThreads.Reservation thread = gatewayThreads.reserve();
             if (thread == null) {
+                metricsService.recordAfterSalesRefundGatewaySaturated();
                 if (gatewayThreadsHeld.compareAndSet(false, true)) {
                     LOGGER.warn("All {} refund gateway threads are held by calls that did not return within their "
                             + "timeout; no refund is claimed until one of them returns", settings.gatewayThreads());
@@ -212,6 +228,18 @@ public final class RefundExecutor implements DisposableBean {
     }
 
 
+    @Override
+    public void bindTo(MeterRegistry registry) {
+        Gauge.builder(GATEWAY_THREADS_BUSY, this, RefundExecutor::busyGatewayThreads)
+                .description("Refund gateway threads running or reserved for a call")
+                .register(registry);
+        Gauge.builder(GATEWAY_THREADS_MAX, this, executor -> executor.settings.gatewayThreads())
+                .description("Refund gateway threads at most (app.after-sales.refund-gateway.max-threads)")
+                .register(registry);
+        registry.counter(ApplicationMetricsService.AFTER_SALES_REFUND_GATEWAY_SATURATED);
+    }
+
+
     Settings settings() {
         return settings;
     }
@@ -222,6 +250,11 @@ public final class RefundExecutor implements DisposableBean {
      */
     int freeGatewayThreads() {
         return gatewayThreads.freeThreads();
+    }
+
+
+    private int busyGatewayThreads() {
+        return settings.gatewayThreads() - gatewayThreads.freeThreads();
     }
 
 

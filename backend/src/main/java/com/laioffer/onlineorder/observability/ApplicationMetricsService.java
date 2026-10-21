@@ -8,6 +8,11 @@ import org.springframework.stereotype.Service;
 @Service
 public class ApplicationMetricsService {
 
+    /**
+     * Registered at zero by the refund executor, so that its first increment shows as an increase.
+     */
+    public static final String AFTER_SALES_REFUND_GATEWAY_SATURATED = "onlineorder.aftersales.refund_gateway.saturated";
+
     private final MeterRegistry meterRegistry;
 
 
@@ -98,6 +103,15 @@ public class ApplicationMetricsService {
                 "onlineorder.aftersales.refunds",
                 "outcome", normalize(outcome)
         ).increment();
+    }
+
+
+    /**
+     * A run of the refund executor that claimed nothing because every refund gateway thread was held by a call that
+     * outlived its timeout (ADR 0002 section 27, follow-up 10). One per poller tick while the gateway hangs.
+     */
+    public void recordAfterSalesRefundGatewaySaturated() {
+        meterRegistry.counter(AFTER_SALES_REFUND_GATEWAY_SATURATED).increment();
     }
 
 

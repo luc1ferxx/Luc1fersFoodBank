@@ -286,6 +286,18 @@ groups:
           summary: After-sales refund claims keep failing
           description: '{{ $value | humanize }} refund claim(s) failed and backed off in the last 5 minutes, and claims have kept failing for 15 minutes. These refunds wait without using up attempts; one is given up (FAILED) once 10 of its claims failed in a row. Find them with GET /admin/refunds?status=PENDING or status=PROCESSING (last_error "The claim of attempt ... failed") and the WARN log "The claim of refund ... failed" (docs/operations.md section 12).'
 
+      # Every refund gateway thread is held by a call that outlived app.after-sales.refund-gateway.timeout and ignored
+      # its interrupt, so the executor claims no refund: each poller tick that finds no free thread counts once (about
+      # one a second). The counter is registered at zero on startup. A few minutes of it is a gateway that hangs.
+      - alert: OnlineOrderRefundGatewaySaturated
+        expr: sum(increase(onlineorder_aftersales_refund_gateway_saturated_total{application="OnlineOrder"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Refund gateway threads are all held by hung calls
+          description: 'No refund was claimed in {{ $value | humanize }} poller run(s) of the last 5 minutes because every refund gateway thread is held by a call that did not return within its timeout, and this has lasted 10 minutes. Due refunds wait without using up attempts. Check the payment gateway; onlineorder_aftersales_refund_gateway_threads_busy shows the held threads (docs/operations.md section 12, "A hung gateway").'
+
       # A paid order was cancelled with a total above its captured payment. Its ORDER_CANCELLED case is open, and the
       # refund executor gives its refund up before calling the gateway (OnlineOrderRefundsGivenUp follows). The counter
       # is registered by the first such cancellation, hence the second branch.
