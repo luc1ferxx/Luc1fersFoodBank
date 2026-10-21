@@ -2,7 +2,6 @@ package com.laioffer.onlineorder.model;
 
 
 import com.laioffer.onlineorder.exception.BadRequestException;
-import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.fulfilment.timeout.DeadlineType;
 import com.laioffer.onlineorder.statemachine.Decision;
@@ -407,6 +406,41 @@ class OrderStateMachineTests {
                 IllegalArgumentException.class, () -> OrderStateMachine.timeoutTrigger(waiting));
 
         Assertions.assertEquals("No deadline cancels an order waiting in " + waiting, refused.getMessage());
+    }
+
+
+    @Test
+    void soleMoves_shouldIndexTheTriggersThatFireFromOneStatusOnly() {
+        Assertions.assertEquals(
+                Map.of(
+                        new OrderStateMachine.SoleMove(OrderStatus.PAID, OrderStatus.ACCEPTED),
+                        OrderTrigger.MERCHANT_ACCEPT,
+                        new OrderStateMachine.SoleMove(OrderStatus.PREPARING, OrderStatus.COMPLETED),
+                        OrderTrigger.ADMIN_COMPLETE
+                ),
+                // CUSTOMER_CANCEL fires from three statuses; ADMIN_KEEP_PLACED from none.
+                OrderStateMachine.soleMoves(List.of(
+                        OrderTrigger.MERCHANT_ACCEPT,
+                        OrderTrigger.CUSTOMER_CANCEL,
+                        OrderTrigger.ADMIN_KEEP_PLACED,
+                        OrderTrigger.ADMIN_COMPLETE
+                ))
+        );
+    }
+
+
+    @Test
+    void soleMoves_withTwoTriggersOfTheSameMove_shouldThrow() {
+        // The merchant's reject and the accept timeout both move PAID to CANCELLED: one family must not hold both.
+        IllegalStateException refused = Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> OrderStateMachine.soleMoves(List.of(OrderTrigger.MERCHANT_REJECT, OrderTrigger.ACCEPT_TIMEOUT))
+        );
+
+        Assertions.assertEquals(
+                "MERCHANT_REJECT and ACCEPT_TIMEOUT both move an order from only PAID to CANCELLED",
+                refused.getMessage()
+        );
     }
 
 

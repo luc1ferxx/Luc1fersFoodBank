@@ -2,6 +2,7 @@ package com.laioffer.onlineorder.fulfilment.order;
 
 
 import com.laioffer.onlineorder.messaging.AfterSalesCasePayload;
+import com.laioffer.onlineorder.model.OrderActor;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
 

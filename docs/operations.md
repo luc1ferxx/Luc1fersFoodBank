@@ -197,6 +197,7 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 | `OnlineOrderRefundsGivenUp` | an after-sales refund became `FAILED` in the last 15m, including the first one after a start; retry with `POST /admin/refunds/{id}/retry` (section 12) | warning |
 | `OnlineOrderRefundsBackingOff` | refund claims failed (`outcome="backed_off"`) in every 5m window for 15m; a refund is given up only after 10 failed claims in a row (section 12) | warning |
 | `OnlineOrderRefundGatewaySaturated` | every refund gateway thread was held by a hung call in every 5m window for 10m; no refund is claimed meanwhile (section 12, "A hung gateway") | warning |
+| `OnlineOrderAfterSalesDeadlinesFailing` | after-sales deadlines failed and backed off (`outcome="failed"`) in every 5m window for 15m; their cases stay past their deadline (section 12, "Deadlines") | warning |
 | `OnlineOrderCancellationsUndercaptured` | a paid order was cancelled with a refund above its captured payment in the last 15m; its refund will be given up (section 12) | warning |
 
 On Kubernetes, load the same file into Prometheus (or wrap it in a `PrometheusRule` for the Prometheus Operator) and
@@ -1151,8 +1152,9 @@ Kafka on. The Kubernetes overlays do not set it.
 
 Every series is registered by its first increment, so it starts at 1; `OnlineOrderRefundsGivenUp` and
 `OnlineOrderCancellationsUndercaptured` therefore also fire on a series that appeared within their 15-minute window,
-as `OnlineOrderDeadLettersGrowing` does. `OnlineOrderRefundsBackingOff` needs back-offs in every 5-minute window for
-15 minutes, so a database blip does not raise it. The alerts mark when something happened; a `FAILED` refund stays
+as `OnlineOrderDeadLettersGrowing` does. `OnlineOrderRefundsBackingOff` and `OnlineOrderAfterSalesDeadlinesFailing`
+need back-offs (failed claims, failed deadlines) in every 5-minute window for 15 minutes, so a database blip does not
+raise them. The alerts mark when something happened; a `FAILED` refund stays
 `FAILED` after the alert resolved. Tests are in `alerts.test.yml`.
 
 ### Runbook
@@ -1276,8 +1278,9 @@ WHERE o.status = 'CANCELLED' AND o.total_price > 0
 **Deadlines.** A deadline whose step rolled back (`onlineorder_aftersales_deadlines_total{outcome="failed"}`, WARN
 "After-sales deadline <trigger> of case <id> (order <order>) failed (attempt N); retrying at ...") is tried again after
 `poller.retry-backoff` (30s), with no limit on the tries. Its `deadline_at` does not move, so the customer's and the
-merchant's answers stay refused meanwhile. No alert covers it. A case whose deadline passed minutes ago means the poller
-is off, stopped or keeps failing (the application writes UTC, section 3):
+merchant's answers stay refused meanwhile. `OnlineOrderAfterSalesDeadlinesFailing` fires once deadlines have kept
+failing for 15 minutes; a poller that is off or stopped counts nothing, so it raises no alert. A case whose deadline
+passed minutes ago means the poller is off, stopped or keeps failing (the application writes UTC, section 3):
 
 ```sql
 SELECT id, order_id, status, deadline_at, deadline_retry_at, deadline_attempts

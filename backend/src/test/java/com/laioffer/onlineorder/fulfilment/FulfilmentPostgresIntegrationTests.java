@@ -15,7 +15,7 @@ import com.laioffer.onlineorder.fulfilment.merchant.MerchantInboxService;
 import com.laioffer.onlineorder.fulfilment.notification.DeliveryNotificationService;
 import com.laioffer.onlineorder.fulfilment.order.DeliveryCompletionService;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantOrderService;
-import com.laioffer.onlineorder.fulfilment.order.OrderActor;
+import com.laioffer.onlineorder.model.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineProcessor;
 import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineService;

@@ -1207,7 +1207,8 @@ Metrics (tag values are lower case):
 - `onlineorder.aftersales.cancellations.undercaptured`: automatic refunds whose order total exceeds the capture.
 
 The alerts `OnlineOrderRefundsGivenUp`, `OnlineOrderRefundsBackingOff`, `OnlineOrderRefundGatewaySaturated` and
-`OnlineOrderCancellationsUndercaptured` watch these refunds; [docs/operations.md](docs/operations.md) section 12 has
+`OnlineOrderCancellationsUndercaptured` watch these refunds, and `OnlineOrderAfterSalesDeadlinesFailing` deadlines that
+keep rolling back; [docs/operations.md](docs/operations.md) section 12 has
 their runbook, the V12-V12_4 rollout and the connection pool sizing for the after-sales listeners.
 
 ---

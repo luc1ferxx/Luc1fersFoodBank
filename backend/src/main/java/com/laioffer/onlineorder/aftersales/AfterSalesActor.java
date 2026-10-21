@@ -6,10 +6,8 @@ package com.laioffer.onlineorder.aftersales;
  * (the deadline poller, the refund executor). The names are those of {@code OrderActor.Type}, so {@link #name()} is an
  * after_sales_case_history.actor_type.
  *
- * <p>The after-sales module's own type, like the dispatch module's {@code DeliveryActor}: {@code OrderActor} lives in
- * {@code fulfilment.order}, which is in a package cycle with {@code model} and {@code service} (ADR 0002 section 22),
- * and the order service calls into this package (cancellation refunds, merchant decisions). Declaring the machines
- * with {@code OrderActor.Type} would pull this package into that cycle.
+ * <p>The after-sales module's own type, like the dispatch module's {@code DeliveryActor}: no rider takes an after-sales
+ * step, so the machines' tables name only these four.
  */
 public enum AfterSalesActor {
     CUSTOMER,

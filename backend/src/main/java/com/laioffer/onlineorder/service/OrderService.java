@@ -11,8 +11,8 @@ import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
 import com.laioffer.onlineorder.fulfilment.AfterCommit;
-import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
+import com.laioffer.onlineorder.model.OrderActor;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 import com.laioffer.onlineorder.model.OrderStateMachine;
@@ -411,16 +411,19 @@ public class OrderService implements OrderLifecycleCommands {
         if (order == null) {
             return DeliveryCompletion.NOT_FOUND;
         }
-        // Each step is fired only from the status it moves from, so the machine applies it.
+        // Each step is fired only from the status it moves from, so the machine applies it; requireApplied stops a
+        // declaration that refuses one from completing an order that never moved.
         return switch (OrderStatus.normalize(order.status())) {
             case PREPARING -> {
-                applyTransition(order, OrderTrigger.DELIVERY_COMPLETE, null, actor, null, DELIVERED_REASON);
+                applyTransition(order, OrderTrigger.DELIVERY_COMPLETE, null, actor, null, DELIVERED_REASON)
+                        .requireApplied();
                 yield DeliveryCompletion.COMPLETED;
             }
             case ACCEPTED -> {
                 OrderEntity preparing = applyTransition(
-                        order, OrderTrigger.DELIVERY_PREPARE, null, actor, null, DELIVERED_REASON).order();
-                applyTransition(preparing, OrderTrigger.DELIVERY_COMPLETE, null, actor, null, DELIVERED_REASON);
+                        order, OrderTrigger.DELIVERY_PREPARE, null, actor, null, DELIVERED_REASON).requireApplied();
+                applyTransition(preparing, OrderTrigger.DELIVERY_COMPLETE, null, actor, null, DELIVERED_REASON)
+                        .requireApplied();
                 yield DeliveryCompletion.COMPLETED;
             }
             case COMPLETED -> DeliveryCompletion.ALREADY_COMPLETED;
@@ -581,6 +584,20 @@ public class OrderService implements OrderLifecycleCommands {
 
         boolean applied() {
             return decision instanceof Decision.Apply;
+        }
+
+
+        /**
+         * The order as written, for a step its caller fires only from the status it moves from.
+         *
+         * @throws IllegalStateException when the machine did not apply the step: the transaction rolls back, and no
+         *                               later step starts from the order as it was
+         */
+        OrderEntity requireApplied() {
+            if (!applied()) {
+                throw new IllegalStateException("Order " + order.id() + " was not moved: " + decision);
+            }
+            return order;
         }
     }
 

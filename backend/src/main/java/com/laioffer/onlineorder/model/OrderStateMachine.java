@@ -1,13 +1,13 @@
 package com.laioffer.onlineorder.model;
 
 
-import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.statemachine.StateMachine;
 import com.laioffer.onlineorder.statemachine.Transition;
 
 
+import java.util.HashMap;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 
 
 /**
@@ -110,16 +110,16 @@ public final class OrderStateMachine {
                     .add()
             .build();
 
-    private static final List<OrderTrigger> RESTAURANT_TRIGGERS = List.of(
+    private static final Map<SoleMove, OrderTrigger> RESTAURANT_TRIGGERS = soleMoves(List.of(
             OrderTrigger.MERCHANT_ACCEPT,
             OrderTrigger.MERCHANT_REJECT,
             OrderTrigger.MERCHANT_START_PREPARING
-    );
+    ));
 
-    private static final List<OrderTrigger> TIMEOUT_TRIGGERS = List.of(
+    private static final Map<SoleMove, OrderTrigger> TIMEOUT_TRIGGERS = soleMoves(List.of(
             OrderTrigger.PAYMENT_TIMEOUT,
             OrderTrigger.ACCEPT_TIMEOUT
-    );
+    ));
 
 
     private OrderStateMachine() {
@@ -150,7 +150,7 @@ public final class OrderStateMachine {
      * @throws IllegalArgumentException for any other combination
      */
     public static OrderTrigger restaurantTrigger(OrderStatus required, OrderStatus target) {
-        OrderTrigger trigger = firingOnlyFrom(RESTAURANT_TRIGGERS, required, target);
+        OrderTrigger trigger = RESTAURANT_TRIGGERS.get(new SoleMove(required, target));
         if (trigger == null) {
             throw new IllegalArgumentException(
                     "No restaurant command moves an order from " + required + " to " + target
@@ -167,7 +167,7 @@ public final class OrderStateMachine {
      * @throws IllegalArgumentException for a status no deadline waits in
      */
     public static OrderTrigger timeoutTrigger(OrderStatus waiting) {
-        OrderTrigger trigger = firingOnlyFrom(TIMEOUT_TRIGGERS, waiting, OrderStatus.CANCELLED);
+        OrderTrigger trigger = TIMEOUT_TRIGGERS.get(new SoleMove(waiting, OrderStatus.CANCELLED));
         if (trigger == null) {
             throw new IllegalArgumentException("No deadline cancels an order waiting in " + waiting);
         }
@@ -176,18 +176,36 @@ public final class OrderStateMachine {
 
 
     /**
-     * The first of {@code triggers} whose transition fires from {@code from} alone and moves to {@code to}; null when
-     * there is none.
+     * The triggers of a family that fire from exactly one status, by that status and their target. Two of them with
+     * the same move would leave the choice to the list's order, so the class fails to initialize instead, as
+     * {@link StateMachine.Builder#build()} does for an invalid table.
+     *
+     * @throws IllegalStateException when two of {@code triggers} move an order from the same single status to the same
+     *                               target
      */
-    private static OrderTrigger firingOnlyFrom(List<OrderTrigger> triggers, OrderStatus from, OrderStatus to) {
-        Set<OrderStatus> only = Set.of(from);
+    static Map<SoleMove, OrderTrigger> soleMoves(List<OrderTrigger> triggers) {
+        Map<SoleMove, OrderTrigger> moves = new HashMap<>();
         for (OrderTrigger trigger : triggers) {
             Transition<OrderStatus, OrderTrigger, OrderActor.Type, OrderTransitionContext> transition =
                     DEFINITION.transition(trigger);
-            if (transition.to() == to && transition.from().equals(only)) {
-                return trigger;
+            if (transition.from().size() != 1 || transition.stays()) {
+                continue;
+            }
+            SoleMove move = new SoleMove(transition.from().iterator().next(), transition.to());
+            OrderTrigger other = moves.putIfAbsent(move, trigger);
+            if (other != null) {
+                throw new IllegalStateException(
+                        other + " and " + trigger + " both move an order from only " + move.from() + " to " + move.to()
+                );
             }
         }
-        return null;
+        return Map.copyOf(moves);
+    }
+
+
+    /**
+     * A move from exactly one status.
+     */
+    record SoleMove(OrderStatus from, OrderStatus to) {
     }
 }
