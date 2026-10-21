@@ -1,6 +1,7 @@
 # ADR 0002：通用声明式状态机 + 外卖售后（仅退款）
 
-- 状态：Proposed（设计规格，实施后由 P5 改为 Accepted 并补充"实际实现与本文的偏差"）
+- 状态：Accepted（2026-10-20）
+- 实施：实际实现及其与本文设计的差异按阶段记录在第 21–26 节，第 27 节是汇总。
 - 日期：2026-10-20
 - 范围：后端（Spring Boot 4.1 / Java 17 / PostgreSQL + H2 / Kafka / Flyway）+ 前端（React 19 strict TS）
 - 读者：在**全新会话**里按阶段实施的工程师。本文 + `AGENTS.md` 就是全部上下文。
@@ -1377,13 +1378,13 @@ RefundDto(Long id, Long caseId, Long orderId, @JsonFormat(shape = STRING) Long o
 - CAS SQL 与旧版本 pod 兼容：表结构相同，旧 pod 仍是盲写，行锁照常保护。
 
 **P3**
-- V12 和 V12_1 只做建表和加约束，可以在线执行。
+- V12 和 V12_1 只做建表和加约束，可以在线执行。（**已更正**：V12 替换了 order_notifications 的唯一键，不能在线执行，见第 27 节偏差 12 和 `docs/operations.md` 的售后章节。）
 - 新 topic 由 `NewTopic` bean 创建；消费者与生产者在同一个版本里上线。
 - **不要让旧版本 pod 与新版本并存**（与 `docs/operations.md` 第 7 节的做法一致）：
   - 旧 pod 取消已支付订单时不会自动退款。
   - 旧 pod 的 `EventContracts` 不认识售后 topic；虽然旧 pod 本身不会发布售后事件，但窗口期内取消的订单会漏掉退款。
 - 推荐的发布方式：先缩容旧版本，或者使用 Recreate 策略。
-- 回滚：新表保留，影响无害；处于开放状态的售后单会停住，直到再次前滚，因为截止时间和退款只有新版本处理。
+- 回滚：新表保留，影响无害；处于开放状态的售后单会停住，直到再次前滚，因为截止时间和退款只有新版本处理。（**已更正**：V12 之后回滚并不无害，上一版本写通知会失败并进死信，见第 27 节偏差 12。）
 - 运维检查项：
   - `onlineorder.aftersales.refunds{outcome=failed}` 必须为 0；FAILED 的退款到 `/admin/refunds?status=FAILED` 处理。
   - `after_sales_cases` 中不应有 `deadline_at < now() - 5min` 的行，有则说明轮询器停摆。
@@ -1817,3 +1818,111 @@ P1 只加测试，全量门禁通过（873 个测试，0 失败，0 跳过）。
 - 管理员仲裁沿用 `useAdminTools` 的单 slot 写法：在两次重试之间去仲裁另一张单，会丢掉第一张单的 key。之后再重试第一张单，会拿到 409 状态冲突，而不是重放结果。
 - 第 25 节的后端待办仍未处理：`MerchantAfterSalesCaseDto` 和管理员的 `RefundDto[]` 还没有纳入 `ApiContractIntegrationTests`；管理员状态过滤区分大小写（前端只发送精确的枚举值，不受影响）。
 - P5 写文档时一并说明：前端的售后入口和 h2 下商家收件箱为空。
+
+---
+
+## 27. 实施总结（提交 e8b5f77 到 55119c0；P5 写）
+
+P5 开始时，`git log --oneline master..HEAD` 共 38 个提交。每个阶段先提交代码，再单独提交一次实施记录：
+
+| 阶段 | 代码提交 | 实施记录 | 内容 |
+|---|---|---|---|
+| 设计 | e8b5f77 | — | 本 ADR |
+| P1 | 39c0f84 | cbdab99（第 21 节） | 迁移前锁定订单和配送转换行为的测试 |
+| P2 | 7d1204a、64fc095、292e931、d804199 | 383b9b5（第 22 节） | 转换指标改为提交后计数；状态机组件；配送和订单迁移到状态机，写入改为 CAS |
+| P3a | 0bf521e 到 8ce1e60，共 7 个 | bb41f2f（第 23 节） | `Money` 补充；V12、V12_1、V12_2；支付记录；售后和退款状态机；事件契约；单一写入者；顾客 API |
+| P3b | d2fa479、1adce61、3bc6e6c、6445dc6、61017e9 | 4241868（第 24 节） | 取消自动退款；截止时间轮询器；退款执行器；demo profile；测试 JVM 堆 |
+| P3c | 045039d 到 1ebafd4，共 8 个 | 0d8e2d1（第 25 节） | 轮询器稳健性；管理员端；通知；商家端；端到端、竞态和角色测试 |
+| P4 | 6017b71 到 ddaa775，共 6 个 | 55119c0（第 26 节） | 前端 API 层和 fake backend；商家、管理员、顾客界面；审查修复；重新生成内嵌产物 |
+
+P5 的文档提交在这个范围之后。
+
+**最终状态**
+- **通用组件**：`com.laioffer.onlineorder.statemachine` 共 6 个类（`StateMachine`、`Transition`、`Guard`、`Decision`、`CompareAndSet`、`StaleTransitionException`），只依赖 JDK。四个声明都是 `static final DEFINITION`：`model.OrderStateMachine`、`fulfilment.dispatch.DeliveryStateMachine`、`aftersales.AfterSalesStateMachine`、`aftersales.RefundStateMachine`。
+- **订单与配送迁移**：
+  - `orders.status` 和 `deliveries.status` 的每次写入都先 `decide`，再用 CAS 写（`OrderRepository.compareAndSetStatus`；`DeliveryRepository.compareAndSetStatus`、`compareAndSetRider`），行数不为 1 时抛 `StaleTransitionException`。`SELECT ... FOR UPDATE` 仍是决策点。
+  - 409 的错误码和文案、no-op、历史、事件和审计与迁移前一致（第 22 节）。`onlineorder.order.transition` 改为提交后计数。
+- **售后后端**：
+  - 迁移：V12 建售后单、行、历史、`refunds`、`order_payments`、`merchant_after_sales_cases`，并给 `order_notifications` 加 `dedup_scope`；V12_1（Java）加币种检查；V12_2 给 `idempotency_requests` 加 `case_id`。
+  - 写入：`AfterSalesTransitions` 是售后单的单一写入者，CAS 条件是 `id + status + version`。已付款订单取消时，经 `service.CancellationRefunds` 在同一事务里开 ORDER_CANCELLED 单和退款。商家决策经 `OrderLifecycleCommands.decideAfterSalesCase` 同步进入。
+  - 接口共 16 个：
+    - 顾客：`POST /orders/{orderId}/after-sales`、`GET /after-sales/cases`、`GET /after-sales/cases/{caseId}`，以及 `POST /after-sales/cases/{caseId}/` 下的 `accept-offer`、`decline-offer`、`escalate`、`withdraw`。顾客的 POST 都要求 `Idempotency-Key`。
+    - 商家：`GET /merchant/after-sales`，`POST /merchant/after-sales/{caseId}/` 下的 `approve`、`reject`、`offer`，不带 key。
+    - 管理员：`GET /admin/after-sales`、`GET /admin/after-sales/{caseId}`、`POST /admin/after-sales/{caseId}/arbitrate`（要求 key）、`GET /admin/refunds`、`POST /admin/refunds/{refundId}/retry`。
+  - 新错误码 4 个：`AFTER_SALES_NOT_ELIGIBLE`、`AFTER_SALES_STATUS_CONFLICT`、`AFTER_SALES_DEADLINE_PASSED`、`REFUND_STATUS_CONFLICT`。审计动作 2 个：`after_sales_case.arbitrate`、`refund.retry`。
+  - 事件：topic `after-sales-events`，7 个 `aftersales.*` 事件类型，都是 INITIAL。消费组 `onlineorder-merchant-aftersales` 维护商家投影（只前进），`onlineorder-aftersales-notification` 写顾客通知。
+  - 执行：轮询器 `AfterSalesPoller`（线程 `after-sales-poller`）每个 tick 先触发到期的截止时间（`AfterSalesDeadlineProcessor`），再执行到期的退款（`RefundExecutor`，网关调用在事务外，网关是 `SimulatedRefundGateway`）。开关 `app.after-sales.poller.enabled` 默认跟随 `app.kafka.enabled`；`demo` profile 缩短时限并打开轮询器。
+  - 指标：`onlineorder.aftersales.steps{action,from,to}`、`onlineorder.aftersales.deadlines{trigger,outcome}`、`onlineorder.aftersales.refunds{outcome}`、`onlineorder.aftersales.cancellations.undercaptured`、`onlineorder.aftersales.merchant_decisions{decision}`。
+- **前端**：
+  - API 层：`proxyPaths.ts` 加 `/after-sales`；`dto.ts` 加 DTO 和严格解码器；`endpoints.ts` 加 16 个端点函数；fake backend 是 `src/test/fakeAfterSales.ts`。
+  - 顾客在 `OrderingPage` 的订单上申请和跟进（`AfterSalesRequestForm`、`AfterSalesCaseView`、`useAfterSales`）。
+  - 商家在 `MerchantConsole` 的 After-sales 页签处理（`MerchantAfterSalesList`、`useMerchantAfterSales`）。
+  - 管理员在 `AdminConsole` 的 After-sales 区块仲裁和重试退款（`AfterSalesAdminPanel`、`useAfterSalesAdmin`）。
+  - 后端内嵌的前端产物已重新生成（ddaa775）。
+- **文档**：P5 更新 README.md、AGENTS.md、docs/operations.md（第 12 节是售后的运行手册），在 `deploy/observability/prometheus/` 加售后告警，并把本 ADR 改为 Accepted。
+
+**测试**
+- 后端：最后一次全量门禁 1527 个测试，0 失败，0 跳过。P1 结束时是 873 个，P3b 结束时是 1351 个。
+  - 状态机：`StateMachineTests`、`OrderStateMachineTests`、`DeliveryStateMachineTests`、`AfterSalesStateMachineTests`、`RefundStateMachineTests`。
+  - 售后的 schema、顾客 API、管理员、截止时间、取消退款、退款执行器、商家和通知，各有 H2 和 PostgreSQL 两套集成测试。
+  - 端到端：`AfterSalesFlowContainerTests`（第 25 节的 6 条流程）。
+- 前端：17 个测试文件，161 个测试，P4 之前是 111 个。
+
+**与原设计的主要偏差**（细节见括号里的节）
+1. **声明的位置和 actor 类型**：订单的 `OrderTrigger`、`OrderTransitionContext`、`OrderStateMachine` 在 `model` 包，不在 `service`（第 19.12 条、第 22 节）。售后和退款状态机用自己的 `AfterSalesActor`（CUSTOMER、MERCHANT、ADMIN、SYSTEM），不复用 `OrderActor.Type`（第 23 节）。
+2. **触发器由调用方选定**，而且在加锁之前选定。`decide()` 最先检查 actor，不允许的 actor 得到 `IllegalStateException`（500）（第 19 节、第 22 节）。
+3. **每单至多两次顾客申请**，替换 D5 的 `UNIQUE (order_id)`：
+   - 第 1 张被撤销后，可以在原窗口内再申请一次（`attempt_no`，`UNIQUE (order_id, kind, attempt_no)`）。
+   - `refunds` 仍有 `UNIQUE (order_id)`，所以每单至多一笔退款。
+   - 售后的幂等记录经 `idempotency_requests.case_id`（V12_2）绑定到售后单；通知去重加了 `dedup_scope`（第 20、23 节）。
+4. **错误码**：没有 `AFTER_SALES_CASE_EXISTS`。已有售后单和超出可退余额都返回 409 `AFTER_SALES_NOT_ELIGIBLE`（第 23 节）。
+5. **截止时间**：硬截止只适用于顾客和商家的应答。撤销和管理员命令是软截止，谁先拿到行锁谁生效（第 19.1 条）。
+6. **支付记录与取消退款**：
+   - 新增 `order_payments`（D16，审查后加入）。没有扣款记录或总额为 0 的已付订单，取消时不建售后单（D12）。
+   - ORDER_CANCELLED 单开单时不和扣款金额比较。扣款少于订单总额时，提交后记 WARN 并计数 `onlineorder.aftersales.cancellations.undercaptured`，执行器在调用网关前把这笔退款判为 FAILED（第 24、25 节）。
+7. **退款执行比第 9 节更严**（第 24、25 节）：
+   - claim 事务里校验金额，并要求 `payment_reference` 等于支付记录的 `provider_reference`。
+   - 网关调用在有上限的线程池上：`app.after-sales.refund-gateway.timeout` 默认 10s，`app.after-sales.refund-gateway.max-threads` 默认 4。
+   - 每个 tick 有时间预算 `app.after-sales.poller.tick-budget`，默认 5s。
+   - claim 拆成两条查询：先领过期租约，再领到期的 PENDING。
+   - claim 事务失败时只让这一条退避，outcome 记为 `backed_off`，不计尝试次数。
+8. **依赖反转**：订单模块定义 `service.CancellationRefunds` 和 `service.AfterSalesMerchantCommands`，由 `aftersales` 实现，`service` 包不 import `aftersales`（第 24、25 节）。
+9. **商家端**：命令要求投影行已经存在，否则返回 404。所以 h2 profile（Kafka 关闭）下，商家看不到也处理不了售后单，商家超时仍会自动同意。没有商家详情接口（第 25 节）。
+10. **通知**：范围比第 10.3 节宽，开单、申请平台介入、所有关闭原因和顾客拒绝还价都会通知。已扣款且金额大于 0 的取消，通知都写"将自动退款"（第 25 节）。
+11. **退款的 `last_error` 只给管理员**：顾客看到的 `RefundDto` 不带这个字段（第 24 节）。
+12. **发布**（运维步骤见 `docs/operations.md` 第 12 节"Rollout (V12-V12_2)"）：
+    - 第 15 节"V12 可以在线执行"的说法不成立。V12 给 `order_notifications` 换唯一键要建唯一索引（第 23 节）。
+    - 第 15 节"回滚：新表保留，影响无害"也不成立。V12 删掉了旧键 `uq_notification_order_event`，上一版本写通知用的 `ON CONFLICT (order_id, event_type)` 会被 PostgreSQL 拒绝。回滚后，直到再次前滚，上一版本的消费者会把每个订单事件，以及 `delivery.assigned`、`delivery.picked_up`、`delivery.delivered`，都送进死信；它取消的已付订单不建售后单，也就不会自动退款。旧版本 pod 与新版本并存时也是这样。
+    - 把旧键 `UNIQUE (order_id, event_type)` 加回去，只在没有任何订单有两条同类型通知时可行；一个订单的第二次售后申请就会产生这样的两条。所以优先前滚。
+13. **前端**：
+    - 历史的 `action`、状态、kind、退款状态都严格解码。后端新增取值之前，必须先发布能识别它的前端。
+    - 顾客有开放或 REFUNDING 的单时每 10s 轮询，商家每 15s 轮询，管理员不轮询。
+    - fake backend 的数据结构与第 12.5 节不同（第 26 节）。
+
+**后续事项**（汇总第 19、22–26 节；"已完成"一栏已对照代码核实）
+
+| # | 事项 | 来源 | 状态 |
+|---|---|---|---|
+| 1 | `OrderLifecycleCommands` 的 Javadoc 写清状态机在运行时强制的规则 | 第 22 节 | 已完成：Javadoc 里有每个命令的触发器、状态、actor 和"已完成"语义的表 |
+| 2 | `service` ↔ `aftersales` 的包循环 | 第 23 节 | 已完成：见偏差 8 |
+| 3 | `RefundDto.last_error` 不返回给顾客 | 第 23 节 | 已完成（P3b，`RefundDto.forCustomer`） |
+| 4 | 轮询器稳健性：skipped 结束本轮、claim 拆成两条查询、claim 失败只退避这一条、网关线程上限、tick 预算、H2 的 SKIP LOCKED 测试、少扣款的取消可观测 | 第 24 节第 1–6、8 条 | 已完成（P3c） |
+| 5 | 已扣款的取消，通知统一写"将自动退款" | 第 24 节第 7 条 | 已完成（P3c） |
+| 6 | 前端代理 `/after-sales`、失败重试复用 key、第二次申请换新 key | 第 23、25 节 | 已完成（P4） |
+| 7 | 新 POST 接口的限流 | 第 25 节 | 未处理：`RateLimitingFilter` 没有任何售后路径的规则，顾客、商家、管理员的 POST 都没有 |
+| 8 | 管理员状态过滤不区分大小写 | 第 25、26 节 | 未处理：`AfterSalesAdminService` 直接 `valueOf`，小写的值返回 400；商家端会先 trim 并转大写 |
+| 9 | 一直 claim 失败的退款需要上限 | 第 25 节 | 未处理：`backed_off` 不计尝试次数，这样的退款永远不会变成 FAILED。P5 加的告警 `OnlineOrderRefundsBackingOff` 让它们可见，但没有上限 |
+| 10 | 网关线程全部被卡住时要能观察到 | 第 25 节 | 未处理：只有 `RefundExecutor` 的一条 WARN 日志（线程恢复时一条 INFO），没有指标 |
+| 11 | `refund.retry` 的审计测试断言真实的 order_id | 第 25 节 | 未处理：`AuditLogIntegrationTests` 仍只断言 `order_id > 0` |
+| 12 | `app.after-sales.refund.retry-backoff` 的注释补上"claim 失败也用这个间隔" | 第 25 节 | 已完成（P5，`application.yml` 的注释） |
+| 13 | 售后通知的过期事件保护 | 第 25 节 | 未处理：`AfterSalesNotificationService` 不调用 `EventSequenceTracker`（商家投影调用了），从死信重放的旧事件仍会写通知；订单通知现状也是这样 |
+| 14 | `ApiContractIntegrationTests` 覆盖 `MerchantAfterSalesCaseDto` 和管理员的 `RefundDto[]` 列表 | 第 25、26 节 | 未处理：目前只锁定顾客的售后单、退款和 overview |
+| 15 | 10 个 listener 容器下重跑 k6 order-flow，评估 prod 连接池 | 第 25 节 | 未处理：默认并发 3 时有 30 个消费线程；prod overlay 是 `DATABASE_POOL_MAX_SIZE=20`，base 是 30。k6 没有重跑；不跑压测的分析和两种限制办法见 `docs/operations.md` 第 12 节"Connections: listener threads and the pool" |
+| 16 | promtool 告警规则：`onlineorder.aftersales.refunds{outcome=failed}`、`onlineorder.aftersales.cancellations.undercaptured` | 第 25 节 | 已完成（P5）：`alerts.yml` 加了 `OnlineOrderRefundsGivenUp`、`OnlineOrderRefundsBackingOff`、`OnlineOrderCancellationsUndercaptured`，`alerts.test.yml` 加了 5 组测试。仍未处理：`onlineorder.aftersales.deadlines{outcome=failed}` 没有告警，网关线程被占满没有指标（见第 10 条） |
+| 17 | 限制骑手取餐后的取消 | 第 19.18 条 | 未处理：`CUSTOMER_CANCEL` 仍允许从 ACCEPTED 取消，取消后全额自动退款 |
+| 18 | P2 留下的小问题：`completeDeliveredOrder` 忽略第一步的 `TransitionOutcome`；`firingOnlyFrom` 在同族出现两个相同的 from 和目标时有歧义；`DispatchService` 里 `from.holdsRider()` 为假的分支不可达；把 `OrderActor` 移到中立的包，解开 `model` ↔ `fulfilment.order` 的循环 | 第 22 节 | 未处理 |
+| 19 | 时间戳是不带时区的 LocalDateTime，浏览器和服务器不在同一时区时倒计时有偏差 | 第 26 节 | 未处理（现有的其他时间戳也一样） |
+| 20 | 订单刚变成 COMPLETED 时，"Request a refund" 要等页面重新显示或点 Refresh 才出现 | 第 26 节 | 未处理：顾客只在有开放或 REFUNDING 的单时轮询 |
+| 21 | 管理员仲裁是单 slot 的 key：两次重试之间去仲裁另一张单，会丢掉第一张单的 key | 第 26 节 | 未处理 |
+| 22 | 运行手册：FAILED 退款和 `backed_off`、少扣款的取消、V12 不能在线执行、V12_2 的外键检查、V12 之前的已付订单没有支付记录时的人工处理、新指标 | D16、第 23、25 节 | 由 P5 的 docs/operations.md 处理 |
+| 23 | README 的模块表和前端售后入口、h2 下商家售后收件箱为空、取消 `AFTER_SALES_CASE_EXISTS`、eligible 列表包含扣款 0.00 的订单（申请会返回 400）；AGENTS.md 的容器测试列表加上 `AfterSalesFlowContainerTests` | 第 23、25、26 节 | 由 P5 的 README.md 和 AGENTS.md 处理 |
