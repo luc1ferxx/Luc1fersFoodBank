@@ -1,11 +1,13 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CartItem } from "./api/dto";
+import type { CartItem, OrderItem } from "./api/dto";
 import App from "./App";
+import { AFTER_SALES_POLL_MS } from "./hooks/useAfterSales";
 import { NOTIFICATION_POLL_MS } from "./hooks/useNotifications";
 import { SESSION_EXPIRED_MESSAGE } from "./hooks/useSession";
 import {
+  afterSalesCaseFixture,
   apiError,
   deferred,
   demoUser,
@@ -15,7 +17,9 @@ import {
   menusFixture,
   orderFixture,
   orderNoFor,
+  refundFixture,
   requestJson,
+  settleAfterSalesRefund,
   USD,
 } from "./test/fakeBackend";
 import { flushPromises, formOf, renderApp, resetVisibility, setVisibility } from "./test/helpers";
@@ -51,6 +55,7 @@ describe("guest browsing and auth", () => {
     expect(screen.getByText("Guest browsing")).toBeInTheDocument();
     expect(backend.callsTo("GET", "/restaurants/menu")).toHaveLength(1);
     expect(backend.callsTo("GET", "/cart")).toHaveLength(0);
+    expect(backend.callsTo("GET", "/after-sales/cases")).toHaveLength(0);
     // A guest's 401 from /me is not an expired session.
     expect(screen.queryByText(SESSION_EXPIRED_MESSAGE)).not.toBeInTheDocument();
 
@@ -285,6 +290,246 @@ describe("cart and checkout", () => {
     expect(keys).toHaveLength(2);
     expect(keys[0]).toEqual(expect.any(String));
     expect(keys[1]).toBe(keys[0]);
+  });
+});
+
+describe("after-sales", () => {
+  const whopperItem: OrderItem = {
+    id: 5,
+    menu_item_id: 10,
+    restaurant_id: 1,
+    price: 6.39,
+    currency: USD,
+    quantity: 2,
+    menu_item_name: "Whopper",
+    menu_item_description: null,
+    menu_item_image_url: null,
+  };
+  const completedOrder = orderFixture({
+    id: 7,
+    status: "COMPLETED",
+    total_price: 12.78,
+    items: [whopperItem],
+  });
+  const refundRequest = () =>
+    screen.findByRole("region", { name: `Refund request for Order #${orderNoFor(7)}` });
+
+  const openOrders = async (user: UserEvent) => {
+    await signedInLabel();
+    await user.click(screen.getByRole("button", { name: "Orders" }));
+  };
+
+  /** Opens the order's request form and fills it for one cold Whopper. */
+  const fillRequest = async (user: UserEvent, button = "Request a refund") => {
+    await user.click(await screen.findByRole("button", { name: button }));
+    await user.click(screen.getByLabelText("Selected items"));
+    await user.click(screen.getByRole("button", { name: "More Whopper" }));
+    await user.selectOptions(screen.getByLabelText("Reason"), "QUALITY_ISSUE");
+    await user.type(screen.getByLabelText("What went wrong?"), "Cold");
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("retries a failed request with its Idempotency-Key and a changed one with a new key", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.orders = [completedOrder];
+    backend.on("POST", "/orders/7/after-sales", () =>
+      apiError(503, "After-sales unavailable", { traceId: "trace-81" }),
+    );
+    backend.on("POST", "/orders/7/after-sales", () =>
+      apiError(503, "After-sales unavailable", { traceId: "trace-82" }),
+    );
+    const user = renderApp();
+
+    await openOrders(user);
+    await fillRequest(user);
+    expect(
+      screen.getByRole("form", { name: `Refund request for Order #${orderNoFor(7)}` }),
+    ).toHaveTextContent("Refund amount $6.39");
+    await user.click(screen.getByRole("button", { name: "Submit request" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "503: After-sales unavailable Trace trace-81.",
+    );
+
+    // The same request again is a retry of the same attempt.
+    await user.click(screen.getByRole("button", { name: "Submit request" }));
+    expect(await screen.findByText(/Trace trace-82/)).toBeInTheDocument();
+
+    // Asking for both Whoppers is another request.
+    await user.click(screen.getByRole("button", { name: "More Whopper" }));
+    await user.click(screen.getByRole("button", { name: "Submit request" }));
+    const request = await refundRequest();
+    expect(within(request).getByText("Waiting for the restaurant")).toBeInTheDocument();
+    expect(within(request).getByText(/^Restaurant answers in/)).toBeInTheDocument();
+    expect(within(request).getByText("2 x Whopper · $12.78")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Request a refund" })).toBeNull();
+
+    const calls = backend.callsTo("POST", "/orders/7/after-sales");
+    expect(calls.map((call) => requestJson(call))).toEqual([
+      {
+        scope: "ITEMS",
+        lines: [{ order_item_id: 5, quantity: 1 }],
+        reason_code: "QUALITY_ISSUE",
+        description: "Cold",
+      },
+      {
+        scope: "ITEMS",
+        lines: [{ order_item_id: 5, quantity: 1 }],
+        reason_code: "QUALITY_ISSUE",
+        description: "Cold",
+      },
+      {
+        scope: "ITEMS",
+        lines: [{ order_item_id: 5, quantity: 2 }],
+        reason_code: "QUALITY_ISSUE",
+        description: "Cold",
+      },
+    ]);
+    const keys = idempotencyKeys(calls);
+    expect(keys[0]).toEqual(expect.any(String));
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).toEqual(expect.any(String));
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  it("retries a failed withdrawal with its key, then requests once more with a new key", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.orders = [completedOrder];
+    backend.on("POST", /^\/after-sales\/cases\/\d+\/withdraw$/, () =>
+      apiError(500, "Database unavailable"),
+    );
+    const user = renderApp();
+
+    await openOrders(user);
+    await fillRequest(user);
+    await user.click(screen.getByRole("button", { name: "Submit request" }));
+    const request = await refundRequest();
+
+    await user.click(within(request).getByRole("button", { name: "Withdraw request" }));
+    const dialog = screen.getByRole("dialog", { name: "Withdraw this refund request?" });
+    await user.click(within(dialog).getByRole("button", { name: "Withdraw" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("500: Database unavailable");
+    await user.click(within(dialog).getByRole("button", { name: "Withdraw" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(within(request).getByText("Closed: Withdrawn")).toBeInTheDocument();
+
+    // The same draft again is the order's second (and last) request, not a retry.
+    await fillRequest(user, "Request a refund again (1 left)");
+    await user.click(screen.getByRole("button", { name: "Submit request" }));
+    expect(
+      await screen.findByRole("heading", { name: "Second refund request" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Request a refund/ })).toBeNull();
+
+    const withdrawKeys = idempotencyKeys(
+      backend.calls.filter((call) => call.method === "POST" && call.path.endsWith("/withdraw")),
+    );
+    expect(withdrawKeys).toHaveLength(2);
+    expect(withdrawKeys[1]).toBe(withdrawKeys[0]);
+    const openCalls = backend.callsTo("POST", "/orders/7/after-sales");
+    expect(requestJson(openCalls[1])).toEqual(requestJson(openCalls[0]));
+    const openKeys = idempotencyKeys(openCalls);
+    expect(openKeys[1]).toEqual(expect.any(String));
+    expect(openKeys[1]).not.toBe(openKeys[0]);
+    expect(backend.state.afterSalesCases.map((item) => item.attempt_no)).toEqual([2, 1]);
+  });
+
+  it("drops an overview response that a newer read superseded", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.orders = [completedOrder];
+    const offered = afterSalesCaseFixture({
+      id: 900,
+      order_id: 7,
+      status: "COUNTER_OFFERED",
+      offered_amount: 3,
+      merchant_decision: "OFFERED",
+    });
+    backend.state.afterSalesCases = [offered];
+    const slowFirstRead = deferred();
+    backend.on("GET", "/after-sales/cases", () => slowFirstRead.promise);
+    const user = renderApp();
+
+    await openOrders(user);
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    const request = await refundRequest();
+    expect(within(request).getByText("Partial refund offered")).toBeInTheDocument();
+
+    // The first read, from before the offer, answers last.
+    await act(async () => {
+      slowFirstRead.resolve(
+        json({ cases: [{ ...offered, status: "PENDING_MERCHANT", offered_amount: null }] }),
+      );
+      await slowFirstRead.promise;
+    });
+    await flushPromises();
+    expect(within(request).getByText("Partial refund offered")).toBeInTheDocument();
+    expect(within(request).getByRole("button", { name: "Accept $3.00" })).toBeInTheDocument();
+    expect(backend.callsTo("GET", "/after-sales/cases")[0]?.signal?.aborted).toBe(true);
+  });
+
+  it("polls a refund in progress and stops once it is refunded", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.orders = [completedOrder];
+    backend.state.afterSalesCases = [
+      afterSalesCaseFixture({
+        id: 900,
+        order_id: 7,
+        status: "REFUNDING",
+        approved_amount: 6.39,
+        merchant_decision: "APPROVED",
+        resolution: "MERCHANT_APPROVED",
+        deadline_at: null,
+        refund: refundFixture({ id: 901, case_id: 900, order_id: 7 }),
+      }),
+    ];
+    const overviewReads = () => backend.callsTo("GET", "/after-sales/cases").length;
+    render(<App />);
+
+    await signedInLabel();
+    fireEvent.click(screen.getByRole("button", { name: "Orders" }));
+    const request = await refundRequest();
+    expect(within(request).getByText("Refund of $6.39: Pending")).toBeInTheDocument();
+    expect(overviewReads()).toBe(1);
+
+    act(() => {
+      vi.advanceTimersByTime(AFTER_SALES_POLL_MS);
+    });
+    await waitFor(() => expect(overviewReads()).toBe(2));
+
+    settleAfterSalesRefund(backend.state, 900);
+    act(() => {
+      vi.advanceTimersByTime(AFTER_SALES_POLL_MS);
+    });
+    await waitFor(() =>
+      expect(within(request).getByText("Refund of $6.39: Refunded")).toBeInTheDocument(),
+    );
+    expect(
+      within(request).getByText("Refunded", { selector: ".status-badge" }),
+    ).toBeInTheDocument();
+    expect(overviewReads()).toBe(3);
+
+    // Everything is final: no more reads.
+    act(() => {
+      vi.advanceTimersByTime(AFTER_SALES_POLL_MS * 3);
+    });
+    await flushPromises();
+    expect(overviewReads()).toBe(3);
+  });
+
+  it("shows the automatic refund of a paid order the customer cancelled", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.orders = [orderFixture({ id: 7, status: "PAID", total_price: 9 })];
+    const user = renderApp();
+
+    await openOrders(user);
+    await user.click(await screen.findByRole("button", { name: "Cancel order" }));
+
+    expect(await screen.findByText("Automatic refund $9.00: Refunding")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Request a refund/ })).toBeNull();
+    expect(backend.callsTo("GET", "/after-sales/cases").length).toBeGreaterThanOrEqual(2);
   });
 });
 

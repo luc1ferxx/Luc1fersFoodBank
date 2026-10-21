@@ -242,6 +242,55 @@ describe("role-based workspaces", () => {
     expect(keys[1]).toBe(keys[0]);
   });
 
+  it("keeps a failed refund request's Idempotency-Key and form across a workspace switch", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.orders = [
+      orderFixture({
+        id: 7,
+        status: "COMPLETED",
+        total_price: 12.78,
+        items: [
+          {
+            id: 5,
+            menu_item_id: 10,
+            restaurant_id: 1,
+            price: 6.39,
+            currency: USD,
+            quantity: 2,
+            menu_item_name: "Whopper",
+            menu_item_description: null,
+            menu_item_image_url: null,
+          },
+        ],
+      }),
+    ];
+    backend.on("POST", "/orders/7/after-sales", () => apiError(503, "After-sales unavailable"));
+    const user = renderApp();
+
+    await screen.findByText("Demo is signed in");
+    await user.click(screen.getByRole("button", { name: "Orders" }));
+    await user.click(await screen.findByRole("button", { name: "Request a refund" }));
+    await user.selectOptions(screen.getByLabelText("Reason"), "WRONG_ITEM");
+    await user.type(screen.getByLabelText("What went wrong?"), "Got a salad");
+    await user.click(screen.getByRole("button", { name: "Submit request" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("503: After-sales unavailable");
+
+    await openWorkspace(user, "Admin console");
+    await openWorkspace(user, "Order food");
+
+    // The retry after coming back is the same request: same form, same key.
+    expect(screen.getByLabelText("What went wrong?")).toHaveValue("Got a salad");
+    await user.click(screen.getByRole("button", { name: "Submit request" }));
+    expect(
+      await screen.findByRole("region", { name: `Refund request for Order #${orderNoFor(7)}` }),
+    ).toHaveTextContent("Waiting for the restaurant");
+
+    const keys = idempotencyKeys(backend.callsTo("POST", "/orders/7/after-sales"));
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toEqual(expect.any(String));
+    expect(keys[1]).toBe(keys[0]);
+  });
+
   it("keeps a failed status change's Idempotency-Key across a workspace switch", async () => {
     const backend = installFakeBackend({ user: demoUser });
     backend.state.orders = [orderFixture({ id: 7, status: "PAID" })];

@@ -1150,3 +1150,74 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+/* After-sales: customer */
+
+.after-sales textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #cfd5c8;
+  border-radius: 8px;
+  background: #fbfcfa;
+  color: #20221d;
+  font: inherit;
+  resize: vertical;
+}
+
+.after-sales h4 {
+  margin: 0;
+}
+
+.after-sales--automatic {
+  font-weight: 800;
+}
+
+.after-sales-form {
+  margin-top: 10px;
+}
+
+.after-sales-form textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #cfd5c8;
+  border-radius: 8px;
+  background: #fbfcfa;
+  color: #20221d;
+  font: inherit;
+  resize: vertical;
+}
+
+.after-sales-form__scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.after-sales-form__scope legend {
+  margin-bottom: 6px;
+  color: #4e554b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.after-sales-form__items {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.after-sales-form__items li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.after-sales-form__preview {
+  margin: 0;
+}
