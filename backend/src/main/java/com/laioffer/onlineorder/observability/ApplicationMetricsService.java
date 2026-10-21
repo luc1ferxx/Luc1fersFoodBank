@@ -83,6 +83,24 @@ public class ApplicationMetricsService {
 
 
     /**
+     * A refund the refund executor handled, counted once its transaction committed.
+     *
+     * @param outcome succeeded (the gateway refunded it and its case is REFUNDED), retried (the gateway call failed and
+     *                the refund waits for its backoff), failed (given up: a permanent failure, the attempts used up or a
+     *                refund that no longer matches its case or payment), superseded (another executor reclaimed it
+     *                after the lease expired, so this result was discarded), unrecorded (the result could not be
+     *                recorded; the refund is reclaimed once its lease expires) or skipped (claimed but not due after
+     *                all)
+     */
+    public void recordAfterSalesRefund(String outcome) {
+        meterRegistry.counter(
+                "onlineorder.aftersales.refunds",
+                "outcome", normalize(outcome)
+        ).increment();
+    }
+
+
+    /**
      * @param decision accepted, rejected or timeout (the merchant did not answer within app.fulfilment.accept-timeout)
      */
     public void recordMerchantDecision(String decision) {

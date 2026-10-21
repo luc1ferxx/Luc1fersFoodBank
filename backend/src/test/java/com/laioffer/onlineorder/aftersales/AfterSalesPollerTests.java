@@ -3,6 +3,7 @@ package com.laioffer.onlineorder.aftersales;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 import org.mockito.Mockito;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
@@ -18,8 +19,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 
 /**
- * The after-sales poller (ADR 0002 D13 and section 9): its own named thread, a lifecycle that starts and stops once, and
- * ticks that never end the schedule.
+ * The after-sales poller (ADR 0002 D13 and section 9): its own named thread, a lifecycle that starts and stops once,
+ * ticks that run the deadlines and then the refunds, and ticks that never end the schedule.
  */
 class AfterSalesPollerTests {
 
@@ -33,7 +34,8 @@ class AfterSalesPollerTests {
             polls.countDown();
             return 0;
         });
-        AfterSalesPoller poller = new AfterSalesPoller(processor, Duration.ofMillis(10));
+        AfterSalesPoller poller = new AfterSalesPoller(
+                processor, Mockito.mock(RefundExecutor.class), Duration.ofMillis(10));
         Assertions.assertFalse(poller.isRunning());
         Assertions.assertTrue(poller.isAutoStartup(), "started with the context");
 
@@ -85,7 +87,8 @@ class AfterSalesPollerTests {
         sharedScheduler.setThreadNamePrefix("scheduling-");
         sharedScheduler.initialize();
         Semaphore outboxTicks = new Semaphore(0);
-        AfterSalesPoller poller = new AfterSalesPoller(processor, Duration.ofMillis(10));
+        AfterSalesPoller poller = new AfterSalesPoller(
+                processor, Mockito.mock(RefundExecutor.class), Duration.ofMillis(10));
         try {
             sharedScheduler.scheduleWithFixedDelay(outboxTicks::release, Duration.ofMillis(10));
             poller.start();
@@ -121,7 +124,8 @@ class AfterSalesPollerTests {
             recovered.countDown();
             return 0;
         });
-        AfterSalesPoller poller = new AfterSalesPoller(processor, Duration.ofMillis(10));
+        AfterSalesPoller poller = new AfterSalesPoller(
+                processor, Mockito.mock(RefundExecutor.class), Duration.ofMillis(10));
         try {
             poller.start();
             Assertions.assertTrue(recovered.await(5, TimeUnit.SECONDS), "Polling stopped after a failed poll");
@@ -138,13 +142,47 @@ class AfterSalesPollerTests {
     @Test
     void poll_shouldNeverThrow() {
         AfterSalesDeadlineProcessor processor = Mockito.mock(AfterSalesDeadlineProcessor.class);
+        RefundExecutor refundExecutor = Mockito.mock(RefundExecutor.class);
         Mockito.when(processor.fireDueDeadlines()).thenThrow(new AssertionError("broken")).thenReturn(1);
-        AfterSalesPoller poller = new AfterSalesPoller(processor, Duration.ofSeconds(1));
+        Mockito.when(refundExecutor.runDueRefunds()).thenReturn(0).thenThrow(new IllegalStateException("gone"));
+        AfterSalesPoller poller = new AfterSalesPoller(processor, refundExecutor, Duration.ofSeconds(1));
 
         Assertions.assertDoesNotThrow(poller::poll);
         Assertions.assertDoesNotThrow(poller::poll);
 
         Mockito.verify(processor, Mockito.times(2)).fireDueDeadlines();
+        Mockito.verify(refundExecutor, Mockito.times(2)).runDueRefunds();
         Assertions.assertFalse(poller.isRunning(), "poll() alone starts nothing");
+    }
+
+
+    /**
+     * A tick fires the deadlines first and then executes the refunds, so that a refund a timeout created in this tick
+     * is executed in it too; a failing deadline job does not keep the refunds from running, nor the other way round.
+     */
+    @Test
+    void poll_shouldRunTheDeadlinesThenTheRefundsEachFailingOnItsOwn() {
+        AfterSalesDeadlineProcessor processor = Mockito.mock(AfterSalesDeadlineProcessor.class);
+        RefundExecutor refundExecutor = Mockito.mock(RefundExecutor.class);
+        Mockito.when(processor.fireDueDeadlines())
+                .thenReturn(1)
+                .thenThrow(new IllegalStateException("deadlines down"))
+                .thenReturn(0);
+        Mockito.when(refundExecutor.runDueRefunds())
+                .thenReturn(1)
+                .thenReturn(0)
+                .thenThrow(new IllegalStateException("refunds down"));
+        AfterSalesPoller poller = new AfterSalesPoller(processor, refundExecutor, Duration.ofSeconds(1));
+
+        poller.poll();
+        poller.poll();
+        poller.poll();
+
+        InOrder ticks = Mockito.inOrder(processor, refundExecutor);
+        for (int tick = 0; tick < 3; tick++) {
+            ticks.verify(processor).fireDueDeadlines();
+            ticks.verify(refundExecutor).runDueRefunds();
+        }
+        ticks.verifyNoMoreInteractions();
     }
 }

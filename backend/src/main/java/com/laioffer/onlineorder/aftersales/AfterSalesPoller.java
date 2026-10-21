@@ -18,14 +18,14 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Runs the after-sales background jobs every app.after-sales.poller.interval on a thread of its own
- * ("after-sales-poller"), not on the shared Spring scheduler (ADR 0002 D13 and section 9): for now the deadlines
- * ({@link AfterSalesDeadlineProcessor}).
+ * ("after-sales-poller"), not on the shared Spring scheduler (ADR 0002 D13 and section 9): the deadlines
+ * ({@link AfterSalesDeadlineProcessor}), then the refunds ({@link RefundExecutor}).
  *
  * <p>The shared scheduler (spring.task.scheduling.pool.size) runs the outbox publisher every 500 ms. A burst of due
- * cases, or cases stuck behind row locks, would otherwise hold its threads and delay every event, the after-sales
- * events this poller writes included. With its own single thread the poller can only delay itself. It is not a
- * TaskScheduler bean on purpose: a second TaskScheduler bean would make Spring Boot back off its auto-configured
- * scheduler for every @Scheduled job.
+ * cases, cases stuck behind row locks, or a slow refund gateway would otherwise hold its threads and delay every event,
+ * the after-sales events this poller writes included. With its own single thread the poller can only delay itself. It
+ * is not a TaskScheduler bean on purpose: a second TaskScheduler bean would make Spring Boot back off its
+ * auto-configured scheduler for every @Scheduled job.
  *
  * <p>Each tick runs the jobs one after the other, each failing on its own: a failed job is logged and the next one
  * still runs. On by default wherever Kafka is (app.after-sales.poller.enabled follows app.kafka.enabled in
@@ -46,11 +46,15 @@ public final class AfterSalesPoller implements SmartLifecycle {
 
     public AfterSalesPoller(
             AfterSalesDeadlineProcessor deadlineProcessor,
+            RefundExecutor refundExecutor,
             @Value("${app.after-sales.poller.interval:1s}") Duration interval
     ) {
-        // The jobs of a tick, in order. The refund executor (refundExecutor.runDueRefunds(), P3-9) joins after the
-        // deadlines, so that a refund a timeout created is executed in the same tick.
-        this.jobs = List.of(new Job("deadline", deadlineProcessor::fireDueDeadlines));
+        // The jobs of a tick, in order: the refunds come after the deadlines, so that a refund a timeout created is
+        // executed in the same tick.
+        this.jobs = List.of(
+                new Job("deadline", deadlineProcessor::fireDueDeadlines),
+                new Job("refund", refundExecutor::runDueRefunds)
+        );
         this.interval = interval;
     }
 

@@ -71,6 +71,30 @@ class AfterSalesCaseViewsTests {
     }
 
 
+    /**
+     * The gateway's error of a failed attempt is for the platform's staff: neither the detail nor a page shows it to the
+     * customer, while every other refund field stays.
+     */
+    @Test
+    void refundOfACustomersCase_shouldLeaveOutItsLastError() {
+        AfterSalesCaseEntity refunding = caseRow(501L, 1001L, "REFUNDING");
+        RefundEntity failing = new RefundEntity(70L, 501L, 1001L, 3L, "after-sales-case:501", "SIMPAY-1",
+                new BigDecimal("9.00"), "USD", "PENDING", 2, NOW.plusSeconds(20), null, null,
+                "java.net.SocketTimeoutException: Read timed out", 4L, NOW, NOW, null);
+        RefundDto expected = new RefundDto(70L, 501L, 1001L, 9001L, new BigDecimal("9.00"), "USD", "PENDING", 2, null,
+                null, NOW.plusSeconds(20), NOW, null);
+        Mockito.when(orderRepository.findOrderNoById(1001L)).thenReturn(Optional.of(9001L));
+        Mockito.when(orderRepository.findAllById(List.of(1001L))).thenReturn(List.of(order(1001L, 9001L)));
+        Mockito.when(refundRepository.findAllByCaseIdIn(List.of(501L))).thenReturn(List.of(failing));
+
+        Assertions.assertEquals(expected, views.detail(refunding).refund());
+        Assertions.assertEquals(expected, views.summaries(List.of(refunding)).get(0).refund());
+        // The full view, for the staff, keeps it.
+        Assertions.assertEquals("java.net.SocketTimeoutException: Read timed out",
+                new RefundDto(failing, 9001L).lastError());
+    }
+
+
     @Test
     void detail_ofACaseWithoutARefundOrAnOrderNumber_shouldLeaveThemOut() {
         Mockito.when(orderRepository.findOrderNoById(1001L)).thenReturn(Optional.empty());

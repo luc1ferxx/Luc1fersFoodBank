@@ -15,6 +15,8 @@ import java.time.LocalDateTime;
  * @param currency      the ISO 4217 currency of {@code amount}
  * @param status        PENDING, PROCESSING, SUCCEEDED or FAILED
  * @param attempts      gateway calls so far
+ * @param lastError     the gateway's error of the last failed attempt: for the platform's staff only, never in a
+ *                      customer's answer ({@link #forCustomer})
  * @param nextAttemptAt when a PENDING refund is tried next
  */
 public record RefundDto(
@@ -49,6 +51,30 @@ public record RefundDto(
                 refund.nextAttemptAt(),
                 refund.createdAt(),
                 refund.succeededAt()
+        );
+    }
+
+
+    /**
+     * The refund as its customer sees it: without {@code last_error}, which describes the platform's gateway and is
+     * for its staff (the admin view shows it).
+     */
+    static RefundDto forCustomer(RefundEntity refund, Long orderNo) {
+        RefundDto full = new RefundDto(refund, orderNo);
+        return new RefundDto(
+                full.id(),
+                full.caseId(),
+                full.orderId(),
+                full.orderNo(),
+                full.amount(),
+                full.currency(),
+                full.status(),
+                full.attempts(),
+                null,
+                full.providerReference(),
+                full.nextAttemptAt(),
+                full.createdAt(),
+                full.succeededAt()
         );
     }
 }

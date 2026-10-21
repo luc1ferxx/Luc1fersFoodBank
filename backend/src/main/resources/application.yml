@@ -257,16 +257,33 @@ app:
     customer-response-timeout: ${AFTER_SALES_CUSTOMER_RESPONSE_TIMEOUT:48h}
     arbitration-timeout: ${AFTER_SALES_ARBITRATION_TIMEOUT:72h}
     poller:
-      # Fires the deadlines of the open cases (com.laioffer.onlineorder.aftersales.AfterSalesPoller) on its own thread,
-      # not on the shared scheduler the outbox publisher uses. Follows Kafka like the fulfilment deadline poller; set
-      # AFTER_SALES_POLLER_ENABLED=true to fire them in the h2 profile.
+      # Fires the deadlines of the open cases, then executes the due refunds
+      # (com.laioffer.onlineorder.aftersales.AfterSalesPoller), on its own thread, not on the shared scheduler the
+      # outbox publisher uses. Follows Kafka like the fulfilment deadline poller; set AFTER_SALES_POLLER_ENABLED=true
+      # to run them in the h2 profile (the demo profile does).
       enabled: ${AFTER_SALES_POLLER_ENABLED:${app.kafka.enabled:true}}
       interval: ${AFTER_SALES_POLL_INTERVAL:1s}
-      # Cases fired per run, one transaction each.
+      # Cases fired, and refunds executed, per run: one transaction each (a refund has two, around its gateway call).
       batch-size: ${AFTER_SALES_POLL_BATCH_SIZE:100}
       # Delay before a case whose deadline failed to fire (for example a lock timeout) is tried again. Its deadline_at
       # stays as it was, so the customer's and the merchant's answers stay refused meanwhile.
       retry-backoff: ${AFTER_SALES_DEADLINE_RETRY_BACKOFF:30s}
+    refund:
+      # Gateway calls a refund may make (a reclaim after an expired lease counts as one) before it is given up
+      # (FAILED, its case stays REFUNDING) for an admin to retry.
+      max-attempts: ${AFTER_SALES_REFUND_MAX_ATTEMPTS:8}
+      # Wait after a failed call: retry-backoff x 2^(attempts - 1), at most retry-backoff-max.
+      retry-backoff: ${AFTER_SALES_REFUND_RETRY_BACKOFF:10s}
+      retry-backoff-max: ${AFTER_SALES_REFUND_RETRY_BACKOFF_MAX:10m}
+      # The lease of a claimed refund: when an executor died or stalled after its claim, another one reclaims the refund
+      # after this long and calls the gateway again with the same key.
+      claim-timeout: ${AFTER_SALES_REFUND_CLAIM_TIMEOUT:60s}
+    refund-gateway:
+      # How long a gateway call is waited for before it counts as a retryable failure. Must be shorter than
+      # refund.claim-timeout (checked at startup), so that no refund is reclaimed while its call may still succeed.
+      timeout: ${AFTER_SALES_REFUND_GATEWAY_TIMEOUT:10s}
+      # The simulated gateway fails the first N attempts of every refund (retryable), for demos and tests.
+      fail-first-attempts: ${AFTER_SALES_REFUND_GATEWAY_FAIL_FIRST_ATTEMPTS:0}
   cleanup:
     enabled: ${CLEANUP_ENABLED:true}
     fixed-delay-ms: ${CLEANUP_FIXED_DELAY_MS:3600000}

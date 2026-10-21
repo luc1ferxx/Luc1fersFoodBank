@@ -13,8 +13,9 @@ import java.util.Map;
 
 
 /**
- * Builds the {@link AfterSalesCaseDto} of cases from their rows: lines, refund, order number and, for one case, its
- * history. Reads only, in the caller's transaction (read-only for the queries, the command's own after a command).
+ * Builds the customer's {@link AfterSalesCaseDto} of cases from their rows: lines, refund, order number and, for one
+ * case, its history. The refund leaves out its last_error ({@link RefundDto#forCustomer}). Reads only, in the caller's
+ * transaction (read-only for the queries, the command's own after a command).
  */
 @Component
 public class AfterSalesCaseViews {
@@ -46,7 +47,7 @@ public class AfterSalesCaseViews {
         Long orderNo = orderRepository.findOrderNoById(current.orderId()).orElse(null);
         RefundDto refund = refundRepository.findAllByCaseIdIn(caseIds).stream()
                 .findFirst()
-                .map(row -> new RefundDto(row, orderNo))
+                .map(row -> RefundDto.forCustomer(row, orderNo))
                 .orElse(null);
         return new AfterSalesCaseDto(
                 current,
@@ -87,7 +88,7 @@ public class AfterSalesCaseViews {
                     current,
                     orderNo,
                     List.copyOf(linesByCase.getOrDefault(current.id(), List.of())),
-                    refund == null ? null : new RefundDto(refund, orderNo),
+                    refund == null ? null : RefundDto.forCustomer(refund, orderNo),
                     null
             ));
         }

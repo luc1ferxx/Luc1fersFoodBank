@@ -90,16 +90,23 @@ class FulfilmentTimeoutContainerTests extends FulfilmentContainerTestSupport {
                     ? cancelled
                     : null;
         });
-        // ADR 0002 D12: the timeout opened the refund of the captured payment, which the notification promises.
+        // ADR 0002 D12: the timeout opened the refund of the captured payment, which the notification promises, and
+        // the after-sales poller (on wherever Kafka is) executes it through the simulated gateway.
         Assertions.assertTrue(
                 String.valueOf(notification.get("message")).endsWith("Your payment will be refunded automatically."),
                 () -> String.valueOf(notification.get("message"))
         );
-        Assertions.assertEquals(List.of("ORDER_CANCELLED|REFUNDING"), jdbcTemplate.query(
-                "SELECT kind, status FROM after_sales_cases WHERE order_id = ?",
-                (row, index) -> row.getString("kind") + "|" + row.getString("status"),
-                paidOrderId
-        ));
+        await("the after-sales poller to refund the cancelled order", EVENT_WAIT, () ->
+                List.of("ORDER_CANCELLED|REFUNDED|SUCCEEDED").equals(jdbcTemplate.query("""
+                        SELECT after_sales_cases.kind, after_sales_cases.status, refunds.status AS refund_status
+                        FROM after_sales_cases
+                        JOIN refunds ON refunds.case_id = after_sales_cases.id
+                        WHERE after_sales_cases.order_id = ?
+                        """,
+                        (row, index) -> row.getString("kind") + "|" + row.getString("status") + "|"
+                                + row.getString("refund_status"),
+                        paidOrderId
+                )));
         Assertions.assertEquals(0, jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM after_sales_cases WHERE order_id = ?", Integer.class, placedOrderId),
                 "the payment timeout cancelled an unpaid order");
