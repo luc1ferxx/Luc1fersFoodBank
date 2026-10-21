@@ -1,6 +1,6 @@
 import { ApiError } from "../api/client";
 import { type CurrencyCode, LEGACY_CURRENCY } from "../api/currency";
-import type { Cart } from "../api/dto";
+import { type Cart, ERROR_CODES } from "../api/dto";
 
 export const EMPTY_CART: Cart = Object.freeze({
   order_items: [],
@@ -138,14 +138,30 @@ export const buildCartItemMap = (cart: Cart): ReadonlyMap<number, CartLineRef> =
   );
 
 /**
+ * What a refused (429 RATE_LIMITED) request tells the user: when to try again, from
+ * the response's Retry-After seconds, or to wait a moment when it had none.
+ */
+const rateLimitedMessage = (retryAfter: number | null): string =>
+  retryAfter === null
+    ? "Too many requests. Wait a moment and try again."
+    : `Too many requests. Try again in ${retryAfter} ${retryAfter === 1 ? "second" : "seconds"}.`;
+
+const isRateLimited = (error: ApiError): boolean =>
+  error.status === 429 || error.code === ERROR_CODES.rateLimited;
+
+/**
  * User-facing copy for a failed request: "<status>: <message> Trace <id>." for API
- * errors, the message for other errors, `fallback` when there is nothing better.
+ * errors, the message for other errors, `fallback` when there is nothing better. A
+ * rate-limited request's message is rateLimitedMessage, not the backend's.
  */
 export const errorCopy = (error: unknown, fallback: string): string => {
   if (error instanceof ApiError) {
     const prefix = error.status ? `${error.status}: ` : "";
+    const message = isRateLimited(error)
+      ? rateLimitedMessage(error.retryAfter)
+      : error.message || fallback;
     const trace = error.traceId ? ` Trace ${error.traceId}.` : "";
-    return `${prefix}${error.message || fallback}${trace}`;
+    return `${prefix}${message}${trace}`;
   }
 
   if (error instanceof Error && error.message) {

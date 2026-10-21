@@ -50,6 +50,7 @@ export {
   deferred,
   idempotencyKeys,
   json,
+  rateLimited,
   requestJson,
   type FakeHandler,
   type FakeRequest,

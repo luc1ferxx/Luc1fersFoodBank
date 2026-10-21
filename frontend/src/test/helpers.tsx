@@ -1,4 +1,4 @@
-import { act, render } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import App from "../App";
 
@@ -10,6 +10,15 @@ export const renderApp = (): UserEvent => {
 
 /** Lets pending promise callbacks (e.g. a dropped stale response) run. */
 export const flushPromises = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+
+/** The menu card of the dish called `name`; fails the test when there is none. */
+export const menuCard = (name: string): HTMLElement => {
+  const card = screen.getByRole("heading", { name }).closest("article");
+  if (!card) {
+    throw new Error(`No menu card for ${name}`);
+  }
+  return card;
+};
 
 /** The form that contains `element`; fails the test when there is none. */
 export const formOf = (element: HTMLElement): HTMLFormElement => {

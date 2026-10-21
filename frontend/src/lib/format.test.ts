@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { ApiError } from "../api/client";
 import { LEGACY_CURRENCY, currencyCode, isCurrencyCode } from "../api/currency";
 import {
   EMPTY_CART,
+  errorCopy,
   formatDateTime,
   formatMoney,
   lineTotal,
@@ -140,5 +142,58 @@ describe("amount inputs", () => {
     expect(isPartialAmount(6.39, 6.39)).toBe(false);
     expect(isPartialAmount(0, 6.39)).toBe(false);
     expect(isPartialAmount(6.38, 6.39)).toBe(true);
+  });
+});
+
+describe("errorCopy", () => {
+  it("writes an API error's status, message and trace id", () => {
+    expect(
+      errorCopy(
+        new ApiError("Payment gateway timed out", { status: 503, traceId: "trace-42" }),
+        "Unable to pay.",
+      ),
+    ).toBe("503: Payment gateway timed out Trace trace-42.");
+    expect(errorCopy(new ApiError("", { status: 500 }), "Unable to pay.")).toBe(
+      "500: Unable to pay.",
+    );
+    expect(errorCopy(new TypeError("Failed to fetch"), "Unable to pay.")).toBe("Failed to fetch");
+    expect(errorCopy("boom", "Unable to pay.")).toBe("Unable to pay.");
+  });
+
+  it("tells a rate-limited user when to try again, from the Retry-After seconds", () => {
+    const refused = (retryAfter: number | null, traceId?: string) =>
+      new ApiError("Too many requests", {
+        status: 429,
+        code: "RATE_LIMITED",
+        retryAfter,
+        traceId,
+      });
+
+    expect(errorCopy(refused(3, "trace-rl"), "Unable to add item.")).toBe(
+      "429: Too many requests. Try again in 3 seconds. Trace trace-rl.",
+    );
+    expect(errorCopy(refused(1), "Unable to add item.")).toBe(
+      "429: Too many requests. Try again in 1 second.",
+    );
+    expect(errorCopy(refused(12), "Unable to add item.")).toBe(
+      "429: Too many requests. Try again in 12 seconds.",
+    );
+    // Without a (usable) Retry-After: the status message.
+    expect(errorCopy(refused(null, "trace-rl"), "Unable to add item.")).toBe(
+      "429: Too many requests. Wait a moment and try again. Trace trace-rl.",
+    );
+    // The code alone is enough, and the status alone (a 429 from a proxy).
+    expect(errorCopy(new ApiError("Slow down", { code: "RATE_LIMITED", retryAfter: 2 }), "x")).toBe(
+      "Too many requests. Try again in 2 seconds.",
+    );
+    expect(errorCopy(new ApiError("<html>", { status: 429 }), "x")).toBe(
+      "429: Too many requests. Wait a moment and try again.",
+    );
+  });
+
+  it("keeps the backend's message for other statuses, even with a Retry-After", () => {
+    expect(
+      errorCopy(new ApiError("Maintenance", { status: 503, retryAfter: 30 }), "Unable to pay."),
+    ).toBe("503: Maintenance");
   });
 });

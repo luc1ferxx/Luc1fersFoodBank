@@ -10,7 +10,7 @@ import {
   installFakeBackend,
   requestJson,
 } from "../test/fakeBackend";
-import { flushPromises, renderApp } from "../test/helpers";
+import { flushPromises, menuCard, renderApp } from "../test/helpers";
 
 const whopperLine: CartItem = {
   order_item_id: 501,
@@ -148,9 +148,11 @@ describe("adding an item from another restaurant", () => {
     backend.on("POST", "/cart", () => apiError(503, "Menu service unavailable"));
     await user.click(within(dialog).getByRole("button", { name: "Clear cart & add" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
+    // The dialog's add was asked for on the Dan Dan Noodles card: it says so there only.
+    expect(await within(menuCard("Dan Dan Noodles")).findByRole("alert")).toHaveTextContent(
       "Your cart was cleared, but Dan Dan Noodles was not added. 503: Menu service unavailable",
     );
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByText("Your cart is empty. Checkout is disabled.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cart (0)" })).toBeInTheDocument();
@@ -165,7 +167,10 @@ describe("adding an item from another restaurant", () => {
 
     await user.click(await screen.findByRole("button", { name: "Add to cart" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("409: Menu item is not available");
+    expect(await within(menuCard("Whopper")).findByRole("alert")).toHaveTextContent(
+      "409: Menu item is not available",
+    );
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

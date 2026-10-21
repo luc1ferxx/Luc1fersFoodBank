@@ -384,6 +384,10 @@ button:disabled {
   padding: 14px;
 }
 
+.menu-card__body > .alert {
+  margin: 0;
+}
+
 .menu-card__meta {
   color: #798272;
   font-size: 12px;

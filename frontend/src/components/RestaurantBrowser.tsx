@@ -117,6 +117,7 @@ export function RestaurantBrowser({
               signedIn={signedIn}
               quantity={cart.itemsByMenuId.get(item.id)?.quantity ?? 0}
               pending={cart.pendingMenuItemId === item.id}
+              error={cart.menuItemErrors.get(item.id)}
               onAdd={cart.addItem}
               onDecrease={cart.decreaseItem}
             />

@@ -43,6 +43,8 @@ export const ERROR_CODES = {
   afterSalesDeadlinePassed: "AFTER_SALES_DEADLINE_PASSED",
   /** POST /admin/refunds/{id}/retry of a refund that is not FAILED (409). */
   refundStatusConflict: "REFUND_STATUS_CONFLICT",
+  /** The rate limiter refused the request (429, with a Retry-After header). */
+  rateLimited: "RATE_LIMITED",
 } as const;
 
 /** The OrderStatus spelled by `value` (e.g. a <select> value), or null. */
