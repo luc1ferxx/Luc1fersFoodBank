@@ -29,6 +29,24 @@ const DEADLINE_LABELS: Readonly<Partial<Record<AfterSalesStatus, string>>> = {
 };
 
 /**
+ * The statuses a first request can be withdrawn from and still leave the order one more
+ * (ADR 0002 section 27): withdrawing after a rejection (the restaurant's, or a declined
+ * offer) or while the platform decides ends the order's requests.
+ */
+const WITHDRAWAL_LEAVES_ANOTHER_REQUEST: ReadonlySet<AfterSalesStatus> = new Set<AfterSalesStatus>([
+  "PENDING_MERCHANT",
+  "COUNTER_OFFERED",
+]);
+
+/** What withdrawing the case means for the order's requests, in the confirmation. */
+const withdrawalCopy = (afterSalesCase: AfterSalesCase): string =>
+  afterSalesCase.attempt_no > 1
+    ? "This is the order's second request: it cannot get another one."
+    : WITHDRAWAL_LEAVES_ANOTHER_REQUEST.has(afterSalesCase.status)
+      ? "You can request a refund for this order once more while its request window is open."
+      : "After a rejection, withdrawing ends this order's refund requests: it cannot get another one.";
+
+/**
  * What a customer reads about a refund that failed. Why it failed (the refund's
  * last_error) is for the platform only; support contacts the customer.
  */
@@ -332,11 +350,7 @@ export function AfterSalesCaseView({
           }}
           onCancel={() => setConfirmingWithdraw(false)}
         >
-          <p>
-            {afterSalesCase.attempt_no > 1
-              ? "This is the order's second request: it cannot get another one."
-              : "You can request a refund for this order once more while its request window is open."}
-          </p>
+          <p>{withdrawalCopy(afterSalesCase)}</p>
         </ConfirmDialog>
       ) : null}
     </section>

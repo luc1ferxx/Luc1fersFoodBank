@@ -28,10 +28,12 @@ public interface OrderRepository extends ListCrudRepository<OrderEntity, Long> {
     Optional<OrderEntity> findByIdAndCustomerId(Long id, Long customerId);
 
     /**
-     * The customer's orders that can get an after-sales request now, latest completed first (ADR 0002 sections 6, 20
-     * and D16): COMPLETED since {@code completedSince} (orders.updated_at is the completion time), with a restaurant
-     * and a captured payment, and without a customer request other than a withdrawn first one. The open command checks
-     * the same rules under the order's row lock.
+     * The customer's orders that can get an after-sales request now, latest completed first (ADR 0002 sections 6, 20,
+     * 27 and D16): COMPLETED since {@code completedSince} (orders.updated_at is the completion time), with a restaurant
+     * and a captured payment, and without a customer request other than a first one the customer withdrew while it was
+     * PENDING_MERCHANT or COUNTER_OFFERED (the from_status of its CUSTOMER_WITHDRAW step; a withdrawal after a
+     * rejection, a declined offer or from arbitration leaves no other request). The open command checks the same rules
+     * under the order's row lock ({@code AfterSalesCustomerService.REQUEST_AGAIN_AFTER_WITHDRAWAL_FROM}).
      */
     @Query("""
             SELECT *
@@ -52,7 +54,14 @@ public interface OrderRepository extends ListCrudRepository<OrderEntity, Long> {
                     AND after_sales_cases.kind = 'CUSTOMER_REQUEST'
                     AND NOT (after_sales_cases.attempt_no = 1
                         AND after_sales_cases.status = 'CLOSED'
-                        AND after_sales_cases.close_reason = 'WITHDRAWN')
+                        AND after_sales_cases.close_reason = 'WITHDRAWN'
+                        AND EXISTS (
+                            SELECT 1
+                            FROM after_sales_case_history
+                            WHERE after_sales_case_history.case_id = after_sales_cases.id
+                              AND after_sales_case_history.action = 'CUSTOMER_WITHDRAW'
+                              AND after_sales_case_history.from_status IN ('PENDING_MERCHANT', 'COUNTER_OFFERED')
+                        ))
               )
             ORDER BY updated_at DESC, id DESC
             LIMIT :limit

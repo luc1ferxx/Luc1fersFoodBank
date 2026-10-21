@@ -9,6 +9,7 @@ import { SESSION_EXPIRED_MESSAGE } from "./hooks/useSession";
 import {
   afterSalesCaseFixture,
   apiError,
+  backendTimestamp,
   deferred,
   demoUser,
   idempotencyKeys,
@@ -437,6 +438,46 @@ describe("after-sales", () => {
     expect(openKeys[1]).toEqual(expect.any(String));
     expect(openKeys[1]).not.toBe(openKeys[0]);
     expect(backend.state.afterSalesCases.map((item) => item.attempt_no)).toEqual([2, 1]);
+  });
+
+  it("offers no other request once a rejected request is withdrawn", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.orders = [completedOrder];
+    backend.state.afterSalesCases = [
+      afterSalesCaseFixture({
+        id: 900,
+        order_id: 7,
+        status: "REJECTED",
+        merchant_decision: "REJECTED",
+        merchant_note: "Looked fine when it left",
+        deadline_at: backendTimestamp(48 * 60 * 60 * 1000),
+      }),
+    ];
+    const user = renderApp();
+
+    await openOrders(user);
+    const request = await refundRequest();
+    expect(screen.queryByRole("button", { name: /Request a refund/ })).toBeNull();
+    await user.click(within(request).getByRole("button", { name: "Withdraw request" }));
+    const dialog = screen.getByRole("dialog", { name: "Withdraw this refund request?" });
+    expect(dialog).toHaveTextContent(
+      "After a rejection, withdrawing ends this order's refund requests: it cannot get another one.",
+    );
+    const reads = backend.callsTo("GET", "/after-sales/cases").length;
+    await user.click(within(dialog).getByRole("button", { name: "Withdraw" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(within(request).getByText("Closed: Withdrawn")).toBeInTheDocument();
+
+    // The overview read after the withdrawal does not list the order: no request again.
+    await waitFor(() =>
+      expect(backend.callsTo("GET", "/after-sales/cases").length).toBeGreaterThan(reads),
+    );
+    await flushPromises();
+    expect(screen.queryByRole("button", { name: /Request a refund/ })).toBeNull();
+    expect(backend.state.afterSalesCases[0]?.history.at(-1)).toMatchObject({
+      action: "CUSTOMER_WITHDRAW",
+      from_status: "REJECTED",
+    });
   });
 
   it("drops an overview response that a newer read superseded", async () => {

@@ -26,23 +26,30 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.data.jdbc.repository.query.Query;
 
 
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 
 /**
- * The customer's after-sales service (ADR 0002 sections 11.2, 19 and 20) on mocks: the shape checks of a request
+ * The customer's after-sales service (ADR 0002 sections 11.2, 19, 20 and 27) on mocks: the shape checks of a request
  * before anything is read, every eligibility rule under the order's lock with the time read after it, the attempt
- * rules, the lines and money rules, the mapping of the attempt key's violation, the commands on a locked case with the
- * mapping of a refused step, and the read-only queries.
+ * rules with the status a withdrawn first request was withdrawn from, the lines and money rules, the mapping of the
+ * attempt key's violation, the commands on a locked case with the mapping of a refused step, and the read-only
+ * queries.
  */
 @ExtendWith(MockitoExtension.class)
 class AfterSalesCustomerServiceTests {
@@ -61,6 +68,9 @@ class AfterSalesCustomerServiceTests {
 
     @Mock
     private AfterSalesCaseRepository caseRepository;
+
+    @Mock
+    private AfterSalesCaseHistoryRepository historyRepository;
 
     @Mock
     private OrderRepository orderRepository;
@@ -90,6 +100,7 @@ class AfterSalesCustomerServiceTests {
     void setup() {
         service = new AfterSalesCustomerService(
                 caseRepository,
+                historyRepository,
                 orderRepository,
                 orderHistoryItemRepository,
                 orderPaymentRepository,
@@ -292,7 +303,6 @@ class AfterSalesCustomerServiceTests {
                 Arguments.of(List.of(caseRow(AfterSalesStatus.PENDING_MERCHANT)), "ALREADY_OPEN"),
                 Arguments.of(List.of(caseRow(AfterSalesStatus.IN_ARBITRATION)), "ALREADY_OPEN"),
                 Arguments.of(List.of(caseRow(AfterSalesStatus.REFUNDING)), "ALREADY_OPEN"),
-                Arguments.of(List.of(withdrawn), "2"),
                 Arguments.of(List.of(closedRequest(1, AfterSalesCloseReason.CUSTOMER_TIMEOUT)), "NO_ATTEMPT_LEFT"),
                 Arguments.of(List.of(closedRequest(1, AfterSalesCloseReason.ARBITRATION_REJECTED)), "NO_ATTEMPT_LEFT"),
                 Arguments.of(List.of(caseRow(AfterSalesStatus.REFUNDED)), "NO_ATTEMPT_LEFT"),
@@ -303,20 +313,13 @@ class AfterSalesCustomerServiceTests {
 
 
     /**
-     * Section 20: a first request when the order has none, a second only after the first was withdrawn; an open one
-     * and every other ending refuse another.
+     * Section 20: a first request when the order has none, a second only after the first was withdrawn (from which
+     * status: the next test); an open one, every other ending and a second request refuse another, without reading
+     * any history.
      */
     @ParameterizedTest
     @MethodSource("earlierCases")
     void open_shouldBeTheFirstRequestOrTheSecondAfterAWithdrawal(List<AfterSalesCaseEntity> cases, String outcome) {
-        if (outcome.equals("2")) {
-            eligibleOrderOpens(order(), cases);
-
-            service.open(CUSTOMER_ID, ORDER_ID, wholeOrder(), "open-2");
-
-            Assertions.assertEquals(2, openedRequest().attemptNo());
-            return;
-        }
         stubEligibleOrder(order(), payment("16.09"), cases);
 
         ConflictException refused = Assertions.assertThrows(ConflictException.class,
@@ -326,7 +329,87 @@ class AfterSalesCustomerServiceTests {
         Assertions.assertEquals(outcome.equals("ALREADY_OPEN")
                 ? "An after-sales case is already open for this order"
                 : "This order cannot be submitted for after-sales again", refused.getMessage());
+        Mockito.verifyNoInteractions(transitions, orderHistoryItemRepository, historyRepository);
+    }
+
+
+    static Stream<Arguments> withdrawalOrigins() {
+        return Stream.of(
+                Arguments.of("while waiting for the merchant", withdrawnRequest(null, null), "PENDING_MERCHANT",
+                        true),
+                Arguments.of("on a counter-offer", withdrawnRequest("OFFERED", "8.00"), "COUNTER_OFFERED", true),
+                Arguments.of("after the merchant rejected it", withdrawnRequest("REJECTED", null), "REJECTED",
+                        false),
+                Arguments.of("after the customer declined the offer", withdrawnRequest("OFFERED", "8.00"),
+                        "REJECTED", false),
+                Arguments.of("in arbitration", withdrawnRequest("REJECTED", null), "IN_ARBITRATION", false),
+                Arguments.of("without its withdrawal step", withdrawnRequest(null, null), null, false)
+        );
+    }
+
+
+    /**
+     * Section 27 (follow-up 24): the second request needs the first withdrawn while PENDING_MERCHANT or
+     * COUNTER_OFFERED, read from its CUSTOMER_WITHDRAW step after the order's lock. Withdrawing a rejection (the
+     * merchant's, or after declining the offer) or an arbitration refuses it with the same 409 as every other ending,
+     * so the customer cannot restart the merchant's clock and its full refund on timeout.
+     */
+    @ParameterizedTest(name = "withdrawn {0}")
+    @MethodSource("withdrawalOrigins")
+    void open_afterAWithdrawnFirstRequest_shouldBeTheSecondOnlyIfWithdrawnBeforeARejection(
+            String origin,
+            AfterSalesCaseEntity withdrawn,
+            String withdrawnFrom,
+            boolean secondAllowed
+    ) {
+        Mockito.when(historyRepository.findWithdrawnFromStatus(withdrawn.id()))
+                .thenReturn(Optional.ofNullable(withdrawnFrom));
+        if (secondAllowed) {
+            eligibleOrderOpens(order(), List.of(withdrawn));
+
+            service.open(CUSTOMER_ID, ORDER_ID, wholeOrder(), "open-2");
+
+            Assertions.assertEquals(2, openedRequest().attemptNo(), origin);
+            InOrder lockThenHistory = Mockito.inOrder(orderRepository, caseRepository, historyRepository, transitions);
+            lockThenHistory.verify(orderRepository).lockByIdAndCustomerId(ORDER_ID, CUSTOMER_ID);
+            lockThenHistory.verify(caseRepository).findAllByOrderId(ORDER_ID);
+            lockThenHistory.verify(historyRepository).findWithdrawnFromStatus(withdrawn.id());
+            lockThenHistory.verify(transitions).open(Mockito.any());
+            return;
+        }
+        stubEligibleOrder(order(), payment("16.09"), List.of(withdrawn));
+
+        ConflictException refused = Assertions.assertThrows(ConflictException.class,
+                () -> service.open(CUSTOMER_ID, ORDER_ID, wholeOrder(), "open-2"));
+
+        Assertions.assertEquals("AFTER_SALES_NOT_ELIGIBLE", refused.getCode(), origin);
+        Assertions.assertEquals("This order cannot be submitted for after-sales again", refused.getMessage(), origin);
+        Mockito.verify(historyRepository).findWithdrawnFromStatus(withdrawn.id());
         Mockito.verifyNoInteractions(transitions, orderHistoryItemRepository);
+    }
+
+
+    /**
+     * The eligible list filters in SQL (OrderRepository.findPageOpenToAfterSales), so it is pinned to the statuses
+     * the open command allows a second request after: the UI never offers a request the command would refuse.
+     */
+    @Test
+    void eligibleOrders_shouldListAnOrderAgainAfterTheSameWithdrawalsAsTheOpenCommand() throws Exception {
+        String sql = OrderRepository.class
+                .getMethod("findPageOpenToAfterSales", Long.class, LocalDateTime.class, int.class)
+                .getAnnotation(Query.class)
+                .value();
+        Matcher withdrawnFrom = Pattern.compile("after_sales_case_history\\.action = 'CUSTOMER_WITHDRAW'\\s+"
+                + "AND after_sales_case_history\\.from_status IN \\(([^)]*)\\)").matcher(sql);
+
+        Assertions.assertTrue(withdrawnFrom.find(), sql);
+        Set<AfterSalesStatus> listed = Arrays.stream(withdrawnFrom.group(1).split(","))
+                .map(status -> AfterSalesStatus.valueOf(status.trim().replace("'", "")))
+                .collect(Collectors.toSet());
+        Assertions.assertEquals(AfterSalesCustomerService.REQUEST_AGAIN_AFTER_WITHDRAWAL_FROM, listed);
+        Assertions.assertEquals(Set.of(AfterSalesStatus.PENDING_MERCHANT, AfterSalesStatus.COUNTER_OFFERED), listed);
+        Assertions.assertTrue(sql.contains("after_sales_cases.close_reason = 'WITHDRAWN'"), sql);
+        Assertions.assertTrue(sql.contains("after_sales_cases.attempt_no = 1"), sql);
     }
 
 
@@ -668,6 +751,19 @@ class AfterSalesCustomerServiceTests {
                 "CLOSED", "MISSING_ITEM", "The fries were missing.", new BigDecimal("16.09"), new BigDecimal("16.09"),
                 null, null, null, "USD", null, null, null, reason.name(), null, null, null, 0, 1L, NOW.minusHours(1),
                 NOW.minusHours(1));
+    }
+
+
+    /**
+     * The first request, CLOSED as WITHDRAWN, with what the merchant had answered before (a decision and an offer, or
+     * nothing); which status it was withdrawn from is in its history only.
+     */
+    static AfterSalesCaseEntity withdrawnRequest(String merchantDecision, String offeredAmount) {
+        return new AfterSalesCaseEntity(CASE_ID + 1, ORDER_ID, CUSTOMER_ID, 7L, "CUSTOMER_REQUEST", 1, "CLOSED",
+                "MISSING_ITEM", "The fries were missing.", new BigDecimal("16.09"), new BigDecimal("16.09"),
+                offeredAmount == null ? null : new BigDecimal(offeredAmount), null, null, "USD", merchantDecision,
+                merchantDecision == null ? null : "Answered.", null, "WITHDRAWN", null, null, null, 0, 3L,
+                NOW.minusHours(1), NOW.minusMinutes(5));
     }
 
 

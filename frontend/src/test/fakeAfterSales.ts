@@ -163,6 +163,41 @@ const statusConflict = (current: AfterSalesStatus, command: Command) => {
 const firesFrom = (current: AfterSalesStatus, command: Command) =>
   COMMANDS[command].from.some((status) => status === current);
 
+/**
+ * The statuses a first request must have been withdrawn from for its order to get a second
+ * one (AfterSalesCustomerService.REQUEST_AGAIN_AFTER_WITHDRAWAL_FROM, ADR 0002 section 27):
+ * withdrawing after a rejection (the merchant's, or a declined offer) or from arbitration
+ * leaves none.
+ */
+const REQUEST_AGAIN_AFTER_WITHDRAWAL_FROM: readonly AfterSalesStatus[] = [
+  "PENDING_MERCHANT",
+  "COUNTER_OFFERED",
+];
+
+/**
+ * The attempt the order's next request is, from its customer requests (newest first), the
+ * way the backend decides it under the order's lock: 1 without one, 2 after a first one
+ * withdrawn from REQUEST_AGAIN_AFTER_WITHDRAWAL_FROM (the from_status of its
+ * CUSTOMER_WITHDRAW step), "open" while the latest is not final, and "none" otherwise.
+ */
+const nextAttempt = (requests: readonly AfterSalesCase[]): 1 | 2 | "open" | "none" => {
+  const latest = requests[0];
+  if (!latest) {
+    return 1;
+  }
+  if (latest.status !== "REFUNDED" && latest.status !== "CLOSED") {
+    return "open";
+  }
+  const withdrawnFrom = latest.history.find(
+    (entry) => entry.action === "CUSTOMER_WITHDRAW",
+  )?.from_status;
+  return requests.length === 1 &&
+    latest.close_reason === "WITHDRAWN" &&
+    REQUEST_AGAIN_AFTER_WITHDRAWAL_FROM.some((status) => status === withdrawnFrom)
+    ? 2
+    : "none";
+};
+
 /** The customer's and the merchant's answers have a hard deadline (ADR 0002 section 19.1). */
 const deadlinePassed = (current: AfterSalesCase) =>
   current.deadline_at !== null && parseTimestamp(current.deadline_at) <= Date.now()
@@ -428,16 +463,12 @@ export function afterSalesRoutes(context: FakeContext): FakeRoute[] {
       if (order.status !== "COMPLETED") {
         return [];
       }
-      const requests = state.afterSalesCases.filter(
-        (item) => item.order_id === order.id && item.kind === "CUSTOMER_REQUEST",
+      const attempt = nextAttempt(
+        state.afterSalesCases.filter(
+          (item) => item.order_id === order.id && item.kind === "CUSTOMER_REQUEST",
+        ),
       );
-      const attempt =
-        requests.length === 0
-          ? 1
-          : requests.length === 1 && requests[0]?.close_reason === "WITHDRAWN"
-            ? 2
-            : null;
-      return attempt === null
+      return attempt === "open" || attempt === "none"
         ? []
         : [
             {
@@ -522,14 +553,15 @@ export function afterSalesRoutes(context: FakeContext): FakeRoute[] {
     if (requestedCents <= 0) {
       return badRequest("Refund amount must be greater than zero");
     }
-    const requests = state.afterSalesCases.filter(
-      (item) => item.order_id === order.id && item.kind === "CUSTOMER_REQUEST",
+    const attempt = nextAttempt(
+      state.afterSalesCases.filter(
+        (item) => item.order_id === order.id && item.kind === "CUSTOMER_REQUEST",
+      ),
     );
-    const latest = requests[0];
-    if (latest && latest.status !== "REFUNDED" && latest.status !== "CLOSED") {
+    if (attempt === "open") {
       return notEligible("An after-sales case is already open for this order");
     }
-    if (latest && (requests.length > 1 || latest.close_reason !== "WITHDRAWN")) {
+    if (attempt === "none") {
       return notEligible("This order cannot be submitted for after-sales again");
     }
     const now = backendTimestamp();
@@ -538,7 +570,7 @@ export function afterSalesRoutes(context: FakeContext): FakeRoute[] {
       order_id: order.id,
       order_no: order.order_no,
       restaurant_id: order.restaurant_id,
-      attempt_no: requests.length + 1,
+      attempt_no: attempt,
       reason_code: reasonCode,
       description,
       requested_amount: requestedCents / 100,

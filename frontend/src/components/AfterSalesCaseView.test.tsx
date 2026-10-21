@@ -10,6 +10,11 @@ const HOUR = 60 * 60 * 1000;
 const SUPPORT_WILL_CALL =
   "The refund did not go through. Our support team will contact you about it.";
 
+const ONCE_MORE =
+  "You can request a refund for this order once more while its request window is open.";
+const AFTER_A_REJECTION =
+  "After a rejection, withdrawing ends this order's refund requests: it cannot get another one.";
+
 const renderCase = (overrides: Partial<AfterSalesCase>) => {
   const handlers = {
     onAcceptOffer: vi.fn(),
@@ -111,6 +116,7 @@ describe("AfterSalesCaseView", () => {
     expect(commandButtons()).toEqual(["Withdraw request"]);
     await user.click(screen.getByRole("button", { name: "Withdraw request" }));
     const dialog = screen.getByRole("dialog", { name: "Withdraw this refund request?" });
+    expect(dialog).toHaveTextContent(AFTER_A_REJECTION);
     await user.click(within(dialog).getByRole("button", { name: "Keep request" }));
     expect(onWithdraw).not.toHaveBeenCalled();
 
@@ -118,6 +124,31 @@ describe("AfterSalesCaseView", () => {
     await user.click(screen.getByRole("button", { name: "Withdraw" }));
     expect(onWithdraw).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  // ADR 0002 section 27: only a first request withdrawn before a rejection leaves another.
+  it.each<[string, Partial<AfterSalesCase>, string]>([
+    ["waiting for the restaurant", { status: "PENDING_MERCHANT" }, ONCE_MORE],
+    [
+      "on a counter-offer",
+      { status: "COUNTER_OFFERED", offered_amount: 3, merchant_decision: "OFFERED" },
+      ONCE_MORE,
+    ],
+    ["rejected", { status: "REJECTED", merchant_decision: "REJECTED" }, AFTER_A_REJECTION],
+    ["with the platform", { status: "IN_ARBITRATION" }, AFTER_A_REJECTION],
+    [
+      "the second one",
+      { status: "PENDING_MERCHANT", attempt_no: 2 },
+      "This is the order's second request: it cannot get another one.",
+    ],
+  ])("says what withdrawing a request %s leaves the order", async (_name, overrides, copy) => {
+    const { user } = renderCase({ deadline_at: backendTimestamp(HOUR), ...overrides });
+
+    await user.click(screen.getByRole("button", { name: "Withdraw request" }));
+
+    expect(screen.getByRole("dialog", { name: "Withdraw this refund request?" })).toHaveTextContent(
+      copy,
+    );
   });
 
   it("shows the refund of an approved case and the reason a case closed, without buttons", () => {
