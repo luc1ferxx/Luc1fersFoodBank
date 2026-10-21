@@ -44,7 +44,12 @@ export function OrderingPage({
 
   const cart = useCart(user, requireSession);
   const { refresh: refreshCart } = cart;
-  const notifications = useNotifications(user, { shown: active });
+  // A notification newer than any seen before (an order completed, say) can change
+  // the orders and what may get a refund: read both again. Set once the order and
+  // after-sales hooks below exist; they need the notification refresh themselves.
+  const reloadOrderViewsRef = useRef(() => {});
+  const onNewNotifications = useCallback(() => reloadOrderViewsRef.current(), []);
+  const notifications = useNotifications(user, { shown: active, onNewNotifications });
   const { load: loadNotifications } = notifications;
   const refreshNotifications = useCallback(() => {
     void loadNotifications();
@@ -58,6 +63,13 @@ export function OrderingPage({
   }, [refreshNotifications, reloadAfterSales]);
   const orders = useOrders(user, { onOrderChanged: refreshAfterOrderChange });
   const { load: loadOrders } = orders;
+
+  useEffect(() => {
+    reloadOrderViewsRef.current = () => {
+      void loadOrders();
+      reloadAfterSales();
+    };
+  }, [loadOrders, reloadAfterSales]);
 
   const refreshOrderViews = useCallback(() => {
     void loadOrders();

@@ -178,7 +178,9 @@ between them with the tabs under the header; guests and logins without a known r
 Switching workspaces keeps the ordering page and the admin console as they were, so a checkout, cancel, status
 change, refund request or arbitration retried after a switch reuses its Idempotency-Key. The merchant and rider
 consoles poll every 15 seconds while the tab is visible; the customer's refund cases every 10 seconds while the page is
-shown and a case is still open or refunding; the admin's after-sales section reads when opened and on Refresh. A
+shown and a case is still open or refunding, and together with the order list whenever a notification poll (every 15
+seconds) brings a new notification, so an order that completes gets "Request a refund" without a refresh; the admin's
+after-sales section reads when opened and on Refresh. A
 deactivated merchant or rider (the backend answers `403` on `/merchant/**` and `/rider/**`) gets a notice instead of
 the raw error, polling stops, and Refresh checks again.
 
@@ -1305,7 +1307,7 @@ This project is intentionally strong on backend correctness patterns, but it is 
 - Timestamps, after-sales deadlines included, are local date-times without a zone; the UI reads them in the browser's zone, so a countdown is off when the browser and the server are in different zones.
 - There is no inventory reservation or stock decrement model.
 - Amounts carry their currency, but there is no conversion: a restaurant prices in one currency and a cart or order stays in it. There are no taxes, discounts or tips, and no currencies with three minor digits.
-- The merchant and rider consoles poll every 15 seconds instead of receiving pushed updates, and the rider console has no map, location, or ETA. The customer's refund cases poll only while one is still open or refunding, so a newly completed order shows "Request a refund" after the page is shown again or refreshed.
+- The merchant and rider consoles poll every 15 seconds instead of receiving pushed updates, and the rider console has no map, location, or ETA. The customer's order list does not poll: it and the refund cases are read again when a notification poll brings a new notification, so with notification polling turned off a newly completed order shows "Request a refund" only after Refresh or after the page is shown again.
 - Kafka delivery is treated as at-least-once with consumer-side idempotency, not end-to-end exactly-once delivery. The
   outbox keeps each aggregate's events in order on their way to Kafka, so one `FAILED` event stops its order until an
   operator retries it, or abandons it and reconciles what its consumers missed.

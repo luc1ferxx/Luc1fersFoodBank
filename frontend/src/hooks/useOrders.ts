@@ -67,6 +67,9 @@ export function useOrders(
           setOrders((current) =>
             current.map((item) => (item.id === updatedOrder.id ? updatedOrder : item)),
           );
+          // A read in flight (a new notification starts one) may predate the cancel:
+          // reading again drops it, so it cannot put the order back as it was.
+          void load();
           onOrderChanged?.();
         })
         .catch((requestError: unknown) => {
@@ -76,7 +79,7 @@ export function useOrders(
           setCancelingOrderId(null);
         });
     },
-    [onOrderChanged],
+    [load, onOrderChanged],
   );
 
   return { orders, loading, error, cancelingOrderId, load, reload, cancel };

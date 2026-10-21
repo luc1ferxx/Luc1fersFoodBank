@@ -87,8 +87,11 @@ const withCase = (
  *
  * The overview is read when the page mounts, on `reload()`, and every 10 seconds while
  * the page is shown and a case can still change (an open step, or a refund on its
- * way); polling stops once every case is final. Only the newest read may update the
- * screen, and a command's result drops a read that started before it.
+ * way); polling stops once every case is final. OrderingPage also calls `reload()`
+ * when a notification newer than any seen before arrives (useNotifications), so an
+ * order that completes meanwhile gets its request form without a poll here. Only the
+ * newest read may update the screen, and a command's result drops a read that
+ * started before it.
  *
  * Every command sends an Idempotency-Key, kept per slot (`open:{order}:{attempt}` or
  * `{command}:{case}`) with the request body it was made for: a retry of the same body

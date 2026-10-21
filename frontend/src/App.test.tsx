@@ -203,9 +203,12 @@ describe("cart and checkout", () => {
       expiry: "12/30",
       cvv: "123",
     });
+    // The checkout reads the orders again; the order's notification, newer than any
+    // before it, reads them once more (and the after-sales overview).
     await waitFor(() => {
-      expect(backend.callsTo("GET", "/orders")).toHaveLength(2);
+      expect(backend.callsTo("GET", "/orders")).toHaveLength(3);
       expect(backend.callsTo("GET", "/notifications")).toHaveLength(2);
+      expect(backend.callsTo("GET", "/after-sales/cases")).toHaveLength(2);
     });
     expect(await screen.findByRole("button", { name: "Notifications (1)" })).toBeInTheDocument();
   });
@@ -517,6 +520,109 @@ describe("after-sales", () => {
     });
     await flushPromises();
     expect(overviewReads()).toBe(3);
+  });
+
+  it("offers a refund once a polled notification says the order completed", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const backend = installFakeBackend({ user: demoUser });
+    const notice = (id: number, eventType: string, title: string, message: string) => ({
+      id,
+      order_id: 7,
+      order_no: orderNoFor(7),
+      event_type: eventType,
+      title,
+      message: `Order #${orderNoFor(7)} ${message}`,
+      created_at: "2026-10-16T12:00:00Z",
+    });
+    backend.state.orders = [{ ...completedOrder, status: "PREPARING" }];
+    backend.state.notifications = [
+      notice(40, "order.preparing", "Preparing your order", "is now being prepared."),
+    ];
+    const orderReads = () => backend.callsTo("GET", "/orders").length;
+    const overviewReads = () => backend.callsTo("GET", "/after-sales/cases").length;
+    const notificationReads = () => backend.callsTo("GET", "/notifications").length;
+    render(<App />);
+
+    await signedInLabel();
+    fireEvent.click(screen.getByRole("button", { name: "Orders" }));
+    expect(await screen.findByText("PREPARING", { selector: ".status-badge" })).toBeInTheDocument();
+    await waitFor(() => expect(notificationReads()).toBe(1));
+    await flushPromises();
+    expect(screen.queryByRole("button", { name: "Request a refund" })).toBeNull();
+    expect([orderReads(), overviewReads()]).toEqual([1, 1]);
+
+    // What the backend does on completion: the order turns COMPLETED, then the
+    // notification consumer writes the order.completed notice.
+    backend.state.orders = [completedOrder];
+    backend.state.notifications.unshift(
+      notice(41, "order.completed", "Order completed", "is completed and ready."),
+    );
+    act(() => {
+      vi.advanceTimersByTime(NOTIFICATION_POLL_MS);
+    });
+
+    expect(await screen.findByRole("button", { name: "Request a refund" })).toBeInTheDocument();
+    expect(screen.getByText("COMPLETED", { selector: ".status-badge" })).toBeInTheDocument();
+    expect([orderReads(), overviewReads()]).toEqual([2, 2]);
+
+    // Polls that bring nothing newer read nothing else.
+    for (const reads of [3, 4]) {
+      act(() => {
+        vi.advanceTimersByTime(NOTIFICATION_POLL_MS);
+      });
+      await waitFor(() => expect(notificationReads()).toBe(reads));
+      await flushPromises();
+    }
+    expect([orderReads(), overviewReads()]).toEqual([2, 2]);
+  });
+
+  it("keeps a cancel's result over an order read a notification started before it", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const backend = installFakeBackend({ user: demoUser });
+    const notice = (id: number, eventType: string, title: string, message: string) => ({
+      id,
+      order_id: 7,
+      order_no: orderNoFor(7),
+      event_type: eventType,
+      title,
+      message: `Order #${orderNoFor(7)} ${message}`,
+      created_at: "2026-10-16T12:00:00Z",
+    });
+    const paidOrder = orderFixture({ id: 7, status: "PAID" });
+    // A copy: the fake's cancel changes the order in its state.
+    backend.state.orders = [{ ...paidOrder }];
+    backend.state.notifications = [
+      notice(40, "order.paid", "Payment confirmed", "was paid successfully with 1 item(s)."),
+    ];
+    render(<App />);
+
+    await signedInLabel();
+    fireEvent.click(screen.getByRole("button", { name: "Orders" }));
+    expect(await screen.findByText("PAID", { selector: ".status-badge" })).toBeInTheDocument();
+    await waitFor(() => expect(backend.callsTo("GET", "/notifications")).toHaveLength(1));
+
+    // A new notification starts an order read, which answers only after the cancel.
+    const slowRead = deferred();
+    backend.on("GET", "/orders", () => slowRead.promise);
+    backend.state.notifications.unshift(
+      notice(41, "order.accepted", "Order accepted", "was accepted by the restaurant."),
+    );
+    act(() => {
+      vi.advanceTimersByTime(NOTIFICATION_POLL_MS);
+    });
+    await waitFor(() => expect(backend.callsTo("GET", "/orders")).toHaveLength(2));
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel order" }));
+    expect(await screen.findByText("CANCELLED", { selector: ".status-badge" })).toBeInTheDocument();
+
+    // The read from before the cancel carries the PAID order: it must not come back.
+    await act(async () => {
+      slowRead.resolve(json([paidOrder]));
+      await slowRead.promise;
+    });
+    await flushPromises();
+    expect(screen.getByText("CANCELLED", { selector: ".status-badge" })).toBeInTheDocument();
+    expect(screen.queryByText("PAID", { selector: ".status-badge" })).toBeNull();
   });
 
   it("shows the automatic refund of a paid order the customer cancelled", async () => {
