@@ -2,7 +2,10 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MERCHANT_POLL_MS } from "../hooks/useMerchantOrders";
+import type { AfterSalesStatus } from "../api/dto";
 import {
+  USD,
+  afterSalesCaseFixture,
   apiError,
   deferred,
   idempotencyKeys,
@@ -10,6 +13,7 @@ import {
   json,
   merchantOrderFixture,
   merchantUser,
+  orderNoFor,
   requestJson,
 } from "../test/fakeBackend";
 import { flushPromises, renderApp, resetVisibility, setVisibility } from "../test/helpers";
@@ -355,5 +359,331 @@ describe("merchant console", () => {
     expect(await screen.findByText(DEACTIVATED)).toBeInTheDocument();
     expect(within(paid).getByRole("alert")).toHaveTextContent("403: Access denied");
     expect(backend.state.merchantOrders[0]?.status).toBe("PAID");
+  });
+});
+
+describe("merchant after-sales", () => {
+  afterEach(() => {
+    resetVisibility();
+    vi.useRealTimers();
+  });
+
+  /** One request waiting for the merchant (order 101) and one already refunded (order 102). */
+  const afterSalesBackend = () => {
+    const backend = installFakeBackend({ user: merchantUser });
+    backend.state.afterSalesCases = [
+      afterSalesCaseFixture({ id: 900, order_id: 101 }),
+      afterSalesCaseFixture({
+        id: 901,
+        order_id: 102,
+        status: "REFUNDED",
+        merchant_decision: "APPROVED",
+        approved_amount: 6.39,
+        refunded_amount: 6.39,
+        resolution: "MERCHANT_APPROVED",
+        deadline_at: null,
+      }),
+    ];
+    return backend;
+  };
+
+  /** A row of GET /merchant/after-sales as the backend sends it, for a stale response. */
+  const merchantCaseJson = (caseId: number, orderId: number, status: AfterSalesStatus) => ({
+    case_id: caseId,
+    order_id: orderId,
+    order_no: orderNoFor(orderId),
+    status,
+    reason_code: "QUALITY_ISSUE",
+    description: "The burger was cold.",
+    lines: [],
+    requested_amount: 6.39,
+    currency: USD,
+    deadline_at: "2099-01-01T00:00:00",
+    opened_at: "2026-10-20T12:00:00",
+    updated_at: "2026-10-20T12:00:00",
+  });
+
+  const caseName = (orderId: number) => `Refund request for Order #${orderNoFor(orderId)}`;
+
+  const requestCard = (orderId: number) =>
+    screen.findByRole("article", { name: caseName(orderId) });
+
+  const caseRequests = (backend: ReturnType<typeof installFakeBackend>) =>
+    backend.callsTo("GET", "/merchant/after-sales");
+
+  const openAfterSales = async (user: UserEvent) => {
+    await user.click(await screen.findByRole("button", { name: "After-sales" }));
+    expect(
+      await screen.findByRole("heading", { name: "Burger Barn refund requests" }),
+    ).toBeInTheDocument();
+  };
+
+  it("lists the restaurant's refund requests on their own tab and filters them by status", async () => {
+    const backend = afterSalesBackend();
+    const user = renderApp();
+
+    await openAfterSales(user);
+    const waiting = await requestCard(101);
+    expect(waiting).toHaveTextContent("Waiting for the restaurant");
+    expect(waiting).toHaveTextContent("$6.39 requested");
+    expect(waiting).toHaveTextContent("1 x Whopper · $6.39");
+    expect(waiting).toHaveTextContent("Quality issue: The burger was cold.");
+    expect(within(waiting).getByText(/^Your answer due in 23h 5\dm/)).toBeInTheDocument();
+    expect(within(waiting).getByRole("button", { name: "Approve refund" })).toBeEnabled();
+    const refunded = await requestCard(102);
+    expect(refunded).toHaveTextContent("Refunded");
+    expect(refunded).toHaveTextContent("Refund$6.39");
+    expect(within(refunded).queryByRole("button", { name: "Approve refund" })).toBeNull();
+    expect(caseRequests(backend)[0]?.url).toBe("/merchant/after-sales?limit=50");
+    // Only the shown section reads: the orders tab is not mounted any more.
+    expect(backend.callsTo("GET", "/merchant/orders")).toHaveLength(1);
+
+    await selectStatus(user, "Refunded");
+    await waitFor(() => expect(screen.queryByRole("article", { name: caseName(101) })).toBeNull());
+    expect(await requestCard(102)).toBeInTheDocument();
+    expect(caseRequests(backend).at(-1)?.url).toBe(
+      "/merchant/after-sales?limit=50&status=REFUNDED",
+    );
+
+    await selectStatus(user, "Platform reviewing");
+    expect(
+      await screen.findByText('No refund requests in "Platform reviewing".'),
+    ).toBeInTheDocument();
+  });
+
+  it("approves a refund request without an Idempotency-Key", async () => {
+    const backend = afterSalesBackend();
+    const user = renderApp();
+
+    await openAfterSales(user);
+    await user.click(
+      within(await requestCard(101)).getByRole("button", { name: "Approve refund" }),
+    );
+
+    expect(
+      await screen.findByText(`Order #${orderNoFor(101)}: refund of $6.39 approved.`),
+    ).toBeInTheDocument();
+    const approved = await requestCard(101);
+    expect(approved).toHaveTextContent("Refunding");
+    expect(approved).toHaveTextContent("Refund$6.39");
+    expect(within(approved).queryByRole("button", { name: "Approve refund" })).toBeNull();
+    // The merchant's answers are idempotent by state on the server and carry no key.
+    expect(idempotencyKeys(backend.callsTo("POST", "/merchant/after-sales/900/approve"))).toEqual([
+      null,
+    ]);
+  });
+
+  it("rejects a refund request only with a reason", async () => {
+    const backend = afterSalesBackend();
+    const user = renderApp();
+
+    await openAfterSales(user);
+    const waiting = await requestCard(101);
+    await user.click(within(waiting).getByRole("button", { name: "Reject" }));
+    await user.click(within(waiting).getByRole("button", { name: "Reject request" }));
+    expect(within(waiting).getByRole("alert")).toHaveTextContent(
+      "Tell the customer why you reject the request.",
+    );
+    expect(backend.callsTo("POST", "/merchant/after-sales/900/reject")).toHaveLength(0);
+
+    await user.type(
+      within(waiting).getByLabelText(
+        `Reason for rejecting the refund request of Order #${orderNoFor(101)}`,
+      ),
+      "  It left the kitchen hot  ",
+    );
+    await user.click(within(waiting).getByRole("button", { name: "Reject request" }));
+
+    expect(
+      await screen.findByText(`Order #${orderNoFor(101)}: refund request rejected.`),
+    ).toBeInTheDocument();
+    const calls = backend.callsTo("POST", "/merchant/after-sales/900/reject");
+    expect(calls.map(requestJson)).toEqual([{ reason: "It left the kitchen hot" }]);
+    expect(idempotencyKeys(calls)).toEqual([null]);
+    const rejected = await requestCard(101);
+    expect(rejected).toHaveTextContent("Not agreed");
+    expect(rejected).toHaveTextContent("Your noteIt left the kitchen hot");
+    expect(within(rejected).getByText(/^Customer can escalate in 1d 23h/)).toBeInTheDocument();
+    expect(within(rejected).queryByRole("button", { name: "Reject" })).toBeNull();
+  });
+
+  it("offers a partial refund only below the requested amount", async () => {
+    const backend = afterSalesBackend();
+    const user = renderApp();
+
+    await openAfterSales(user);
+    const waiting = await requestCard(101);
+    await user.click(within(waiting).getByRole("button", { name: "Offer partial refund" }));
+    const amount = within(waiting).getByLabelText(`Partial refund for Order #${orderNoFor(101)}`);
+
+    await user.type(amount, "6.39");
+    await user.click(within(waiting).getByRole("button", { name: "Send offer" }));
+    expect(within(waiting).getByRole("alert")).toHaveTextContent(
+      "Offer more than $0.00 and less than the requested $6.39.",
+    );
+    await user.clear(amount);
+    await user.type(amount, "3.505");
+    await user.click(within(waiting).getByRole("button", { name: "Send offer" }));
+    expect(within(waiting).getByRole("alert")).toHaveTextContent(
+      "Enter the amount with at most two decimals, like 4.50.",
+    );
+    expect(backend.callsTo("POST", "/merchant/after-sales/900/offer")).toHaveLength(0);
+
+    await user.clear(amount);
+    await user.type(amount, "3.5");
+    await user.type(
+      within(waiting).getByLabelText("Note for the customer (optional)"),
+      "Sorry about that",
+    );
+    await user.click(within(waiting).getByRole("button", { name: "Send offer" }));
+
+    expect(
+      await screen.findByText(`Order #${orderNoFor(101)}: partial refund of $3.50 offered.`),
+    ).toBeInTheDocument();
+    const calls = backend.callsTo("POST", "/merchant/after-sales/900/offer");
+    expect(calls.map(requestJson)).toEqual([{ amount: 3.5, note: "Sorry about that" }]);
+    expect(idempotencyKeys(calls)).toEqual([null]);
+    const offered = await requestCard(101);
+    expect(offered).toHaveTextContent("Partial refund offered");
+    expect(offered).toHaveTextContent("Offered$3.50");
+    expect(within(offered).getByText(/^Customer's answer due in/)).toBeInTheDocument();
+  });
+
+  it("re-reads the requests when the case moved on meanwhile (409)", async () => {
+    const backend = afterSalesBackend();
+    const user = renderApp();
+
+    await openAfterSales(user);
+    const waiting = await requestCard(101);
+    // The customer withdraws before the merchant answers.
+    const current = backend.state.afterSalesCases[0];
+    if (!current) {
+      throw new Error("missing fixture");
+    }
+    current.status = "CLOSED";
+    current.close_reason = "WITHDRAWN";
+    current.deadline_at = null;
+    const readsBefore = caseRequests(backend).length;
+
+    await user.click(within(waiting).getByRole("button", { name: "Approve refund" }));
+
+    expect(await within(waiting).findByRole("alert")).toHaveTextContent(
+      "409: After-sales case is CLOSED; only PENDING_MERCHANT cases can be approved",
+    );
+    await waitFor(() => expect(within(waiting).getByText("Closed")).toBeInTheDocument());
+    expect(caseRequests(backend).length).toBe(readsBefore + 1);
+    expect(within(waiting).queryByRole("button", { name: "Approve refund" })).toBeNull();
+  });
+
+  it("disables the answers once the merchant's deadline passed", async () => {
+    const backend = installFakeBackend({ user: merchantUser });
+    backend.state.afterSalesCases = [
+      afterSalesCaseFixture({ id: 900, order_id: 101, deadline_at: "2026-01-01T00:00:00" }),
+    ];
+    const user = renderApp();
+
+    await openAfterSales(user);
+    const late = await requestCard(101);
+    expect(late).toHaveTextContent("Deadline passed");
+    expect(late).toHaveTextContent(
+      "The deadline passed: the requested amount is refunded automatically.",
+    );
+    ["Approve refund", "Offer partial refund", "Reject"].forEach((name) =>
+      expect(within(late).getByRole("button", { name })).toBeDisabled(),
+    );
+  });
+
+  it("stops polling the requests once the account is deactivated and recovers on Refresh", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const backend = afterSalesBackend();
+    const user = renderApp();
+
+    await openAfterSales(user);
+    const waiting = await requestCard(101);
+    expect(caseRequests(backend)).toHaveLength(1);
+    // An admin deactivates the merchant; the backend answers 403 from the next request.
+    backend.state.user = withMerchantActive(false);
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS);
+    });
+
+    expect(await screen.findByText(DEACTIVATED)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(within(waiting).getByRole("button", { name: "Approve refund" })).toBeDisabled();
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS * 3);
+    });
+    await flushPromises();
+    expect(caseRequests(backend)).toHaveLength(2);
+    expect(screen.getByLabelText("Refresh every 15 seconds")).toBeDisabled();
+
+    backend.state.user = withMerchantActive(true);
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.queryByText(DEACTIVATED)).toBeNull());
+    expect(
+      within(await requestCard(101)).getByRole("button", { name: "Approve refund" }),
+    ).toBeEnabled();
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS);
+    });
+    await waitFor(() => expect(caseRequests(backend)).toHaveLength(4));
+  });
+
+  it("drops the requests for a status filter the merchant already left", async () => {
+    const backend = afterSalesBackend();
+    const user = renderApp();
+
+    await openAfterSales(user);
+    await requestCard(101);
+    const slowRefunded = deferred();
+    backend.on("GET", "/merchant/after-sales", () => slowRefunded.promise);
+    await selectStatus(user, "Refunded");
+    await selectStatus(user, "Waiting for the restaurant");
+    expect(await requestCard(101)).toBeInTheDocument();
+
+    // The REFUNDED list arrives after the merchant switched to PENDING_MERCHANT.
+    await act(async () => {
+      slowRefunded.resolve(json([merchantCaseJson(901, 102, "REFUNDED")]));
+      await slowRefunded.promise;
+    });
+    await flushPromises();
+
+    expect(screen.queryByRole("article", { name: caseName(102) })).toBeNull();
+    expect(screen.getByLabelText("Status")).toHaveValue("PENDING_MERCHANT");
+    expect(
+      caseRequests(backend).find((call) => call.query.get("status") === "REFUNDED")?.signal
+        ?.aborted,
+    ).toBe(true);
+  });
+
+  it("drops a list read that started before an answer finished", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const backend = afterSalesBackend();
+    const user = renderApp();
+
+    await openAfterSales(user);
+    const waiting = await requestCard(101);
+    // A poll starts while the request still waits for the merchant and answers late.
+    const stalePoll = deferred();
+    backend.on("GET", "/merchant/after-sales", () => stalePoll.promise);
+    act(() => {
+      vi.advanceTimersByTime(MERCHANT_POLL_MS);
+    });
+    await waitFor(() => expect(caseRequests(backend)).toHaveLength(2));
+
+    await user.click(within(waiting).getByRole("button", { name: "Approve refund" }));
+    expect(
+      await screen.findByText(`Order #${orderNoFor(101)}: refund of $6.39 approved.`),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      stalePoll.resolve(json([merchantCaseJson(900, 101, "PENDING_MERCHANT")]));
+      await stalePoll.promise;
+    });
+    await flushPromises();
+
+    expect(within(waiting).getByText("Refunding")).toBeInTheDocument();
+    expect(within(waiting).queryByRole("button", { name: "Approve refund" })).toBeNull();
+    expect(caseRequests(backend)[1]?.signal?.aborted).toBe(true);
   });
 });
