@@ -370,6 +370,10 @@ API errors use a consistent JSON shape and include the OpenTelemetry trace id, w
   keeps it. `formatDateTime` shows the time in the browser's zone and locale, and countdowns and deadline checks are
   exact whatever the browser's zone. The UI tests run in `America/New_York` against a fake backend that writes UTC,
   so reading a timestamp as local time fails them.
+- **Times inside texts name their zone.** A deadline the backend writes into a message, a notification
+  (`"Reply by 2026-10-23 16:00 UTC"`) or a 409 (`AFTER_SALES_DEADLINE_PASSED`, `AFTER_SALES_NOT_ELIGIBLE`: `"... passed
+  at 2026-10-23T16:00:00 UTC"`), ends with `UTC`, since the UI shows messages as they come next to times it converts.
+  Notifications stored before keep their unlabelled text.
 - Rows written earlier by a server in another zone keep that zone's wall-clock time (`docs/operations.md`
   section 3).
 

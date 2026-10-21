@@ -43,7 +43,7 @@ class AfterSalesErrorsTests {
                 AfterSalesStateMachine.BEFORE_DEADLINE), OFFERED);
 
         Assertions.assertEquals("AFTER_SALES_DEADLINE_PASSED", conflict.getCode());
-        Assertions.assertEquals("The deadline of this after-sales step passed at 2026-10-22T09:30:00",
+        Assertions.assertEquals("The deadline of this after-sales step passed at 2026-10-22T09:30:00 UTC",
                 conflict.getMessage());
     }
 
@@ -89,7 +89,8 @@ class AfterSalesErrorsTests {
 
         Assertions.assertEquals("AFTER_SALES_NOT_ELIGIBLE", conflict.getCode());
         Assertions.assertEquals("Order has no captured payment", conflict.getMessage());
-        Assertions.assertEquals("2026-10-22T09:30:15",
+        // Truncated to the second, with the zone the server runs in.
+        Assertions.assertEquals("2026-10-22T09:30:15 UTC",
                 AfterSalesErrors.timestamp(LocalDateTime.of(2026, 10, 22, 9, 30, 15, 999_999_000)));
     }
 }

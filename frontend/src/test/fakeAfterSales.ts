@@ -166,7 +166,7 @@ const firesFrom = (current: AfterSalesStatus, command: Command) =>
 /** The customer's and the merchant's answers have a hard deadline (ADR 0002 section 19.1). */
 const deadlinePassed = (current: AfterSalesCase) =>
   current.deadline_at !== null && parseTimestamp(current.deadline_at) <= Date.now()
-    ? apiError(409, `The deadline of this after-sales step passed at ${current.deadline_at}`, {
+    ? apiError(409, `The deadline of this after-sales step passed at ${current.deadline_at} UTC`, {
         code: "AFTER_SALES_DEADLINE_PASSED",
       })
     : null;
@@ -468,7 +468,7 @@ export function afterSalesRoutes(context: FakeContext): FakeRoute[] {
     }
     if (parseTimestamp(state.afterSalesRequestDeadline) <= Date.now()) {
       return notEligible(
-        `The after-sales window of this order closed at ${state.afterSalesRequestDeadline}`,
+        `The after-sales window of this order closed at ${state.afterSalesRequestDeadline} UTC`,
       );
     }
     const requested = body.arrayOrEmpty("lines", (value, path) => {

@@ -216,7 +216,7 @@ describe("fake after-sales backend", () => {
     expect(await rejection(api.acceptAfterSalesOffer(900, "accept-1"))).toEqual({
       status: 409,
       code: "AFTER_SALES_DEADLINE_PASSED",
-      message: "The deadline of this after-sales step passed at 2026-01-01T00:00:00",
+      message: "The deadline of this after-sales step passed at 2026-01-01T00:00:00 UTC",
     });
     expect((await api.getAfterSalesCase(902)).refund?.last_error).toBeNull();
 

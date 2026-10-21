@@ -86,10 +86,11 @@ public class OrderNotificationService {
     private static final String ARBITRATION_REJECTED = "ARBITRATION_REJECTED";
 
     /**
-     * A deadline in a message, to the minute: "2026-10-21 12:00". Truncated, so the customer never reads a later time
-     * than the real deadline.
+     * A deadline in a message, to the minute and with its zone: "2026-10-21 12:00 UTC". Truncated, so the customer never
+     * reads a later time than the real deadline. The server runs in UTC, and the UI shows a message as it comes while it
+     * shows every other time in the browser's zone, so the zone is named.
      */
-    private static final DateTimeFormatter DEADLINE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+    private static final DateTimeFormatter DEADLINE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm 'UTC'");
 
     private final OrderNotificationRepository orderNotificationRepository;
     private final OrderRepository orderRepository;

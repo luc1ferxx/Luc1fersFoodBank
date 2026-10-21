@@ -62,7 +62,7 @@ class AfterSalesNotificationServiceTests {
     private static final LocalDateTime OPENED_AT = LocalDateTime.of(2026, 4, 25, 13, 10, 5, 120_394_000);
 
     /**
-     * Shown to the minute, truncated: "2026-04-27 15:42".
+     * Shown to the minute, truncated: "2026-04-27 15:42 UTC".
      */
     private static final LocalDateTime DEADLINE = LocalDateTime.of(2026, 4, 27, 15, 42, 59, 900_000_000);
 
@@ -104,7 +104,7 @@ class AfterSalesNotificationServiceTests {
 
         assertNotified(FulfilmentEvents.AFTER_SALES_CASE_OPENED, "case:501", "Refund requested",
                 "Your refund request of 10.59 USD for " + ORDER + " was sent to the restaurant. If it does not answer by "
-                        + "2026-04-27 15:42, the request is approved automatically.");
+                        + "2026-04-27 15:42 UTC, the request is approved automatically.");
         Mockito.verify(processedEventService).markIfUnseen(
                 AfterSalesNotificationService.AFTER_SALES_NOTIFICATION_CONSUMER,
                 "evt-opened",
@@ -131,7 +131,7 @@ class AfterSalesNotificationServiceTests {
 
         assertNotified(FulfilmentEvents.AFTER_SALES_OFFER_MADE, "case:501", "Partial refund offered",
                 "The restaurant offers 6.20 EUR instead of the 12.40 EUR you requested for " + ORDER
-                        + ": Only the fries were cold. Reply by 2026-04-27 15:42, or the offer is accepted automatically.");
+                        + ": Only the fries were cold. Reply by 2026-04-27 15:42 UTC, or the offer is accepted automatically.");
     }
 
 
@@ -151,10 +151,10 @@ class AfterSalesNotificationServiceTests {
 
         assertNotified(FulfilmentEvents.AFTER_SALES_REQUEST_REJECTED, "case:501", "Refund request declined",
                 "The restaurant declined your refund request for " + ORDER + ": The burger was in the bag at pickup. "
-                        + "You can ask the platform to step in by 2026-04-27 15:42.");
+                        + "You can ask the platform to step in by 2026-04-27 15:42 UTC.");
         assertNotified(FulfilmentEvents.AFTER_SALES_REQUEST_REJECTED, "case:502", "Refund request declined",
                 "The restaurant declined your refund request for " + ORDER + ". "
-                        + "You can ask the platform to step in by 2026-04-27 15:42.");
+                        + "You can ask the platform to step in by 2026-04-27 15:42 UTC.");
     }
 
 
@@ -169,7 +169,7 @@ class AfterSalesNotificationServiceTests {
 
         assertNotified(FulfilmentEvents.AFTER_SALES_REQUEST_REJECTED, "case:501", "Offer declined",
                 "You declined the restaurant's offer for " + ORDER + ". "
-                        + "You can ask the platform to step in by 2026-04-27 15:42.");
+                        + "You can ask the platform to step in by 2026-04-27 15:42 UTC.");
     }
 
 
@@ -182,7 +182,7 @@ class AfterSalesNotificationServiceTests {
 
         assertNotified(FulfilmentEvents.AFTER_SALES_CASE_ESCALATED, "case:501", "Platform review requested",
                 "The platform will review your refund request of 10.59 USD for " + ORDER + ". If it has not decided by "
-                        + "2026-04-27 15:42, the request is approved automatically.");
+                        + "2026-04-27 15:42 UTC, the request is approved automatically.");
     }
 
 

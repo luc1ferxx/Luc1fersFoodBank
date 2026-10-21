@@ -79,7 +79,7 @@ abstract class AbstractAfterSalesNotificationIntegrationTests {
         ), notifications(order));
         Assertions.assertEquals(
                 "Your refund request of 12.50 USD for order #" + order.orderNo() + " was sent to the restaurant. "
-                        + "If it does not answer by 2026-04-26 13:10, the request is approved automatically.",
+                        + "If it does not answer by 2026-04-26 13:10 UTC, the request is approved automatically.",
                 message(order, FulfilmentEvents.AFTER_SALES_CASE_OPENED, secondCase));
     }
 

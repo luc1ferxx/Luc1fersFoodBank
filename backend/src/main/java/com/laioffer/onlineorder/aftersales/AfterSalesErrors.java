@@ -99,9 +99,10 @@ public final class AfterSalesErrors {
 
 
     /**
-     * A time in a message: ISO-8601 local date and time to the second, as "2026-10-21T12:00:00".
+     * A time in a message: ISO-8601 date and time to the second with its zone named, as "2026-10-21T12:00:00 UTC". The
+     * server runs in UTC, and the UI shows a message as it comes while it shows every other time in the browser's zone.
      */
     static String timestamp(LocalDateTime time) {
-        return DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(time.truncatedTo(ChronoUnit.SECONDS));
+        return DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(time.truncatedTo(ChronoUnit.SECONDS)) + " UTC";
     }
 }

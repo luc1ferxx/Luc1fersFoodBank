@@ -367,7 +367,7 @@ abstract class AbstractMerchantAfterSalesIntegrationTests {
         Assertions.assertEquals(1, jdbcTemplate.update(
                 "UPDATE after_sales_cases SET deadline_at = ? WHERE id = ?", deadline, caseId));
         String tooLate = "The deadline of this after-sales step passed at "
-                + DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(deadline);
+                + DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(deadline) + " UTC";
 
         answer(burgerKing, caseId, "approve", null)
                 .andExpect(status().isConflict())

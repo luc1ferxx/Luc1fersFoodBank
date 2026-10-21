@@ -237,7 +237,7 @@ class AfterSalesCustomerServiceTests {
                         order.createdAt(), null, null, order.updatedAt(), "USD"), true, "This order has no restaurant"),
                 Arguments.of(order, false, "Order has no captured payment"),
                 Arguments.of(completedAt(NOW.minusHours(24).minusSeconds(1)), true,
-                        "The after-sales window of this order closed at 2026-10-21T12:00:29")
+                        "The after-sales window of this order closed at 2026-10-21T12:00:29 UTC")
         );
     }
 
@@ -509,7 +509,7 @@ class AfterSalesCustomerServiceTests {
         Assertions.assertEquals("After-sales case is PENDING_MERCHANT; only COUNTER_OFFERED cases can be accepted",
                 status.getMessage());
         Assertions.assertEquals("AFTER_SALES_DEADLINE_PASSED", deadline.getCode());
-        Assertions.assertEquals("The deadline of this after-sales step passed at 2026-10-21T13:00:30",
+        Assertions.assertEquals("The deadline of this after-sales step passed at 2026-10-21T13:00:30 UTC",
                 deadline.getMessage());
         Mockito.verifyNoInteractions(views);
     }
