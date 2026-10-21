@@ -2230,6 +2230,115 @@
         }
       ],
       "description": "How far back the oldest monthly partition starts (retention at work), and clock steps back seen by the Snowflake generator."
+    },
+    {
+      "type": "row",
+      "id": 35,
+      "title": "Rate limits",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 82
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 36,
+      "title": "Rate-limit rejections and store failures",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 83
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (route) (rate(onlineorder_security_rate_limit_rejected_total{application=\"OnlineOrder\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "429 {{route}}",
+          "range": true,
+          "exemplar": false
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(onlineorder_security_rate_limit_store_failure_total{application=\"OnlineOrder\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "store failures (let through)",
+          "range": true,
+          "exemplar": false
+        }
+      ],
+      "description": "Requests refused with 429 RATE_LIMITED per bucket (route), and in red the requests let through unchecked because the rate-limit store (Redis) failed: while that line is above zero the limiter is off. Rates over 5m, the window of OnlineOrderRateLimiterFailingOpen; the first refusal or failure of a route registers its series and is not counted here."
     }
   ]
 }
