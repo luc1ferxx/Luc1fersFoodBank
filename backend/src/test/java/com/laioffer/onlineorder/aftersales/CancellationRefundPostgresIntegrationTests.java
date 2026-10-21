@@ -121,6 +121,37 @@ class CancellationRefundPostgresIntegrationTests extends AbstractCancellationRef
 
         Assertions.assertEquals("CANCELLED", cancelled.status());
         assertRefundOpened(paid.id());
+        // ADR 0002 section 24 item 7: the customer's own cancel promises the refund too.
+        orderNotificationService.recordOrderEvent(latestOrderEvent(paid.id(), "order.cancelled"));
+        Assertions.assertEquals("Order #" + orderNo(paid.id()) + " was cancelled. Your payment will be refunded "
+                + "automatically.", cancelledNotice(paid.id()));
+    }
+
+
+    /**
+     * Cancels that open no refund keep their notices: an unpaid order's (the customer's and an admin's cancel), and
+     * the customer's cancel of an order without a capture (an admin marked it PAID) or of 0.00.
+     */
+    @Test
+    void cancelNotices_ofOrdersWithoutACaptureAboveZero_shouldNotPromiseARefund() throws Exception {
+        Customer jack = customer("cancel-refund-notice-");
+        OrderDto unpaid = placedOrder(jack, menuItem(BURGER_KING, 0));
+        OrderDto unpaidByAdmin = placedOrder(jack, menuItem(BURGER_KING, 1));
+        OrderDto markedPaid = placedOrder(jack, menuItem(BURGER_KING, 0));
+        orderService.transitionOrderStatus(markedPaid.id(), "PAID");
+        OrderDto free = paidOrder(jack, freeMenuItem(BURGER_KING));
+
+        orderService.idempotentCancelOrder(jack.id(), unpaid.id(), "cancel-" + unpaid.id());
+        orderService.idempotentTransitionOrderStatus(
+                adminId(), unpaidByAdmin.id(), "CANCELLED", "admin-cancel-" + unpaidByAdmin.id());
+        orderService.idempotentCancelOrder(jack.id(), markedPaid.id(), "cancel-" + markedPaid.id());
+        orderService.idempotentCancelOrder(jack.id(), free.id(), "cancel-" + free.id());
+
+        for (OrderDto order : List.of(unpaid, unpaidByAdmin, markedPaid, free)) {
+            assertNothingOpened(order.id());
+            orderNotificationService.recordOrderEvent(latestOrderEvent(order.id(), "order.cancelled"));
+            Assertions.assertEquals("Order #" + orderNo(order.id()) + " was cancelled.", cancelledNotice(order.id()));
+        }
     }
 
 
@@ -205,6 +236,10 @@ class CancellationRefundPostgresIntegrationTests extends AbstractCancellationRef
                 "SELECT currency FROM refunds WHERE case_id = ?", String.class, opened.id()));
         Assertions.assertEquals("EUR", jdbcTemplate.queryForObject(
                 "SELECT currency FROM after_sales_case_history WHERE case_id = ?", String.class, opened.id()));
+        // ADR 0002 section 24 item 7: an admin's cancel promises the refund too.
+        orderNotificationService.recordOrderEvent(latestOrderEvent(paid.id(), "order.cancelled"));
+        Assertions.assertEquals("Order #" + orderNo(paid.id()) + " was cancelled. Your payment will be refunded "
+                + "automatically.", cancelledNotice(paid.id()));
     }
 
 

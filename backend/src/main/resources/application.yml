@@ -295,6 +295,8 @@ app:
       max-threads: ${AFTER_SALES_REFUND_GATEWAY_MAX_THREADS:4}
       # The simulated gateway fails the first N attempts of every refund (retryable), for demos and tests.
       fail-first-attempts: ${AFTER_SALES_REFUND_GATEWAY_FAIL_FIRST_ATTEMPTS:0}
+    # Consumer group of the customer notifications for after-sales events (fulfilment.notification).
+    notification-group: ${AFTER_SALES_NOTIFICATION_GROUP:onlineorder-aftersales-notification}
   cleanup:
     enabled: ${CLEANUP_ENABLED:true}
     fixed-delay-ms: ${CLEANUP_FIXED_DELAY_MS:3600000}

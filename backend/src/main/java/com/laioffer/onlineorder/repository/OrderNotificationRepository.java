@@ -48,6 +48,45 @@ public interface OrderNotificationRepository extends ListCrudRepository<OrderNot
     );
 
 
+    /**
+     * Records an after-sales notification unless the order already has one of this event type in {@code dedupScope}
+     * (its case, 'case:' || case id), and returns the rows inserted: 1 or 0. The two requests an order can have send
+     * the same event types, and each gets its own notifications. Target-less ON CONFLICT, the form H2 (PostgreSQL
+     * mode) parses too: the id is generated, so the only unique constraint an insert can violate is
+     * uq_notification_order_event_scope; a foreign key violation still throws.
+     */
+    @Modifying
+    @Query("""
+            INSERT INTO order_notifications (
+                order_id,
+                customer_id,
+                event_type,
+                dedup_scope,
+                title,
+                message,
+                created_at
+            ) VALUES (
+                :orderId,
+                :customerId,
+                :eventType,
+                :dedupScope,
+                :title,
+                :message,
+                :createdAt
+            )
+            ON CONFLICT DO NOTHING
+            """)
+    int insertIfAbsentInScope(
+            Long orderId,
+            Long customerId,
+            String eventType,
+            String dedupScope,
+            String title,
+            String message,
+            LocalDateTime createdAt
+    );
+
+
     List<OrderNotificationEntity> findAllByCustomerIdOrderByCreatedAtDesc(Long customerId);
 
 

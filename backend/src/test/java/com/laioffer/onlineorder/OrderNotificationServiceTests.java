@@ -176,16 +176,45 @@ class OrderNotificationServiceTests {
     }
 
 
+    /**
+     * ADR 0002 section 24 item 7: the customer's and an admin's cancel of an order with a capture above 0.00 promise
+     * the refund too; without one (unpaid, marked PAID by an admin, or 0.00) they say nothing about a payment, as
+     * before.
+     */
     @Test
-    void recordOrderEvent_whenTheCustomerCancelledOrThePaymentTimedOut_shouldNotLookAtThePayment() {
+    void recordOrderEvent_whenTheCustomerOrAnAdminCancelled_shouldPromiseTheRefundOnlyOfACapturedPayment() {
         OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
+        Mockito.when(orderPaymentRepository.findByOrderId(9L)).thenReturn(
+                Optional.of(payment("22.00")),
+                Optional.of(payment("22.00")),
+                Optional.of(payment("0.00")),
+                Optional.empty()
+        );
 
         service.recordOrderEvent(cancelledEvent("CUSTOMER_CANCELLED"));
+        service.recordOrderEvent(cancelledEvent("ADMIN_CANCELLED"));
+        service.recordOrderEvent(cancelledEvent("CUSTOMER_CANCELLED"));
+        service.recordOrderEvent(cancelledEvent("ADMIN_CANCELLED"));
+
+        ArgumentCaptor<String> messages = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(orderNotificationRepository, Mockito.times(4)).insertIfAbsent(
+                Mockito.eq(9L), Mockito.eq(4L), Mockito.eq("order.cancelled"), Mockito.eq("Order cancelled"),
+                messages.capture(), Mockito.any(LocalDateTime.class));
+        Assertions.assertEquals(List.of(
+                "Order #9 was cancelled. Your payment will be refunded automatically.",
+                "Order #9 was cancelled. Your payment will be refunded automatically.",
+                "Order #9 was cancelled.",
+                "Order #9 was cancelled."
+        ), messages.getAllValues());
+    }
+
+
+    @Test
+    void recordOrderEvent_whenThePaymentTimedOut_shouldNotLookAtThePayment() {
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository);
+
         service.recordOrderEvent(cancelledEvent("PAYMENT_TIMEOUT"));
 
-        Mockito.verify(orderNotificationRepository).insertIfAbsent(
-                Mockito.eq(9L), Mockito.eq(4L), Mockito.eq("order.cancelled"), Mockito.eq("Order cancelled"),
-                Mockito.eq("Order #9 was cancelled."), Mockito.any(LocalDateTime.class));
         Mockito.verify(orderNotificationRepository).insertIfAbsent(
                 Mockito.eq(9L), Mockito.eq(4L), Mockito.eq("order.cancelled"),
                 Mockito.eq("Order cancelled: payment not received"),

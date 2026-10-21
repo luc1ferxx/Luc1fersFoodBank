@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.fulfilment;
 
 
+import com.laioffer.onlineorder.money.Money;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -18,6 +19,7 @@ import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -107,6 +109,19 @@ class FulfilmentTimeoutContainerTests extends FulfilmentContainerTestSupport {
                                 + row.getString("refund_status"),
                         paidOrderId
                 )));
+        // ADR 0002 P3-10: the after-sales notification group tells the customer the refund went through, in the
+        // order's currency and under its public number. The case's opening sent nothing (the cancellation notice
+        // already promised the refund), and it came before the refund on the order's partition.
+        Map<?, ?> refunded = awaitValue("the refund notification", EVENT_WAIT, () ->
+                notificationOf(customer, paidOrderId, "aftersales.case_refunded"));
+        Map<String, Object> paid = jdbcTemplate.queryForMap(
+                "SELECT total_price, currency, order_no FROM orders WHERE id = ?", paidOrderId);
+        Assertions.assertEquals("Refund completed", refunded.get("title"));
+        Assertions.assertEquals("Your payment of "
+                        + Money.of((BigDecimal) paid.get("total_price"), String.valueOf(paid.get("currency")))
+                        + " for cancelled order #" + paid.get("order_no") + " was refunded.",
+                refunded.get("message"));
+        Assertions.assertNull(notificationOf(customer, paidOrderId, "aftersales.case_opened"));
         Assertions.assertEquals(0, jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM after_sales_cases WHERE order_id = ?", Integer.class, placedOrderId),
                 "the payment timeout cancelled an unpaid order");

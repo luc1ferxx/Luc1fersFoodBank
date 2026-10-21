@@ -579,11 +579,12 @@ their events.
 > restaurant was staffed still fires if its merchant is deactivated afterwards. The payment timeout for unpaid `PLACED`
 > orders runs as before. A paid order (`PAID` or `ACCEPTED`) that is cancelled, by anyone, gets an automatic refund:
 > the cancel opens an `ORDER_CANCELLED` after-sales case and its refund of the order total in the same transaction
-> (ADR 0002 D12), and the cancellation notice after a reject or an accept timeout says the payment will be refunded.
+> (ADR 0002 D12), and its cancellation notice, whoever cancelled, says the payment will be refunded automatically.
 > The after-sales poller then executes the refund through the refund gateway (simulated here) and marks the case
-> `REFUNDED`; a refund the gateway refuses, or that keeps failing, ends `FAILED` and leaves its case `REFUNDING`. An
-> order without a captured payment (marked `PAID` by an admin, or paid before payments were recorded) or with a total
-> of 0.00 gets none; for the former that notice still asks the customer to contact support.
+> `REFUNDED`, which sends the customer a "Refund completed" notification; a refund the gateway refuses, or that keeps
+> failing, ends `FAILED` and leaves its case `REFUNDING`. An order without a captured payment (marked `PAID` by an
+> admin, or paid before payments were recorded) or with a total of 0.00 gets none and keeps the old notices; after a
+> reject or an accept timeout, the former's still asks the customer to contact support.
 
 ### Event flow
 
