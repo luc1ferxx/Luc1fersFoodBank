@@ -44,7 +44,7 @@ public class OutboxAdminController {
     }
 
 
-    @PostMapping("/admin/outbox/events/{eventId}/retry")
+    @PostMapping("/admin/outbox/events/{eventId:\\d+}/retry")
     public OutboxEventDto retryFailedEvent(Principal principal, @PathVariable Long eventId) {
         return outboxAdminService.retryFailedEvent(eventId, auditActorResolver.resolve(principal));
     }
@@ -54,7 +54,7 @@ public class OutboxAdminController {
      * Gives up on a FAILED event that can never be published, releasing the later events of its aggregate. Last resort
      * after retries: its consumers never receive it (docs/operations.md section 8).
      */
-    @PostMapping("/admin/outbox/events/{eventId}/abandon")
+    @PostMapping("/admin/outbox/events/{eventId:\\d+}/abandon")
     public OutboxEventDto abandonFailedEvent(
             Principal principal,
             @PathVariable Long eventId,

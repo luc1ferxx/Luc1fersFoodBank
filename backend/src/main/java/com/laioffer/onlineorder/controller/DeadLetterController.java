@@ -27,7 +27,7 @@ public class DeadLetterController {
     }
 
 
-    @PostMapping("/dead-letters/{deadLetterEventId}/replay")
+    @PostMapping("/dead-letters/{deadLetterEventId:\\d+}/replay")
     public DeadLetterReplayDto replay(Principal principal, @PathVariable Long deadLetterEventId) {
         return deadLetterReplayService.replay(deadLetterEventId, auditActorResolver.resolve(principal));
     }

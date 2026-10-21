@@ -47,13 +47,13 @@ public class MerchantAfterSalesController {
     }
 
 
-    @PostMapping("/merchant/after-sales/{caseId}/approve")
+    @PostMapping("/merchant/after-sales/{caseId:\\d+}/approve")
     public MerchantAfterSalesCaseDto approve(Principal principal, @PathVariable Long caseId) {
         return merchantAfterSalesService.approve(merchantId(principal), caseId);
     }
 
 
-    @PostMapping("/merchant/after-sales/{caseId}/reject")
+    @PostMapping("/merchant/after-sales/{caseId:\\d+}/reject")
     public MerchantAfterSalesCaseDto reject(
             Principal principal,
             @PathVariable Long caseId,
@@ -63,7 +63,7 @@ public class MerchantAfterSalesController {
     }
 
 
-    @PostMapping("/merchant/after-sales/{caseId}/offer")
+    @PostMapping("/merchant/after-sales/{caseId:\\d+}/offer")
     public MerchantAfterSalesCaseDto offer(
             Principal principal,
             @PathVariable Long caseId,

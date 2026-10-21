@@ -58,7 +58,7 @@ public class OrderController {
     }
 
 
-    @PatchMapping("/orders/{orderId}/status")
+    @PatchMapping("/orders/{orderId:\\d+}/status")
     public OrderDto updateOrderStatus(
             Principal principal,
             @PathVariable Long orderId,

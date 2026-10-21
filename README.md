@@ -573,7 +573,7 @@ settings and failure modes: [docs/operations.md](docs/operations.md), section 11
 - Customer accounts track status, failed login count, lockout time, last login, and audit timestamps.
 - Login lookup is case-insensitive.
 - Anonymous routes are rate-limited by remote IP.
-- Authenticated checkout, the after-sales commands, and the admin's catalog edits, merchant and rider provisioning and status changes, manual order status change and outbox and dead-letter recovery are rate-limited by user identity.
+- Authenticated checkout, the after-sales commands, and the admin's catalog edits, merchant and rider provisioning and status changes, manual order status change and outbox and dead-letter recovery are rate-limited by user identity. Their ids are decimal digits only (`{id:\d+}` in the mapping), so another spelling of the same number (`+42`, `0x2A`) is `404` instead of reaching the handler past the limit.
 - Roles: `ROLE_USER` (customers), `ROLE_ADMIN`, `ROLE_MERCHANT` (`/merchant/**`, own restaurant only) and `ROLE_RIDER` (`/rider/**`, own deliveries only). Merchant and rider requests re-check the account's active flag, so a deactivation applies to existing sessions on their next request.
 - Redis rate-limit store failures fail open and emit metrics instead of blocking core flows.
 
@@ -1047,9 +1047,9 @@ and are checked for an active account on every request (`403`), like the merchan
 - **Rate limits.** Per login: the customer's five commands share one bucket (20, one more every 3 s, like the cart
   checkout), the merchant's approve, reject and offer another (30, one every 2 s), and arbitration and the refund retry
   have one each (10, one every 6 s). The limit runs before the idempotency check, so a replay with the same key takes a
-  token too; a command refused with `429 RATE_LIMITED` did not run, and retrying it later with its key is safe. The
-  customer's commands take their ids as decimal digits only (`+42`, `0x2A` and the like are `404`), so no spelling of
-  an id gets past the limit.
+  token too; a command refused with `429 RATE_LIMITED` did not run, and retrying it later with its key is safe. Like
+  every rate-limited route, these take their ids as decimal digits only (`+42`, `0x2A` and the like are `404`), so no
+  spelling of an id gets past the limit.
 - **Errors.** `409 AFTER_SALES_NOT_ELIGIBLE` (the order cannot get a request: not `COMPLETED`, no restaurant, no
   captured payment, the window closed, a request open or none left, or more than the capture allows),
   `409 AFTER_SALES_STATUS_CONFLICT`, `409 AFTER_SALES_DEADLINE_PASSED`, `409 REFUND_STATUS_CONFLICT`, and `400` for a

@@ -154,6 +154,11 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     }
 
 
+    /**
+     * The rules match ids as {@code \d+}, so the mappings behind them take {@code {id:\d+}}: an unconstrained numeric
+     * path variable also converts {@code +42}, {@code 0x2A}, whitespace and non-ASCII digits, which would reach the
+     * handler past the rule. {@code RateLimitedRouteMappingTests} checks every mapping a rule covers.
+     */
     private RateLimitRule resolveRule(HttpServletRequest request) {
         String method = request.getMethod();
         String path = resolveRequestPath(request);

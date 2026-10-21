@@ -58,7 +58,7 @@ public class AfterSalesAdminController {
     }
 
 
-    @PostMapping("/admin/after-sales/{caseId}/arbitrate")
+    @PostMapping("/admin/after-sales/{caseId:\\d+}/arbitrate")
     public AfterSalesCaseDto arbitrate(
             Principal principal,
             @PathVariable Long caseId,
@@ -81,7 +81,7 @@ public class AfterSalesAdminController {
     }
 
 
-    @PostMapping("/admin/refunds/{refundId}/retry")
+    @PostMapping("/admin/refunds/{refundId:\\d+}/retry")
     public RefundDto retryRefund(Principal principal, @PathVariable Long refundId) {
         return afterSalesAdminService.retryRefund(refundId, auditActorResolver.resolve(principal));
     }
