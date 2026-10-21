@@ -5,8 +5,11 @@ import com.laioffer.onlineorder.aftersales.AfterSalesActor;
 import com.laioffer.onlineorder.aftersales.AfterSalesCaseRepository;
 import com.laioffer.onlineorder.aftersales.AfterSalesTransitions;
 import com.laioffer.onlineorder.aftersales.AfterSalesTrigger;
+import com.laioffer.onlineorder.fulfilment.dispatch.DispatchService;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantAfterSalesInboxService;
+import com.laioffer.onlineorder.fulfilment.merchant.MerchantInboxService;
 import com.laioffer.onlineorder.messaging.AfterSalesEventEnvelope;
+import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.contract.EventContracts;
 import com.laioffer.onlineorder.messaging.contract.EventTopic;
 import com.laioffer.onlineorder.model.OrderDto;
@@ -98,6 +101,12 @@ class ApiContractIntegrationTests {
 
     @Autowired
     private EventContracts eventContracts;
+
+    @Autowired
+    private MerchantInboxService merchantInboxService;
+
+    @Autowired
+    private DispatchService dispatchService;
 
 
     /**
@@ -449,6 +458,85 @@ class ApiContractIntegrationTests {
         Assertions.assertEquals(4.89, adminRefund.get("amount").asDouble());
         Assertions.assertEquals("USD", adminRefund.get("currency").asString());
         Assertions.assertEquals("simulated gateway timeout", adminRefund.get("last_error").asString());
+    }
+
+
+    /**
+     * The merchant's inbox and the rider's deliveries in declaration order, with the order's public number as a string
+     * right after order_id (V14: the order events, version 2, carry it to both modules). Null fields are omitted,
+     * except in the rider's view, which keeps every other field. Kafka is off here: the order's events go from the
+     * outbox to the merchant inbox and to dispatch by hand, as their consumers would hand them.
+     */
+    @Test
+    void merchantAndRiderBodies_shouldCarryTheOrderNumberRightAfterTheOrderId() throws Exception {
+        String email = "fulfilment-contract-" + System.nanoTime() + "@example.com";
+        signUpAndLogInAs(email);
+        Long customerId = jdbcTemplate.queryForObject("SELECT id FROM customers WHERE email = ?", Long.class, email);
+        cartService.addMenuItemToCart(customerId, 1L);
+        OrderDto order = cartService.checkout(customerId, "PAID");
+        String orderNo = String.valueOf(order.orderNo());
+        merchantInboxService.handle(latestOrderEvent(order.id(), "order.paid"));
+        MockHttpSession merchant = logIn("merchant.burgerking@laifood.com", "merchant123");
+        List<String> merchantOrderFields = List.of("order_id", "order_no", "restaurant_id", "customer_id", "status",
+                "total_price", "currency", "items", "paid_at", "updated_at");
+
+        JsonNode inboxRow = withField(json(mockMvc.perform(get("/merchant/orders").session(merchant))
+                .andExpect(status().isOk())), "order_id", order.id());
+        Assertions.assertEquals(merchantOrderFields, List.copyOf(inboxRow.propertyNames()));
+        Assertions.assertTrue(inboxRow.get("order_no").isString(), inboxRow.toString());
+        Assertions.assertEquals(orderNo, inboxRow.get("order_no").asString());
+        JsonNode accepted = json(mockMvc.perform(post("/merchant/orders/{id}/accept", order.id()).session(merchant))
+                .andExpect(status().isOk()));
+        Assertions.assertEquals(merchantOrderFields, List.copyOf(accepted.propertyNames()));
+        Assertions.assertEquals(orderNo, accepted.get("order_no").asString());
+
+        dispatchService.handle(latestOrderEvent(order.id(), "order.accepted"));
+        String riderEmail = jdbcTemplate.queryForObject("""
+                SELECT customers.email
+                FROM deliveries
+                JOIN riders ON riders.id = deliveries.rider_id
+                JOIN customers ON customers.id = riders.customer_id
+                WHERE deliveries.order_id = ?
+                """, String.class, order.id());
+        JsonNode delivery = withField(json(mockMvc.perform(get("/rider/deliveries")
+                        .session(logIn(riderEmail, "rider123")))
+                .andExpect(status().isOk())), "order_id", order.id());
+        Assertions.assertEquals(
+                List.of("delivery_id", "order_id", "order_no", "restaurant_id", "restaurant_name", "status",
+                        "assigned_at", "picked_up_at", "delivered_at"),
+                List.copyOf(delivery.propertyNames())
+        );
+        Assertions.assertTrue(delivery.get("order_no").isString(), delivery.toString());
+        Assertions.assertEquals(orderNo, delivery.get("order_no").asString());
+        Assertions.assertTrue(delivery.get("picked_up_at").isNull(), delivery.toString());
+    }
+
+
+    /**
+     * The order event of {@code eventType} the order wrote last, read from the outbox as its consumers read it.
+     */
+    private OrderEventEnvelope latestOrderEvent(Long orderId, String eventType) {
+        String payload = jdbcTemplate.queryForObject("""
+                SELECT payload
+                FROM outbox_events
+                WHERE aggregate_type = 'ORDER' AND aggregate_id = ? AND event_type = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """, String.class, orderId, eventType);
+        return eventContracts.read(EventTopic.ORDER_EVENTS, payload, OrderEventEnvelope.class);
+    }
+
+
+    /**
+     * The element of the JSON array {@code array} whose {@code field} is {@code value}.
+     */
+    private static JsonNode withField(JsonNode array, String field, long value) {
+        for (JsonNode element : array) {
+            if (element.path(field).asLong() == value) {
+                return element;
+            }
+        }
+        throw new AssertionError("No element with " + field + " " + value + " in " + array);
     }
 
 

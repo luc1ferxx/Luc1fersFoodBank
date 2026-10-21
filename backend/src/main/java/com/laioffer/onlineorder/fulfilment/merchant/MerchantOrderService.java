@@ -150,6 +150,7 @@ public class MerchantOrderService {
         return toDto(new MerchantOrderEntity(
                 inboxOrder.id(),
                 inboxOrder.orderId(),
+                inboxOrder.orderNo(),
                 inboxOrder.restaurantId(),
                 inboxOrder.customerId(),
                 order.status(),
@@ -178,6 +179,7 @@ public class MerchantOrderService {
     private MerchantOrderDto toDto(MerchantOrderEntity entity) {
         return new MerchantOrderDto(
                 entity.orderId(),
+                entity.orderNo(),
                 entity.restaurantId(),
                 entity.customerId(),
                 entity.status(),

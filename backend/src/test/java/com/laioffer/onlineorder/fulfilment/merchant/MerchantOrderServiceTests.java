@@ -35,6 +35,7 @@ class MerchantOrderServiceTests {
     private static final long MERCHANT_CUSTOMER_ID = 40L;
     private static final long RESTAURANT_ID = 2L;
     private static final long ORDER_ID = 10L;
+    private static final long ORDER_NO = 7_254_189_912_938_504_192L;
     private static final OrderActor MERCHANT = OrderActor.merchant(MERCHANT_CUSTOMER_ID);
 
     @Mock
@@ -76,6 +77,8 @@ class MerchantOrderServiceTests {
         MerchantOrderDto accepted = service.accept(MERCHANT_CUSTOMER_ID, ORDER_ID);
 
         Assertions.assertEquals("ACCEPTED", accepted.status());
+        Assertions.assertEquals(ORDER_ID, accepted.orderId());
+        Assertions.assertEquals(ORDER_NO, accepted.orderNo());
         Assertions.assertEquals(1, accepted.items().size());
         Assertions.assertEquals("Whopper Meal", accepted.items().get(0).menuItemName());
         // The stored lines carry no currency: they are priced in the inbox row's.
@@ -270,6 +273,7 @@ class MerchantOrderServiceTests {
 
         Assertions.assertEquals(1, orders.size());
         Assertions.assertEquals(RESTAURANT_ID, orders.get(0).restaurantId());
+        Assertions.assertEquals(ORDER_NO, orders.get(0).orderNo());
         Mockito.verify(merchantOrderRepository, Mockito.never()).findPageByRestaurantId(Mockito.anyLong(), Mockito.anyInt());
     }
 
@@ -285,6 +289,7 @@ class MerchantOrderServiceTests {
         return new MerchantOrderEntity(
                 1L,
                 ORDER_ID,
+                ORDER_NO,
                 RESTAURANT_ID,
                 3L,
                 status,

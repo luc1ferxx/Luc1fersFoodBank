@@ -13,6 +13,8 @@ import java.time.LocalDateTime;
 /**
  * A row of the merchant order inbox.
  *
+ * @param orderNo  the order's public number (V14), from the first order event that carried it (version 2); null while
+ *                 only version 1 events reached the row
  * @param items    JSON array of the order lines at payment time, priced in {@code currency}
  * @param currency the ISO 4217 currency of the order, from the order event (USD for events published before orders
  *                 carried one)
@@ -24,6 +26,8 @@ public record MerchantOrderEntity(
         Long id,
         @Column("order_id")
         Long orderId,
+        @Column("order_no")
+        Long orderNo,
         @Column("restaurant_id")
         Long restaurantId,
         @Column("customer_id")

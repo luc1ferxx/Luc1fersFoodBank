@@ -57,6 +57,12 @@ import java.util.UUID;
  * lock and written with a compare-and-set on the status and rider read there. A write that does not change exactly one
  * row throws {@link StaleTransitionException} and rolls back; with the lock held it cannot happen. A delivery that
  * leaves a status holding its rider releases that rider (the one the compare-and-set confirmed) once.
+ *
+ * <p>The order's public number (data.order_no, order events version 2) is stored with the delivery that
+ * order.accepted creates; a delivery is only ever created there, from the event's own data. A delivery that has none
+ * (created from a version 1 order.accepted) gets it from the next order.accepted or order.cancelled that carries it,
+ * a stale one included: the number never changes, so no event order can make it wrong, and a stored one is never
+ * replaced. Status changes and reassignments never write it, so they keep it.
  */
 @Service
 public class DispatchService {
@@ -130,13 +136,15 @@ public class DispatchService {
             return;
         }
         if (!sequenceTracker.advance(DISPATCH_CONSUMER, event)) {
+            // The delivery reflects a later event already, but the order number is a fact no event changes.
+            recordOrderNo(event.aggregateId(), data);
             return;
         }
 
         if (FulfilmentEvents.ORDER_ACCEPTED.equals(event.eventType())) {
             assignRider(event.aggregateId(), data);
         } else {
-            cancelDelivery(event.aggregateId());
+            cancelDelivery(event.aggregateId(), data);
         }
     }
 
@@ -228,6 +236,7 @@ public class DispatchService {
         DeliveryEntity reassigned = new DeliveryEntity(
                 delivery.id(),
                 delivery.orderId(),
+                delivery.orderNo(),
                 delivery.customerId(),
                 delivery.restaurantId(),
                 riderId,
@@ -281,6 +290,7 @@ public class DispatchService {
     private void assignRider(Long orderId, OrderEventPayload order) {
         DispatchOrderEntity dispatchOrder = lockDispatchOrder(orderId);
         if (dispatchOrder.cancelledAt() != null) {
+            recordOrderNo(orderId, order);
             AfterCommit.run(() -> metricsService.recordDispatchAssignment("cancelled"));
             LOGGER.info(
                     "Order {} was cancelled at {} before dispatch saw it accepted; no rider assigned",
@@ -290,6 +300,7 @@ public class DispatchService {
             return;
         }
         if (deliveryRepository.findByOrderId(orderId) != null) {
+            recordOrderNo(orderId, order);
             AfterCommit.run(() -> metricsService.recordDispatchAssignment("duplicate"));
             return;
         }
@@ -307,12 +318,14 @@ public class DispatchService {
         LocalDateTime now = LocalDateTime.now();
         int inserted = deliveryRepository.insertAssignedIfAbsent(
                 orderId,
+                order.orderNo(),
                 order.customerId(),
                 order.restaurantId(),
                 rider.id(),
                 now
         );
         if (inserted == 0) {
+            recordOrderNo(orderId, order);
             AfterCommit.run(() -> metricsService.recordDispatchAssignment("duplicate"));
             return;
         }
@@ -330,7 +343,7 @@ public class DispatchService {
     }
 
 
-    private void cancelDelivery(Long orderId) {
+    private void cancelDelivery(Long orderId, OrderEventPayload order) {
         lockDispatchOrder(orderId);
         // The tombstone, also when the order has no delivery yet: a later order.accepted must not assign a rider.
         dispatchOrderRepository.markCancelled(orderId, LocalDateTime.now());
@@ -338,6 +351,7 @@ public class DispatchService {
         if (delivery == null) {
             return;
         }
+        recordOrderNo(orderId, order);
         Decision<DeliveryStatus, DeliveryTrigger> decision = DeliveryStateMachine.DEFINITION.decide(
                 DeliveryStatus.valueOf(delivery.status()),
                 DeliveryTrigger.CANCEL_FOR_ORDER,
@@ -348,6 +362,18 @@ public class DispatchService {
         // one (Rejected) stays delivered: the order was cancelled after the rider delivered it.
         if (decision instanceof Decision.Apply<DeliveryStatus, DeliveryTrigger> apply) {
             applyTransition(delivery, apply);
+        }
+    }
+
+
+    /**
+     * Gives the order's delivery, if it has one, the order number the event carries, unless the delivery has one
+     * already. Called after the dispatch row lock where the handler takes it, so the delivery row is locked after it as
+     * everywhere else.
+     */
+    private void recordOrderNo(Long orderId, OrderEventPayload order) {
+        if (order.orderNo() != null) {
+            deliveryRepository.recordOrderNo(orderId, order.orderNo());
         }
     }
 
@@ -417,6 +443,7 @@ public class DispatchService {
         DeliveryEntity updated = new DeliveryEntity(
                 delivery.id(),
                 delivery.orderId(),
+                delivery.orderNo(),
                 delivery.customerId(),
                 delivery.restaurantId(),
                 riderId,

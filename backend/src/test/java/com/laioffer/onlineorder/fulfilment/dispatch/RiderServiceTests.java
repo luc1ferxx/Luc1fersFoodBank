@@ -278,7 +278,7 @@ class RiderServiceTests {
 
     private static DeliveryEntity delivery(String status) {
         LocalDateTime now = LocalDateTime.now();
-        return new DeliveryEntity(7L, 70L, 700L, 1L, RIDER_ID, status, now, null, null, null, now);
+        return new DeliveryEntity(7L, 70L, null, 700L, 1L, RIDER_ID, status, now, null, null, null, now);
     }
 
 

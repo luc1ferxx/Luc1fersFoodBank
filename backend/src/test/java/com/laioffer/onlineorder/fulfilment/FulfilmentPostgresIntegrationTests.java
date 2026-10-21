@@ -27,6 +27,7 @@ import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.repository.OrderRepository;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.CustomerService;
+import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.OrderService;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -1649,6 +1650,59 @@ class FulfilmentPostgresIntegrationTests {
                         order.orderId()
                 )
         );
+    }
+
+
+    /**
+     * The order events (version 2) carry the order's public number to the merchant inbox and to the delivery (V14):
+     * the merchant's and the rider's endpoints return it as a string, from the lists and from the commands, and a
+     * reassignment keeps it.
+     */
+    @Test
+    void merchantAndRiderApis_shouldShowThePublicOrderNumberTheOrderEventsCarry() throws Exception {
+        PaidOrder order = paidOrderAt("Burger King");
+        Long orderNo = orderRepository.findOrderNoById(order.orderId()).orElseThrow();
+        String expected = String.valueOf(orderNo);
+        Long aliceId = riderIdOf(ALICE_RIDER);
+        Long bobId = riderIdOf(BOB_RIDER);
+
+        Long deliveryId = dispatchTo(order, aliceId);
+
+        OrderEventEnvelope accepted = latestOrderEvent(order.orderId(), "order.accepted");
+        Assertions.assertEquals(OrderEventOutboxService.ORDER_EVENT_VERSION, accepted.eventVersion());
+        Assertions.assertEquals(orderNo, accepted.data().orderNo());
+        Assertions.assertEquals(orderNo, latestOrderEvent(order.orderId(), "order.paid").data().orderNo());
+        Assertions.assertEquals(orderNo, jdbcTemplate.queryForObject(
+                "SELECT order_no FROM merchant_orders WHERE order_id = ?", Long.class, order.orderId()));
+        Assertions.assertEquals(orderNo, jdbcTemplate.queryForObject(
+                "SELECT order_no FROM deliveries WHERE id = ?", Long.class, deliveryId));
+
+        MockHttpSession burgerKing = login(BURGER_KING_MERCHANT, MERCHANT_PASSWORD);
+        mockMvc.perform(get("/merchant/orders").session(burgerKing))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.order_id == %d)].order_no".formatted(order.orderId())).value(expected));
+        mockMvc.perform(post("/merchant/orders/{id}/preparing", order.orderId()).session(burgerKing))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.order_no").value(expected));
+
+        MockHttpSession alice = login(ALICE_RIDER, "rider123");
+        mockMvc.perform(get("/rider/deliveries").session(alice))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.delivery_id == %d)].order_no".formatted(deliveryId)).value(expected));
+        mockMvc.perform(post("/rider/deliveries/{id}/picked-up", deliveryId).session(alice))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.order_no").value(expected));
+
+        Assertions.assertEquals(orderNo, dispatchService.reassign(deliveryId, bobId).orderNo());
+        mockMvc.perform(get("/rider/deliveries").session(login(BOB_RIDER, "rider123")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.delivery_id == %d)].order_no".formatted(deliveryId)).value(expected));
+        mockMvc.perform(get("/admin/deliveries").param("order_id", order.orderId().toString())
+                        .session(login("demo@laifood.com", "demo123")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].order_no").value(expected));
+        Assertions.assertEquals(orderNo, jdbcTemplate.queryForObject(
+                "SELECT order_no FROM deliveries WHERE id = ?", Long.class, deliveryId));
     }
 
 
