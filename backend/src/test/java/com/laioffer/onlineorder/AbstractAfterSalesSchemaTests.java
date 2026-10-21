@@ -445,13 +445,17 @@ abstract class AbstractAfterSalesSchemaTests {
 
 
     @Test
-    void refundRepository_shouldClaimDueAndExpiredRefundsOldestFirstWithAVersionCheck() {
+    void refundRepository_shouldClaimExpiredLeasesBeforeDueRefundsWithAVersionCheck() {
         LocalDateTime now = LONG_AGO.plusDays(10);
         RefundEntity due = saveRefund(refundOfANewCase("PENDING", LONG_AGO, null));
         RefundEntity expired = saveRefund(refundOfANewCase("PROCESSING", null, now.minusSeconds(1)));
         RefundEntity leased = saveRefund(refundOfANewCase("PROCESSING", null, now.plusSeconds(1)));
         RefundEntity failed = saveRefund(refundOfANewCase("FAILED", null, null));
         RefundEntity later = saveRefund(refundOfANewCase("PENDING", now.plusSeconds(1), null));
+
+        // An expired lease is claimed before a due PENDING refund, although the PENDING one has the lower id.
+        Assertions.assertEquals(expired, refundRepository.claimNextDue(now));
+        refundRepository.save(withStatus(expired, "PROCESSING", now.plusMinutes(1)));
 
         Assertions.assertEquals(0L, due.version());
         Assertions.assertEquals(due, refundRepository.findById(due.id()).orElseThrow());
@@ -465,9 +469,8 @@ abstract class AbstractAfterSalesSchemaTests {
                 () -> refundRepository.save(withStatus(claimed, "FAILED", null)));
         Assertions.assertEquals(processing, refundRepository.lockById(due.id()));
 
-        Assertions.assertEquals(expired.id(), refundRepository.claimNextDue(now).id());
-        refundRepository.save(withStatus(expired, "PROCESSING", now.plusMinutes(1)));
         Assertions.assertNull(refundRepository.claimNextDue(now));
+        // At now + 1s the lease of leased has expired and later is due: the expired lease still goes first.
         Assertions.assertEquals(leased.id(), refundRepository.claimNextDue(now.plusSeconds(1)).id());
 
         Assertions.assertEquals(List.of(due.id(), failed.id(), later.id()), refundRepository.findAllByCaseIdIn(
