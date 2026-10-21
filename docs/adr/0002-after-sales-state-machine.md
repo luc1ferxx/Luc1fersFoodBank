@@ -1716,3 +1716,104 @@ P1 只加测试，全量门禁通过（873 个测试，0 失败，0 跳过）。
   - `AuditLogIntegrationTests` 中 `refund.retry` 断言真实的 order_id。
   - application.yml 里 `refund.retry-backoff` 的注释补上"claim 失败也用这个间隔"。
   - 售后通知没有过期事件保护：从死信重放的旧事件仍会写通知，这一点和订单通知的现状一致。
+
+---
+
+## 26. P4 实施记录（提交 6017b71 到 ddaa775；P5 开始前必读）
+
+做法：先单独提交共享 API 层和 fake backend（6017b71），再让顾客、商家、管理员三块界面在各自的 worktree 里并行完成，按商家（b0f8b06）、管理员（f583ce4）、顾客（c983903）的顺序 cherry-pick 到 `feature/after-sales`。只有 `App.css` 末尾追加的样式有文本冲突，两边都保留。之后做了一轮只读审查（78a2262），最后用 `npm run deploy:backend` 重新生成后端内嵌的前端产物（ddaa775）。
+
+门禁：在 `frontend/` 下依次运行 `npm ci`、`typecheck`、`lint`、`npm test`、`build`，全部通过。前端测试从 111 个增加到 161 个，0 失败。新代码里没有 `any`、`as` 断言（`as const` 除外）和 `!`。
+
+对抗审查只读三件事：幂等 key 的复用、过期响应的丢弃、解码的严格程度。结论如下：
+- 必须修的有两处，都已修复（78a2262）：
+  - 管理员仲裁的响应会中止**当时选中的另一张单**的详情读取，那张单会一直停在 "Loading"。它还会中止期间切换过去的其他状态的列表读取，导致列表显示为空。
+  - 修复后：只有响应对应的单仍被选中时，才替换详情；列表改为重新读取，而不是中止。退款重试也同样改为重新读取。
+  - 新增回归测试 "keeps loading another case selected while an arbitration was answered"。已确认这个测试在修复前失败、修复后通过。
+- 另修了一个不稳定的测试：48 小时的倒计时只允许显示 "1d 23h"，但 `useNow` 的时钟可能比 fake 的时钟慢一拍，显示成 "2d 0h"。
+- 其余项逐一检查后没有发现问题：
+  - 三处的 key 都按 payload 复用：失败后重试用同一个 key；payload 变了就换新 key；成功后丢弃。
+  - 第二次申请的 slot 带 attempt，所以一定会用新 key。
+  - 读取都经过 `useLiveResource` 或 `useLatestRequest`，命令结果会丢弃在它之前发出的读取。
+  - 解码器全部是严格的。
+
+**已完成**
+- API 层（6017b71）：
+  - `dto.ts` 新增常量：`AFTER_SALES_STATUSES`、`AFTER_SALES_OPEN_STATUSES`、`AFTER_SALES_FINAL_STATUSES`、`AFTER_SALES_REASONS`、`AFTER_SALES_KINDS`、`AFTER_SALES_MERCHANT_DECISIONS`、`AFTER_SALES_RESOLUTIONS`、`AFTER_SALES_CLOSE_REASONS`、`AFTER_SALES_ACTIONS`、`AFTER_SALES_ACTOR_TYPES`、`REFUND_STATUSES`、`AFTER_SALES_SCOPES`、`ARBITRATION_DECISIONS`。
+  - 对应的接口和解码器有 `decodeAfterSalesLine`、`decodeAfterSalesHistoryEntry`、`decodeRefund`、`decodeAfterSalesCase`、`decodeEligibleOrder`、`decodeAfterSalesOverview`、`decodeMerchantAfterSalesCase`。
+  - `ERROR_CODES` 新增四个错误码。
+  - `endpoints.ts` 新增第 12.1 节列出的全部 16 个端点函数。顾客命令和仲裁都要求传 key，商家命令和退款重试不带 key。
+  - `proxyPaths.ts` 新增 `/after-sales`。
+- Fake backend：`src/test/fakeAfterSales.ts`，在 `fakeBackend.ts` 的路由表末尾注册。它实现了：
+  - 角色检查：顾客只要登录即可，别人的单返回 404；商家每次请求都检查账号是否启用，未启用返回 403；管理员需要 ROLE_ADMIN。
+  - 第 5.2 节的转换，以及 alreadyDone 的判断顺序。
+  - 409 的 code 和文案，与后端逐字一致。
+  - 硬截止（顾客和商家的应答）。
+  - 幂等重放：同一个 key 返回该 key 绑定的单的**当前**状态；同一个 key 搭配不同请求返回 409 CONFLICT；失败的请求不记录 key。
+  - 已付款订单取消时，自动开一张 ORDER_CANCELLED 单。
+- 共享的界面工具（第 12 节没有列出）：
+  - `components/Countdown.tsx`、`hooks/useNow.ts`
+  - `lib/format.ts` 的 `timeLeft`
+  - `lib/forms.ts` 的 `parseAmountInput`、`isPartialAmount`
+  - `lib/labels.ts` 中状态、原因、退款状态、历史动作、resolution、关闭原因的英文标签
+  - `App.css` 中共享的售后样式
+- 商家（b0f8b06）：
+  - `MerchantConsole` 增加 "Orders" / "After-sales" 页签。
+  - `useMerchantAfterSales` 每 15s 轮询一次；403 时停止轮询并显示停用提示；命令不带 key；遇到 404、409 或 403 时重新读取列表。
+  - `MerchantAfterSalesList` 提供倒计时；截止后按钮禁用；拒绝必须填理由；还价金额必须小于申请金额。
+- 管理员（f583ce4）：
+  - `AdminConsole` 的 `SECTIONS` 新增 After-sales。
+  - `useAfterSalesAdmin` 在顶层创建，与 `useAdminTools` 并列。
+  - `AfterSalesAdminPanel` 包括：按状态查看的队列；详情，含完整历史、退款的 attempts 和 `last_error`；仲裁表单，说明必填，PARTIAL 金额必须小于申请金额，带 key；失败退款表格和重试按钮。
+- 顾客（c983903）：
+  - `useAfterSales` 在 `OrderingPage` 创建，与 `useOrders` 并列。
+  - `AfterSalesRequestForm` 支持整单或按菜品申请；数量上限是下单数量；有金额预览。
+  - `AfterSalesCaseView` 包括：状态、各项金额、倒计时、商家和平台的说明、退款状态，以及可展开的历史（按需读取详情接口）；各状态对应的按钮；撤销前要确认。
+  - 撤销后在窗口内显示 "Request a refund again (1 left)"。
+  - ORDER_CANCELLED 单显示为 "Automatic refund {金额}: Refunding / Refunded"。
+- 新增测试：
+  - API 和 fake：`client.test.ts` 新增 1 个，`dto.test.ts` 新增 6 个，`fakeAfterSales.test.ts` 6 个，`format.test.ts` 新增 4 个。
+  - 商家：`MerchantConsole.test.tsx` 新增 9 个。
+  - 管理员：`AdminConsole.test.tsx` 新增 7 个（其中 1 个是审查时补的）。
+  - 顾客：`AfterSalesRequestForm.test.tsx` 3 个，`AfterSalesCaseView.test.tsx` 7 个，`App.test.tsx` 新增 5 个，访客测试另外断言不会请求 `/after-sales`。
+  - 切换工作区：`Workspaces.test.tsx` 新增 2 个，失败的申请和失败的仲裁在切换工作区后仍复用原 key。
+
+**与前文的偏差**
+1. `ERROR_CODES` 没有 `afterSalesCaseExists`：后端已取消这个错误码（第 23 节偏差 1）。`AfterSalesCase` 和 `EligibleOrder` 带 `attempt_no`（第 23 节偏差 3）。
+2. 历史的 `action` 按 `AFTER_SALES_ACTIONS` 中的 17 个值严格解码。后端以后新增动作时，必须先发布能识别它的前端。状态、kind、退款状态也一样严格。
+3. 端点签名：
+   - `escalateAfterSalesCase(caseId, note | null, key)`：说明为空时不带请求体。
+   - `offerMerchantAfterSales(caseId, amount, note | null)`：note 为空时请求体里不写这个字段。
+   - 金额以 JSON 数字发送。
+4. Fake 的数据结构和第 12.5 节不同：
+   - 退款嵌在所属的单里，没有单独的 `refunds` 数组，管理员的退款列表由单派生。
+   - `afterSalesKeys` 的值是 `{fingerprint, caseId}`。
+   - 另有 `afterSalesRequestDeadline` 和 `nextAfterSalesId`。
+   - `FakeContext` 新增 `requireSession`。
+   - 商家收件箱直接由单派生，所以 fake 里商家**立刻**就能看到新单；真实后端要等 Kafka 投影写入（h2 下为空，见第 25 节偏差 2）。
+   - fake 不跑超时，测试直接改 state 来模拟。
+5. 顾客：
+   - `open(order, attemptNo, draft)` 比第 12.2 节多一个 `attemptNo`，slot 写成 `open:{orderId}:{attempt}`。
+   - `pending` 和 `errors` 按目标分别保存。
+   - 页面可见、且有开放或 REFUNDING 的单时，每 10s 轮询一次。
+   - overview 在取消订单后、页面重新显示时、以及点 Refresh 时重新读取。
+   - 截止后禁用接受、拒绝还价和申请平台介入；撤销是软截止（第 19.1 条），截止后仍可用。
+   - 遇到 404 或 409 时重新读取。
+   - 历史由同一文件里的 `useAfterSalesCaseDetail` 读取。
+6. 商家：
+   - 每个页签的 section 各自创建 hook。所以打开 After-sales 时订单列表不再轮询，切换页签会重置过滤条件。
+   - 倒计时文案随状态变化。
+   - 前端只校验"最多两位小数"；0 位小数的币种由后端返回 400。
+7. 管理员：
+   - key 的 payload 用解析后的金额和去掉首尾空格的说明拼成。
+   - 仲裁成功后重新读取队列，已裁决的单离开 IN_ARBITRATION 列表。
+   - 退款重试的错误显示在表格上方。
+   - 不轮询，打开页签和点 Refresh 时读取。
+8. 后端内嵌的前端产物按以往做法重新生成。`processResources` 排除 `public/**`，打包时总是使用新构建的产物，所以这一步不影响 jar 的内容。
+
+**待办（非阻断）**
+- 时间戳是不带时区的 LocalDateTime，前端按浏览器本地时间解析。浏览器和服务器不在同一时区时，倒计时会有偏差。现有的其他时间戳也有这个问题。
+- 顾客只在有开放或退款中的单时才轮询。订单刚变成 COMPLETED 时，"Request a refund" 要等页面重新显示或点 Refresh 后才出现。
+- 管理员仲裁沿用 `useAdminTools` 的单 slot 写法：在两次重试之间去仲裁另一张单，会丢掉第一张单的 key。之后再重试第一张单，会拿到 409 状态冲突，而不是重放结果。
+- 第 25 节的后端待办仍未处理：`MerchantAfterSalesCaseDto` 和管理员的 `RefundDto[]` 还没有纳入 `ApiContractIntegrationTests`；管理员状态过滤区分大小写（前端只发送精确的枚举值，不受影响）。
+- P5 写文档时一并说明：前端的售后入口和 h2 下商家收件箱为空。
