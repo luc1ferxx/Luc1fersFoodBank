@@ -287,6 +287,10 @@ app:
       # The lease of a claimed refund: when an executor died or stalled after its claim, another one reclaims the refund
       # after this long and calls the gateway again with the same key.
       claim-timeout: ${AFTER_SALES_REFUND_CLAIM_TIMEOUT:60s}
+      # Claims of one refund that may fail in a row after the claim (outcome backed_off) before the last of them gives
+      # the refund up (FAILED, no attempt used up) for an admin to retry, instead of backing it off forever. At least 1
+      # (checked at startup); any other step of the refund starts the count over.
+      max-claim-failures: ${AFTER_SALES_REFUND_MAX_CLAIM_FAILURES:10}
     refund-gateway:
       # How long a gateway call is waited for before it counts as a retryable failure; the call is then interrupted.
       # Must be shorter than refund.claim-timeout (checked at startup), so that no refund is reclaimed while the call

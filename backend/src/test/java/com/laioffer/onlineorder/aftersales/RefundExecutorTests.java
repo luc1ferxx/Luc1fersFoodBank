@@ -473,6 +473,121 @@ class RefundExecutorTests {
 
 
     /**
+     * Section 27, follow-up 9: a failed claim short of max-claim-failures in a row backs off as before.
+     */
+    @Test
+    void claimThatFailsShortOfTheLimit_shouldStillBackOff() {
+        due(withClaimFailures(pending(0), SETTINGS.maxClaimFailures() - 2));
+        Mockito.when(caseRepository.findById(CASE_ID)).thenThrow(new IllegalStateException("broken row"));
+        Mockito.when(refundRepository.backOffPending(Mockito.eq(REFUND_ID), Mockito.eq(2L), Mockito.any(),
+                Mockito.any(), Mockito.any())).thenReturn(1);
+
+        Assertions.assertEquals(1, executor(SETTINGS).runDueRefunds());
+
+        Mockito.verify(refundRepository).backOffPending(Mockito.eq(REFUND_ID), Mockito.eq(2L), Mockito.any(),
+                Mockito.any(), Mockito.any());
+        Mockito.verify(refundRepository, Mockito.never()).lockById(Mockito.anyLong());
+        Assertions.assertTrue(writes.isEmpty());
+        Mockito.verify(metricsService).recordAfterSalesRefund(RefundExecutor.BACKED_OFF);
+    }
+
+
+    /**
+     * The max-claim-failures-th failed claim in a row gives a PENDING refund up instead of backing it off forever: in
+     * a transaction of its own, at the version claimed, CLAIM then GIVE_UP without a call. Its attempts stay, its
+     * count starts over, and the run goes on.
+     */
+    @Test
+    void lastClaimThatFailsInARow_shouldGiveThePendingRefundUp() {
+        due(withClaimFailures(pending(0), SETTINGS.maxClaimFailures() - 1));
+        Mockito.when(caseRepository.findById(CASE_ID)).thenThrow(new IllegalStateException("broken row"));
+
+        Assertions.assertEquals(1, executor(SETTINGS).runDueRefunds());
+
+        Assertions.assertEquals(List.of("FAILED|0|null|null|null|10 claims failed in a row; the last one: The claim "
+                + "of attempt 1 failed: java.lang.IllegalStateException: broken row|v2|" + NOW + "|null"),
+                writes.stream().map(RefundExecutorTests::summary).toList());
+        Assertions.assertEquals(0, writes.get(0).claimFailures());
+        assertSameRefund(writes.get(0));
+        InOrder steps = Mockito.inOrder(transactionManager, refundRepository, metricsService);
+        steps.verify(transactionManager).rollback(Mockito.any(TransactionStatus.class));
+        steps.verify(refundRepository).lockById(REFUND_ID);
+        steps.verify(refundRepository).save(Mockito.any());
+        steps.verify(transactionManager).commit(Mockito.any(TransactionStatus.class));
+        steps.verify(metricsService).recordAfterSalesRefund(RefundExecutor.FAILED);
+        steps.verify(refundRepository).claimNextDue(NOW);
+        Mockito.verify(refundRepository, Mockito.never()).backOffPending(
+                Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+        Mockito.verify(metricsService, Mockito.never()).recordAfterSalesRefund(RefundExecutor.BACKED_OFF);
+        Mockito.verifyNoInteractions(gateway, transitions);
+    }
+
+
+    /**
+     * The same for an expired lease whose reclaims keep failing: GIVE_UP from PROCESSING, the attempts made kept. Here
+     * its count is already at the limit (as after max-claim-failures was lowered), so this failure is past it.
+     */
+    @Test
+    void lastReclaimThatFailsInARow_shouldGiveTheExpiredLeaseUp() {
+        due(withClaimFailures(processing(3, NOW.minusSeconds(1)), SETTINGS.maxClaimFailures()));
+        Mockito.when(orderPaymentRepository.findByOrderId(ORDER_ID))
+                .thenThrow(new CannotAcquireLockException("lock timeout"));
+
+        Assertions.assertEquals(1, executor(SETTINGS).runDueRefunds());
+
+        Assertions.assertEquals(List.of("FAILED|3|null|null|null|11 claims failed in a row; the last one: The claim "
+                + "of attempt 4 failed: org.springframework.dao.CannotAcquireLockException: lock timeout|v2|" + NOW
+                + "|null"), writes.stream().map(RefundExecutorTests::summary).toList());
+        Mockito.verify(refundRepository, Mockito.never()).backOffExpiredLease(
+                Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+        Mockito.verify(metricsService).recordAfterSalesRefund(RefundExecutor.FAILED);
+        Mockito.verifyNoInteractions(gateway, transitions);
+    }
+
+
+    /**
+     * A refund that moved on between its last failed claim and the give-up (another executor claimed it) is not given
+     * up: the back-off then finds it moved on too and changes nothing.
+     */
+    @Test
+    void lastClaimThatFailsInARowOfARefundThatMovedOn_shouldNotGiveItUp() {
+        RefundEntity failing = withClaimFailures(pending(0), SETTINGS.maxClaimFailures() - 1);
+        due(failing);
+        rows.put(REFUND_ID, withVersion(failing, 3L));
+        Mockito.when(caseRepository.findById(CASE_ID)).thenThrow(new IllegalStateException("broken row"));
+        Mockito.when(refundRepository.backOffPending(Mockito.eq(REFUND_ID), Mockito.eq(2L), Mockito.any(),
+                Mockito.any(), Mockito.any())).thenReturn(0);
+
+        Assertions.assertEquals(1, executor(SETTINGS).runDueRefunds());
+
+        Mockito.verify(refundRepository).lockById(REFUND_ID);
+        Assertions.assertTrue(writes.isEmpty());
+        Mockito.verify(metricsService).recordAfterSalesRefund(RefundExecutor.BACKED_OFF);
+        Mockito.verify(metricsService, Mockito.never()).recordAfterSalesRefund(RefundExecutor.FAILED);
+    }
+
+
+    /**
+     * A give-up that fails too backs the refund off as before; the next failed claim tries again.
+     */
+    @Test
+    void failingGiveUpAfterTheLastFailedClaim_shouldBackOffInstead() {
+        due(withClaimFailures(pending(0), SETTINGS.maxClaimFailures() - 1));
+        Mockito.when(caseRepository.findById(CASE_ID)).thenThrow(new IllegalStateException("broken row"));
+        Mockito.when(refundRepository.lockById(REFUND_ID)).thenThrow(new CannotAcquireLockException("lock timeout"));
+        Mockito.when(refundRepository.backOffPending(Mockito.eq(REFUND_ID), Mockito.eq(2L), Mockito.any(),
+                Mockito.any(), Mockito.any())).thenReturn(1);
+
+        Assertions.assertEquals(1, executor(SETTINGS).runDueRefunds());
+
+        Mockito.verify(refundRepository).backOffPending(Mockito.eq(REFUND_ID), Mockito.eq(2L), Mockito.any(),
+                Mockito.any(), Mockito.any());
+        Assertions.assertTrue(writes.isEmpty());
+        Mockito.verify(metricsService).recordAfterSalesRefund(RefundExecutor.BACKED_OFF);
+    }
+
+
+    /**
      * A back-off that fails too (the database is gone) ends the run with its exception, after counting the refund.
      */
     @Test
@@ -942,6 +1057,19 @@ class RefundExecutorTests {
 
 
     @Test
+    void settings_shouldRefuseFewerThanOneFailedClaimAndDefaultToTen() {
+        for (int maxClaimFailures : new int[] {0, -1}) {
+            IllegalArgumentException refused = Assertions.assertThrows(IllegalArgumentException.class, () ->
+                    new RefundExecutor.Settings(100, MAX_ATTEMPTS, Duration.ofSeconds(10), Duration.ofMinutes(10),
+                            Duration.ofSeconds(60), Duration.ofSeconds(10), GATEWAY_THREADS, maxClaimFailures));
+            Assertions.assertEquals("app.after-sales.refund.max-claim-failures must be at least 1, got "
+                    + maxClaimFailures, refused.getMessage());
+        }
+        Assertions.assertEquals(10, SETTINGS.maxClaimFailures());
+    }
+
+
+    @Test
     void settings_shouldRefuseMissingDurationsAndRaiseTheBatchSizeToOne() {
         Assertions.assertThrows(IllegalArgumentException.class, () -> new RefundExecutor.Settings(
                 100, 8, null, Duration.ofMinutes(10), Duration.ofSeconds(60), Duration.ofSeconds(10), GATEWAY_THREADS));
@@ -1045,11 +1173,21 @@ class RefundExecutorTests {
     }
 
 
+    private static RefundEntity withClaimFailures(RefundEntity refund, int claimFailures) {
+        return new RefundEntity(refund.id(), refund.caseId(), refund.orderId(), refund.customerId(),
+                refund.gatewayKey(), refund.paymentReference(), refund.amount(), refund.currency(), refund.status(),
+                refund.attempts(), refund.nextAttemptAt(), refund.claimedUntil(), refund.providerReference(),
+                refund.lastError(), refund.version(), refund.createdAt(), refund.updatedAt(), refund.succeededAt(),
+                claimFailures);
+    }
+
+
     private static RefundEntity withVersion(RefundEntity refund, Long version) {
         return new RefundEntity(refund.id(), refund.caseId(), refund.orderId(), refund.customerId(),
                 refund.gatewayKey(), refund.paymentReference(), refund.amount(), refund.currency(), refund.status(),
                 refund.attempts(), refund.nextAttemptAt(), refund.claimedUntil(), refund.providerReference(),
-                refund.lastError(), version, refund.createdAt(), refund.updatedAt(), refund.succeededAt());
+                refund.lastError(), version, refund.createdAt(), refund.updatedAt(), refund.succeededAt(),
+                refund.claimFailures());
     }
 
 

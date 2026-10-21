@@ -274,8 +274,9 @@ groups:
 
       # backed_off: the claim transaction failed after it claimed a refund (a database error, or an exception while the
       # refund was checked against its case and payment). The refund waits app.after-sales.refund.retry-backoff (10s)
-      # and is claimed again without using up an attempt, so it never reaches FAILED on its own: with the defaults one
-      # such refund backs off every 10-11 seconds until the cause is fixed.
+      # and is claimed again without using up an attempt, every 10-11 seconds with the defaults, until the cause is fixed
+      # or app.after-sales.refund.max-claim-failures (10) of its claims failed in a row, which gives it up (FAILED,
+      # OnlineOrderRefundsGivenUp). This fires when claims keep failing, refund after refund.
       - alert: OnlineOrderRefundsBackingOff
         expr: sum(increase(onlineorder_aftersales_refunds_total{application="OnlineOrder", outcome="backed_off"}[5m])) > 0
         for: 15m
@@ -283,7 +284,7 @@ groups:
           severity: warning
         annotations:
           summary: After-sales refund claims keep failing
-          description: '{{ $value | humanize }} refund claim(s) failed and backed off in the last 5 minutes, and claims have kept failing for 15 minutes. These refunds wait without using up attempts and never reach FAILED. Find them with GET /admin/refunds?status=PENDING or status=PROCESSING (last_error "The claim of attempt ... failed") and the WARN log "The claim of refund ... failed" (docs/operations.md section 12).'
+          description: '{{ $value | humanize }} refund claim(s) failed and backed off in the last 5 minutes, and claims have kept failing for 15 minutes. These refunds wait without using up attempts; one is given up (FAILED) once 10 of its claims failed in a row. Find them with GET /admin/refunds?status=PENDING or status=PROCESSING (last_error "The claim of attempt ... failed") and the WARN log "The claim of refund ... failed" (docs/operations.md section 12).'
 
       # A paid order was cancelled with a total above its captured payment. Its ORDER_CANCELLED case is open, and the
       # refund executor gives its refund up before calling the gateway (OnlineOrderRefundsGivenUp follows). The counter

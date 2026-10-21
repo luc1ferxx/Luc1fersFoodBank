@@ -43,7 +43,7 @@ class RefundExecutorConfigurationTests {
             Assertions.assertNull(context.getStartupFailure());
             Assertions.assertEquals(
                     new RefundExecutor.Settings(100, 8, Duration.ofSeconds(10), Duration.ofMinutes(10),
-                            Duration.ofSeconds(60), Duration.ofSeconds(10), 4),
+                            Duration.ofSeconds(60), Duration.ofSeconds(10), 4, 10),
                     context.getBean(RefundExecutor.class).settings()
             );
             // The simulated gateway fails no attempt by default.
@@ -64,12 +64,13 @@ class RefundExecutorConfigurationTests {
                         "AFTER_SALES_REFUND_CLAIM_TIMEOUT=2m",
                         "AFTER_SALES_REFUND_GATEWAY_TIMEOUT=30s",
                         "AFTER_SALES_REFUND_GATEWAY_FAIL_FIRST_ATTEMPTS=1",
-                        "AFTER_SALES_REFUND_GATEWAY_MAX_THREADS=2"
+                        "AFTER_SALES_REFUND_GATEWAY_MAX_THREADS=2",
+                        "AFTER_SALES_REFUND_MAX_CLAIM_FAILURES=3"
                 )
                 .run(context -> {
                     Assertions.assertEquals(
                             new RefundExecutor.Settings(7, 3, Duration.ofSeconds(2), Duration.ofMinutes(1),
-                                    Duration.ofMinutes(2), Duration.ofSeconds(30), 2),
+                                    Duration.ofMinutes(2), Duration.ofSeconds(30), 2, 3),
                             context.getBean(RefundExecutor.class).settings()
                     );
                     Assertions.assertInstanceOf(RefundGatewayResult.RetryableFailure.class,
@@ -110,6 +111,20 @@ class RefundExecutorConfigurationTests {
             Throwable cause = rootCause(context.getStartupFailure());
             Assertions.assertInstanceOf(IllegalArgumentException.class, cause);
             Assertions.assertEquals("app.after-sales.refund-gateway.max-threads must be at least 1, got 0",
+                    cause.getMessage());
+        });
+    }
+
+
+    /**
+     * Section 27, follow-up 9: a refund needs one failed claim at least before it is given up.
+     */
+    @Test
+    void noFailedClaimAllowed_shouldFailStartup() {
+        contextRunner.withPropertyValues("AFTER_SALES_REFUND_MAX_CLAIM_FAILURES=0").run(context -> {
+            Throwable cause = rootCause(context.getStartupFailure());
+            Assertions.assertInstanceOf(IllegalArgumentException.class, cause);
+            Assertions.assertEquals("app.after-sales.refund.max-claim-failures must be at least 1, got 0",
                     cause.getMessage());
         });
     }

@@ -190,7 +190,7 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 | `OnlineOrderDbReplicaLagging` | a read replica > 2s behind the primary for 5m (it gets no reads meanwhile; section 11) | warning |
 | `OnlineOrderDbReplicaUnavailable` | a read replica gets no reads for 5m (lagging, unreachable or not a standby) | warning |
 | `OnlineOrderRefundsGivenUp` | an after-sales refund became `FAILED` in the last 15m, including the first one after a start; retry with `POST /admin/refunds/{id}/retry` (section 12) | warning |
-| `OnlineOrderRefundsBackingOff` | refund claims failed (`outcome="backed_off"`) in every 5m window for 15m; such refunds never reach `FAILED` on their own (section 12) | warning |
+| `OnlineOrderRefundsBackingOff` | refund claims failed (`outcome="backed_off"`) in every 5m window for 15m; a refund is given up only after 10 failed claims in a row (section 12) | warning |
 | `OnlineOrderCancellationsUndercaptured` | a paid order was cancelled with a total above its captured payment in the last 15m; its refund will be given up (section 12) | warning |
 
 On Kubernetes, load the same file into Prometheus (or wrap it in a `PrometheusRule` for the Prometheus Operator) and
@@ -1022,7 +1022,7 @@ replica with Redis hung; `FulfilmentReplicaRoutingContainerTests` runs the whole
 `ReplicaLagMonitorTests`, `WalPositionHistoryTests`, `ReadYourWritesTrackerTests` and
 `ReadWriteRoutingConfigurationTests` cover the parts.
 
-## 12. After-sales refunds (V12-V12_2)
+## 12. After-sales refunds (V12-V12_3)
 
 Refund requests on completed orders and the automatic refund of cancelled paid orders. Cases, refunds, the poller and
 the customer and admin API are in `backend/src/main/java/com/laioffer/onlineorder/aftersales/`, the merchant's side in
@@ -1142,11 +1142,15 @@ after it had claimed the refund, before any call: a database error (lock or stat
 exception while the refund was checked against its case and payment. Only that refund backs off, in a transaction of
 its own and only while it is still at the version claimed: its next attempt, or for an expired lease the lease's end,
 moves `retry-backoff` (10s) ahead and `last_error` becomes "The claim of attempt N failed: ...". The refunds behind it
-are still executed. It uses up no attempt, so it never reaches `FAILED` on its own, and an admin retry of a `PENDING`
+are still executed. It uses up no attempt, but it counts in `claim_failures` (V12_3): once
+`app.after-sales.refund.max-claim-failures` (10, about 100 s of failures at the default backoff) of its claims failed in
+a row, the last one gives it up (`FAILED`, attempts unchanged, `last_error` "10 claims failed in a row; the last one:
+The claim of attempt N failed: ...", `OnlineOrderRefundsGivenUp` follows) for an admin to retry once the cause is fixed;
+any other step of the refund, an admin retry included, starts the count over. Until then an admin retry of a `PENDING`
 refund changes nothing. Find it in `GET /admin/refunds?status=PENDING` (or `PROCESSING`) by its `last_error`, or:
 
 ```sql
-SELECT id, case_id, order_id, status, attempts, next_attempt_at, claimed_until, last_error
+SELECT id, case_id, order_id, status, attempts, claim_failures, next_attempt_at, claimed_until, last_error
 FROM refunds
 WHERE status IN ('PENDING', 'PROCESSING') AND last_error LIKE 'The claim of attempt %'
 ORDER BY updated_at;
@@ -1223,7 +1227,7 @@ on it answer 404 (`OnlineOrderKafkaConsumerLag` covers the group), while the mer
 Not covered yet: the after-sales `POST` endpoints have no rate-limit rule; the after-sales tables (cases, lines,
 history, refunds, payments) have no retention or partitioning; a customer is not notified when a refund is given up.
 
-### Rollout (V12-V12_2)
+### Rollout (V12-V12_3)
 
 **V12** creates `order_payments`, `after_sales_cases`, `after_sales_case_lines`, `after_sales_case_history`, `refunds`
 and `merchant_after_sales_cases`, all empty, and changes one existing table: `order_notifications` gets
@@ -1242,7 +1246,10 @@ constraint without `IF NOT EXISTS` and always builds its own index.
 `after_sales_cases (id) ON DELETE CASCADE`. The key is validated at once (it is not added `NOT VALID`): one scan of
 `idempotency_requests`, which finds every `case_id` NULL and so looks nothing up, under the `ACCESS EXCLUSIVE` lock of
 the column change until V12_2 commits. Checkouts and every idempotent command write that table and wait. It only keeps
-`CLEANUP_IDEMPOTENCY_RETENTION` (3d) of requests; 500,000 rows took 26 ms in the same setup.
+`CLEANUP_IDEMPOTENCY_RETENTION` (3d) of requests; 500,000 rows took 26 ms in the same setup. **V12_3** adds
+`refunds.claim_failures INTEGER DEFAULT 0 NOT NULL` (catalog only: a constant default) and its check
+`chk_refund_claim_failures`, validated by one scan of `refunds` under the `ACCESS EXCLUSIVE` lock of the column change;
+only the refund executor and the admin refund endpoints wait, and `refunds` holds one row per refunded case.
 
 How to run it: time V12 against a restored copy of production first (`SELECT COUNT(*),
 pg_size_pretty(pg_total_relation_size('order_notifications')) FROM order_notifications`), then follow steps 1-4 of

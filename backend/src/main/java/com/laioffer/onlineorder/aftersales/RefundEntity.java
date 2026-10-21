@@ -23,6 +23,9 @@ import java.time.LocalDateTime;
  * @param claimedUntil      when the lease of a PROCESSING refund expires
  * @param providerReference the gateway's id of the refund, once it succeeded
  * @param version           the optimistic lock, as on {@link AfterSalesCaseEntity}
+ * @param claimFailures     the claims that failed in a row after the claim, before any call (V12_3); raised only by
+ *                          {@link RefundRepository#backOffPending} and {@link RefundRepository#backOffExpiredLease},
+ *                          which keep the version, and back to 0 with every step saved
  */
 @Table("refunds")
 public record RefundEntity(
@@ -63,6 +66,35 @@ public record RefundEntity(
         @Column("updated_at")
         LocalDateTime updatedAt,
         @Column("succeeded_at")
-        LocalDateTime succeededAt
+        LocalDateTime succeededAt,
+        @Column("claim_failures")
+        Integer claimFailures
 ) {
+
+    /**
+     * A refund with no failed claim: what every step saves, so that each one starts the count over.
+     */
+    public RefundEntity(
+            Long id,
+            Long caseId,
+            Long orderId,
+            Long customerId,
+            String gatewayKey,
+            String paymentReference,
+            BigDecimal amount,
+            String currency,
+            String status,
+            Integer attempts,
+            LocalDateTime nextAttemptAt,
+            LocalDateTime claimedUntil,
+            String providerReference,
+            String lastError,
+            Long version,
+            LocalDateTime createdAt,
+            LocalDateTime updatedAt,
+            LocalDateTime succeededAt
+    ) {
+        this(id, caseId, orderId, customerId, gatewayKey, paymentReference, amount, currency, status, attempts,
+                nextAttemptAt, claimedUntil, providerReference, lastError, version, createdAt, updatedAt, succeededAt, 0);
+    }
 }

@@ -373,10 +373,12 @@ abstract class AbstractRefundExecutorIntegrationTests {
             RefundEntity backedOffLease = refundOf(failingLease.id());
             Assertions.assertEquals("PROCESSING|1|" + error.formatted(2) + "|null", state(backedOffLease));
             Assertions.assertEquals(leaseBefore.version(), backedOffLease.version());
+            Assertions.assertEquals(1, backedOffLease.claimFailures());
             assertAbout(backedOffLease.claimedUntil(), before.plus(RETRY_BACKOFF), after.plus(RETRY_BACKOFF));
             RefundEntity backedOffPending = refundOf(failingPending.id());
             Assertions.assertEquals("PENDING|0|" + error.formatted(1) + "|null", state(backedOffPending));
             Assertions.assertEquals(pendingBefore.version(), backedOffPending.version());
+            Assertions.assertEquals(1, backedOffPending.claimFailures());
             assertAbout(backedOffPending.nextAttemptAt(), before.plus(RETRY_BACKOFF), after.plus(RETRY_BACKOFF));
             assertSucceeded(healthy, 1);
             Mockito.verify(gateway, Mockito.times(1)).refund(Mockito.any());
@@ -393,6 +395,69 @@ abstract class AbstractRefundExecutorIntegrationTests {
         Assertions.assertEquals(2, refundExecutor.runDueRefunds());
         assertSucceeded(failingLease, 2);
         assertSucceeded(failingPending, 1);
+        Assertions.assertEquals(0, refundOf(failingLease.id()).claimFailures(), "a step starts the count over");
+        Assertions.assertEquals(0, refundOf(failingPending.id()).claimFailures());
+    }
+
+
+    /**
+     * Section 27, follow-up 9: the claims of a refund that keep failing are counted in a row, and the
+     * max-claim-failures-th one gives the refund up (FAILED, its case still REFUNDING, no attempt used and no call
+     * made) instead of backing it off forever; an expired lease the same way, with its attempts kept.
+     */
+    @Test
+    void refundsWhoseClaimsKeepFailing_shouldBeGivenUpByTheLastFailureInARow() {
+        Customer ivan = customer("refund-claims-keep-failing-");
+        AfterSalesCaseEntity failingPending = cancelledCase(ivan);
+        AfterSalesCaseEntity failingLease = cancelledCase(ivan);
+        Long pendingId = refundOf(failingPending.id()).id();
+        Long leaseId = refundOf(failingLease.id()).id();
+        leaseAsIfClaimed(leaseId, 2, LocalDateTime.now().minusSeconds(1));
+        int maxClaimFailures = refundExecutor.settings().maxClaimFailures();
+        // As if both had backed off all but two times.
+        Assertions.assertEquals(2, jdbcTemplate.update("UPDATE refunds SET claim_failures = ? WHERE id IN (?, ?)",
+                maxClaimFailures - 2, pendingId, leaseId));
+        OrderPaymentRepository payments = Mockito.mock(
+                OrderPaymentRepository.class, AdditionalAnswers.delegatesTo(orderPaymentRepository));
+        for (AfterSalesCaseEntity failing : List.of(failingPending, failingLease)) {
+            Mockito.doThrow(new IllegalStateException("payments unavailable"))
+                    .when(payments).findByOrderId(failing.orderId());
+        }
+        RefundExecutor failingLookups = new RefundExecutor(refundRepository, caseRepository, payments, transitions,
+                gateway, metricsService, transactionManager, refundExecutor.settings(), LocalDateTime::now);
+        String error = "The claim of attempt %d failed: java.lang.IllegalStateException: payments unavailable";
+        double backedOffBefore = refundCount(RefundExecutor.BACKED_OFF);
+        double failedBefore = refundCount(RefundExecutor.FAILED);
+        try {
+            Assertions.assertEquals(2, failingLookups.runDueRefunds());
+            Assertions.assertEquals(maxClaimFailures - 1, refundRepository.findById(pendingId).orElseThrow()
+                    .claimFailures());
+            Assertions.assertEquals(maxClaimFailures - 1, refundRepository.findById(leaseId).orElseThrow()
+                    .claimFailures());
+            Assertions.assertEquals(backedOffBefore + 2, refundCount(RefundExecutor.BACKED_OFF));
+
+            makeDue(pendingId);
+            Assertions.assertEquals(1, jdbcTemplate.update("UPDATE refunds SET claimed_until = ? WHERE id = ?",
+                    LocalDateTime.now().minusSeconds(1), leaseId));
+            Assertions.assertEquals(2, failingLookups.runDueRefunds());
+
+            String inARow = maxClaimFailures + " claims failed in a row; the last one: ";
+            RefundEntity givenUpPending = refundRepository.findById(pendingId).orElseThrow();
+            Assertions.assertEquals("FAILED|0|" + inARow + error.formatted(1) + "|null", state(givenUpPending));
+            Assertions.assertNull(givenUpPending.nextAttemptAt());
+            Assertions.assertEquals(0, givenUpPending.claimFailures());
+            RefundEntity givenUpLease = refundRepository.findById(leaseId).orElseThrow();
+            Assertions.assertEquals("FAILED|2|" + inARow + error.formatted(3) + "|null", state(givenUpLease));
+            Assertions.assertNull(givenUpLease.claimedUntil());
+            Assertions.assertEquals(backedOffBefore + 2, refundCount(RefundExecutor.BACKED_OFF));
+            Assertions.assertEquals(failedBefore + 2, refundCount(RefundExecutor.FAILED));
+            Assertions.assertEquals("REFUNDING", reload(failingPending.id()).status());
+            Assertions.assertEquals("REFUNDING", reload(failingLease.id()).status());
+            Mockito.verify(gateway, Mockito.never()).refund(Mockito.any());
+            Assertions.assertEquals(0, failingLookups.runDueRefunds(), "a FAILED refund waits for an admin");
+        } finally {
+            failingLookups.destroy();
+        }
     }
 
 

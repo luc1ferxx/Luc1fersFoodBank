@@ -74,15 +74,16 @@ public interface RefundRepository extends ListCrudRepository<RefundEntity, Long>
 
     /**
      * Backs off a PENDING refund whose claim transaction failed after the claim: its next attempt moves to
-     * {@code retryAt} and the failure becomes its last_error, only while the refund is still PENDING at
-     * {@code version}. Leaves the version as it is, as {@link AfterSalesCaseRepository#rescheduleDeadline} does.
-     * Returns the rows changed, 1 or 0.
+     * {@code retryAt}, the failure becomes its last_error and its claim_failures go up by one, only while the refund is
+     * still PENDING at {@code version}. Leaves the version as it is, as
+     * {@link AfterSalesCaseRepository#rescheduleDeadline} does. Returns the rows changed, 1 or 0.
      */
     @Modifying
     @Query("""
             UPDATE refunds
             SET next_attempt_at = :retryAt,
                 last_error = :lastError,
+                claim_failures = claim_failures + 1,
                 updated_at = :now
             WHERE id = :id
               AND version = :version
@@ -93,15 +94,16 @@ public interface RefundRepository extends ListCrudRepository<RefundEntity, Long>
 
     /**
      * Backs off a PROCESSING refund whose lease expired and whose reclaim failed after the claim: the end of its lease
-     * moves to {@code retryAt}, so that it is not reclaimed before, and the failure becomes its last_error, only while
-     * the refund is still PROCESSING at {@code version}. Its attempts stay, since no call was made. Returns the rows
-     * changed, 1 or 0.
+     * moves to {@code retryAt}, so that it is not reclaimed before, the failure becomes its last_error and its
+     * claim_failures go up by one, only while the refund is still PROCESSING at {@code version}. Its attempts stay,
+     * since no call was made. Returns the rows changed, 1 or 0.
      */
     @Modifying
     @Query("""
             UPDATE refunds
             SET claimed_until = :retryAt,
                 last_error = :lastError,
+                claim_failures = claim_failures + 1,
                 updated_at = :now
             WHERE id = :id
               AND version = :version

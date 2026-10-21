@@ -39,7 +39,8 @@ import java.util.function.Supplier;
  *     attempt left (19.9), is given up (FAILED) in this transaction instead of being called. When this transaction
  *     fails after the claim (it rolls back), only that refund backs off: in a transaction of its own and at the version
  *     claimed, its next attempt (or its expired lease's end) moves app.after-sales.refund.retry-backoff ahead with the
- *     failure as last_error, and the refunds behind it are still executed.</li>
+ *     failure as last_error, and the refunds behind it are still executed. Once app.after-sales.refund.max-claim-failures
+ *     claims of a refund failed in a row, the last one gives it up (FAILED) instead, in that transaction.</li>
  *     <li>The gateway is called outside any transaction and waited for at most app.after-sales.refund-gateway.timeout,
  *     which must be shorter than the lease (19.10, checked at startup), so another executor does not reclaim a refund
  *     whose call may still succeed. A timeout, an exception and no answer count as retryable failures. A timed-out
@@ -120,13 +121,14 @@ public final class RefundExecutor implements DisposableBean {
             @Value("${app.after-sales.refund.retry-backoff:10s}") Duration retryBackoff,
             @Value("${app.after-sales.refund.retry-backoff-max:10m}") Duration retryBackoffMax,
             @Value("${app.after-sales.refund.claim-timeout:60s}") Duration claimTimeout,
+            @Value("${app.after-sales.refund.max-claim-failures:10}") int maxClaimFailures,
             @Value("${app.after-sales.refund-gateway.timeout:10s}") Duration gatewayTimeout,
             @Value("${app.after-sales.refund-gateway.max-threads:4}") int gatewayThreads
     ) {
         this(refundRepository, caseRepository, orderPaymentRepository, transitions, gateway, metricsService,
                 transactionManager,
                 new Settings(batchSize, maxAttempts, retryBackoff, retryBackoffMax, claimTimeout, gatewayTimeout,
-                        gatewayThreads),
+                        gatewayThreads, maxClaimFailures),
                 LocalDateTime::now);
     }
 
@@ -358,14 +360,20 @@ public final class RefundExecutor implements DisposableBean {
     /**
      * Backs off a refund whose claim transaction failed after the claim, in a transaction of its own: the claim's
      * transaction rolled back. Its next attempt, or the end of its expired lease, moves the retry backoff ahead with
-     * the failure as last_error, only while the refund is still at the version that was claimed; one that moved on
-     * meanwhile (an admin, or another executor once this one's claim was rolled back) is left as it is. No call was
-     * made, so its status and attempts stay. Counted as backed_off.
+     * the failure as last_error and one more failed claim, only while the refund is still at the version that was
+     * claimed; one that moved on meanwhile (an admin, or another executor once this one's claim was rolled back) is
+     * left as it is. No call was made, so its status and attempts stay. Counted as backed_off, unless this was the
+     * max-claim-failures-th failed claim in a row: then the refund is given up instead.
      */
     private void backOff(RefundEntity due, RuntimeException failure) {
+        String error = truncate("The claim of attempt " + (due.attempts() + 1) + " failed: " + failure);
+        int failures = due.claimFailures() + 1;
+        if (failures >= settings.maxClaimFailures() && giveUpAfterFailedClaims(due, failures, error)) {
+            metricsService.recordAfterSalesRefund(FAILED);
+            return;
+        }
         LocalDateTime now = clock.get();
         LocalDateTime retryAt = now.plus(settings.retryBackoff());
-        String error = truncate("The claim of attempt " + (due.attempts() + 1) + " failed: " + failure);
         LOGGER.warn("The claim of refund {} of case {} (order {}) failed before attempt {}; retrying at {}", due.id(),
                 due.caseId(), due.orderId(), due.attempts() + 1, retryAt, failure);
         try {
@@ -379,6 +387,39 @@ public final class RefundExecutor implements DisposableBean {
             }
         } finally {
             metricsService.recordAfterSalesRefund(BACKED_OFF);
+        }
+    }
+
+
+    /**
+     * Gives up a refund whose claim failed for the max-claim-failures-th time in a row, in a transaction of its own and
+     * only while it is still at the version claimed: a PENDING one is claimed and given up (CLAIM, then GIVE_UP from
+     * PROCESSING, as a refund that fails its checks), an expired lease is given up. No call was made, so its attempts
+     * stay. An admin retry starts it over.
+     *
+     * @return whether it was given up; false when it moved on meanwhile or the give-up failed too, and it backs off
+     */
+    private boolean giveUpAfterFailedClaims(RefundEntity due, int failures, String error) {
+        try {
+            return Boolean.TRUE.equals(transactionTemplate.execute(status -> {
+                RefundEntity locked = refundRepository.lockById(due.id());
+                if (locked == null || !due.version().equals(locked.version())) {
+                    return false;
+                }
+                LocalDateTime now = clock.get();
+                RefundStatus from = RefundStatus.valueOf(locked.status());
+                if (from == RefundStatus.PENDING) {
+                    requireApplied(decide(from, RefundTrigger.CLAIM, locked, now), locked);
+                    from = RefundStatus.PROCESSING;
+                }
+                giveUp(locked, from, failures + " claims failed in a row; the last one: " + error, locked.attempts(),
+                        now);
+                return true;
+            }));
+        } catch (RuntimeException ex) {
+            LOGGER.warn("Refund {} of case {} could not be given up after {} failed claims in a row; it backs off",
+                    due.id(), due.caseId(), failures, ex);
+            return false;
         }
     }
 
@@ -532,7 +573,7 @@ public final class RefundExecutor implements DisposableBean {
 
     /**
      * The refund after a step at {@code now}: a PENDING refund has its next attempt, a PROCESSING one its lease, and
-     * neither is kept in another status.
+     * neither is kept in another status. Its failed claims start over.
      */
     private static RefundEntity moved(
             RefundEntity current,
@@ -572,15 +613,17 @@ public final class RefundExecutor implements DisposableBean {
      * The executor's settings (app.after-sales.refund.*, app.after-sales.refund-gateway.timeout and max-threads, and
      * the poller's batch size), checked at startup.
      *
-     * @param batchSize       refunds handled per run at most; at least 1
-     * @param maxAttempts     gateway calls a refund may make, reclaims included, before it is given up
-     * @param retryBackoff    the wait after the first failed attempt; it doubles with every further one. Also the
-     *                        wait after a claim that failed before its call
-     * @param retryBackoffMax the longest wait between attempts
-     * @param claimTimeout    the lease of a claim: after it another executor may reclaim the refund
-     * @param gatewayTimeout  how long a gateway call is waited for; shorter than the lease (section 19.10)
-     * @param gatewayThreads  the most gateway calls running at once, calls that outlived their timeout included; at
-     *                        least 1
+     * @param batchSize        refunds handled per run at most; at least 1
+     * @param maxAttempts      gateway calls a refund may make, reclaims included, before it is given up
+     * @param retryBackoff     the wait after the first failed attempt; it doubles with every further one. Also the
+     *                         wait after a claim that failed before its call
+     * @param retryBackoffMax  the longest wait between attempts
+     * @param claimTimeout     the lease of a claim: after it another executor may reclaim the refund
+     * @param gatewayTimeout   how long a gateway call is waited for; shorter than the lease (section 19.10)
+     * @param gatewayThreads   the most gateway calls running at once, calls that outlived their timeout included; at
+     *                         least 1
+     * @param maxClaimFailures the claims of a refund that may fail in a row after the claim, before any call, until
+     *                         the last one gives the refund up; at least 1
      */
     record Settings(
             int batchSize,
@@ -589,8 +632,14 @@ public final class RefundExecutor implements DisposableBean {
             Duration retryBackoffMax,
             Duration claimTimeout,
             Duration gatewayTimeout,
-            int gatewayThreads
+            int gatewayThreads,
+            int maxClaimFailures
     ) {
+
+        /**
+         * The default app.after-sales.refund.max-claim-failures.
+         */
+        static final int DEFAULT_MAX_CLAIM_FAILURES = 10;
 
         Settings {
             batchSize = Math.max(1, batchSize);
@@ -601,6 +650,10 @@ public final class RefundExecutor implements DisposableBean {
             if (gatewayThreads < 1) {
                 throw new IllegalArgumentException(
                         "app.after-sales.refund-gateway.max-threads must be at least 1, got " + gatewayThreads);
+            }
+            if (maxClaimFailures < 1) {
+                throw new IllegalArgumentException(
+                        "app.after-sales.refund.max-claim-failures must be at least 1, got " + maxClaimFailures);
             }
             requirePositive(retryBackoff, "app.after-sales.refund.retry-backoff");
             requirePositive(retryBackoffMax, "app.after-sales.refund.retry-backoff-max");
@@ -615,6 +668,20 @@ public final class RefundExecutor implements DisposableBean {
                 throw new IllegalArgumentException("app.after-sales.refund-gateway.timeout (" + gatewayTimeout
                         + ") must be shorter than app.after-sales.refund.claim-timeout (" + claimTimeout + ")");
             }
+        }
+
+
+        Settings(
+                int batchSize,
+                int maxAttempts,
+                Duration retryBackoff,
+                Duration retryBackoffMax,
+                Duration claimTimeout,
+                Duration gatewayTimeout,
+                int gatewayThreads
+        ) {
+            this(batchSize, maxAttempts, retryBackoff, retryBackoffMax, claimTimeout, gatewayTimeout, gatewayThreads,
+                    DEFAULT_MAX_CLAIM_FAILURES);
         }
 
 

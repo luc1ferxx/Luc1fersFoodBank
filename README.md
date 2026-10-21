@@ -851,7 +851,8 @@ the platform arbitrates a dispute, and every step that waits for someone has a d
 cancelled is refunded through the same cases. The module is `com.laioffer.onlineorder.aftersales`
 (cases, refunds, the deadline and refund poller, the customer and admin APIs); the merchant's side lives in
 `fulfilment.merchant` and the customer notifications in `fulfilment.notification`. Migrations: `V12` (the tables,
-`order_payments` included), `V12_1` (currency checks, Java) and `V12_2` (idempotency records bound to a case). Design
+`order_payments` included), `V12_1` (currency checks, Java), `V12_2` (idempotency records bound to a case) and
+`V12_3` (a refund's failed claims in a row). Design
 and the record of what was built: [ADR 0002](docs/adr/0002-after-sales-state-machine.md). To try it on H2, see
 [After-sales demo](#after-sales-demo).
 
@@ -1120,7 +1121,7 @@ Metrics (tag values are lower case):
 - `onlineorder.aftersales.cancellations.undercaptured`: automatic refunds whose order total exceeds the capture.
 
 The alerts `OnlineOrderRefundsGivenUp`, `OnlineOrderRefundsBackingOff` and `OnlineOrderCancellationsUndercaptured`
-watch these refunds; [docs/operations.md](docs/operations.md) section 12 has their runbook, the V12-V12_2 rollout and
+watch these refunds; [docs/operations.md](docs/operations.md) section 12 has their runbook, the V12-V12_3 rollout and
 the connection pool sizing for the after-sales listeners.
 
 ---
