@@ -373,9 +373,14 @@ export const decodeMerchantOrderItem: Decoder<MerchantOrderItem> = (value, path)
   };
 };
 
-/** GET /merchant/orders and the accept/reject/preparing responses (MerchantOrderDto). */
+/**
+ * GET /merchant/orders and the accept/reject/preparing responses (MerchantOrderDto).
+ * `order_id` is the key the merchant endpoints take; `order_no` as in Order (null for an
+ * order the backend sends no number for).
+ */
 export interface MerchantOrder {
   order_id: number;
+  order_no: string | null;
   restaurant_id: number;
   customer_id: number;
   status: OrderStatus;
@@ -391,6 +396,7 @@ export const decodeMerchantOrder: Decoder<MerchantOrder> = (value, path) => {
   const f = fieldsOf(value, path);
   return {
     order_id: f.number("order_id"),
+    order_no: f.optionalString("order_no"),
     restaurant_id: f.number("restaurant_id"),
     customer_id: f.number("customer_id"),
     status: f.oneOf("status", ORDER_STATUSES),
@@ -427,10 +433,14 @@ export const decodeRiderProfile: Decoder<RiderProfile> = (value, path) => {
   };
 };
 
-/** GET /rider/deliveries and the picked-up/delivered responses: the rider's own deliveries. */
+/**
+ * GET /rider/deliveries and the picked-up/delivered responses: the rider's own deliveries.
+ * `order_no` as in MerchantOrder.
+ */
 export interface RiderDelivery {
   delivery_id: number;
   order_id: number;
+  order_no: string | null;
   restaurant_id: number;
   restaurant_name: string | null;
   status: DeliveryStatus;
@@ -444,6 +454,7 @@ export const decodeRiderDelivery: Decoder<RiderDelivery> = (value, path) => {
   return {
     delivery_id: f.number("delivery_id"),
     order_id: f.number("order_id"),
+    order_no: f.optionalString("order_no"),
     restaurant_id: f.number("restaurant_id"),
     restaurant_name: f.optionalString("restaurant_name"),
     status: f.oneOf("status", DELIVERY_STATUSES),

@@ -6,7 +6,7 @@ import {
   useRiderConsole,
 } from "../hooks/useRiderConsole";
 import { formatDateTime } from "../lib/format";
-import { DELIVERY_STATUS_LABELS } from "../lib/labels";
+import { DELIVERY_STATUS_LABELS, orderLabel } from "../lib/labels";
 
 const FILTERS: readonly { value: RiderDeliveryFilter; label: string }[] = [
   { value: "ACTIVE", label: "Active (assigned or picked up)" },
@@ -43,7 +43,7 @@ function DeliveryCard({
       <div className="order-card__top">
         <div>
           <p className="section-kicker">Delivery #{delivery.delivery_id}</p>
-          <h3>Order #{delivery.order_id}</h3>
+          <h3>{orderLabel({ id: delivery.order_id, order_no: delivery.order_no })}</h3>
         </div>
         <span className={`status-badge status-badge--${delivery.status}`}>
           {DELIVERY_STATUS_LABELS[delivery.status]}

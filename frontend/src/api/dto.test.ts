@@ -5,9 +5,11 @@ import {
   decodeAfterSalesCase,
   decodeAfterSalesOverview,
   decodeMerchantAfterSalesCase,
+  decodeMerchantOrder,
   decodeNotification,
   decodeOrder,
   decodeRefund,
+  decodeRiderDelivery,
 } from "./dto";
 
 const order = { id: 42, total_price: 9, status: "PAID", items: [] };
@@ -43,6 +45,50 @@ describe("order numbers", () => {
       '{"id": 42, "total_price": 9, "status": "PAID", "items": [], "order_no": 7391823564100000042}',
     );
     expect(() => decodeOrder(body, "order")).toThrow(DecodeError);
+  });
+
+  describe("in the merchant and rider consoles", () => {
+    const merchantOrder = {
+      order_id: 42,
+      restaurant_id: 1,
+      customer_id: 3,
+      status: "PAID",
+      total_price: 9,
+      currency: USD,
+      items: [],
+    };
+    const delivery = { delivery_id: 5, order_id: 42, restaurant_id: 1, status: "ASSIGNED" };
+
+    it("keeps every digit of the order number", () => {
+      expect(
+        decodeMerchantOrder({ ...merchantOrder, order_no: "9223372036854775807" }, "order"),
+      ).toMatchObject({ order_id: 42, order_no: "9223372036854775807" });
+      expect(
+        decodeRiderDelivery({ ...delivery, order_no: "9223372036854775807" }, "delivery"),
+      ).toMatchObject({ order_id: 42, order_no: "9223372036854775807" });
+    });
+
+    it("decodes a missing or null order number as null", () => {
+      expect(decodeMerchantOrder(merchantOrder, "order").order_no).toBeNull();
+      expect(
+        decodeMerchantOrder({ ...merchantOrder, order_no: null }, "order").order_no,
+      ).toBeNull();
+      expect(decodeRiderDelivery(delivery, "delivery").order_no).toBeNull();
+      expect(decodeRiderDelivery({ ...delivery, order_no: null }, "delivery").order_no).toBeNull();
+    });
+
+    it("rejects an order number sent as a JSON number", () => {
+      const merchantBody: unknown = JSON.parse(
+        '{"order_id": 42, "restaurant_id": 1, "customer_id": 3, "status": "PAID",' +
+          ' "total_price": 9, "currency": "USD", "order_no": 7391823564100000042}',
+      );
+      const deliveryBody: unknown = JSON.parse(
+        '{"delivery_id": 5, "order_id": 42, "restaurant_id": 1, "status": "ASSIGNED",' +
+          ' "order_no": 7391823564100000042}',
+      );
+      expect(() => decodeMerchantOrder(merchantBody, "order")).toThrow(DecodeError);
+      expect(() => decodeRiderDelivery(deliveryBody, "delivery")).toThrow(DecodeError);
+    });
   });
 });
 

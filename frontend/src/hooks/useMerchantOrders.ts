@@ -8,6 +8,7 @@ import {
   rejectMerchantOrder,
 } from "../api/endpoints";
 import { errorCopy } from "../lib/format";
+import { orderLabel } from "../lib/labels";
 import { withEntry, withoutEntry } from "../lib/maps";
 import { useLiveResource } from "./useLiveResource";
 import { usePolling } from "./usePolling";
@@ -104,6 +105,7 @@ export function useMerchantOrders() {
   const run = useCallback(
     (order: MerchantOrder, command: MerchantCommand, reason = ""): Promise<boolean> => {
       const orderId = order.order_id;
+      const label = orderLabel({ id: orderId, order_no: order.order_no });
       setPending((current) => withEntry(current, orderId, command));
       setCommandErrors((current) => withoutEntry(current, orderId));
       setNotice("");
@@ -113,7 +115,7 @@ export function useMerchantOrders() {
           applyAndReload((list) =>
             list.map((item) => (item.order_id === updated.order_id ? updated : item)),
           );
-          setNotice(`Order #${orderId} ${COMMAND_COPY[command].done}.`);
+          setNotice(`${label} ${COMMAND_COPY[command].done}.`);
           return true;
         })
         .catch((requestError: unknown) => {
@@ -121,10 +123,7 @@ export function useMerchantOrders() {
             withEntry(
               current,
               orderId,
-              errorCopy(
-                requestError,
-                `Unable to ${COMMAND_COPY[command].failed} order #${orderId}.`,
-              ),
+              errorCopy(requestError, `Unable to ${COMMAND_COPY[command].failed} ${label}.`),
             ),
           );
           if (
