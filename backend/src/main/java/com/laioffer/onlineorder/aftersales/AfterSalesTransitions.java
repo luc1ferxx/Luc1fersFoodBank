@@ -215,8 +215,9 @@ public class AfterSalesTransitions {
 
     /**
      * Opens the automatic refund of a paid order that was cancelled (ADR 0002 D5, D12, sections 9 and 19.7): an
-     * ORDER_CANCELLED case straight in REFUNDING, attempt 1, with the order total requested and approved (resolution
-     * ORDER_CANCELLED) and every order line in full; its ORDER_CANCELLED history row (SYSTEM); its refund, PENDING and
+     * ORDER_CANCELLED case straight in REFUNDING, attempt 1, with the order total requested and the cancellation's refund
+     * approved (the total, or a share of it after a pickup; resolution ORDER_CANCELLED) and every order line in full;
+     * its ORDER_CANCELLED history row (SYSTEM); its refund, PENDING and
      * due at once, against the order's captured payment; and its aftersales.case_opened event. The caller cancelled the
      * order in this transaction under the order's row lock, after the order's own event, and checked that the order has
      * a captured payment and a total above zero (an ORDER_CANCELLED case of 0.00 breaks chk_after_sales_case_amounts).
@@ -244,7 +245,7 @@ public class AfterSalesTransitions {
                 order.totalPrice(),
                 total.amount(),
                 null,
-                total.amount(),
+                cancellation.refund().amount(),
                 null,
                 order.currency(),
                 null,
@@ -544,6 +545,7 @@ public class AfterSalesTransitions {
             OrderEntity order,
             OrderPaymentEntity payment,
             List<OrderHistoryItemEntity> items,
+            Money refund,
             LocalDateTime cancelledAt
     ) {
 
@@ -555,6 +557,12 @@ public class AfterSalesTransitions {
                         "Payment " + payment.id() + " belongs to order " + payment.orderId() + ", not " + order.id());
             }
             items = List.copyOf(items);
+            Objects.requireNonNull(refund, "refund");
+            order.total().requireSameCurrency(refund);
+            if (!refund.isPositive() || refund.isGreaterThan(order.total())) {
+                throw new IllegalArgumentException("The refund of order " + order.id() + " must be more than zero and "
+                        + "at most its total " + order.total() + ", got " + refund);
+            }
             Objects.requireNonNull(cancelledAt, "cancelledAt");
         }
     }

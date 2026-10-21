@@ -637,6 +637,19 @@ describe("after-sales", () => {
     expect(screen.queryByRole("button", { name: /Request a refund/ })).toBeNull();
     expect(backend.callsTo("GET", "/after-sales/cases").length).toBeGreaterThanOrEqual(2);
   });
+
+  it("refunds only half of an order the customer cancelled after the rider picked it up", async () => {
+    const backend = installFakeBackend({ user: demoUser });
+    backend.state.orders = [orderFixture({ id: 7, status: "ACCEPTED", total_price: 9.01 })];
+    backend.state.orderPickups.set(7, "2026-10-21T09:30:00");
+    const user = renderApp();
+
+    await openOrders(user);
+    await user.click(await screen.findByRole("button", { name: "Cancel order" }));
+
+    // 50% of $9.01, rounded half-even like the backend: $4.50.
+    expect(await screen.findByText("Automatic refund $4.50: Refunding")).toBeInTheDocument();
+  });
 });
 
 describe("admin console order tools", () => {

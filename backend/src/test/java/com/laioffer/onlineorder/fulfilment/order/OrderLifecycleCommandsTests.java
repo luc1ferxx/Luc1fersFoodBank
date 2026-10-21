@@ -14,6 +14,7 @@ import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineRepository;
 import com.laioffer.onlineorder.messaging.AfterSalesCasePayload;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
+import com.laioffer.onlineorder.model.OrderTrigger;
 import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
@@ -773,16 +774,20 @@ class OrderLifecycleCommandsTests {
                 Mockito.eq(ORDER_ID), Mockito.eq("PAID"), Mockito.eq("CANCELLED"), Mockito.any(),
                 cancelledAt.capture());
         InOrder refunds = Mockito.inOrder(cancellationRefunds);
-        refunds.verify(cancellationRefunds).refundCancelledOrder(
+        refunds.verify(cancellationRefunds).refundCancelledOrder(new CancellationRefunds.Cancellation(
                 order("PAID", RESTAURANT_ID).withStatus(
                         "CANCELLED", "MERCHANT_REJECTED: sold out", cancelledAt.getAllValues().get(0)),
+                OrderTrigger.MERCHANT_REJECT,
+                null,
                 cancelledAt.getAllValues().get(0)
-        );
-        refunds.verify(cancellationRefunds).refundCancelledOrder(
+        ));
+        refunds.verify(cancellationRefunds).refundCancelledOrder(new CancellationRefunds.Cancellation(
                 order("PAID", RESTAURANT_ID).withStatus(
                         "CANCELLED", OrderLifecycleCommands.MERCHANT_TIMEOUT, cancelledAt.getAllValues().get(1)),
+                OrderTrigger.ACCEPT_TIMEOUT,
+                null,
                 cancelledAt.getAllValues().get(1)
-        );
+        ));
         Mockito.verifyNoMoreInteractions(cancellationRefunds);
     }
 

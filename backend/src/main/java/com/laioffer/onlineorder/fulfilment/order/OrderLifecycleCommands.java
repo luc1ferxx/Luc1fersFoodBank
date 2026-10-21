@@ -7,6 +7,7 @@ import com.laioffer.onlineorder.model.OrderStatus;
 
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -130,6 +131,19 @@ public interface OrderLifecycleCommands {
      * @param actor recorded for each step, normally {@link OrderActor#rider(Long)} of the delivering rider
      */
     DeliveryCompletion completeDeliveredOrder(Long orderId, OrderActor actor);
+
+
+    /**
+     * Records that the rider picked the order up at {@code pickedUpAt} (delivery.picked_up), once: a redelivered or
+     * replayed pickup leaves the first one. No status changes and no history row or event is written; a customer cancel
+     * of the still ACCEPTED order afterwards refunds only part of it (ADR 0002 section 27, follow-up 17). The update
+     * takes the order's row lock, so it and a cancel happen one after the other.
+     *
+     * @param actor the rider who picked it up ({@link OrderActor#rider(Long)}), or {@link OrderActor#system()}; any
+     *              other actor is an {@link IllegalStateException}, like an actor a delivery trigger does not allow
+     * @return whether this call recorded it: false for an unknown order or one whose pickup was already recorded
+     */
+    boolean recordPickup(Long orderId, LocalDateTime pickedUpAt, OrderActor actor);
 
 
     /**

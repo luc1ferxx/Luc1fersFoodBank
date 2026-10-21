@@ -1025,7 +1025,7 @@ replica with Redis hung; `FulfilmentReplicaRoutingContainerTests` runs the whole
 `ReplicaLagMonitorTests`, `WalPositionHistoryTests`, `ReadYourWritesTrackerTests` and
 `ReadWriteRoutingConfigurationTests` cover the parts.
 
-## 12. After-sales refunds (V12-V12_3)
+## 12. After-sales refunds (V12-V12_4)
 
 Refund requests on completed orders and the automatic refund of cancelled paid orders. Cases, refunds, the poller and
 the customer and admin API are in `backend/src/main/java/com/laioffer/onlineorder/aftersales/`, the merchant's side in
@@ -1075,6 +1075,7 @@ what was built); this section is the operator's side.
 | `refund-gateway.timeout` | 10s; must be below `refund.claim-timeout` | `AFTER_SALES_REFUND_GATEWAY_TIMEOUT` |
 | `refund-gateway.max-threads` | 4 gateway calls at once, calls that outlived their timeout included | `AFTER_SALES_REFUND_GATEWAY_MAX_THREADS` |
 | `request-window`, `merchant-response-timeout`, `customer-response-timeout`, `arbitration-timeout` | 24h, 24h, 48h, 72h | `AFTER_SALES_REQUEST_WINDOW`, `AFTER_SALES_MERCHANT_RESPONSE_TIMEOUT`, `AFTER_SALES_CUSTOMER_RESPONSE_TIMEOUT`, `AFTER_SALES_ARBITRATION_TIMEOUT` |
+| `picked-up-cancel-refund-percent` | 50: the share of the total a customer's cancel after the pickup refunds (0-100, half-even; 0 refunds nothing); an admin's cancel always refunds in full | `AFTER_SALES_PICKED_UP_CANCEL_REFUND_PERCENT` |
 | `topic`, `merchant-group`, `notification-group` | `after-sales-events`, `onlineorder-merchant-aftersales`, `onlineorder-aftersales-notification` | `KAFKA_AFTER_SALES_TOPIC`, `AFTER_SALES_MERCHANT_GROUP`, `AFTER_SALES_NOTIFICATION_GROUP` |
 
 The application does not start when `refund.max-attempts` or `refund-gateway.max-threads` is below 1, a time limit,
@@ -1241,7 +1242,7 @@ request; a refused one never reached the handler and can be retried with its key
 Not covered yet: the after-sales tables (cases, lines, history, refunds, payments) have no retention or partitioning; a
 customer is not notified when a refund is given up.
 
-### Rollout (V12-V12_3)
+### Rollout (V12-V12_4)
 
 **V12** creates `order_payments`, `after_sales_cases`, `after_sales_case_lines`, `after_sales_case_history`, `refunds`
 and `merchant_after_sales_cases`, all empty, and changes one existing table: `order_notifications` gets
@@ -1263,7 +1264,11 @@ the column change until V12_2 commits. Checkouts and every idempotent command wr
 `CLEANUP_IDEMPOTENCY_RETENTION` (3d) of requests; 500,000 rows took 26 ms in the same setup. **V12_3** adds
 `refunds.claim_failures INTEGER DEFAULT 0 NOT NULL` (catalog only: a constant default) and its check
 `chk_refund_claim_failures`, validated by one scan of `refunds` under the `ACCESS EXCLUSIVE` lock of the column change;
-only the refund executor and the admin refund endpoints wait, and `refunds` holds one row per refunded case.
+only the refund executor and the admin refund endpoints wait, and `refunds` holds one row per refunded case. **V12_4**
+adds `orders.picked_up_at TIMESTAMP` (nullable, no default: catalog only, a brief `ACCESS EXCLUSIVE` lock on `orders`
+and no rewrite). The order-delivery consumer fills it from `delivery.picked_up` from then on; deliveries picked up
+before the release have none, so a customer who cancels one of those still gets the whole order back. An older pod
+neither writes nor reads the column.
 
 How to run it: time V12 against a restored copy of production first (`SELECT COUNT(*),
 pg_size_pretty(pg_total_relation_size('order_notifications')) FROM order_notifications`), then follow steps 1-4 of

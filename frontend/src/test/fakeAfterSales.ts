@@ -15,6 +15,7 @@ import {
   type Refund,
   parseAfterSalesStatus,
 } from "../api/dto";
+import type { CurrencyCode } from "../api/currency";
 import { minorDigits } from "../lib/format";
 import { USD, orderNoFor } from "./fixtures";
 import type { FakeState } from "./fakeBackend";
@@ -269,13 +270,43 @@ export function settleAfterSalesRefund(state: FakeState, caseId: number) {
   });
 }
 
+/** app.after-sales.picked-up-cancel-refund-percent at its default. */
+export const PICKED_UP_CANCEL_REFUND_PERCENT = 50;
+
+/**
+ * `percent` of `amount`, rounded half-even to the currency's minor unit like the backend's
+ * Money.multiply (4.505 USD is 4.50, 475.5 JPY is 476).
+ */
+const shareOf = (amount: number, percent: number, currency: CurrencyCode): number => {
+  const unit = 10 ** minorDigits(currency);
+  const exact = (Math.round(amount * unit) * percent) / 100;
+  const floor = Math.floor(exact);
+  const rest = exact - floor;
+  const rounded = rest > 0.5 || (rest === 0.5 && floor % 2 === 1) ? floor + 1 : floor;
+  return rounded / unit;
+};
+
 /**
  * Opens the automatic refund of a paid order that was just cancelled (ADR 0002 D12): an
- * ORDER_CANCELLED case in REFUNDING for the order total, unless the order was not paid
- * or is free.
+ * ORDER_CANCELLED case in REFUNDING that requests the order total and refunds it, unless the
+ * order was not paid or is free. A customer's cancel after the pickup refunds only
+ * PICKED_UP_CANCEL_REFUND_PERCENT of it (section 27, follow-up 17); an admin's cancel refunds
+ * it all.
  */
-export function openCancellationRefund(state: FakeState, order: Order, wasPaid: boolean) {
+export function openCancellationRefund(
+  state: FakeState,
+  order: Order,
+  wasPaid: boolean,
+  cancelledBy: "CUSTOMER" | "ADMIN",
+) {
   if (!wasPaid || order.total_price <= 0) {
+    return;
+  }
+  const refunded =
+    cancelledBy === "CUSTOMER" && state.orderPickups.has(order.id)
+      ? shareOf(order.total_price, PICKED_UP_CANCEL_REFUND_PERCENT, order.currency)
+      : order.total_price;
+  if (refunded <= 0) {
     return;
   }
   const current = afterSalesCaseFixture({
@@ -288,7 +319,7 @@ export function openCancellationRefund(state: FakeState, order: Order, wasPaid: 
     reason_code: null,
     description: null,
     requested_amount: order.total_price,
-    approved_amount: order.total_price,
+    approved_amount: refunded,
     resolution: "ORDER_CANCELLED",
     currency: order.currency,
     lines: order.items.map((item): AfterSalesLine => ({
@@ -306,7 +337,7 @@ export function openCancellationRefund(state: FakeState, order: Order, wasPaid: 
     case_id: current.id,
     order_id: order.id,
     order_no: order.order_no,
-    amount: order.total_price,
+    amount: refunded,
     currency: order.currency,
   });
   current.history.push({
@@ -314,7 +345,7 @@ export function openCancellationRefund(state: FakeState, order: Order, wasPaid: 
     from_status: null,
     to_status: "REFUNDING",
     actor_type: "SYSTEM",
-    amount: order.total_price,
+    amount: refunded,
     currency: order.currency,
     note: null,
     occurred_at: current.created_at,

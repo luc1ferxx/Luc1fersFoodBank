@@ -3,7 +3,10 @@ package com.laioffer.onlineorder.aftersales;
 
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.exception.ConflictException;
+import com.laioffer.onlineorder.fulfilment.order.DeliveryCompletionService;
 import com.laioffer.onlineorder.messaging.AfterSalesEventEnvelope;
+import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
+import com.laioffer.onlineorder.messaging.DeliveryEventPayload;
 import com.laioffer.onlineorder.messaging.contract.EventContracts;
 import com.laioffer.onlineorder.messaging.contract.EventTopic;
 import com.laioffer.onlineorder.model.OrderDto;
@@ -89,6 +92,9 @@ abstract class AbstractCancellationRefundIntegrationTests {
     @Autowired
     MeterRegistry meterRegistry;
 
+    @Autowired
+    DeliveryCompletionService deliveryCompletionService;
+
 
     @Test
     void customerCancel_ofAPaidOrder_shouldOpenTheRefundOfTheWholeOrder() throws Exception {
@@ -114,6 +120,50 @@ abstract class AbstractCancellationRefundIntegrationTests {
 
         // A retry with the same key answers with the cancelled order and opens nothing more.
         cancel(alice, paid.id(), "cancel-" + paid.id()).andExpect(status().isOk());
+        assertRefundOpened(paid.id());
+    }
+
+
+    /**
+     * Section 27, follow-up 17: delivery.picked_up records the pickup on the order (once), and the customer's cancel of
+     * the still ACCEPTED order afterwards refunds half of it (app.after-sales.picked-up-cancel-refund-percent, 50 by
+     * default, half-even: 8.045 is 8.04); the case still requests the whole order.
+     */
+    @Test
+    void customerCancel_afterThePickup_shouldRefundHalfOfTheOrder() throws Exception {
+        Customer frank = customer("cancel-refund-pickup-");
+        OrderDto paid = paidOrder(frank, menuItem(BURGER_KING, 0), menuItem(BURGER_KING, 1));
+        orderService.transitionOrderStatus(paid.id(), "ACCEPTED");
+        LocalDateTime pickedUpAt = LocalDateTime.of(2026, 10, 21, 9, 30, 15);
+        deliveryCompletionService.handle(pickedUp(paid.id(), "pickup-" + paid.id(), pickedUpAt));
+        // A second pickup (a reassigned delivery) keeps the first one.
+        deliveryCompletionService.handle(pickedUp(paid.id(), "pickup-again-" + paid.id(), pickedUpAt.plusMinutes(9)));
+        Assertions.assertEquals(pickedUpAt, jdbcTemplate.queryForObject(
+                "SELECT picked_up_at FROM orders WHERE id = ?", LocalDateTime.class, paid.id()));
+        Assertions.assertEquals("ACCEPTED", orderRepository.findById(paid.id()).orElseThrow().status(),
+                "a pickup changes no status");
+
+        cancel(frank, paid.id(), "cancel-" + paid.id()).andExpect(status().isOk());
+
+        Money total = Money.of(paid.totalPrice(), paid.currency());
+        AfterSalesCaseEntity opened = assertRefundOpened(paid.id(), total.multiply(new BigDecimal("0.50")));
+        Assertions.assertTrue(Money.of(opened.approvedAmount(), opened.currency()).isPositive());
+    }
+
+
+    /**
+     * An admin's cancel after the pickup is the platform's decision: still the whole order.
+     */
+    @Test
+    void adminCancel_afterThePickup_shouldRefundTheWholeOrder() throws Exception {
+        Customer gina = customer("cancel-refund-pickup-admin-");
+        OrderDto paid = paidOrder(gina, menuItem(BURGER_KING, 0));
+        orderService.transitionOrderStatus(paid.id(), "ACCEPTED");
+        deliveryCompletionService.handle(
+                pickedUp(paid.id(), "pickup-" + paid.id(), LocalDateTime.of(2026, 10, 21, 9, 0)));
+
+        orderService.idempotentTransitionOrderStatus(adminId(), paid.id(), "CANCELLED", "admin-" + paid.id());
+
         assertRefundOpened(paid.id());
     }
 
@@ -229,11 +279,20 @@ abstract class AbstractCancellationRefundIntegrationTests {
 
     /**
      * The order is CANCELLED with exactly one case, an ORDER_CANCELLED one in REFUNDING for the order total in the
-     * order's currency, opened by SYSTEM at the time of the cancel with every order line in full, one PENDING refund
+     * order's currency (approved in full), opened by SYSTEM at the time of the cancel with every order line in full, one PENDING refund
      * of that amount due at once against the order's captured payment, and one aftersales.case_opened event that
      * passes its contract and follows the order's own order.cancelled.
      */
     AfterSalesCaseEntity assertRefundOpened(Long orderId) {
+        return assertRefundOpened(orderId, orderRepository.findById(orderId).orElseThrow().total());
+    }
+
+
+    /**
+     * {@link #assertRefundOpened(Long)} for a case that requests the order total and approves and refunds
+     * {@code refunded} (the share of a customer's cancel after the pickup, section 27 follow-up 17).
+     */
+    AfterSalesCaseEntity assertRefundOpened(Long orderId, Money refunded) {
         OrderEntity order = orderRepository.findById(orderId).orElseThrow();
         Assertions.assertEquals("CANCELLED", order.status());
         Money total = order.total();
@@ -249,7 +308,7 @@ abstract class AbstractCancellationRefundIntegrationTests {
         Assertions.assertEquals(order.currency(), opened.currency());
         Assertions.assertEquals(total, Money.of(opened.orderTotal(), opened.currency()));
         Assertions.assertEquals(total, Money.of(opened.requestedAmount(), opened.currency()));
-        Assertions.assertEquals(total, Money.of(opened.approvedAmount(), opened.currency()));
+        Assertions.assertEquals(refunded, Money.of(opened.approvedAmount(), opened.currency()));
         Assertions.assertNull(opened.offeredAmount());
         Assertions.assertNull(opened.refundedAmount());
         Assertions.assertEquals("ORDER_CANCELLED", opened.resolution());
@@ -294,7 +353,7 @@ abstract class AbstractCancellationRefundIntegrationTests {
         Assertions.assertEquals("ORDER_CANCELLED", history.get("action"));
         Assertions.assertEquals("SYSTEM", history.get("actor_type"));
         Assertions.assertNull(history.get("actor_id"));
-        Assertions.assertEquals(total, Money.of((BigDecimal) history.get("amount"), String.valueOf(history.get("currency"))));
+        Assertions.assertEquals(refunded, Money.of((BigDecimal) history.get("amount"), String.valueOf(history.get("currency"))));
         Assertions.assertEquals(cancelledAt, jdbcTemplate.queryForObject(
                 "SELECT occurred_at FROM after_sales_case_history WHERE case_id = ?", LocalDateTime.class, opened.id()));
 
@@ -307,7 +366,7 @@ abstract class AbstractCancellationRefundIntegrationTests {
         Assertions.assertEquals(jdbcTemplate.queryForObject(
                 "SELECT provider_reference FROM order_payments WHERE order_id = ?", String.class, orderId),
                 refund.paymentReference());
-        Assertions.assertEquals(total, Money.of(refund.amount(), refund.currency()));
+        Assertions.assertEquals(refunded, Money.of(refund.amount(), refund.currency()));
         Assertions.assertEquals("PENDING", refund.status());
         Assertions.assertEquals(0, refund.attempts());
         Assertions.assertEquals(cancelledAt, refund.nextAttemptAt(), "due at once");
@@ -346,9 +405,18 @@ abstract class AbstractCancellationRefundIntegrationTests {
         Assertions.assertEquals("ORDER_CANCELLED", event.data().action());
         Assertions.assertEquals("SYSTEM", event.data().actorType());
         Assertions.assertEquals(order.orderNo(), event.data().orderNo());
-        Assertions.assertEquals(total, Money.of(event.data().approvedAmount(), event.data().currency()));
+        Assertions.assertEquals(refunded, Money.of(event.data().approvedAmount(), event.data().currency()));
         Assertions.assertEquals(orderLines.size(), event.data().lines().size());
         return opened;
+    }
+
+
+    /**
+     * The dispatch module's delivery.picked_up of {@code orderId}, as the order-delivery consumer reads it.
+     */
+    static DeliveryEventEnvelope pickedUp(Long orderId, String eventId, LocalDateTime at) {
+        return new DeliveryEventEnvelope(eventId, 1, "delivery.picked_up", "DELIVERY", orderId + 500_000, at, eventId,
+                null, new DeliveryEventPayload(orderId, null, null, 4L, "Alice", "PICKED_UP"));
     }
 
 

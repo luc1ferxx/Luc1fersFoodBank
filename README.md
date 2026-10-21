@@ -636,6 +636,10 @@ their events.
 > orders runs as before. A paid order (`PAID` or `ACCEPTED`) that is cancelled, by anyone, gets an automatic refund:
 > the cancel opens an `ORDER_CANCELLED` after-sales case and its refund of the order total in the same transaction
 > (ADR 0002 D12), and its cancellation notice, whoever cancelled, says the payment will be refunded automatically.
+> Once the rider picked the order up (`delivery.picked_up`, recorded as `orders.picked_up_at` by the order-delivery
+> consumer), a customer who cancels the still `ACCEPTED` order gets only
+> `AFTER_SALES_PICKED_UP_CANCEL_REFUND_PERCENT` (50) percent of the total back, rounded half-even; the case still
+> requests the whole order and approves that share. An admin's cancel after the pickup still refunds the whole order.
 > The after-sales poller then executes the refund through the refund gateway (simulated here) and marks the case
 > `REFUNDED`, which sends the customer a "Refund completed" notification; a refund the gateway refuses, or that keeps
 > failing, ends `FAILED` and leaves its case `REFUNDING`. An order without a captured payment (marked `PAID` by an
@@ -1157,7 +1161,7 @@ Metrics (tag values are lower case):
 
 The alerts `OnlineOrderRefundsGivenUp`, `OnlineOrderRefundsBackingOff`, `OnlineOrderRefundGatewaySaturated` and
 `OnlineOrderCancellationsUndercaptured` watch these refunds; [docs/operations.md](docs/operations.md) section 12 has
-their runbook, the V12-V12_3 rollout and the connection pool sizing for the after-sales listeners.
+their runbook, the V12-V12_4 rollout and the connection pool sizing for the after-sales listeners.
 
 ---
 

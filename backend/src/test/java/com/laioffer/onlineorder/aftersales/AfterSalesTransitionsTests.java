@@ -58,6 +58,8 @@ class AfterSalesTransitionsTests {
 
     static final LocalDateTime NOW = LocalDateTime.of(2026, 10, 21, 12, 0, 30);
 
+    static final Money FULL_REFUND = Money.of(new BigDecimal("16.09"), "USD");
+
     static final Long CASE_ID = 501L;
 
     static final Long ORDER_ID = 1001L;
@@ -482,7 +484,7 @@ class AfterSalesTransitionsTests {
         stubCaseAndLineInserts();
 
         AfterSalesCaseEntity opened = transitions.openOrderCancelled(new AfterSalesTransitions.OrderCancellation(
-                order, payment("16.09", "USD"), ORDER_ITEMS, NOW));
+                order, payment("16.09", "USD"), ORDER_ITEMS, FULL_REFUND, NOW));
 
         AfterSalesCaseEntity expected = new AfterSalesCaseEntity(CASE_ID, ORDER_ID, CUSTOMER_ID, 7L, "ORDER_CANCELLED",
                 1, "REFUNDING", null, null, new BigDecimal("16.09"), new BigDecimal("16.09"), null,
@@ -536,7 +538,7 @@ class AfterSalesTransitionsTests {
         TransactionSynchronizationManager.initSynchronization();
         try {
             transitions.openOrderCancelled(new AfterSalesTransitions.OrderCancellation(
-                    cancelledOrder("USD"), payment("16.09", "USD"), ORDER_ITEMS, NOW));
+                    cancelledOrder("USD"), payment("16.09", "USD"), ORDER_ITEMS, FULL_REFUND, NOW));
             Mockito.verifyNoInteractions(metricsService);
 
             TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
@@ -551,7 +553,7 @@ class AfterSalesTransitionsTests {
     void openOrderCancelled_withAPaymentInAnotherCurrency_shouldWriteNothing() {
         Assertions.assertThrows(CurrencyMismatchException.class, () -> transitions.openOrderCancelled(
                 new AfterSalesTransitions.OrderCancellation(
-                        cancelledOrder("USD"), payment("16.09", "EUR"), ORDER_ITEMS, NOW)));
+                        cancelledOrder("USD"), payment("16.09", "EUR"), ORDER_ITEMS, FULL_REFUND, NOW)));
         assertNothingWritten();
     }
 
@@ -561,18 +563,48 @@ class AfterSalesTransitionsTests {
         OrderEntity order = cancelledOrder("USD");
         OrderPaymentEntity payment = payment("16.09", "USD");
         Assertions.assertThrows(NullPointerException.class,
-                () -> new AfterSalesTransitions.OrderCancellation(null, payment, ORDER_ITEMS, NOW));
+                () -> new AfterSalesTransitions.OrderCancellation(null, payment, ORDER_ITEMS, FULL_REFUND, NOW));
         Assertions.assertThrows(NullPointerException.class,
-                () -> new AfterSalesTransitions.OrderCancellation(order, null, ORDER_ITEMS, NOW));
+                () -> new AfterSalesTransitions.OrderCancellation(order, null, ORDER_ITEMS, FULL_REFUND, NOW));
         Assertions.assertThrows(NullPointerException.class,
-                () -> new AfterSalesTransitions.OrderCancellation(order, payment, null, NOW));
+                () -> new AfterSalesTransitions.OrderCancellation(order, payment, null, FULL_REFUND, NOW));
         Assertions.assertThrows(NullPointerException.class,
-                () -> new AfterSalesTransitions.OrderCancellation(order, payment, ORDER_ITEMS, null));
+                () -> new AfterSalesTransitions.OrderCancellation(order, payment, ORDER_ITEMS, FULL_REFUND, null));
         OrderPaymentEntity anotherOrders = new OrderPaymentEntity(78L, ORDER_ID + 1, CUSTOMER_ID,
                 new BigDecimal("16.09"), "USD", "CAPTURED", "SIMPAY-1b2c", NOW.minusHours(3));
         IllegalArgumentException mismatch = Assertions.assertThrows(IllegalArgumentException.class,
-                () -> new AfterSalesTransitions.OrderCancellation(order, anotherOrders, ORDER_ITEMS, NOW));
+                () -> new AfterSalesTransitions.OrderCancellation(order, anotherOrders, ORDER_ITEMS, FULL_REFUND, NOW));
         Assertions.assertEquals("Payment 78 belongs to order 1002, not 1001", mismatch.getMessage());
+        Assertions.assertThrows(NullPointerException.class,
+                () -> new AfterSalesTransitions.OrderCancellation(order, payment, ORDER_ITEMS, null, NOW));
+        for (String refund : new String[] {"0.00", "16.10"}) {
+            IllegalArgumentException outOfRange = Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> new AfterSalesTransitions.OrderCancellation(
+                            order, payment, ORDER_ITEMS, Money.of(new BigDecimal(refund), "USD"), NOW));
+            Assertions.assertEquals("The refund of order 1001 must be more than zero and at most its total 16.09 USD, "
+                    + "got " + refund + " USD", outOfRange.getMessage());
+        }
+        Assertions.assertThrows(CurrencyMismatchException.class, () -> new AfterSalesTransitions.OrderCancellation(
+                order, payment, ORDER_ITEMS, Money.of(new BigDecimal("16.09"), "EUR"), NOW));
+    }
+
+
+    /**
+     * Section 27, follow-up 17: after a pickup the customer's cancel refunds a share; the case requests the whole total
+     * and approves that share, with every line in full.
+     */
+    @Test
+    void openOrderCancelled_withAShareOfTheTotal_shouldRequestTheTotalAndApproveTheShare() {
+        OrderEntity order = cancelledOrder("USD");
+        stubCaseAndLineInserts();
+
+        AfterSalesCaseEntity opened = transitions.openOrderCancelled(new AfterSalesTransitions.OrderCancellation(
+                order, payment("16.09", "USD"), ORDER_ITEMS, Money.of(new BigDecimal("8.04"), "USD"), NOW));
+
+        Assertions.assertEquals(0, new BigDecimal("16.09").compareTo(opened.requestedAmount()));
+        Assertions.assertEquals(0, new BigDecimal("8.04").compareTo(opened.approvedAmount()));
+        Assertions.assertEquals("REFUNDING", opened.status());
+        Assertions.assertEquals("ORDER_CANCELLED", opened.resolution());
     }
 
 

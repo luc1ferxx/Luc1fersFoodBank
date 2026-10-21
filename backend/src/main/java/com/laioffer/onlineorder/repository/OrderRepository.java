@@ -103,4 +103,27 @@ public interface OrderRepository extends ListCrudRepository<OrderEntity, Long> {
               AND status = :fromStatus
             """)
     int compareAndSetStatus(Long id, String fromStatus, String toStatus, String cancelReason, LocalDateTime updatedAt);
+
+
+    /**
+     * Records when the rider picked the order up, once: a repeated or later pickup leaves the first one. Not a status
+     * change, so neither the status nor updated_at moves. Returns the rows changed, 0 for an unknown order or one whose
+     * pickup is already recorded.
+     */
+    @Modifying
+    @Query("""
+            UPDATE orders
+            SET picked_up_at = :pickedUpAt
+            WHERE id = :id
+              AND picked_up_at IS NULL
+            """)
+    int recordPickup(Long id, LocalDateTime pickedUpAt);
+
+
+    /**
+     * When the rider picked the order up, or empty while no pickup is recorded (or for an unknown order). Read under
+     * the order's row lock by a cancel, so a pickup that committed first is seen.
+     */
+    @Query("SELECT picked_up_at FROM orders WHERE id = :id")
+    Optional<LocalDateTime> findPickedUpAt(Long id);
 }

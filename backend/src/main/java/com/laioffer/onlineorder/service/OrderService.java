@@ -42,6 +42,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -428,6 +429,17 @@ public class OrderService implements OrderLifecycleCommands {
     }
 
 
+    @Override
+    @Transactional
+    public boolean recordPickup(Long orderId, LocalDateTime pickedUpAt, OrderActor actor) {
+        Objects.requireNonNull(pickedUpAt, "pickedUpAt");
+        if (actor.type() != OrderActor.Type.RIDER && actor.type() != OrderActor.Type.SYSTEM) {
+            throw new IllegalStateException("A pickup is recorded for a rider or the system, not " + actor);
+        }
+        return orderRepository.recordPickup(orderId, pickedUpAt.truncatedTo(ChronoUnit.MICROS)) == 1;
+    }
+
+
     /**
      * The after-sales module locks the case, decides with the after-sales machine and writes the step, all in this
      * transaction.
@@ -532,8 +544,13 @@ public class OrderService implements OrderLifecycleCommands {
         orderEventOutboxService.enqueueOrderEvent(updatedOrder, items, null, transitionedAt);
         if (targetStatus == OrderStatus.CANCELLED && REFUNDED_WHEN_CANCELLED.contains(currentStatus)) {
             // After the order's own event (ADR 0002 D12): the order row stays locked, and the refund commits with the
-            // cancel or rolls it back.
-            cancellationRefunds.refundCancelledOrder(updatedOrder, transitionedAt);
+            // cancel or rolls it back. A pickup that committed before this cancel took the lock is seen here.
+            cancellationRefunds.refundCancelledOrder(new CancellationRefunds.Cancellation(
+                    updatedOrder,
+                    trigger,
+                    orderRepository.findPickedUpAt(updatedOrder.id()).orElse(null),
+                    transitionedAt
+            ));
         }
         // Counted once the transition commits: a later step of the caller (its audit entry, its idempotency record)
         // can still roll it back.

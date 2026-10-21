@@ -172,6 +172,10 @@ export function riderRoutes({ state, requireRole }: FakeContext) {
     delivery.status = target;
     if (target === "PICKED_UP") {
       delivery.picked_up_at = NOW;
+      // delivery.picked_up reaches the order module, which keeps the first pickup.
+      if (!state.orderPickups.has(delivery.order_id)) {
+        state.orderPickups.set(delivery.order_id, NOW);
+      }
     } else if (target === "DELIVERED") {
       delivery.delivered_at = NOW;
       if (state.riderProfile) {

@@ -14,6 +14,7 @@ import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.model.OrderStatusHistoryDto;
+import com.laioffer.onlineorder.model.OrderTrigger;
 import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
@@ -496,6 +497,8 @@ class OrderServiceTests {
                 Mockito.any(LocalDateTime.class));
         steps.verify(orderEventOutboxService).enqueueOrderEvent(
                 Mockito.any(), Mockito.anyList(), Mockito.isNull(), Mockito.any(LocalDateTime.class));
+        // The refund of the paid order reads the pickup under the lock (section 27, follow-up 17).
+        steps.verify(orderRepository).findPickedUpAt(5L);
         steps.verify(idempotencyRequestRepository)
                 .markSucceeded(Mockito.eq(77L), Mockito.eq("SUCCEEDED"), Mockito.eq(5L), Mockito.any(LocalDateTime.class));
         Mockito.verifyNoMoreInteractions(orderRepository, idempotencyRequestRepository, idempotencyRequestInitializer);
@@ -601,14 +604,55 @@ class OrderServiceTests {
                 cancelledAt.getValue());
         steps.verify(orderEventOutboxService).enqueueOrderEvent(
                 Mockito.any(), Mockito.anyList(), Mockito.isNull(), Mockito.eq(cancelledAt.getValue()));
-        steps.verify(cancellationRefunds).refundCancelledOrder(
+        steps.verify(cancellationRefunds).refundCancelledOrder(new CancellationRefunds.Cancellation(
                 locked.withStatus("CANCELLED", OrderLifecycleCommands.CUSTOMER_CANCELLED, cancelledAt.getValue()),
+                OrderTrigger.CUSTOMER_CANCEL,
+                null,
                 cancelledAt.getValue()
-        );
+        ));
         steps.verify(metricsService).recordOrderTransition(from.name(), "CANCELLED");
         steps.verify(idempotencyRequestRepository)
                 .markSucceeded(Mockito.eq(77L), Mockito.eq("SUCCEEDED"), Mockito.eq(5L), Mockito.any(LocalDateTime.class));
         Mockito.verifyNoMoreInteractions(cancellationRefunds);
+    }
+
+
+    /**
+     * Section 27, follow-up 17: the pickup the order module recorded is read once the order is locked and handed to the
+     * refund with the cancel's trigger, which decides how much it refunds.
+     */
+    @Test
+    void customerCancel_ofAPickedUpOrder_shouldHandItsPickupToTheRefund() {
+        stubFirstIdempotentAttempt(1L, "refund-pickup-key");
+        Mockito.when(orderRepository.lockByIdAndCustomerId(5L, 1L)).thenReturn(order("ACCEPTED", null));
+        LocalDateTime pickedUpAt = LocalDateTime.of(2026, 10, 21, 9, 30);
+        Mockito.when(orderRepository.findPickedUpAt(5L)).thenReturn(Optional.of(pickedUpAt));
+        stubCompareAndSet();
+
+        orderService.idempotentCancelOrder(1L, 5L, "refund-pickup-key");
+
+        InOrder steps = Mockito.inOrder(orderRepository, cancellationRefunds);
+        steps.verify(orderRepository).lockByIdAndCustomerId(5L, 1L);
+        steps.verify(orderRepository).findPickedUpAt(5L);
+        steps.verify(cancellationRefunds).refundCancelledOrder(Mockito.argThat(cancellation ->
+                cancellation.trigger() == OrderTrigger.CUSTOMER_CANCEL
+                        && pickedUpAt.equals(cancellation.pickedUpAt())));
+    }
+
+
+    /**
+     * A pickup is written once, in the microseconds the column keeps; a repeat changes no row.
+     */
+    @Test
+    void recordPickup_shouldWriteThePickupOnceInMicroseconds() {
+        LocalDateTime pickedUpAt = LocalDateTime.of(2026, 10, 21, 9, 30, 0, 123_456_789);
+        Mockito.when(orderRepository.recordPickup(5L, LocalDateTime.of(2026, 10, 21, 9, 30, 0, 123_456_000)))
+                .thenReturn(1, 0);
+
+        Assertions.assertTrue(orderService.recordPickup(5L, pickedUpAt, OrderActor.rider(4L)));
+        Assertions.assertFalse(orderService.recordPickup(5L, pickedUpAt, OrderActor.system()));
+        Assertions.assertThrows(IllegalStateException.class,
+                () -> orderService.recordPickup(5L, pickedUpAt, OrderActor.merchant(40L)));
     }
 
 
@@ -627,9 +671,9 @@ class OrderServiceTests {
         steps.verify(orderEventOutboxService).enqueueOrderEvent(
                 Mockito.any(), Mockito.anyList(), Mockito.isNull(), Mockito.any(LocalDateTime.class));
         steps.verify(cancellationRefunds).refundCancelledOrder(
-                Mockito.argThat(order -> "CANCELLED".equals(order.status())
-                        && OrderLifecycleCommands.ADMIN_CANCELLED.equals(order.cancelReason())),
-                Mockito.any(LocalDateTime.class)
+                Mockito.argThat(cancellation -> "CANCELLED".equals(cancellation.order().status())
+                        && OrderLifecycleCommands.ADMIN_CANCELLED.equals(cancellation.order().cancelReason())
+                        && cancellation.trigger() == OrderTrigger.ADMIN_CANCEL)
         );
         steps.verify(auditLogService).record(
                 Mockito.eq(AuditActor.admin(9L)), Mockito.eq(AuditActions.ORDER_STATUS_UPDATE),
@@ -658,7 +702,7 @@ class OrderServiceTests {
         orderService.transitionOrderStatus(5L, to.name(), OrderActor.admin(9L));
 
         Mockito.verify(cancellationRefunds, Mockito.times(refunded ? 1 : 0))
-                .refundCancelledOrder(Mockito.any(), Mockito.any());
+                .refundCancelledOrder(Mockito.any());
     }
 
 
@@ -693,7 +737,7 @@ class OrderServiceTests {
         Mockito.when(orderRepository.lockByIdAndCustomerId(5L, 1L)).thenReturn(order("PAID", null));
         stubCompareAndSet();
         Mockito.doThrow(new IllegalStateException("forced refund failure"))
-                .when(cancellationRefunds).refundCancelledOrder(Mockito.any(), Mockito.any());
+                .when(cancellationRefunds).refundCancelledOrder(Mockito.any());
 
         IllegalStateException failed = Assertions.assertThrows(IllegalStateException.class,
                 () -> orderService.idempotentCancelOrder(1L, 5L, "failed-refund-key"));

@@ -129,6 +129,11 @@ export interface FakeState {
   afterSalesKeys: Map<string, { fingerprint: string; caseId: number }>;
   /** The end of every completed order's request window (LocalDateTime). */
   afterSalesRequestDeadline: string;
+  /**
+   * When a rider picked each order up (orders.picked_up_at): the rider's PICKED_UP move
+   * records it, or a test sets it. A customer's cancel afterwards refunds only part.
+   */
+  orderPickups: Map<number, string>;
   /** The next case or refund id. */
   nextAfterSalesId: number;
   nextAccountId: number;
@@ -161,6 +166,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
     afterSalesCases: [],
     afterSalesKeys: new Map(),
     afterSalesRequestDeadline: localTimestamp(AFTER_SALES_TIMEOUTS.requestWindow),
+    orderPickups: new Map(),
     nextAfterSalesId: 900,
     nextAccountId: 40,
     nextOrderItemId: 500,
@@ -388,7 +394,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
           recordStatusChange(order.id, order.status, "CANCELLED", "CUSTOMER");
         }
         order.status = "CANCELLED";
-        openCancellationRefund(state, order, wasPaid);
+        openCancellationRefund(state, order, wasPaid, "CUSTOMER");
         return json({ ...order });
       }),
     ],
@@ -407,7 +413,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
         }
         order.status = status;
         if (status === "CANCELLED") {
-          openCancellationRefund(state, order, wasPaid);
+          openCancellationRefund(state, order, wasPaid, "ADMIN");
         }
         return json({ ...order });
       }),

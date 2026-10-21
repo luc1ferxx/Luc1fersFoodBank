@@ -4,6 +4,7 @@ package com.laioffer.onlineorder.aftersales;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderPaymentEntity;
 import com.laioffer.onlineorder.fulfilment.AfterCommit;
+import com.laioffer.onlineorder.model.OrderTrigger;
 import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
@@ -11,12 +12,13 @@ import com.laioffer.onlineorder.repository.OrderPaymentRepository;
 import com.laioffer.onlineorder.service.CancellationRefunds;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 
-import java.time.LocalDateTime;
+import java.math.BigDecimal;
 import java.util.Optional;
 
 
@@ -29,10 +31,16 @@ import java.util.Optional;
  * A completed order cannot be cancelled and a cancelled one cannot complete, so the case never meets a customer's
  * request on the same order.
  *
- * <p>The case refunds the order's total, which is not checked against the capture here (ADR 0002 section 24,
- * deviation 2): a total above the capture still opens the case, and the refund executor gives its refund up before
- * calling the gateway (section 19.4). So that support sees such an order before then, its opening is logged as a WARN
- * and counted in onlineorder.aftersales.cancellations.undercaptured once the cancel committed.
+ * <p>The case refunds the order's total, except when the customer cancels an order the rider already picked up
+ * (section 27, follow-up 17): then it refunds {@code app.after-sales.picked-up-cancel-refund-percent} of the total,
+ * rounded half-even to the currency's minor unit, and nothing when that is 0.00. An admin's cancel after the pickup
+ * still refunds the whole total: it is the platform's decision. The case's requested amount stays the total and its
+ * approved amount is the refund.
+ *
+ * <p>The refund is not checked against the capture here (ADR 0002 section 24, deviation 2): a refund above the capture
+ * still opens the case, and the refund executor gives its refund up before calling the gateway (section 19.4). So that
+ * support sees such an order before then, its opening is logged as a WARN and counted in
+ * onlineorder.aftersales.cancellations.undercaptured once the cancel committed.
  */
 @Service
 public class OrderCancellationRefunds implements CancellationRefunds {
@@ -43,25 +51,41 @@ public class OrderCancellationRefunds implements CancellationRefunds {
     private final OrderHistoryItemRepository orderHistoryItemRepository;
     private final AfterSalesTransitions transitions;
     private final ApplicationMetricsService metricsService;
+    private final BigDecimal pickedUpRefundShare;
 
 
     public OrderCancellationRefunds(
             OrderPaymentRepository orderPaymentRepository,
             OrderHistoryItemRepository orderHistoryItemRepository,
             AfterSalesTransitions transitions,
-            ApplicationMetricsService metricsService
+            ApplicationMetricsService metricsService,
+            @Value("${app.after-sales.picked-up-cancel-refund-percent:50}") int pickedUpRefundPercent
     ) {
+        if (pickedUpRefundPercent < 0 || pickedUpRefundPercent > 100) {
+            throw new IllegalArgumentException("app.after-sales.picked-up-cancel-refund-percent must be between 0 and "
+                    + "100, got " + pickedUpRefundPercent);
+        }
         this.orderPaymentRepository = orderPaymentRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
         this.transitions = transitions;
         this.metricsService = metricsService;
+        this.pickedUpRefundShare = BigDecimal.valueOf(pickedUpRefundPercent).movePointLeft(2);
     }
 
 
     @Override
     @Transactional(propagation = Propagation.MANDATORY)
-    public void refundCancelledOrder(OrderEntity cancelledOrder, LocalDateTime cancelledAt) {
-        if (!cancelledOrder.total().isPositive()) {
+    public void refundCancelledOrder(Cancellation cancellation) {
+        OrderEntity cancelledOrder = cancellation.order();
+        Money total = cancelledOrder.total();
+        boolean cancelledAfterPickup = cancellation.trigger() == OrderTrigger.CUSTOMER_CANCEL
+                && cancellation.pickedUpAt() != null;
+        Money refund = cancelledAfterPickup ? total.multiply(pickedUpRefundShare) : total;
+        if (!refund.isPositive()) {
+            if (cancelledAfterPickup && total.isPositive()) {
+                LOGGER.info("Order {} was cancelled by the customer after its pickup at {}; its refund share of {} is "
+                        + "nothing", cancelledOrder.id(), cancellation.pickedUpAt(), total);
+            }
             return;
         }
         Optional<OrderPaymentEntity> payment = orderPaymentRepository.findByOrderId(cancelledOrder.id());
@@ -76,17 +100,21 @@ public class OrderCancellationRefunds implements CancellationRefunds {
                 cancelledOrder,
                 payment.get(),
                 orderHistoryItemRepository.findAllByOrderIdOrderByIdAsc(cancelledOrder.id()),
-                cancelledAt
+                refund,
+                cancellation.cancelledAt()
         ));
-        Money total = cancelledOrder.total();
+        if (cancelledAfterPickup) {
+            AfterCommit.run(() -> LOGGER.info("Order {} was cancelled by the customer after its pickup at {}; case {} "
+                    + "refunds {} of its {}", cancelledOrder.id(), cancellation.pickedUpAt(), opened.id(), refund, total));
+        }
         Money captured = payment.get().captured();
         // The opening refused a capture in another currency; only a smaller amount is left to see.
-        if (total.currency().equals(captured.currency()) && total.isGreaterThan(captured)) {
+        if (refund.currency().equals(captured.currency()) && refund.isGreaterThan(captured)) {
             AfterCommit.run(() -> {
-                LOGGER.warn("Order {} was cancelled with a total of {} but its payment {} captured only {}; the "
+                LOGGER.warn("Order {} was cancelled with a refund of {} but its payment {} captured only {}; the "
                                 + "refund of case {} will be given up before the gateway is called, for support to "
                                 + "refund by hand",
-                        cancelledOrder.id(), total, payment.get().providerReference(), captured, opened.id());
+                        cancelledOrder.id(), refund, payment.get().providerReference(), captured, opened.id());
                 metricsService.recordAfterSalesUndercapturedCancellation();
             });
         }

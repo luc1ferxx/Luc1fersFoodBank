@@ -259,6 +259,10 @@ app:
     merchant-response-timeout: ${AFTER_SALES_MERCHANT_RESPONSE_TIMEOUT:24h}
     customer-response-timeout: ${AFTER_SALES_CUSTOMER_RESPONSE_TIMEOUT:48h}
     arbitration-timeout: ${AFTER_SALES_ARBITRATION_TIMEOUT:72h}
+    # A cancelled paid order is refunded automatically in full, except when the customer cancels it after the rider
+    # picked it up (delivery.picked_up): then this percent of its total (0-100, rounded half-even to the currency's
+    # minor unit; 0 refunds nothing). An admin's cancel always refunds in full. Applies to cancels after a change.
+    picked-up-cancel-refund-percent: ${AFTER_SALES_PICKED_UP_CANCEL_REFUND_PERCENT:50}
     poller:
       # Fires the deadlines of the open cases, then executes the due refunds
       # (com.laioffer.onlineorder.aftersales.AfterSalesPoller), on its own thread, not on the shared scheduler the
