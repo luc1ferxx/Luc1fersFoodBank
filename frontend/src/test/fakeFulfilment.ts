@@ -13,6 +13,8 @@ import { type FakeHandler, type FakeRoute, apiError, idParam, json, requestJson 
 /** What the fake's route groups share with the core fake backend. */
 export interface FakeContext {
   state: FakeState;
+  /** 401 without a session, like `anyRequest().authenticated()`. */
+  requireSession: (handler: FakeHandler) => FakeHandler;
   /** 401 without a session, 403 without `role`, like the backend's security config. */
   requireRole: (role: string, handler: FakeHandler) => FakeHandler;
   recordStatusChange: (

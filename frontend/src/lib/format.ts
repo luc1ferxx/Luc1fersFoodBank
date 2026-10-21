@@ -47,6 +47,32 @@ export const formatDateTime = (value: string | null | undefined): string => {
   return date.toLocaleString();
 };
 
+/**
+ * The time left until `deadline` (a backend LocalDateTime, read as local time) at
+ * `now`: "1d 4h", "3h 12m", "2m 05s", "40s"; null once it passed or when it does not
+ * parse.
+ */
+export const timeLeft = (deadline: string, now: number): string | null => {
+  const left = Date.parse(deadline) - now;
+  if (Number.isNaN(left) || left <= 0) {
+    return null;
+  }
+  const seconds = Math.floor(left / 1000);
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  }
+  return `${seconds}s`;
+};
+
 export const formatCardNumberInput = (value = ""): string =>
   value
     .replace(/\D/g, "")

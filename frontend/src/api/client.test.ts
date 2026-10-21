@@ -44,6 +44,38 @@ const riderAccountJson = {
   on_duty: false,
   active_deliveries: 0,
 };
+const caseJson = {
+  id: 900,
+  order_id: 101,
+  order_no: "7391823564100000101",
+  kind: "CUSTOMER_REQUEST",
+  attempt_no: 1,
+  status: "PENDING_MERCHANT",
+  requested_amount: 6.39,
+  currency: "USD",
+  lines: [],
+  created_at: "2026-10-20T12:00:00",
+  updated_at: "2026-10-20T12:00:00",
+};
+const merchantCaseJson = {
+  case_id: 900,
+  order_id: 101,
+  status: "PENDING_MERCHANT",
+  reason_code: "QUALITY_ISSUE",
+  description: "Cold",
+  requested_amount: 6.39,
+  opened_at: "2026-10-20T12:00:00",
+  updated_at: "2026-10-20T12:00:00",
+};
+const refundJson = {
+  id: 901,
+  case_id: 900,
+  order_id: 101,
+  amount: 6.39,
+  status: "FAILED",
+  attempts: 5,
+  created_at: "2026-10-20T12:00:00",
+};
 const deliveryJson = {
   delivery_id: 5,
   order_id: 7,
@@ -193,6 +225,30 @@ describe("API endpoints", () => {
         riderAccountJson,
       ],
       [() => api.setRiderAccountActive(4, true), riderAccountJson],
+      [() => api.getAfterSalesOverview(), { cases: [], eligible_orders: [] }],
+      [() => api.getAfterSalesCase(900), caseJson],
+      [
+        () =>
+          api.openAfterSalesCase(
+            101,
+            { scope: "WHOLE_ORDER", lines: [], reason_code: "OTHER", description: "x" },
+            "k",
+          ),
+        caseJson,
+      ],
+      [() => api.acceptAfterSalesOffer(900, "k"), caseJson],
+      [() => api.declineAfterSalesOffer(900, "k"), caseJson],
+      [() => api.escalateAfterSalesCase(900, null, "k"), caseJson],
+      [() => api.withdrawAfterSalesCase(900, "k"), caseJson],
+      [() => api.getMerchantAfterSalesCases({ status: "PENDING_MERCHANT" }), []],
+      [() => api.approveMerchantAfterSales(900), merchantCaseJson],
+      [() => api.rejectMerchantAfterSales(900, "No"), merchantCaseJson],
+      [() => api.offerMerchantAfterSales(900, 3, null), merchantCaseJson],
+      [() => api.getAdminAfterSalesCases(), [caseJson]],
+      [() => api.getAdminAfterSalesCase(900), caseJson],
+      [() => api.arbitrateAfterSalesCase(900, { decision: "REJECT", note: "No" }, "k"), caseJson],
+      [() => api.getAdminRefunds(), [refundJson]],
+      [() => api.retryRefund(901), refundJson],
     ];
     const fetchMock = stubFetch();
     for (const [call, body] of calls) {
@@ -215,6 +271,140 @@ describe("API endpoints", () => {
       "/menu.png",
       "/carts",
     ].forEach((path) => expect(path).not.toMatch(proxied));
+  });
+});
+
+describe("after-sales endpoints", () => {
+  it("send the contract's methods, paths, bodies and Idempotency-Keys", async () => {
+    const fetchMock = stubFetch(() => Promise.resolve(json(caseJson)));
+
+    await api.openAfterSalesCase(
+      101,
+      {
+        scope: "ITEMS",
+        lines: [{ order_item_id: 5, quantity: 2 }],
+        reason_code: "MISSING_ITEM",
+        description: "Two missing",
+      },
+      "open-key",
+    );
+    await api.acceptAfterSalesOffer(900, "accept-key");
+    await api.declineAfterSalesOffer(900, "decline-key");
+    await api.escalateAfterSalesCase(900, "Please look", "escalate-key");
+    await api.escalateAfterSalesCase(900, "", "escalate-key-2");
+    await api.withdrawAfterSalesCase(900, "withdraw-key");
+    await api.arbitrateAfterSalesCase(
+      900,
+      { decision: "PARTIAL", amount: 2.5, note: "Half" },
+      "arbitrate-key",
+    );
+    fetchMock.mockImplementation(() => Promise.resolve(json(merchantCaseJson)));
+    await api.approveMerchantAfterSales(900);
+    await api.rejectMerchantAfterSales(900, "Looked fine");
+    await api.offerMerchantAfterSales(900, 3.2, "Sorry");
+    await api.offerMerchantAfterSales(900, 3.2, null);
+    fetchMock.mockImplementation(() => Promise.resolve(json(refundJson)));
+    await api.retryRefund(901);
+    fetchMock.mockImplementation(() => Promise.resolve(json([])));
+    await api.getMerchantAfterSalesCases();
+    await api.getAdminAfterSalesCases({ status: "REFUNDING" });
+    await api.getAdminRefunds({ status: "PENDING" });
+
+    const sent = fetchMock.mock.calls.map(([url, init]) => ({
+      url,
+      method: init?.method,
+      headers: init?.headers,
+      body: init?.body,
+    }));
+    const json_ = { "Content-Type": "application/json" };
+    expect(sent).toEqual([
+      {
+        url: "/orders/101/after-sales",
+        method: "POST",
+        headers: { ...json_, "Idempotency-Key": "open-key" },
+        body: JSON.stringify({
+          scope: "ITEMS",
+          lines: [{ order_item_id: 5, quantity: 2 }],
+          reason_code: "MISSING_ITEM",
+          description: "Two missing",
+        }),
+      },
+      {
+        url: "/after-sales/cases/900/accept-offer",
+        method: "POST",
+        headers: { "Idempotency-Key": "accept-key" },
+        body: undefined,
+      },
+      {
+        url: "/after-sales/cases/900/decline-offer",
+        method: "POST",
+        headers: { "Idempotency-Key": "decline-key" },
+        body: undefined,
+      },
+      {
+        url: "/after-sales/cases/900/escalate",
+        method: "POST",
+        headers: { ...json_, "Idempotency-Key": "escalate-key" },
+        body: JSON.stringify({ note: "Please look" }),
+      },
+      {
+        url: "/after-sales/cases/900/escalate",
+        method: "POST",
+        headers: { "Idempotency-Key": "escalate-key-2" },
+        body: undefined,
+      },
+      {
+        url: "/after-sales/cases/900/withdraw",
+        method: "POST",
+        headers: { "Idempotency-Key": "withdraw-key" },
+        body: undefined,
+      },
+      {
+        url: "/admin/after-sales/900/arbitrate",
+        method: "POST",
+        headers: { ...json_, "Idempotency-Key": "arbitrate-key" },
+        body: JSON.stringify({ decision: "PARTIAL", amount: 2.5, note: "Half" }),
+      },
+      // The merchant's answers and a refund retry are idempotent by state: no key.
+      {
+        url: "/merchant/after-sales/900/approve",
+        method: "POST",
+        headers: undefined,
+        body: undefined,
+      },
+      {
+        url: "/merchant/after-sales/900/reject",
+        method: "POST",
+        headers: json_,
+        body: JSON.stringify({ reason: "Looked fine" }),
+      },
+      {
+        url: "/merchant/after-sales/900/offer",
+        method: "POST",
+        headers: json_,
+        body: JSON.stringify({ amount: 3.2, note: "Sorry" }),
+      },
+      {
+        url: "/merchant/after-sales/900/offer",
+        method: "POST",
+        headers: json_,
+        body: JSON.stringify({ amount: 3.2 }),
+      },
+      { url: "/admin/refunds/901/retry", method: "POST", headers: undefined, body: undefined },
+      { url: "/merchant/after-sales?limit=50", method: "GET", headers: undefined, body: undefined },
+      {
+        url: "/admin/after-sales?limit=50&status=REFUNDING",
+        method: "GET",
+        headers: undefined,
+        body: undefined,
+      },
+      {
+        url: "/admin/refunds?limit=50&status=PENDING",
+        method: "GET",
+        headers: undefined,
+        body: undefined,
+      },
+    ]);
   });
 });
 

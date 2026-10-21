@@ -2,6 +2,7 @@ import { type Mock, vi } from "vitest";
 import { fieldsOf } from "../api/decode";
 import {
   type ActorType,
+  type AfterSalesCase,
   type Cart,
   type CartItem,
   type CurrentUser,
@@ -18,6 +19,12 @@ import {
   parseOrderStatus,
 } from "../api/dto";
 import { adminRoutes } from "./fakeAdmin";
+import {
+  AFTER_SALES_TIMEOUTS,
+  afterSalesRoutes,
+  localTimestamp,
+  openCancellationRefund,
+} from "./fakeAfterSales";
 import { type FakeContext, merchantRoutes, riderRoutes } from "./fakeFulfilment";
 import {
   type FakeHandler,
@@ -49,6 +56,13 @@ export {
 } from "./fakeHttp";
 export { deliveryFixture, merchantOrderFixture } from "./fakeFulfilment";
 export { merchantAccountFixture, riderAccountFixture } from "./fakeAdmin";
+export {
+  AFTER_SALES_TIMEOUTS,
+  afterSalesCaseFixture,
+  localTimestamp,
+  refundFixture,
+  settleAfterSalesRefund,
+} from "./fakeAfterSales";
 export {
   EUR,
   USD,
@@ -106,6 +120,17 @@ export interface FakeState {
   /** Provisioned logins listed by /admin/merchants and /admin/riders. */
   merchantAccounts: MerchantAccount[];
   riderAccounts: RiderAccount[];
+  /**
+   * Every after-sales case, newest first, each with its refund and full history. The
+   * customer endpoints show those of `orders`, the merchant's those of its restaurant.
+   */
+  afterSalesCases: AfterSalesCase[];
+  /** Idempotency-Keys of after-sales commands that succeeded: the request and the case. */
+  afterSalesKeys: Map<string, { fingerprint: string; caseId: number }>;
+  /** The end of every completed order's request window (LocalDateTime). */
+  afterSalesRequestDeadline: string;
+  /** The next case or refund id. */
+  nextAfterSalesId: number;
   nextAccountId: number;
   nextOrderItemId: number;
   nextOrderId: number;
@@ -133,6 +158,10 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
     deliveries: [],
     merchantAccounts: [],
     riderAccounts: [],
+    afterSalesCases: [],
+    afterSalesKeys: new Map(),
+    afterSalesRequestDeadline: localTimestamp(AFTER_SALES_TIMEOUTS.requestWindow),
+    nextAfterSalesId: 900,
     nextAccountId: 40,
     nextOrderItemId: 500,
     nextOrderId: 100,
@@ -151,6 +180,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
 
   const context: FakeContext = {
     state,
+    requireSession: protectedRoute,
     requireRole: (role, handler) =>
       protectedRoute((request, match) =>
         hasRole(role)
@@ -353,10 +383,12 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
         if (!order) {
           return apiError(404, "Order not found");
         }
+        const wasPaid = order.status === "PAID" || order.status === "ACCEPTED";
         if (order.status !== "CANCELLED") {
           recordStatusChange(order.id, order.status, "CANCELLED", "CUSTOMER");
         }
         order.status = "CANCELLED";
+        openCancellationRefund(state, order, wasPaid);
         return json({ ...order });
       }),
     ],
@@ -369,10 +401,14 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
         if (!order || !status) {
           return apiError(404, "Order not found");
         }
+        const wasPaid = order.status === "PAID" || order.status === "ACCEPTED";
         if (order.status !== status) {
           recordStatusChange(order.id, order.status, status, "ADMIN");
         }
         order.status = status;
+        if (status === "CANCELLED") {
+          openCancellationRefund(state, order, wasPaid);
+        }
         return json({ ...order });
       }),
     ],
@@ -405,6 +441,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
     ...merchantRoutes(context),
     ...riderRoutes(context),
     ...adminRoutes(context),
+    ...afterSalesRoutes(context),
   ];
 
   const fetchMock: Mock<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>> =

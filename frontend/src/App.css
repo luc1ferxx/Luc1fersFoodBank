@@ -1021,3 +1021,83 @@ button:disabled {
     width: fit-content;
   }
 }
+
+/* After-sales: shared by the customer, merchant and admin views. */
+
+.status-badge--PENDING_MERCHANT,
+.status-badge--COUNTER_OFFERED,
+.status-badge--IN_ARBITRATION,
+.status-badge--PENDING,
+.status-badge--PROCESSING {
+  background: #fff4dc;
+  color: #7c520f;
+}
+
+.status-badge--REJECTED,
+.status-badge--FAILED {
+  background: #fff0ec;
+  color: #90301e;
+}
+
+.status-badge--REFUNDING {
+  background: #e9f4ff;
+  color: #1e5c8e;
+}
+
+.status-badge--REFUNDED,
+.status-badge--SUCCEEDED {
+  background: #e9f7ec;
+  color: #246238;
+}
+
+.status-badge--CLOSED {
+  background: #eef0ea;
+  color: #4e554b;
+}
+
+.countdown {
+  color: #7c520f;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.countdown--passed {
+  color: #90301e;
+}
+
+.countdown time {
+  color: #6b7566;
+  font-weight: 700;
+}
+
+.after-sales {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #e3e7dd;
+}
+
+.after-sales__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.after-sales__amounts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+
+.after-sales__amounts dt {
+  color: #6b7566;
+  font-weight: 700;
+}
+
+.after-sales__amounts dd {
+  margin: 0;
+  color: #20221d;
+  font-weight: 800;
+}
