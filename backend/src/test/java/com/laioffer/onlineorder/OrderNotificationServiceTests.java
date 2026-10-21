@@ -284,6 +284,20 @@ class OrderNotificationServiceTests {
 
 
     @Test
+    void notifiesOf_shouldBeTheDeliveryEventsThatWriteANotification() {
+        OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository, 50);
+
+        for (String eventType : List.of("delivery.assigned", "delivery.picked_up", "delivery.delivered")) {
+            Assertions.assertTrue(service.notifiesOf(deliveryEvent(eventType)), eventType);
+        }
+        for (String eventType : List.of("delivery.cancelled", "delivery.reassigned")) {
+            Assertions.assertFalse(service.notifiesOf(deliveryEvent(eventType)), eventType);
+        }
+        Mockito.verifyNoInteractions(orderNotificationRepository);
+    }
+
+
+    @Test
     void recordOrderAndDeliveryEvents_shouldNameTheOrderByItsPublicNumber() {
         OrderNotificationService service = new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository, 50);
         Mockito.when(orderRepository.findOrderNoById(9L)).thenReturn(Optional.of(7_391_022_331_904_512_345L));

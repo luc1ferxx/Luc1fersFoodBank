@@ -7,14 +7,18 @@ import com.laioffer.onlineorder.fulfilment.dispatch.DispatchService;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantAfterSalesInboxService;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantAfterSalesService;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantInboxService;
+import com.laioffer.onlineorder.fulfilment.notification.DeliveryNotificationService;
 import com.laioffer.onlineorder.fulfilment.timeout.OrderDeadlineService;
 import com.laioffer.onlineorder.messaging.AfterSalesEventEnvelope;
+import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
+import com.laioffer.onlineorder.messaging.DeliveryEventPayload;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.contract.EventContracts;
 import com.laioffer.onlineorder.messaging.contract.EventTopic;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.CustomerService;
 import com.laioffer.onlineorder.service.EventSequenceTracker;
+import com.laioffer.onlineorder.service.OrderEventHandlerService;
 import com.laioffer.onlineorder.service.OrderService;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -32,6 +36,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
@@ -104,6 +109,12 @@ class StaleEventPostgresIntegrationTests {
 
     @Autowired
     private AfterSalesCustomerService afterSalesCustomerService;
+
+    @Autowired
+    private OrderEventHandlerService orderEventHandlerService;
+
+    @Autowired
+    private DeliveryNotificationService deliveryNotificationService;
 
     @Autowired
     private CustomerService customerService;
@@ -279,6 +290,28 @@ class StaleEventPostgresIntegrationTests {
 
 
     /**
+     * ADR 0002 section 27, follow-up 13: an order event replayed from the dead letters after a later event of its order
+     * was notified would tell the customer about a step the order has left. It writes nothing and counts as skipped;
+     * the next event still notifies.
+     */
+    @Test
+    void orderNotifications_anEventReplayedAfterALaterOne_shouldNotNotify() {
+        PaidOrder order = paidBurgerKingOrder();
+        // order.paid (2) was dead-lettered from the notification group; order.accepted (3) got through.
+        orderEventHandlerService.handle(customerOrderEvent(order, "order.accepted", "ACCEPTED", 3));
+        double skippedBefore = staleSkipped("order-notification-consumer");
+
+        orderEventHandlerService.handle(customerOrderEvent(order, "order.paid", "PAID", 2));
+
+        Assertions.assertEquals(List.of("order.accepted"), notifications(order.id()));
+        Assertions.assertEquals(3L, position("order-notification-consumer", order.id()));
+        Assertions.assertEquals(skippedBefore + 1, staleSkipped("order-notification-consumer"));
+        orderEventHandlerService.handle(customerOrderEvent(order, "order.preparing", "PREPARING", 4));
+        Assertions.assertEquals(List.of("order.accepted", "order.preparing"), notifications(order.id()));
+    }
+
+
+    /**
      * The delivery takes the number from the order.accepted that creates it; one created from a version 1 event gets it
      * from the next order.accepted or order.cancelled that carries it, stale or not, and keeps the first it got.
      */
@@ -317,6 +350,30 @@ class StaleEventPostgresIntegrationTests {
         dispatchService.handle(orderEvent("order.cancelled", numbered, BURGER_KING, "CANCELLED", 5));
         Assertions.assertEquals(List.of("CANCELLED"), deliveries(numbered));
         Assertions.assertEquals(orderNo(numbered), deliveryOrderNo(numbered));
+    }
+
+
+    /**
+     * The same for delivery notifications; the events that notify nobody (a reassignment, a cancellation) leave this
+     * consumer's position alone, so they never make a notifying event look stale.
+     */
+    @Test
+    void deliveryNotifications_shouldSkipAReplayedAssignmentAndIgnoreTheEventsThatNotifyNobody() {
+        PaidOrder order = paidBurgerKingOrder();
+        long deliveryId = ORDER_IDS.incrementAndGet();
+
+        deliveryNotificationService.handle(deliveryEvent(order, deliveryId, "delivery.reassigned", 2));
+        Assertions.assertNull(deliveryPosition(deliveryId));
+        // delivery.assigned (1) was dead-lettered; the pickup (3) is notified, then the assignment is replayed.
+        deliveryNotificationService.handle(deliveryEvent(order, deliveryId, "delivery.picked_up", 3));
+        double skippedBefore = staleSkipped("delivery-notification-consumer");
+        deliveryNotificationService.handle(deliveryEvent(order, deliveryId, "delivery.assigned", 1));
+
+        Assertions.assertEquals(List.of("delivery.picked_up"), notifications(order.id()));
+        Assertions.assertEquals(3L, deliveryPosition(deliveryId));
+        Assertions.assertEquals(skippedBefore + 1, staleSkipped("delivery-notification-consumer"));
+        deliveryNotificationService.handle(deliveryEvent(order, deliveryId, "delivery.delivered", 4));
+        Assertions.assertEquals(List.of("delivery.picked_up", "delivery.delivered"), notifications(order.id()));
     }
 
 
@@ -364,10 +421,11 @@ class StaleEventPostgresIntegrationTests {
 
 
     /**
-     * A customer's request on the whole of a completed Burger King order, opened through the customer's service.
+     * A paid Burger King order of a new customer, checked out through the cart (notifications need the real order and
+     * customer rows).
      */
-    private long openedAfterSalesCase() {
-        String email = "stale-after-sales-" + System.nanoTime() + "@example.com";
+    private PaidOrder paidBurgerKingOrder() {
+        String email = "stale-events-" + System.nanoTime() + "@example.com";
         customerService.signUp(email, "demo123", "Stale", "Events");
         Long customerId = jdbcTemplate.queryForObject("SELECT id FROM customers WHERE email = ?", Long.class, email);
         cartService.addMenuItemToCart(customerId, jdbcTemplate.queryForObject("""
@@ -376,12 +434,76 @@ class StaleEventPostgresIntegrationTests {
                 JOIN restaurants ON restaurants.id = menu_items.restaurant_id
                 WHERE restaurants.name = 'Burger King'
                 """, Long.class));
-        Long orderId = cartService.checkout(customerId, "PAID").id();
+        return new PaidOrder(cartService.checkout(customerId, "PAID").id(), customerId);
+    }
+
+
+    private static OrderEventEnvelope customerOrderEvent(
+            PaidOrder order,
+            String eventType,
+            String status,
+            long sequence
+    ) {
+        return FulfilmentTestEvents.orderEvent(
+                eventType, order.id(), order.customerId(), BURGER_KING, status, null, LocalDateTime.now()
+        ).withSequence(sequence);
+    }
+
+
+    private static DeliveryEventEnvelope deliveryEvent(
+            PaidOrder order,
+            long deliveryId,
+            String eventType,
+            long sequence
+    ) {
+        String eventId = UUID.randomUUID().toString();
+        return new DeliveryEventEnvelope(
+                eventId,
+                1,
+                eventType,
+                "DELIVERY",
+                deliveryId,
+                sequence,
+                LocalDateTime.now(),
+                eventId,
+                null,
+                new DeliveryEventPayload(
+                        order.id(), order.customerId(), BURGER_KING, 1L, "Demo Rider Alice", "ASSIGNED")
+        );
+    }
+
+
+    private List<String> notifications(long orderId) {
+        return jdbcTemplate.queryForList(
+                "SELECT event_type FROM order_notifications WHERE order_id = ? ORDER BY id", String.class, orderId);
+    }
+
+
+    private Long deliveryPosition(long deliveryId) {
+        List<Long> positions = jdbcTemplate.queryForList("""
+                SELECT last_sequence FROM consumer_aggregate_sequences
+                WHERE consumer_name = 'delivery-notification-consumer' AND aggregate_type = 'DELIVERY'
+                  AND aggregate_id = ?
+                """, Long.class, deliveryId);
+        return positions.isEmpty() ? null : positions.get(0);
+    }
+
+
+    private record PaidOrder(Long id, Long customerId) {
+    }
+
+
+    /**
+     * A customer's request on the whole of a completed Burger King order, opened through the customer's service.
+     */
+    private long openedAfterSalesCase() {
+        PaidOrder order = paidBurgerKingOrder();
         for (String status : List.of("ACCEPTED", "PREPARING", "COMPLETED")) {
-            orderService.transitionOrderStatus(orderId, status);
+            orderService.transitionOrderStatus(order.id(), status);
         }
+        Long orderId = order.id();
         return afterSalesCustomerService.open(
-                customerId,
+                order.customerId(),
                 orderId,
                 new OpenAfterSalesBody("WHOLE_ORDER", null, "MISSING_ITEM", "The fries were missing."),
                 "stale-open-" + orderId

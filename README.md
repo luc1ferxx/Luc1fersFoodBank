@@ -753,8 +753,10 @@ letter replayed after later events of the same order were applied still reaches 
 that keep per-aggregate state (merchant inbox, dispatch, timeout) therefore record the last sequence they applied per
 order (`consumer_aggregate_sequences`, through `EventSequenceTracker`) and skip an event whose sequence is not above it
 (`onlineorder_events_stale_skipped_total`). The after-sales consumers do the same per case: the merchant projection,
-and the customer notifications, which write no notice for a step the case has already left. Only event types a consumer applies move its position: dispatch ignores
-`order.preparing`, so an `order.accepted` dead-lettered for want of a rider and replayed after it still gets one.
+and the customer notifications, which write no notice for a step the case has already left. The order and delivery
+notifications skip a stale event per order and per delivery the same way. Only event types a consumer applies move
+its position: dispatch ignores `order.preparing`, so an `order.accepted` dead-lettered for want of a rider and
+replayed after it still gets one.
 Events without a sequence (written before V9) and positions older than the processed-events retention fall back on the
 rules below, which still hold for every module when the order of two events flips:
 
@@ -920,7 +922,8 @@ the guarded transition only if the order still waits, and deletes the row, all i
 poller runs on its own thread instead of the shared scheduler (4 threads), so a burst of due deadlines cannot delay
 the outbox publisher.
 
-Follow-ups: real rider location and ETA, and a k6 run with the fulfilment consumers on.
+Follow-up: real rider location and ETA. The k6 run with the fulfilment consumers on is in
+[docs/operations.md](docs/operations.md) section 12, "Connections: listener threads and the pool".
 
 ---
 
