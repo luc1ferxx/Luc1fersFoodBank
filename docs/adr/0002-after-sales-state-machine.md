@@ -1422,7 +1422,7 @@ RefundDto(Long id, Long caseId, Long orderId, @JsonFormat(shape = STRING) Long o
 - 中文 UI 与 i18n。
 - 退款 FAILED 时给客户发通知：只做运维告警和管理员重试。
 - 真实支付渠道和回调（webhook）。
-- 订单事件增加 `order_no`（order-data v2）。
+- ~~订单事件增加 `order_no`（order-data v2）~~：售后之外单独做了（PR #41，2026-10-21）。订单事件 v2 带可选的 `data.order_no`，V14 让商家收件箱和配送记录保存它，商家端和骑手端显示公开单号；V14 之前的行仍显示 id（`docs/operations.md` 第 8 节）。
 - 售后历史表分区，以及售后单和退款的保留期清理。
 - 把 `OrderService` 自己的幂等实现迁到 `IdempotentRequests`。
 - 结账创建和派单 INSERT 进入引擎。
