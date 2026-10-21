@@ -22,7 +22,7 @@ import { adminRoutes } from "./fakeAdmin";
 import {
   AFTER_SALES_TIMEOUTS,
   afterSalesRoutes,
-  localTimestamp,
+  backendTimestamp,
   openCancellationRefund,
 } from "./fakeAfterSales";
 import { type FakeContext, merchantRoutes, riderRoutes } from "./fakeFulfilment";
@@ -59,7 +59,7 @@ export { merchantAccountFixture, riderAccountFixture } from "./fakeAdmin";
 export {
   AFTER_SALES_TIMEOUTS,
   afterSalesCaseFixture,
-  localTimestamp,
+  backendTimestamp,
   refundFixture,
   settleAfterSalesRefund,
 } from "./fakeAfterSales";
@@ -165,7 +165,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
     riderAccounts: [],
     afterSalesCases: [],
     afterSalesKeys: new Map(),
-    afterSalesRequestDeadline: localTimestamp(AFTER_SALES_TIMEOUTS.requestWindow),
+    afterSalesRequestDeadline: backendTimestamp(AFTER_SALES_TIMEOUTS.requestWindow),
     orderPickups: new Map(),
     nextAfterSalesId: 900,
     nextAccountId: 40,
@@ -201,7 +201,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
         actor_type: actorType,
         actor_id: actorType === "SYSTEM" ? null : (state.user?.id ?? null),
         reason,
-        occurred_at: `2026-10-16T12:0${history.length}:00Z`,
+        occurred_at: `2026-10-16T12:0${history.length}:00`,
       });
       state.orderHistory.set(orderId, history);
     },
@@ -349,7 +349,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
           status: "PAID",
           total_price: state.cart.total_price,
           currency: state.cart.currency,
-          created_at: "2026-10-16T12:00:00Z",
+          created_at: "2026-10-16T12:00:00",
           restaurant_id: state.cart.order_items[0]?.restaurant_id ?? null,
           cancel_reason: null,
           items: state.cart.order_items.map((item) => ({

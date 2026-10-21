@@ -8,6 +8,7 @@ import {
   AFTER_SALES_TIMEOUTS,
   afterSalesCaseFixture,
   apiError,
+  backendTimestamp,
   customerUser,
   demoUser,
   idempotencyKeys,
@@ -15,7 +16,6 @@ import {
   merchantOrderFixture,
   merchantUser,
   orderFixture,
-  localTimestamp,
   orderNoFor,
   requestJson,
   riderUser,
@@ -379,7 +379,7 @@ describe("role-based workspaces", () => {
         id: 900,
         order_id: 100,
         status: "IN_ARBITRATION",
-        deadline_at: localTimestamp(AFTER_SALES_TIMEOUTS.arbitration),
+        deadline_at: backendTimestamp(AFTER_SALES_TIMEOUTS.arbitration),
       }),
     ];
     backend.on("POST", "/admin/after-sales/900/arbitrate", () =>

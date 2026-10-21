@@ -6,7 +6,7 @@ import {
   useAfterSalesCaseDetail,
 } from "../hooks/useAfterSales";
 import { useNow } from "../hooks/useNow";
-import { formatDateTime, formatMoney, timeLeft } from "../lib/format";
+import { formatDateTime, formatMoney, timeLeft, utcTimestamp } from "../lib/format";
 import {
   ACTOR_LABELS,
   AFTER_SALES_ACTION_LABELS,
@@ -97,7 +97,9 @@ function AfterSalesHistory({
                 {entry.amount !== null ? ` · ${formatMoney(entry.amount, entry.currency)}` : ""}
               </span>
               {entry.note ? <span>Note: {entry.note}</span> : null}
-              <time dateTime={entry.occurred_at}>{formatDateTime(entry.occurred_at)}</time>
+              <time dateTime={utcTimestamp(entry.occurred_at)}>
+                {formatDateTime(entry.occurred_at)}
+              </time>
             </li>
           ))}
         </ol>

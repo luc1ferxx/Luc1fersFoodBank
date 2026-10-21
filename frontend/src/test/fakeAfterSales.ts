@@ -16,7 +16,7 @@ import {
   parseAfterSalesStatus,
 } from "../api/dto";
 import type { CurrencyCode } from "../api/currency";
-import { minorDigits } from "../lib/format";
+import { minorDigits, parseTimestamp } from "../lib/format";
 import { USD, orderNoFor } from "./fixtures";
 import type { FakeState } from "./fakeBackend";
 import type { FakeContext } from "./fakeFulfilment";
@@ -41,18 +41,12 @@ export const AFTER_SALES_TIMEOUTS = {
 } as const;
 
 /**
- * A time the way the backend writes LocalDateTime: local date and time to the second,
- * without a zone ("2026-10-21T12:00:00"). Relative to the clock, so a deadline the fake
- * sets is still ahead when a test runs.
+ * A time the way the backend writes LocalDateTime: the server runs in UTC, so UTC date and
+ * time, here to the second, without an offset ("2026-10-21T12:00:00"). Relative to the
+ * clock, so a deadline the fake sets is still ahead when a test runs.
  */
-export const localTimestamp = (offsetMs = 0): string => {
-  const date = new Date(Date.now() + offsetMs);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return (
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
-    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-  );
-};
+export const backendTimestamp = (offsetMs = 0): string =>
+  new Date(Date.now() + offsetMs).toISOString().slice(0, "yyyy-mm-ddThh:mm:ss".length);
 
 const cents = (amount: number) => Math.round(amount * 100);
 
@@ -67,8 +61,8 @@ export const refundFixture = (
   attempts: 0,
   last_error: null,
   provider_reference: null,
-  next_attempt_at: localTimestamp(),
-  created_at: localTimestamp(),
+  next_attempt_at: backendTimestamp(),
+  created_at: backendTimestamp(),
   succeeded_at: null,
   ...overrides,
 });
@@ -107,11 +101,11 @@ export const afterSalesCaseFixture = (
   resolution: null,
   close_reason: null,
   admin_note: null,
-  deadline_at: localTimestamp(AFTER_SALES_TIMEOUTS.merchant),
+  deadline_at: backendTimestamp(AFTER_SALES_TIMEOUTS.merchant),
   refund: null,
   history: [],
-  created_at: localTimestamp(),
-  updated_at: localTimestamp(),
+  created_at: backendTimestamp(),
+  updated_at: backendTimestamp(),
   ...overrides,
 });
 
@@ -171,7 +165,7 @@ const firesFrom = (current: AfterSalesStatus, command: Command) =>
 
 /** The customer's and the merchant's answers have a hard deadline (ADR 0002 section 19.1). */
 const deadlinePassed = (current: AfterSalesCase) =>
-  current.deadline_at !== null && Date.parse(current.deadline_at) <= Date.now()
+  current.deadline_at !== null && parseTimestamp(current.deadline_at) <= Date.now()
     ? apiError(409, `The deadline of this after-sales step passed at ${current.deadline_at}`, {
         code: "AFTER_SALES_DEADLINE_PASSED",
       })
@@ -217,16 +211,16 @@ function step(
   { amount = null, note = null }: { amount?: number | null; note?: string | null } = {},
 ) {
   const from = current.status;
-  const now = localTimestamp();
+  const now = backendTimestamp();
   current.status = to;
   current.updated_at = now;
   current.deadline_at =
     to === "PENDING_MERCHANT"
-      ? localTimestamp(AFTER_SALES_TIMEOUTS.merchant)
+      ? backendTimestamp(AFTER_SALES_TIMEOUTS.merchant)
       : to === "COUNTER_OFFERED" || to === "REJECTED"
-        ? localTimestamp(AFTER_SALES_TIMEOUTS.customer)
+        ? backendTimestamp(AFTER_SALES_TIMEOUTS.customer)
         : to === "IN_ARBITRATION"
-          ? localTimestamp(AFTER_SALES_TIMEOUTS.arbitration)
+          ? backendTimestamp(AFTER_SALES_TIMEOUTS.arbitration)
           : null;
   if (to === "REFUNDING" && current.approved_amount !== null) {
     current.refund = refundFixture({
@@ -262,7 +256,7 @@ export function settleAfterSalesRefund(state: FakeState, caseId: number) {
   current.refund.status = "SUCCEEDED";
   current.refund.attempts += 1;
   current.refund.provider_reference = `SIMREFUND-${current.refund.id}`;
-  current.refund.succeeded_at = localTimestamp();
+  current.refund.succeeded_at = backendTimestamp();
   current.refund.next_attempt_at = null;
   current.refunded_amount = current.approved_amount;
   step(state, current, "REFUNDED", "REFUND_SUCCEEDED", "SYSTEM", {
@@ -472,7 +466,7 @@ export function afterSalesRoutes(context: FakeContext): FakeRoute[] {
         `Only COMPLETED orders can get after-sales; this order is ${order.status}`,
       );
     }
-    if (Date.parse(state.afterSalesRequestDeadline) <= Date.now()) {
+    if (parseTimestamp(state.afterSalesRequestDeadline) <= Date.now()) {
       return notEligible(
         `The after-sales window of this order closed at ${state.afterSalesRequestDeadline}`,
       );
@@ -538,7 +532,7 @@ export function afterSalesRoutes(context: FakeContext): FakeRoute[] {
     if (latest && (requests.length > 1 || latest.close_reason !== "WITHDRAWN")) {
       return notEligible("This order cannot be submitted for after-sales again");
     }
-    const now = localTimestamp();
+    const now = backendTimestamp();
     const opened = afterSalesCaseFixture({
       id: state.nextAfterSalesId++,
       order_id: order.id,
@@ -828,7 +822,9 @@ export function afterSalesRoutes(context: FakeContext): FakeRoute[] {
         const cases = state.afterSalesCases.filter((item) => item.status === status);
         if (AFTER_SALES_OPEN_STATUSES.has(status)) {
           // The queue: the nearest deadline first.
-          cases.sort((a, b) => Date.parse(a.deadline_at ?? "") - Date.parse(b.deadline_at ?? ""));
+          cases.sort(
+            (a, b) => parseTimestamp(a.deadline_at ?? "") - parseTimestamp(b.deadline_at ?? ""),
+          );
         }
         return json(cases.slice(0, limit).map((item) => ({ ...item, history: undefined })));
       }),
@@ -944,7 +940,7 @@ export function afterSalesRoutes(context: FakeContext): FakeRoute[] {
           });
         }
         refund.status = "PENDING";
-        refund.next_attempt_at = localTimestamp();
+        refund.next_attempt_at = backendTimestamp();
         return json({ ...refund });
       }),
     ],

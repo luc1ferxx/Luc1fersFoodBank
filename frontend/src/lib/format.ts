@@ -44,27 +44,45 @@ export const minorDigits = (currency: CurrencyCode): number =>
 export const lineTotal = (price: number, quantity: number): number =>
   (Math.round(price * 100) * quantity) / 100;
 
+/** A date and time without an offset, as Java writes a LocalDateTime: 2026-10-20T12:00, ...:00, ...:00.123456. */
+const LOCAL_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+
+/**
+ * A backend timestamp with its zone made explicit. The backend runs in UTC and writes every
+ * timestamp as a LocalDateTime, without an offset ("2026-10-20T12:00:00"), which a browser
+ * would read in its own zone; such a string gets a "Z". One that already carries "Z" or an
+ * offset, and anything that is not a date and time, is returned as it is.
+ */
+export const utcTimestamp = (value: string): string =>
+  LOCAL_DATE_TIME.test(value) ? `${value}Z` : value;
+
+/**
+ * Milliseconds since the epoch of a backend timestamp, read as UTC when it has no offset
+ * (see `utcTimestamp`); NaN when it does not parse. The one way the UI reads a backend time.
+ */
+export const parseTimestamp = (value: string): number => Date.parse(utcTimestamp(value));
+
+/** A backend timestamp in the browser's zone and locale. */
 export const formatDateTime = (value: string | null | undefined): string => {
   if (!value) {
     return "Pending timestamp";
   }
 
-  const date = new Date(value);
+  const time = parseTimestamp(value);
 
-  if (Number.isNaN(date.getTime())) {
+  if (Number.isNaN(time)) {
     return value;
   }
 
-  return date.toLocaleString();
+  return new Date(time).toLocaleString();
 };
 
 /**
- * The time left until `deadline` (a backend LocalDateTime, read as local time) at
- * `now`: "1d 4h", "3h 12m", "2m 05s", "40s"; null once it passed or when it does not
- * parse.
+ * The time left until `deadline` (a backend timestamp, see `parseTimestamp`) at `now`:
+ * "1d 4h", "3h 12m", "2m 05s", "40s"; null once it passed or when it does not parse.
  */
 export const timeLeft = (deadline: string, now: number): string | null => {
-  const left = Date.parse(deadline) - now;
+  const left = parseTimestamp(deadline) - now;
   if (Number.isNaN(left) || left <= 0) {
     return null;
   }

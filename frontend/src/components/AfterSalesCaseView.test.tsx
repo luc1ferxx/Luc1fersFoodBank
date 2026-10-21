@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AfterSalesCase, Refund } from "../api/dto";
-import { afterSalesCaseFixture, localTimestamp, refundFixture } from "../test/fakeBackend";
+import { afterSalesCaseFixture, backendTimestamp, refundFixture } from "../test/fakeBackend";
 import { AfterSalesCaseView, AutomaticRefund } from "./AfterSalesCaseView";
 
 const HOUR = 60 * 60 * 1000;
@@ -39,7 +39,7 @@ const commandButtons = () =>
 
 describe("AfterSalesCaseView", () => {
   it("waits for the restaurant with a countdown and can only be withdrawn", () => {
-    renderCase({ deadline_at: localTimestamp(2 * HOUR + 30 * 60 * 1000) });
+    renderCase({ deadline_at: backendTimestamp(2 * HOUR + 30 * 60 * 1000) });
 
     expect(screen.getByText("Waiting for the restaurant")).toBeInTheDocument();
     expect(screen.getByText(/^Restaurant answers in 2h (29|30)m/)).toBeInTheDocument();
@@ -53,7 +53,7 @@ describe("AfterSalesCaseView", () => {
       offered_amount: 3,
       merchant_decision: "OFFERED",
       merchant_note: "One was fine",
-      deadline_at: localTimestamp(47 * HOUR),
+      deadline_at: backendTimestamp(47 * HOUR),
     });
 
     expect(commandButtons()).toEqual(["Accept $3.00", "Decline offer", "Withdraw request"]);
@@ -70,7 +70,7 @@ describe("AfterSalesCaseView", () => {
       status: "COUNTER_OFFERED",
       offered_amount: 3,
       merchant_decision: "OFFERED",
-      deadline_at: localTimestamp(-HOUR),
+      deadline_at: backendTimestamp(-HOUR),
     });
 
     expect(screen.getByText(/^Deadline passed/)).toBeInTheDocument();
@@ -84,7 +84,7 @@ describe("AfterSalesCaseView", () => {
       status: "REJECTED",
       merchant_decision: "REJECTED",
       merchant_note: "Looked fine when it left",
-      deadline_at: localTimestamp(48 * HOUR),
+      deadline_at: backendTimestamp(48 * HOUR),
     });
 
     expect(screen.getByText("Restaurant's reason: Looked fine when it left")).toBeInTheDocument();
@@ -105,7 +105,7 @@ describe("AfterSalesCaseView", () => {
   it("withdraws only after the confirmation", async () => {
     const { user, onWithdraw } = renderCase({
       status: "IN_ARBITRATION",
-      deadline_at: localTimestamp(72 * HOUR),
+      deadline_at: backendTimestamp(72 * HOUR),
     });
 
     expect(commandButtons()).toEqual(["Withdraw request"]);

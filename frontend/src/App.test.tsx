@@ -603,7 +603,7 @@ describe("after-sales", () => {
       event_type: eventType,
       title,
       message: `Order #${orderNoFor(7)} ${message}`,
-      created_at: "2026-10-16T12:00:00Z",
+      created_at: "2026-10-16T12:00:00",
     });
     backend.state.orders = [{ ...completedOrder, status: "PREPARING" }];
     backend.state.notifications = [
@@ -657,7 +657,7 @@ describe("after-sales", () => {
       event_type: eventType,
       title,
       message: `Order #${orderNoFor(7)} ${message}`,
-      created_at: "2026-10-16T12:00:00Z",
+      created_at: "2026-10-16T12:00:00",
     });
     const paidOrder = orderFixture({ id: 7, status: "PAID" });
     // A copy: the fake's cancel changes the order in its state.

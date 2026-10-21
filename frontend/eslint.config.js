@@ -51,6 +51,35 @@ export default defineConfig([
     },
   },
   {
+    // Backend timestamps are UTC without an offset, which Date.parse and new Date(string)
+    // read in the browser's zone: they are parsed only by parseTimestamp in src/lib/format.ts.
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/lib/format.ts", "src/**/*.test.{ts,tsx}"],
+    rules: {
+      "no-restricted-properties": [
+        "error",
+        {
+          object: "Date",
+          property: "parse",
+          message: "Read backend timestamps with parseTimestamp (src/lib/format.ts): they are UTC.",
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/lib/format.ts", "src/**/*.test.{ts,tsx}", "src/test/**"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "NewExpression[callee.name='Date'][arguments.length>0]",
+          message: "Read backend timestamps with parseTimestamp (src/lib/format.ts): they are UTC.",
+        },
+      ],
+    },
+  },
+  {
     files: ["**/*.js"],
     extends: [js.configs.recommended],
     languageOptions: {

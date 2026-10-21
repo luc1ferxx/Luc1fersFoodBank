@@ -39,8 +39,8 @@ export const merchantOrderFixture = (
   currency: USD,
   items: [{ menu_item_id: 10, menu_item_name: "Whopper", price: 6.39, currency: USD, quantity: 2 }],
   cancel_reason: null,
-  paid_at: "2026-10-16T12:00:00Z",
-  updated_at: "2026-10-16T12:00:00Z",
+  paid_at: "2026-10-16T12:00:00",
+  updated_at: "2026-10-16T12:00:00",
   ...overrides,
 });
 
@@ -51,13 +51,13 @@ export const deliveryFixture = (
   restaurant_id: 1,
   restaurant_name: "Burger Barn",
   status: "ASSIGNED",
-  assigned_at: "2026-10-16T12:10:00Z",
+  assigned_at: "2026-10-16T12:10:00",
   picked_up_at: null,
   delivered_at: null,
   ...overrides,
 });
 
-const NOW = "2026-10-16T12:30:00Z";
+const NOW = "2026-10-16T12:30:00";
 
 const forbidden = () => apiError(403, "Access denied", { code: "FORBIDDEN" });
 

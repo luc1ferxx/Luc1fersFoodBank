@@ -4,7 +4,7 @@ import { restaurantsFixture } from "./fixtures";
 import type { FakeContext } from "./fakeFulfilment";
 import { type FakeRoute, apiError, idParam, json, requestJson } from "./fakeHttp";
 
-const CREATED_AT = "2026-10-16T09:00:00Z";
+const CREATED_AT = "2026-10-16T09:00:00";
 
 export const merchantAccountFixture = (
   overrides: Partial<MerchantAccount> & Pick<MerchantAccount, "merchant_id" | "email">,

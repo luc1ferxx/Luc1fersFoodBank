@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { LEGACY_CURRENCY, currencyCode, isCurrencyCode } from "../api/currency";
-import { EMPTY_CART, formatMoney, lineTotal, minorDigits, timeLeft } from "./format";
+import {
+  EMPTY_CART,
+  formatDateTime,
+  formatMoney,
+  lineTotal,
+  minorDigits,
+  parseTimestamp,
+  timeLeft,
+  utcTimestamp,
+} from "./format";
 import { amountInputExample, amountInputRule, isPartialAmount, parseAmountInput } from "./forms";
 
 describe("formatMoney", () => {
@@ -41,10 +50,51 @@ describe("currency codes", () => {
   });
 });
 
-describe("timeLeft", () => {
-  const now = Date.parse("2026-10-20T12:00:00");
+describe("backend timestamps", () => {
+  const noonUtc = Date.UTC(2026, 9, 20, 12);
 
-  it("counts down to a backend LocalDateTime with the two largest units", () => {
+  it("are tested in a zone behind UTC, where reading them as local time is hours off", () => {
+    // vite.config.ts sets TZ for the tests; in UTC itself local and UTC parsing would agree.
+    expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe("America/New_York");
+    expect(new Date(noonUtc).getTimezoneOffset()).toBe(4 * 60);
+    expect(Date.parse("2026-10-20T12:00:00")).toBe(noonUtc + 4 * 60 * 60 * 1000);
+  });
+
+  it("are read as UTC when they carry no offset, the way the backend writes them", () => {
+    expect(parseTimestamp("2026-10-20T12:00:00")).toBe(noonUtc);
+    // Java leaves out zero seconds and writes up to nine decimals; a Date keeps milliseconds.
+    expect(parseTimestamp("2026-10-20T12:00")).toBe(noonUtc);
+    expect(parseTimestamp("2026-10-20T12:00:00.250")).toBe(noonUtc + 250);
+    expect(parseTimestamp("2026-10-20T12:00:00.123456")).toBe(noonUtc + 123);
+    expect(utcTimestamp("2026-10-20T12:00:00.123456")).toBe("2026-10-20T12:00:00.123456Z");
+  });
+
+  it("keep an explicit Z or offset, and stay invalid when they do not parse", () => {
+    expect(utcTimestamp("2026-10-20T12:00:00Z")).toBe("2026-10-20T12:00:00Z");
+    expect(parseTimestamp("2026-10-20T12:00:00Z")).toBe(noonUtc);
+    expect(utcTimestamp("2026-10-20T14:00:00+02:00")).toBe("2026-10-20T14:00:00+02:00");
+    expect(parseTimestamp("2026-10-20T14:00:00+02:00")).toBe(noonUtc);
+    expect(parseTimestamp("2026-10-20T08:00:00-04:00")).toBe(noonUtc);
+    ["", "soon", "2026-10-20T25:00:00", "2026-13-01T12:00:00", "20261020T120000"].forEach((value) =>
+      expect(parseTimestamp(value)).toBeNaN(),
+    );
+    expect(utcTimestamp("soon")).toBe("soon");
+  });
+
+  it("are shown in the browser's zone, and as they came when they do not parse", () => {
+    expect(formatDateTime("2026-10-20T12:00:00")).toBe(new Date(noonUtc).toLocaleString());
+    expect(formatDateTime("2026-10-20T12:00:00")).toBe(
+      new Date(noonUtc).toLocaleString(undefined, { timeZone: "America/New_York" }),
+    );
+    expect(formatDateTime("soon")).toBe("soon");
+    expect(formatDateTime(null)).toBe("Pending timestamp");
+  });
+});
+
+describe("timeLeft", () => {
+  const now = Date.UTC(2026, 9, 20, 12);
+
+  it("counts down to a backend LocalDateTime (UTC) with the two largest units", () => {
     expect(timeLeft("2026-10-21T16:30:00", now)).toBe("1d 4h");
     expect(timeLeft("2026-10-20T15:12:59", now)).toBe("3h 12m");
     expect(timeLeft("2026-10-20T12:02:05", now)).toBe("2m 05s");

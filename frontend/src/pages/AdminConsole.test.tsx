@@ -8,12 +8,12 @@ import {
   USD,
   afterSalesCaseFixture,
   apiError,
+  backendTimestamp,
   deferred,
   demoUser,
   idempotencyKeys,
   installFakeBackend,
   json,
-  localTimestamp,
   merchantAccountFixture,
   refundFixture,
   requestJson,
@@ -275,7 +275,7 @@ const escalatedCase = (id: number, overrides: Partial<AfterSalesCase> = {}): Aft
     lines: twoWhoppers,
     merchant_decision: "REJECTED",
     merchant_note: "Looked fine when it left",
-    deadline_at: localTimestamp(AFTER_SALES_TIMEOUTS.arbitration),
+    deadline_at: backendTimestamp(AFTER_SALES_TIMEOUTS.arbitration),
     history: [
       {
         action: "OPEN",

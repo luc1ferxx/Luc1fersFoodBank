@@ -7,7 +7,7 @@ import {
   parseAfterSalesStatus,
 } from "../api/dto";
 import { ARBITRATION_NOTE_MAX, type AfterSalesAdmin } from "../hooks/useAfterSalesAdmin";
-import { formatDateTime, formatMoney } from "../lib/format";
+import { formatDateTime, formatMoney, utcTimestamp } from "../lib/format";
 import {
   ACTOR_LABELS,
   AFTER_SALES_ACTION_LABELS,
@@ -205,7 +205,9 @@ function CaseDetails({ current, admin }: { current: AfterSalesCase; admin: After
                 {entry.amount !== null ? ` · ${formatMoney(entry.amount, entry.currency)}` : ""}
                 {entry.note ? ` · ${entry.note}` : ""}
               </span>
-              <time dateTime={entry.occurred_at}>{formatDateTime(entry.occurred_at)}</time>
+              <time dateTime={utcTimestamp(entry.occurred_at)}>
+                {formatDateTime(entry.occurred_at)}
+              </time>
             </li>
           ))}
         </ol>

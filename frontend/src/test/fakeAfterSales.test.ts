@@ -2,13 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api/client";
 import type { OpenAfterSalesRequest } from "../api/dto";
 import * as api from "../api/endpoints";
+import { parseTimestamp } from "../lib/format";
 import {
   USD,
   afterSalesCaseFixture,
+  backendTimestamp,
   customerUser,
   demoUser,
   installFakeBackend,
-  localTimestamp,
   merchantUser,
   orderFixture,
   refundFixture,
@@ -253,7 +254,16 @@ describe("fake after-sales backend", () => {
 
     backend.state.user = null;
     expect(await rejection(api.getAfterSalesOverview())).toMatchObject({ status: 401 });
-    expect(localTimestamp()).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+  });
+
+  it("writes times the way the backend does: UTC wall-clock time without an offset", () => {
+    const hour = 60 * 60 * 1000;
+    const written = backendTimestamp(hour);
+
+    expect(written).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    expect(Math.abs(parseTimestamp(written) - (Date.now() + hour))).toBeLessThan(2000);
+    // Not the test zone's wall-clock time (New York, behind UTC).
+    expect(Math.abs(Date.parse(written) - (Date.now() + hour))).toBeGreaterThan(hour);
   });
 
   it("opens the automatic refund when a paid order is cancelled", async () => {

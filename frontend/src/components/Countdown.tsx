@@ -1,5 +1,5 @@
 import { useNow } from "../hooks/useNow";
-import { formatDateTime, timeLeft } from "../lib/format";
+import { formatDateTime, timeLeft, utcTimestamp } from "../lib/format";
 
 /**
  * The deadline of an after-sales step: the time left, ticking, with the deadline
@@ -12,7 +12,7 @@ export function Countdown({ deadline, label = "Due" }: { deadline: string; label
   return (
     <span className={left ? "countdown" : "countdown countdown--passed"}>
       {left ? `${label} in ${left}` : "Deadline passed"}{" "}
-      <time dateTime={deadline}>({formatDateTime(deadline)})</time>
+      <time dateTime={utcTimestamp(deadline)}>({formatDateTime(deadline)})</time>
     </span>
   );
 }
