@@ -7,6 +7,7 @@ import com.laioffer.onlineorder.entity.MenuItemEntity;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.entity.OrderItemEntity;
+import com.laioffer.onlineorder.entity.OrderPaymentEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
@@ -24,6 +25,7 @@ import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.MenuItemRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderItemRepository;
+import com.laioffer.onlineorder.repository.OrderPaymentRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,6 +44,7 @@ import java.util.HexFormat;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Supplier;
 
 
@@ -67,6 +70,7 @@ public class CartService {
     private final OrderHistoryItemRepository orderHistoryItemRepository;
     private final OrderEventOutboxService orderEventOutboxService;
     private final OrderStatusHistoryService orderStatusHistoryService;
+    private final OrderPaymentRepository orderPaymentRepository;
     private final ApplicationMetricsService metricsService;
 
 
@@ -81,6 +85,7 @@ public class CartService {
             OrderHistoryItemRepository orderHistoryItemRepository,
             OrderEventOutboxService orderEventOutboxService,
             OrderStatusHistoryService orderStatusHistoryService,
+            OrderPaymentRepository orderPaymentRepository,
             ApplicationMetricsService metricsService
     ) {
         this.cartRepository = cartRepository;
@@ -93,6 +98,7 @@ public class CartService {
         this.orderHistoryItemRepository = orderHistoryItemRepository;
         this.orderEventOutboxService = orderEventOutboxService;
         this.orderStatusHistoryService = orderStatusHistoryService;
+        this.orderPaymentRepository = orderPaymentRepository;
         this.metricsService = metricsService;
     }
 
@@ -283,6 +289,11 @@ public class CartService {
      * Turns the locked cart into an order. The order total is the exact sum of the line totals (price snapshot times
      * quantity) in the cart's currency, and the order and its items take that currency; a line in another currency
      * would fail the sum ({@link Money#plus}).
+     *
+     * <p>An order created PAID (the payment checkout, {@link PaymentService}) gets its payment capture recorded in
+     * the same transaction ({@link #recordCapture}), so the order and its payment commit or roll back together. A
+     * PLACED order has no payment, and an idempotent replay returns the stored order before this method, so an order
+     * never gets a second capture.
      */
     private OrderDto checkoutInternal(Long customerId, CartEntity cart, String status, String idempotencyKey) {
         List<OrderItemEntity> cartItems = orderItemRepository.getAllByCartId(cart.id());
@@ -313,6 +324,9 @@ public class CartService {
                 null,
                 createdAt
         );
+        if (initialStatus == OrderStatus.PAID) {
+            recordCapture(savedOrder, total, createdAt);
+        }
 
         List<OrderHistoryItemEntity> orderHistoryItems = new ArrayList<>();
         List<OrderHistoryItemDto> orderHistoryItemDtos = new ArrayList<>();
@@ -344,6 +358,25 @@ public class CartService {
         cartRepository.updateTotal(cart.id(), emptyTotal.amount(), emptyTotal.currencyCode());
 
         return new OrderDto(savedOrder, orderHistoryItemDtos);
+    }
+
+
+    /**
+     * Records the capture of the order's total (ADR 0002 D16), which the order's refunds are made against. Payments
+     * are simulated: the card was only validated ({@link PaymentService}), and the provider reference is a new
+     * {@code SIMPAY-} id.
+     */
+    private void recordCapture(OrderEntity order, Money total, LocalDateTime capturedAt) {
+        orderPaymentRepository.save(new OrderPaymentEntity(
+                null,
+                order.id(),
+                order.customerId(),
+                total.amount(),
+                total.currencyCode(),
+                OrderPaymentEntity.CAPTURED,
+                "SIMPAY-" + UUID.randomUUID().toString().replace("-", ""),
+                capturedAt
+        ));
     }
 
 

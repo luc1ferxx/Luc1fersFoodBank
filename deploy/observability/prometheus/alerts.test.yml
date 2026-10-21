@@ -380,3 +380,143 @@ tests:
       - eval_time: 20m
         alertname: OnlineOrderDbReplicaUnavailable
         exp_alerts: []
+
+  # onlineorder.aftersales.refunds{outcome="failed"} is registered by the first refund given up, so it starts at 1;
+  # the other outcomes never raise the alert.
+  - name: first refund given up after a start
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_aftersales_refunds_total{application="OnlineOrder", instance="app:8081", outcome="succeeded"}'
+        values: '1+2x30'
+      - series: 'onlineorder_aftersales_refunds_total{application="OnlineOrder", instance="app:8081", outcome="retried"}'
+        values: '1+1x30'
+      - series: 'onlineorder_aftersales_refunds_total{application="OnlineOrder", instance="app:8081", outcome="failed"}'
+        values: '_x5 1x25'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: OnlineOrderRefundsGivenUp
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: OnlineOrderRefundsGivenUp
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: After-sales refunds were given up
+              description: Refunds reached FAILED in the last 15 minutes and their customers are not refunded. List them with GET /admin/refunds (FAILED by default), read last_error, fix the cause, then retry with POST /admin/refunds/{id}/retry. A refund that does not match its case or payment fails the same way again (docs/operations.md section 12).
+      # Resolves once the window no longer holds the failure; the refund itself stays FAILED until retried.
+      - eval_time: 25m
+        alertname: OnlineOrderRefundsGivenUp
+        exp_alerts: []
+
+  - name: later refund given up on an existing series
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_aftersales_refunds_total{application="OnlineOrder", instance="app:8081", outcome="failed"}'
+        values: '1x24 2x10'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OnlineOrderRefundsGivenUp
+        exp_alerts: []
+      - eval_time: 27m
+        alertname: OnlineOrderRefundsGivenUp
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: After-sales refunds were given up
+              description: Refunds reached FAILED in the last 15 minutes and their customers are not refunded. List them with GET /admin/refunds (FAILED by default), read last_error, fix the cause, then retry with POST /admin/refunds/{id}/retry. A refund that does not match its case or payment fails the same way again (docs/operations.md section 12).
+
+  # Refund claims keep failing, one back-off every ~10s, from minute 5 to minute 35, then the cause is fixed.
+  - name: refund claims backing off for 15 minutes
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_aftersales_refunds_total{application="OnlineOrder", instance="app:8081", outcome="backed_off"}'
+        values: '_x5 1+6x30 181x20'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: OnlineOrderRefundsBackingOff
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: OnlineOrderRefundsBackingOff
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: After-sales refund claims keep failing
+              description: '30 refund claim(s) failed and backed off in the last 5 minutes, and claims have kept failing for 15 minutes. These refunds wait without using up attempts; one is given up (FAILED) once 10 of its claims failed in a row. Find them with GET /admin/refunds?status=PENDING or status=PROCESSING (last_error "The claim of attempt ... failed") and the WARN log "The claim of refund ... failed" (docs/operations.md section 12).'
+      - eval_time: 45m
+        alertname: OnlineOrderRefundsBackingOff
+        exp_alerts: []
+
+  # A database blip: a few claims back off, then the refunds go through.
+  - name: a short burst of refund back-offs raises nothing
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_aftersales_refunds_total{application="OnlineOrder", instance="app:8081", outcome="backed_off"}'
+        values: '_x5 1 4 6x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OnlineOrderRefundsBackingOff
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: OnlineOrderRefundsBackingOff
+        exp_alerts: []
+
+  # The gateway hangs from minute 5 to minute 30: every poller run (one a second) finds no free thread.
+  - name: refund gateway threads held for 10 minutes
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_aftersales_refund_gateway_saturated_total{application="OnlineOrder", instance="app:8081"}'
+        values: '0x5 60+60x25 1560x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: OnlineOrderRefundGatewaySaturated
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: OnlineOrderRefundGatewaySaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Refund gateway threads are all held by hung calls
+              description: 'No refund was claimed in 300 poller run(s) of the last 5 minutes because every refund gateway thread is held by a call that did not return within its timeout, and this has lasted 10 minutes. Due refunds wait without using up attempts. Check the payment gateway; onlineorder_aftersales_refund_gateway_threads_busy shows the held threads (docs/operations.md section 12, "A hung gateway").'
+      - eval_time: 40m
+        alertname: OnlineOrderRefundGatewaySaturated
+        exp_alerts: []
+
+  # Two minutes of held threads, then the gateway answers again.
+  - name: a short refund gateway stall raises nothing
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_aftersales_refund_gateway_saturated_total{application="OnlineOrder", instance="app:8081"}'
+        values: '0x5 60 120x30'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: OnlineOrderRefundGatewaySaturated
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: OnlineOrderRefundGatewaySaturated
+        exp_alerts: []
+
+  # onlineorder.aftersales.cancellations.undercaptured has no tags and is registered by the first such cancellation.
+  - name: first undercaptured cancellation after a start
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_aftersales_cancellations_undercaptured_total{application="OnlineOrder", instance="app:8081"}'
+        values: '_ _ 1x25'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: OnlineOrderCancellationsUndercaptured
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: OnlineOrderCancellationsUndercaptured
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Paid orders were cancelled with less captured than their refund
+              description: The automatic refund of these cancellations will be given up before the gateway is called, and an admin retry fails the same way. The WARN log "Order ... was cancelled with a refund of ..." names the order, the payment and the case; support refunds them by hand (docs/operations.md section 12).
+      - eval_time: 20m
+        alertname: OnlineOrderCancellationsUndercaptured
+        exp_alerts: []

@@ -84,16 +84,29 @@ public interface DeliveryRepository extends ListCrudRepository<DeliveryEntity, L
     List<DeliveryEntity> findRecent(int limit);
 
 
+    /**
+     * Moves the delivery to another rider while it still has {@code expectedRiderId} and is open: a compare-and-set on
+     * what the caller read under the row lock. Returns the rows changed, 1, or 0 when the row no longer matches
+     * (checked with {@link com.laioffer.onlineorder.statemachine.CompareAndSet}).
+     */
     @Modifying
     @Query("""
             UPDATE deliveries
             SET rider_id = :riderId,
                 updated_at = :updatedAt
             WHERE id = :id
+              AND rider_id = :expectedRiderId
+              AND status IN ('ASSIGNED', 'PICKED_UP')
             """)
-    int updateRider(Long id, Long riderId, LocalDateTime updatedAt);
+    int compareAndSetRider(Long id, Long expectedRiderId, Long riderId, LocalDateTime updatedAt);
 
 
+    /**
+     * Moves the delivery from {@code expectedStatus} to {@code status} while it still has {@code expectedRiderId}: a
+     * compare-and-set on what the caller read under the row lock. The timestamps are written as given. Returns the rows
+     * changed, 1, or 0 when the row no longer matches (checked with
+     * {@link com.laioffer.onlineorder.statemachine.CompareAndSet}).
+     */
     @Modifying
     @Query("""
             UPDATE deliveries
@@ -103,9 +116,13 @@ public interface DeliveryRepository extends ListCrudRepository<DeliveryEntity, L
                 cancelled_at = :cancelledAt,
                 updated_at = :updatedAt
             WHERE id = :id
+              AND status = :expectedStatus
+              AND rider_id = :expectedRiderId
             """)
-    int updateStatus(
+    int compareAndSetStatus(
             Long id,
+            String expectedStatus,
+            Long expectedRiderId,
             String status,
             LocalDateTime pickedUpAt,
             LocalDateTime deliveredAt,

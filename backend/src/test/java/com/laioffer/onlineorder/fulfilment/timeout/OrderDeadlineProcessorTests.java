@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -75,6 +76,30 @@ class OrderDeadlineProcessorTests {
         Mockito.verify(metricsService).recordFulfilmentTimeout("ACCEPT", "cancelled");
         Mockito.verify(metricsService).recordMerchantDecision("timeout");
         Mockito.verify(transactionManager, Mockito.times(2)).commit(Mockito.any(TransactionStatus.class));
+    }
+
+
+    /**
+     * ADR 0002 I14 (section 4.1): in one transaction per deadline, the deadline is claimed (SKIP LOCKED) before the order
+     * module locks the order, and deleted after the cancel.
+     */
+    @Test
+    void dueDeadline_shouldBeClaimedBeforeTheOrderIsCancelledAndDeletedAfter() {
+        Mockito.when(orderDeadlineRepository.claimNextDue(Mockito.any()))
+                .thenReturn(deadline(1L, 10L, "ACCEPT"))
+                .thenReturn(null);
+        Mockito.when(orderLifecycleCommands.cancelIfStillIn(10L, OrderStatus.PAID, "MERCHANT_TIMEOUT", OrderActor.system()))
+                .thenReturn(Optional.of(cancelledOrder(10L, "MERCHANT_TIMEOUT")));
+
+        processor.fireDueDeadlines();
+
+        InOrder steps = Mockito.inOrder(transactionManager, orderDeadlineRepository, orderLifecycleCommands);
+        steps.verify(transactionManager).getTransaction(Mockito.any());
+        steps.verify(orderDeadlineRepository).claimNextDue(Mockito.any());
+        steps.verify(orderLifecycleCommands)
+                .cancelIfStillIn(10L, OrderStatus.PAID, "MERCHANT_TIMEOUT", OrderActor.system());
+        steps.verify(orderDeadlineRepository).deleteById(1L);
+        steps.verify(transactionManager).commit(Mockito.any(TransactionStatus.class));
     }
 
 

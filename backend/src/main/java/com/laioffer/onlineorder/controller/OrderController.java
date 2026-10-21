@@ -58,7 +58,7 @@ public class OrderController {
     }
 
 
-    @PatchMapping("/orders/{orderId}/status")
+    @PatchMapping("/orders/{orderId:\\d+}/status")
     public OrderDto updateOrderStatus(
             Principal principal,
             @PathVariable Long orderId,
@@ -69,7 +69,7 @@ public class OrderController {
         return orderService.idempotentTransitionOrderStatus(actor.id(), orderId, body.status(), idempotencyKey);
     }
 
-    @PostMapping("/orders/{orderId}/cancel")
+    @PostMapping("/orders/{orderId:\\d+}/cancel")
     public OrderDto cancelOrder(
             Principal principal,
             @PathVariable Long orderId,

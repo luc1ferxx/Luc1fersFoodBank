@@ -73,6 +73,48 @@
       "versions": {
         "1": "INITIAL"
       }
+    },
+    "aftersales.case_opened": {
+      "topic": "after-sales-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "aftersales.offer_made": {
+      "topic": "after-sales-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "aftersales.request_rejected": {
+      "topic": "after-sales-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "aftersales.case_escalated": {
+      "topic": "after-sales-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "aftersales.refund_approved": {
+      "topic": "after-sales-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "aftersales.case_refunded": {
+      "topic": "after-sales-events",
+      "versions": {
+        "1": "INITIAL"
+      }
+    },
+    "aftersales.case_closed": {
+      "topic": "after-sales-events",
+      "versions": {
+        "1": "INITIAL"
+      }
     }
   }
 }

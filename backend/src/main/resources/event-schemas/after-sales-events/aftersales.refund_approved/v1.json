@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/after-sales-events/aftersales.refund_approved/v1.json",
+  "title": "aftersales.refund_approved, version 1",
+  "description": "The amount to refund is settled (approved_amount, resolution) and its refund started: the merchant approved, a counter-offer was accepted, an admin granted the request, or a deadline ran out. Topic after-sales-events, record key: the order id, aggregate: AFTER_SALES_CASE (aggregate_id = the case id).",
+  "$ref": "../../common/envelope/v1.json",
+  "properties": {
+    "event_type": {
+      "const": "aftersales.refund_approved"
+    },
+    "aggregate_type": {
+      "const": "AFTER_SALES_CASE"
+    },
+    "data": {
+      "$ref": "../../common/after-sales-case-data/v1.json",
+      "required": [
+        "approved_amount",
+        "resolution"
+      ],
+      "properties": {
+        "status": {
+          "const": "REFUNDING"
+        }
+      }
+    }
+  }
+}

@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.messaging.contract;
 
 
+import com.laioffer.onlineorder.aftersales.AfterSalesStatus;
 import com.laioffer.onlineorder.fulfilment.FulfilmentEvents;
 import com.laioffer.onlineorder.model.OrderStatus;
 import org.junit.jupiter.api.Assertions;
@@ -52,15 +53,22 @@ class EventSchemaContractTests {
                 FulfilmentEvents.DELIVERY_CANCELLED,
                 FulfilmentEvents.DELIVERY_REASSIGNED
         );
+        // One type per status a case enters; the opening is case_opened, PENDING_MERCHANT's type.
+        List<String> afterSalesEvents = Arrays.stream(AfterSalesStatus.values()).map(AfterSalesStatus::eventType).toList();
         EventSchemaCatalog catalog = EventSchemaRegistry.published().catalog();
 
         List<String> missing = new ArrayList<>();
         orderEvents.forEach(type -> expectTopic(catalog, type, EventTopic.ORDER_EVENTS, missing));
         deliveryEvents.forEach(type -> expectTopic(catalog, type, EventTopic.DELIVERY_EVENTS, missing));
         expectTopic(catalog, FulfilmentEvents.MERCHANT_ORDER_RECEIVED, EventTopic.MERCHANT_EVENTS, missing);
+        afterSalesEvents.forEach(type -> expectTopic(catalog, type, EventTopic.AFTER_SALES_EVENTS, missing));
 
         assertNoProblems(missing);
-        Assertions.assertEquals(orderEvents.size() + deliveryEvents.size() + 1, catalog.eventTypes().size());
+        Assertions.assertEquals(7, afterSalesEvents.stream().distinct().count());
+        Assertions.assertEquals(
+                orderEvents.size() + deliveryEvents.size() + 1 + afterSalesEvents.size(),
+                catalog.eventTypes().size()
+        );
     }
 
 

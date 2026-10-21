@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/common/after-sales-case-data/v1.json",
+  "title": "After-sales case event data, version 1",
+  "description": "The data of every after-sales event (after-sales-events topic): the after-sales case after the step the event reports, and the step itself (action, actor_type, actor_id). Every amount is in currency, the order's, and every line repeats it next to its amounts. Consumers that keep a copy of the case apply an event only when its version is above the one they hold.",
+  "type": "object",
+  "required": [
+    "case_id",
+    "order_id",
+    "customer_id",
+    "kind",
+    "attempt_no",
+    "status",
+    "action",
+    "actor_type",
+    "version",
+    "requested_amount",
+    "currency",
+    "lines",
+    "opened_at"
+  ],
+  "properties": {
+    "case_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "order_id": {
+      "description": "The order's internal id, also the record key.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "order_no": {
+      "description": "The order's public number as a string (it exceeds 2^53). Absent for an order without one.",
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "customer_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "restaurant_id": {
+      "description": "Absent only for the automatic refund of an order without a restaurant.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "kind": {
+      "description": "CUSTOMER_REQUEST: the customer asked for a refund of a completed order. ORDER_CANCELLED: the automatic refund of a paid order that was cancelled.",
+      "enum": [
+        "CUSTOMER_REQUEST",
+        "ORDER_CANCELLED"
+      ]
+    },
+    "attempt_no": {
+      "description": "1, or 2 for the customer's request after withdrawing the first; always 1 for ORDER_CANCELLED.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2
+    },
+    "status": {
+      "description": "The case status after the step; each event type fixes it.",
+      "enum": [
+        "PENDING_MERCHANT",
+        "COUNTER_OFFERED",
+        "REJECTED",
+        "IN_ARBITRATION",
+        "REFUNDING",
+        "REFUNDED",
+        "CLOSED"
+      ]
+    },
+    "action": {
+      "description": "The step: OPEN or ORDER_CANCELLED for the opening, otherwise the after-sales trigger, for example MERCHANT_APPROVE or OFFER_TIMEOUT.",
+      "type": "string",
+      "pattern": "^[A-Z_]+$"
+    },
+    "actor_type": {
+      "description": "Who took the step; SYSTEM for the deadline poller, the refund executor and the cancellation of a paid order.",
+      "enum": [
+        "CUSTOMER",
+        "MERCHANT",
+        "ADMIN",
+        "SYSTEM"
+      ]
+    },
+    "actor_id": {
+      "description": "The customer, merchant or admin login (customers.id) that took the step; absent for SYSTEM.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "version": {
+      "description": "The case's version after the step: 0 when it was opened, then one more per step.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "reason_code": {
+      "description": "The customer's reason (CUSTOMER_REQUEST only).",
+      "enum": [
+        "MISSING_ITEM",
+        "WRONG_ITEM",
+        "QUALITY_ISSUE",
+        "DAMAGED_PACKAGING",
+        "FOOD_SAFETY",
+        "LATE_DELIVERY",
+        "OTHER"
+      ]
+    },
+    "description": {
+      "description": "The customer's description (CUSTOMER_REQUEST only).",
+      "type": "string",
+      "maxLength": 1000
+    },
+    "requested_amount": {
+      "description": "The sum of the lines.",
+      "$ref": "#/$defs/amount"
+    },
+    "offered_amount": {
+      "description": "The merchant's counter-offer.",
+      "$ref": "#/$defs/amount"
+    },
+    "approved_amount": {
+      "description": "The amount to refund, from REFUNDING on.",
+      "$ref": "#/$defs/amount"
+    },
+    "refunded_amount": {
+      "description": "The amount refunded (REFUNDED).",
+      "$ref": "#/$defs/amount"
+    },
+    "currency": {
+      "description": "Currency of every amount of the case.",
+      "$ref": "#/$defs/currency"
+    },
+    "merchant_decision": {
+      "description": "The merchant's one answer, once given.",
+      "enum": [
+        "APPROVED",
+        "REJECTED",
+        "OFFERED"
+      ]
+    },
+    "merchant_note": {
+      "description": "The merchant's reason for a rejection, or the note of a counter-offer.",
+      "type": "string"
+    },
+    "resolution": {
+      "description": "How the approved amount was set, from REFUNDING on.",
+      "enum": [
+        "MERCHANT_APPROVED",
+        "MERCHANT_TIMEOUT",
+        "OFFER_ACCEPTED",
+        "OFFER_TIMEOUT",
+        "ARBITRATION_FULL",
+        "ARBITRATION_PARTIAL",
+        "ARBITRATION_TIMEOUT",
+        "ORDER_CANCELLED"
+      ]
+    },
+    "close_reason": {
+      "description": "Why the case was closed without a refund (CLOSED).",
+      "enum": [
+        "WITHDRAWN",
+        "CUSTOMER_TIMEOUT",
+        "ARBITRATION_REJECTED"
+      ]
+    },
+    "deadline_at": {
+      "description": "The deadline of an open status (PENDING_MERCHANT, COUNTER_OFFERED, REJECTED, IN_ARBITRATION); absent otherwise.",
+      "$ref": "../envelope/v1.json#/$defs/local_date_time"
+    },
+    "lines": {
+      "description": "The order lines the case asks a refund for; an ORDER_CANCELLED case lists every line in full.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/line"
+      }
+    },
+    "opened_at": {
+      "description": "When the case was opened.",
+      "$ref": "../envelope/v1.json#/$defs/local_date_time"
+    }
+  },
+  "$defs": {
+    "amount": {
+      "type": "number",
+      "minimum": 0
+    },
+    "currency": {
+      "description": "ISO 4217 alphabetic code.",
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "line": {
+      "type": "object",
+      "required": [
+        "order_item_id",
+        "menu_item_name",
+        "quantity",
+        "unit_price",
+        "amount",
+        "currency"
+      ],
+      "properties": {
+        "order_item_id": {
+          "description": "The order line (order_history_items.id).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "menu_item_name": {
+          "type": "string"
+        },
+        "quantity": {
+          "description": "The quantity asked, at most the quantity ordered.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "unit_price": {
+          "$ref": "#/$defs/amount"
+        },
+        "amount": {
+          "description": "unit_price x quantity.",
+          "$ref": "#/$defs/amount"
+        },
+        "currency": {
+          "description": "Currency of unit_price and amount: the case's currency.",
+          "$ref": "#/$defs/currency"
+        }
+      }
+    }
+  }
+}

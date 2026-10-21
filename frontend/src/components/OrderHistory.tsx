@@ -1,6 +1,6 @@
 import type { OrderStatus } from "../api/dto";
 import { useOrderHistory } from "../hooks/useOrderHistory";
-import { formatDateTime } from "../lib/format";
+import { formatDateTime, utcTimestamp } from "../lib/format";
 import { ACTOR_LABELS } from "../lib/labels";
 import { Alert } from "./Alert";
 
@@ -47,7 +47,9 @@ export function OrderHistory({
               </strong>
               <span>by {ACTOR_LABELS[entry.actor_type]}</span>
               {entry.reason ? <span>Reason: {entry.reason}</span> : null}
-              <time dateTime={entry.occurred_at}>{formatDateTime(entry.occurred_at)}</time>
+              <time dateTime={utcTimestamp(entry.occurred_at)}>
+                {formatDateTime(entry.occurred_at)}
+              </time>
             </li>
           ))}
         </ol>

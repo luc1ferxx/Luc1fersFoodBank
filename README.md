@@ -29,6 +29,11 @@ Most demo food apps stop at CRUD. This one goes deeper into the failure modes th
 - **Kafka-based async processing** with consumer-side deduplication
 - **Persistent dead-letter storage and replay** for failed consumers
 - **Failed outbox inspection and retry** for operator recovery
+- **Declared state machines** for orders, deliveries, after-sales cases and refunds: one validated table per
+  lifecycle, decided purely and written with a compare-and-set under the row lock
+- **After-sales refunds** with merchant answers, platform arbitration, deadlines and automatic refunds of cancelled
+  paid orders, executed through a leased, retried gateway call outside the transaction
+  ([After-Sales Refunds](#after-sales-refunds))
 - **Redis-backed sessions, cache, and rate limiting**
 - **OpenTelemetry tracing from the HTTP request through the outbox to the Kafka consumer**, Prometheus metrics, structured logs, Grafana dashboards and alert rules
 - **Kubernetes manifests and a gated release pipeline** (coverage, SpotBugs, CodeQL, Trivy, SBOM, staged deploys); see [docs/operations.md](docs/operations.md)
@@ -46,8 +51,8 @@ The theme of the project is simple:
 
 | Area | What is included |
 | --- | --- |
-| Customer experience | Sign up, log in, browse restaurants, search menus, manage cart, checkout, view orders, cancel eligible orders, view notifications |
-| Admin operations | Move orders through a guarded state machine, inspect failed outbox events, retry failed publishes, replay dead-lettered events |
+| Customer experience | Sign up, log in, browse restaurants, search menus, manage cart, checkout, view orders, cancel eligible orders, view notifications, ask for a refund of a completed order and follow it |
+| Admin operations | Move orders through a guarded state machine, inspect failed outbox events, retry failed publishes, replay dead-lettered events, arbitrate escalated refund requests, retry failed refunds |
 | Reliability | Idempotency keys, row locking, transactional outbox, at-least-once event handling, deduplication tables, replay paths |
 | Observability | OpenTelemetry traces (`X-Trace-Id` = trace id), structured logs with trace/span ids, Prometheus metrics on a separate management port, Grafana dashboard, alert rules, readiness and liveness probes |
 | Local development | Docker Compose for PostgreSQL, Redis, and Kafka; H2 fallback profile; React dev server proxy |
@@ -165,15 +170,19 @@ between them with the tabs under the header; guests and logins without a known r
 
 | Role | Workspace |
 | --- | --- |
-| `ROLE_USER`, guests | Order food: menus, cart, checkout, orders with their status history (`GET /orders/{id}/history`), notifications. Adding another restaurant's item (`409 CART_RESTAURANT_CONFLICT`) asks whether to clear the cart (`DELETE /cart`) and add it. |
-| `ROLE_MERCHANT` | Merchant console: the restaurant's orders (`GET /merchant/orders`, status filter), accept, reject with a reason, mark preparing. |
+| `ROLE_USER`, guests | Order food: menus, cart, checkout, orders with their status history (`GET /orders/{id}/history`), notifications. Adding another restaurant's item (`409 CART_RESTAURANT_CONFLICT`) asks whether to clear the cart (`DELETE /cart`) and add it. Signed-in customers also get "Request a refund" on a completed order within the request window (whole order or chosen lines), their refund cases with a countdown, accept or decline a counter-offer, escalate, withdraw (a first request withdrawn before a rejection then offers "Request a refund again (1 left)"), and the automatic refund of a cancelled paid order. |
+| `ROLE_MERCHANT` | Merchant console, "Orders" tab: the restaurant's orders (`GET /merchant/orders`, status filter), accept, reject with a reason, mark preparing. "After-sales" tab: the restaurant's refund requests; approve, reject with a reason, or offer less than requested, until the deadline. |
 | `ROLE_RIDER` | Rider console: on-duty switch, the rider's own deliveries, picked up and delivered. |
-| `ROLE_ADMIN` | Admin console: list, create, and deactivate merchants (restaurant picked from the catalog) and riders; the manual order-status change and dead-letter replay. |
+| `ROLE_ADMIN` | Admin console: list, create, and deactivate merchants (restaurant picked from the catalog) and riders; the manual order-status change and dead-letter replay; the after-sales queue by status, a case's history with its refund attempts and last error, arbitration, and the failed refunds with Retry. |
 
-Switching workspaces keeps the ordering page and the admin console as they were, so a checkout, cancel, or status
-change retried after a switch reuses its Idempotency-Key. The merchant and rider consoles poll every 15 seconds while
-the tab is visible. A deactivated merchant or rider (the backend answers `403` on `/merchant/**` and `/rider/**`) gets
-a notice instead of the raw error, polling stops, and Refresh checks again.
+Switching workspaces keeps the ordering page and the admin console as they were, so a checkout, cancel, status
+change, refund request or arbitration retried after a switch reuses its Idempotency-Key. The merchant and rider
+consoles poll every 15 seconds while the tab is visible; the customer's refund cases every 10 seconds while the page is
+shown and a case is still open or refunding, and together with the order list whenever a notification poll (every 15
+seconds) brings a new notification, so an order that completes gets "Request a refund" without a refresh; the admin's
+after-sales section reads when opened and on Refresh. A
+deactivated merchant or rider (the backend answers `403` on `/merchant/**` and `/rider/**`) gets a notice instead of
+the raw error, polling stops, and Refresh checks again.
 
 ### Demo Account
 
@@ -194,6 +203,38 @@ Use this when you want a smaller backend run without PostgreSQL or Kafka. Redis 
 ```
 
 The `h2` profile runs Flyway migrations and includes the demo seed callback by default.
+
+### After-sales demo
+
+The `demo` profile (`backend/src/main/resources/application-demo.yml`) shortens the after-sales time limits, which
+otherwise default to a 24-hour request window and 24, 48 and 72 hours to answer: a request window of 2 hours, 2 minutes
+for the merchant, 3 for the customer and 5 for the platform. It also turns on the after-sales poller, which follows
+Kafka and is therefore off in the plain `h2` profile, so that the deadlines fire and refunds go through the simulated
+refund gateway.
+
+```sh
+(cd backend && SPRING_PROFILES_ACTIVE=h2,demo ./gradlew bootRun)
+```
+
+1. Sign in as `demo@laifood.com` (a customer and an admin), add a menu item to the cart and pay with
+   `POST /payments/checkout` (with an `Idempotency-Key`).
+2. Complete the order as the admin: `PATCH /orders/{orderId}/status` with `{"status": "ACCEPTED"}`, then `PREPARING`,
+   then `COMPLETED`, each with its own `Idempotency-Key`.
+3. Ask for a refund: `POST /orders/{orderId}/after-sales` with
+   `{"scope": "WHOLE_ORDER", "reason_code": "MISSING_ITEM", "description": "..."}` and an `Idempotency-Key`.
+4. Leave it unanswered for 2 minutes. The poller then fires the merchant timeout, which approves the requested amount,
+   and executes the refund in the same tick: `GET /after-sales/cases/{caseId}` shows the case `REFUNDED` and its
+   refund `SUCCEEDED`.
+
+Add `AFTER_SALES_REFUND_GATEWAY_FAIL_FIRST_ATTEMPTS=2` to watch the refund fail twice and back off (10 s, then 20 s)
+before it succeeds. The same steps work in the UI (`npm start`): the admin console's "Order tools" for step 2 and the
+order list's "Request a refund" for step 3.
+
+What `h2` cannot show: with Kafka off there is no outbox publisher and no consumer. The merchant's after-sales inbox is
+filled from `after-sales-events`, so it stays empty and merchants cannot answer a request (their commands are `404`);
+the merchant timeout still approves the request when its deadline passes, because the poller fires it from the
+database. No notifications are written either. Run the full stack (Quick Start) to see the merchant's side, the
+counter-offer and the arbitration.
 
 ---
 
@@ -217,9 +258,10 @@ The `h2` profile runs Flyway migrations and includes the demo seed callback by d
 | `POST` | `/cart/checkout` | Checkout cart with idempotency key |
 | `POST` | `/payments/checkout` | Payment-style checkout with idempotency key |
 | `GET` | `/orders` | List current user's orders; each carries `id` (the key the order paths take) and `order_no` (the public order number, a JSON string) |
-| `POST` | `/orders/{orderId}/cancel` | Cancel an eligible order |
+| `POST` | `/orders/{orderId}/cancel` | Cancel an eligible order (a paid one with a captured payment above 0.00 is refunded automatically) |
 | `GET` | `/orders/{orderId}/history` | The order's status changes, oldest first (owner or admin; `404` for anyone else) |
 | `GET` | `/notifications` | List order notifications |
+| `GET`, `POST` | `/after-sales/cases/**`, `/orders/{orderId}/after-sales` | Refund requests and the answers to them (see [After-Sales Refunds](#after-sales-refunds)) |
 
 ### Admin and Recovery APIs
 
@@ -234,6 +276,7 @@ The `h2` profile runs Flyway migrations and includes the demo seed callback by d
 | `POST` | `/dead-letters/{deadLetterEventId}/replay` | Replay a stored dead-letter event |
 | `GET`, `POST` | `/admin/merchants`, `/admin/riders` | List or provision merchant and rider logins (see [Provisioning merchants and riders](#provisioning-merchants-and-riders)) |
 | `PATCH` | `/admin/merchants/{merchantId}`, `/admin/riders/{riderId}` | Activate or deactivate a merchant or rider, body `{"active": false}` |
+| `GET`, `POST` | `/admin/after-sales/**`, `/admin/refunds/**` | After-sales queue and arbitration, refunds and the retry of a failed one (see [After-Sales Refunds](#after-sales-refunds)) |
 | `GET` | `/admin/audit-log?limit=50&before_id=` | Audit log of the admin actions above and of the riders' own changes (see [Order State](#order-state)), newest first; pass the last entry's `id` as `before_id` for the next page |
 
 ### Operational APIs
@@ -312,6 +355,28 @@ API errors use a consistent JSON shape and include the OpenTelemetry trace id, w
   `en-US`, the currency's own decimals: $12.78, €0.50, ¥950), and `lineTotal` multiplies a price by a quantity in
   integer hundredths.
 
+### Timestamps and time zone
+
+- **The server runs in UTC.** `OnlineOrderApplication.main` makes UTC the JVM's default zone before Spring starts,
+  whatever the host, the image or `-Duser.timezone` say; the Gradle `test` task and `bootRun` start their JVM in UTC
+  too, since tests do not run `main`. Every timestamp is a `LocalDateTime` from `LocalDateTime.now()` in a `TIMESTAMP`
+  column, so it is UTC wall-clock time, and the PostgreSQL driver opens each session in the JVM's zone, so
+  `CURRENT_TIMESTAMP` stored into a `TIMESTAMP` column (column defaults, the login lockout, the demo seed) is UTC as
+  well (`ServerTimeZoneTests`, `ServerTimeZonePostgresTests`).
+- **The JSON keeps its format.** Timestamps are still ISO dates and times without an offset
+  (`"2026-10-20T12:00:00"`, with fractional seconds when there are any); they mean UTC.
+- **Frontend.** `parseTimestamp` in `src/lib/format.ts` is the only parser of backend timestamps (ESLint rejects
+  `Date.parse` and `new Date(value)` elsewhere): an offset-less date and time is read as UTC, one with `Z` or an offset
+  keeps it. `formatDateTime` shows the time in the browser's zone and locale, and countdowns and deadline checks are
+  exact whatever the browser's zone. The UI tests run in `America/New_York` against a fake backend that writes UTC,
+  so reading a timestamp as local time fails them.
+- **Times inside texts name their zone.** A deadline the backend writes into a message, a notification
+  (`"Reply by 2026-10-23 16:00 UTC"`) or a 409 (`AFTER_SALES_DEADLINE_PASSED`, `AFTER_SALES_NOT_ELIGIBLE`: `"... passed
+  at 2026-10-23T16:00:00 UTC"`), ends with `UTC`, since the UI shows messages as they come next to times it converts.
+  Notifications stored before keep their unlabelled text.
+- Rows written earlier by a server in another zone keep that zone's wall-clock time (`docs/operations.md`
+  section 3).
+
 ### Order State
 
 Allowed transitions:
@@ -326,6 +391,18 @@ COMPLETED and CANCELLED are terminal
 
 Status changes and their outbox events commit together. Invalid transitions fail without side effects.
 
+The order, delivery, after-sales case and refund lifecycles are each declared once with the generic `StateMachine` of
+`com.laioffer.onlineorder.statemachine` (`model.OrderStateMachine`, `fulfilment.dispatch.DeliveryStateMachine`,
+`aftersales.AfterSalesStateMachine`, `aftersales.RefundStateMachine`). A declaration names, per trigger (a command or an
+event), the states it fires from, its target (or `stay()` for an internal transition such as a reassignment), the actor
+types allowed, its guards, and when it already happened (a retry that answers unchanged). `build()` refuses an invalid
+table at class initialization, listing every problem: a trigger declared twice or not at all, a transition out of a
+terminal state, a state no initial state reaches or that cannot reach a terminal one. `decide()` is pure; the service
+locks the row, decides, and writes the new state with a compare-and-set on the state it read (`CompareAndSet`: any row
+count but 1 rolls back). `toMermaid()` draws a machine; the tests pin each drawing. Moving the order and delivery paths
+onto the declarations kept their 409 codes and messages, no-ops, history, events and audit as they were. Design and
+implementation record: [ADR 0002](docs/adr/0002-after-sales-state-machine.md).
+
 Every status change, including the creation at checkout, also writes one `order_status_history` row and moves
 `orders.updated_at`, in the same transaction and through the same guarded transition (`OrderService`, the
 `OrderLifecycleCommands` seam for the fulfilment modules). A row records `from_status` (null for the creation),
@@ -337,27 +414,28 @@ steps for the rider, also when an admin marked the delivery delivered through `/
 records that admin). Same-status no-ops and idempotent retries write nothing. `GET /orders/{orderId}/history` serves
 it; orders placed before V7_1 start with one `SYSTEM`/`backfill` row.
 
-Admin actions (status changes, outbox retries, dead-letter replays, catalog edits, merchant and rider provisioning
-and activation, delivery reassignment, the simulated rider actions) and the riders' own changes (going on or off duty,
-picking up and delivering through `/rider/**`) are also written to `audit_log` by `AuditLogService.record` in the
-action's transaction: the login (`actor_customer_id`, the customer id of the admin's or the rider's login), the role
-(`ROLE_ADMIN`, `ROLE_RIDER`), the action, its target, a JSON `details` object and the trace id. The actions are
-`order.status.update`, `outbox_event.retry`, `dead_letter.replay`, `menu_item.update`, `restaurant.update`,
-`merchant.create`, `merchant.update`, `rider.create`, `rider.update`, `rider.availability`, `delivery.picked_up`,
-`delivery.delivered` and `delivery.reassign` (`AuditActions`); staff entries carry the login's customer id and email,
+Admin actions (status changes, outbox retries and abandons, dead-letter replays, catalog edits, merchant and rider
+provisioning and activation, delivery reassignment, the simulated rider actions, after-sales arbitrations and refund
+retries) and the riders' own changes (going on or off duty, picking up and delivering through `/rider/**`) are also
+written to `audit_log` by `AuditLogService.record` in the action's transaction: the login (`actor_customer_id`, the
+customer id of the admin's or the rider's login), the role (`ROLE_ADMIN`, `ROLE_RIDER`), the action, its target, a JSON
+`details` object and the trace id. The actions are `order.status.update`, `outbox_event.retry`, `outbox_event.abandon`,
+`dead_letter.replay`, `menu_item.update`, `restaurant.update`, `merchant.create`, `merchant.update`, `rider.create`,
+`rider.update`, `rider.availability`, `delivery.picked_up`, `delivery.delivered`, `delivery.reassign`,
+`after_sales_case.arbitrate` and `refund.retry` (`AuditActions`); staff entries carry the login's customer id and email,
 never a password. Refused actions add no entry, and neither do a retry of `PATCH /orders/{id}/status` with the same
 `Idempotency-Key` or a repeated action that changes nothing (the same flag again, a delivery move that already
 happened). Every dead-letter replay request that is not refused is recorded with its outcome (`REPLAYED`,
 `REPLAY_FAILED`, or `ALREADY_REPLAYED` when the event had been replayed before and nothing was sent). All keys are
-64-bit (`BIGINT`) since V7; see [docs/operations.md](docs/operations.md) section 7 for the rollout of these
-migrations, which must not run next to pods of an older version.
+64-bit (`BIGINT`) since V7; see [docs/operations.md](docs/operations.md) section 7 for the rollout of these migrations,
+which must not run next to pods of an older version.
 
 ### Outbox and Kafka
 
 - Order events are inserted into `outbox_events` inside the same transaction as the order change, after the event was
   checked against its published schema ("Event contracts" below).
 - Each event gets the next sequence of its aggregate (`aggregate_sequence`, the envelope's `sequence`: 1, 2, 3, ... per
-  order, delivery or merchant order, in commit order).
+  order, delivery, merchant order or after-sales case, in commit order).
 - A scheduled publisher claims `PENDING` or stale `PROCESSING` rows with `FOR UPDATE SKIP LOCKED`, but only the head
   of each aggregate: an event waits while an earlier event of its aggregate is `PENDING`, `PROCESSING` or `FAILED`. So
   an aggregate's events reach Kafka in sequence order, one acknowledgement after the other, across publisher instances.
@@ -377,8 +455,8 @@ migrations, which must not run next to pods of an older version.
 
 ### Event contracts
 
-Every event on `order-events`, `delivery-events` and `merchant-events` has a published, versioned JSON Schema (draft
-2020-12) under `backend/src/main/resources/event-schemas/`:
+Every event on `order-events`, `delivery-events`, `merchant-events` and `after-sales-events` has a published, versioned
+JSON Schema (draft 2020-12) under `backend/src/main/resources/event-schemas/`:
 
 ```text
 event-schemas/
@@ -388,16 +466,24 @@ event-schemas/
 |                                      occurred_at, correlation_id, idempotency_key, data
 |-- common/order-data/v1.json          order event data; money amounts with an optional ISO 4217 currency next to them
 |-- common/delivery-data/v1.json       delivery event data
+|-- common/after-sales-case-data/v1.json  the whole after-sales case after its step, lines with their currency
 |-- order-events/<event_type>/v1.json      order.created ... order.cancelled (data.status fixed per type)
 |-- delivery-events/<event_type>/v1.json   delivery.assigned ... delivery.reassigned
-`-- merchant-events/merchant.order_received/v1.json
+|-- merchant-events/merchant.order_received/v1.json
+`-- after-sales-events/<event_type>/v1.json  aftersales.case_opened ... aftersales.case_closed
 ```
 
 The JSON is snake_case with nulls omitted (the application ObjectMapper). `event_version` names the schema version of
 the event's type the producer wrote; the payload records (`messaging.OrderEventPayload`, `OrderEventItem`,
-`DeliveryEventPayload`, `MerchantEventPayload`) belong to the contract and no longer reuse REST DTOs. V1 is the shape
-the events already had plus two optional fields: `sequence` (absent on events written before V9) and `currency` on the
-order total and on each item price (absent until orders carry a currency).
+`DeliveryEventPayload`, `MerchantEventPayload`, `AfterSalesCasePayload`) belong to the contract and no longer reuse
+REST DTOs. V1 is the shape the events already had plus two optional fields: `sequence` (absent on events written
+before V9) and `currency` on the order total and on each item price (absent until orders carry a currency).
+
+The description of the published `aftersales.case_opened` v1 schema says an `ORDER_CANCELLED` case approves the order
+total. Since V12_4 that holds except for a customer's cancel after the pickup, whose case still requests the total but
+approves and refunds only a share (ADR 0002 section 27, follow-up 17). No property changed, so no new version was
+published (a published schema file never changes): read what a case refunds from `approved_amount` and
+`refunded_amount`, never from `requested_amount`.
 
 **Validation.** `EventContracts` (networknt json-schema-validator 3.x, the line built on Jackson 3, so events are
 checked as `tools.jackson` trees without a second JSON library; schemas refer to each other by `$id` under
@@ -490,7 +576,7 @@ With the breaker, a cold request pays one 500ms command timeout per open period 
 ### Read Replicas
 
 Optional read/write splitting onto PostgreSQL streaming replicas, off unless `DATABASE_REPLICA_URLS` is set (details,
-settings and failure modes: [docs/operations.md](docs/operations.md), section 8):
+settings and failure modes: [docs/operations.md](docs/operations.md), section 11):
 
 - **Opt-in per service method.** Only read-only transactions declared by the application (`@Transactional(readOnly =
   true)` or `ReadOnlyTransactions`) read a replica: catalog loads behind the cache, order and notification lists, the
@@ -514,8 +600,30 @@ settings and failure modes: [docs/operations.md](docs/operations.md), section 8)
 - Authentication uses server-side sessions backed by Redis, under a namespace that carries the session format version (`onlineorder:session:v2`), so pods of two releases never read each other's sessions during a rolling update or rollback.
 - Customer accounts track status, failed login count, lockout time, last login, and audit timestamps.
 - Login lookup is case-insensitive.
-- Anonymous routes are rate-limited by remote IP.
-- Authenticated checkout and admin routes (including merchant and rider provisioning) are rate-limited by user identity.
+- Every write endpoint of the API controllers has a token bucket (`POST /logout` and the dev-only H2 console have none) in `RateLimitingFilter` (Redis): login and signup per remote IP, the rest per login (per IP when the request is anonymous, before its `401`). Each bucket refills fully in a minute; a refused request answers `429 RATE_LIMITED` before its handler runs, and counts in `onlineorder_security_rate_limit_rejected_total{route}`. A replay with the same `Idempotency-Key` takes a token like any request. The ids of these routes are decimal digits only (`{id:\d+}` in the mapping), so another spelling of the same number (`+42`, `0x2A`) is `404` instead of reaching the handler past the limit. `RateLimitedRouteMappingTests` checks both for every controller mapping.
+
+  | Bucket | Requests | Capacity, refill |
+  | --- | --- | --- |
+  | `login` (IP) | `POST /login` | 10, one every 6 s |
+  | `signup` (IP) | `POST /signup` | 5, one every 12 s |
+  | `cart` | `POST /cart`, `DELETE /cart`, `PUT` and `DELETE /cart/items/{id}` | 60, one every second |
+  | `cart-checkout` | `POST /cart/checkout` | 20, one every 3 s |
+  | `payment-checkout` | `POST /payments/checkout` | 10, one every 6 s |
+  | `order-cancel` | `POST /orders/{id}/cancel` | 20, one every 3 s |
+  | `customer-after-sales` | `POST /orders/{id}/after-sales`, `POST /after-sales/cases/{id}/accept-offer`, `decline-offer`, `escalate`, `withdraw` | 20, one every 3 s |
+  | `merchant-orders` | `POST /merchant/orders/{id}/accept`, `reject`, `preparing` | 60, one every second |
+  | `merchant-after-sales` | `POST /merchant/after-sales/{id}/approve`, `reject`, `offer` | 30, one every 2 s |
+  | `rider-deliveries` | `POST /rider/deliveries/{id}/picked-up`, `delivered` | 30, one every 2 s |
+  | `rider-availability` | `PUT /rider/me/availability` | 10, one every 6 s |
+  | `order-status` | `PATCH /orders/{id}/status` (admin) | 30, one every 2 s |
+  | `admin-deliveries` | `POST /admin/deliveries/{id}/picked-up`, `delivered`, `reassign` | 60, one every second |
+  | `admin-catalog` | `PATCH /admin/menu-items/{id}`, `PATCH /admin/restaurants/{id}` | 30, one every 2 s |
+  | `admin-provisioning` | `POST /admin/merchants`, `POST /admin/riders` | 10, one every 6 s |
+  | `admin-staff-status` | `PATCH /admin/merchants/{id}`, `PATCH /admin/riders/{id}` | 30, one every 2 s |
+  | `after-sales-arbitrate` | `POST /admin/after-sales/{id}/arbitrate` | 10, one every 6 s |
+  | `refund-retry` | `POST /admin/refunds/{id}/retry` | 10, one every 6 s |
+  | `outbox-retry`, `outbox-abandon` | `POST /admin/outbox/events/{id}/retry`, `abandon` (one bucket each) | 10, one every 6 s |
+  | `dead-letter-replay` | `POST /dead-letters/{id}/replay` | 10, one every 6 s |
 - Roles: `ROLE_USER` (customers), `ROLE_ADMIN`, `ROLE_MERCHANT` (`/merchant/**`, own restaurant only) and `ROLE_RIDER` (`/rider/**`, own deliveries only). Merchant and rider requests re-check the account's active flag, so a deactivation applies to existing sessions on their next request.
 - Redis rate-limit store failures fail open and emit metrics instead of blocking core flows.
 
@@ -529,11 +637,12 @@ own tables:
 
 | Module | Package | Owns | Reacts to |
 | --- | --- | --- | --- |
-| Order | `fulfilment.order` (+ `service.OrderService`) | `orders`, the order state machine | `delivery.delivered` |
-| Merchant | `fulfilment.merchant` | `merchant_accounts`, `merchant_orders` (inbox) | `order.paid` and later order events |
+| Order | `fulfilment.order` (+ `service.OrderService`) | `orders`, the order state machine | `delivery.picked_up` (records `orders.picked_up_at`), `delivery.delivered` |
+| Merchant | `fulfilment.merchant` | `merchant_accounts`, `merchant_orders` (inbox), `merchant_after_sales_cases` (after-sales inbox) | `order.paid` and later order events; after-sales events of customer requests |
 | Timeout | `fulfilment.timeout` | `order_deadlines` | `order.created`, `order.paid`, later order events, `merchant.order_received` |
 | Dispatch | `fulfilment.dispatch` | `riders` (rider logins, on duty), `deliveries`, `dispatch_orders` | `order.accepted`, `order.cancelled` |
-| Notifications | `service.OrderNotificationService`, `fulfilment.notification` | `order_notifications` | order events, delivery events |
+| Notifications | `service.OrderNotificationService`, `fulfilment.notification` | `order_notifications` | order events, delivery events, after-sales events |
+| After-sales | `aftersales` (order domain; see [After-Sales Refunds](#after-sales-refunds)) | `after_sales_cases` (+ lines, history), `refunds`, the after-sales and refund state machines | no events; driven by its API, its poller, and the order module's cancels and merchant answers |
 
 Every order now belongs to one restaurant: a cart only holds items of one restaurant (adding another restaurant's item
 returns `409 CART_RESTAURANT_CONFLICT`) and checkout records `orders.restaurant_id`. Orders placed before this change
@@ -552,7 +661,19 @@ their events.
 > never gets its paid orders auto-cancelled: they stay `PAID` in its inbox until a merchant or an admin moves them, and
 > `onlineorder.fulfilment.merchant.orders_received{staffing="unstaffed"}` counts them. A deadline set while the
 > restaurant was staffed still fires if its merchant is deactivated afterwards. The payment timeout for unpaid `PLACED`
-> orders runs as before. Cancelled paid orders are not refunded automatically: the customer is told to contact support.
+> orders runs as before. A paid order (`PAID` or `ACCEPTED`) that is cancelled, by anyone, gets an automatic refund:
+> the cancel opens an `ORDER_CANCELLED` after-sales case and its refund of the order total in the same transaction
+> (ADR 0002 D12), and its cancellation notice, whoever cancelled, says the payment will be refunded automatically
+> (after the pickup, the customer's own cancel names the share instead).
+> Once the rider picked the order up (`delivery.picked_up`, recorded as `orders.picked_up_at` by the order-delivery
+> consumer), a customer who cancels the still `ACCEPTED` order gets only
+> `AFTER_SALES_PICKED_UP_CANCEL_REFUND_PERCENT` (50) percent of the total back, rounded half-even; the case still
+> requests the whole order and approves that share. An admin's cancel after the pickup still refunds the whole order.
+> The after-sales poller then executes the refund through the refund gateway (simulated here) and marks the case
+> `REFUNDED`, which sends the customer a "Refund completed" notification; a refund the gateway refuses, or that keeps
+> failing, ends `FAILED` and leaves its case `REFUNDING`. An order without a captured payment (marked `PAID` by an
+> admin, or paid before payments were recorded) or with a total of 0.00 gets none and keeps the old notices; after a
+> reject or an accept timeout, the former's still asks the customer to contact support.
 
 ### Event flow
 
@@ -569,7 +690,9 @@ POST /merchant/orders/{id}/accept  order ACCEPTED ------------------ order.accep
                                                                         |-> timeout: deadline dropped
                                                                         `-> merchant inbox, notifications
 POST /merchant/orders/{id}/preparing  order PREPARING -------------- order.preparing
-POST /rider/deliveries/{id}/picked-up delivery PICKED_UP ----------- delivery.picked_up -> notifications: "Order on the way"
+POST /rider/deliveries/{id}/picked-up delivery PICKED_UP ----------- delivery.picked_up
+                                                                        |-> order: orders.picked_up_at (a customer cancel refunds a share)
+                                                                        `-> notifications: "Order on the way"
 POST /rider/deliveries/{id}/delivered delivery DELIVERED ----------- delivery.delivered
                                                                         |-> order: PREPARING -> COMPLETED ---- order.completed
                                                                         `-> notifications: "Order delivered"
@@ -586,7 +709,8 @@ synchronous seam is the order module's command API, `OrderLifecycleCommands`: me
 so that the order row lock, the guarded transition and the outbox write happen in the caller's transaction. A merchant
 accept and a timeout cancel therefore race on the same row lock and exactly one wins (the timeout only cancels an order
 that is still `PAID`; a late accept gets `409 ORDER_STATUS_CONFLICT`). This is a deliberate exception to "events only":
-the merchant's accept must answer with the order's real status, so it cannot be a fire-and-forget event. The merchant
+the merchant's accept must answer with the order's real status, so it cannot be a fire-and-forget event. A merchant's
+answer to a refund request goes through the same seam (`decideAfterSalesCase`), for the same reason. The merchant
 controller resolves the login to a customer id like every other controller; the merchant module itself only reads its
 own tables.
 
@@ -601,6 +725,7 @@ delivery event for a cancelled order is logged and ignored.
 | `order-events` (key: order id) | order module, via the outbox | `onlineorder` (notifications), `onlineorder-merchant`, `onlineorder-timeout`, `onlineorder-dispatch` |
 | `delivery-events` (key: order id) | dispatch, via the outbox | `onlineorder-order-delivery`, `onlineorder-notification-delivery` |
 | `merchant-events` (key: order id) | merchant, via the outbox | `onlineorder-timeout-merchant` |
+| `after-sales-events` (key: order id) | after-sales, via the outbox | `onlineorder-merchant-aftersales`, `onlineorder-aftersales-notification` |
 | `order-events.dlt` | the listener error handler | `onlineorder-dlt` |
 
 All events go through the transactional outbox (`OrderEventOutboxService.enqueueEvent` stores any aggregate type and
@@ -616,7 +741,8 @@ offset, like the existing one.
 letter replayed after later events of the same order were applied still reaches a group out of order. The consumers
 that keep per-aggregate state (merchant inbox, dispatch, timeout) therefore record the last sequence they applied per
 order (`consumer_aggregate_sequences`, through `EventSequenceTracker`) and skip an event whose sequence is not above it
-(`onlineorder_events_stale_skipped_total`). Only event types a consumer applies move its position: dispatch ignores
+(`onlineorder_events_stale_skipped_total`). The after-sales consumers do the same per case: the merchant projection,
+and the customer notifications, which write no notice for a step the case has already left. Only event types a consumer applies move its position: dispatch ignores
 `order.preparing`, so an `order.accepted` dead-lettered for want of a rider and replayed after it still gets one.
 Events without a sequence (written before V9) and positions older than the processed-events retention fall back on the
 rules below, which still hold for every module when the order of two events flips:
@@ -701,7 +827,8 @@ rider's own availability change cannot put them back on duty even when it races 
 Deliveries a deactivated rider already holds stay assigned to them, and that rider can no longer move them (`403`).
 The `active_deliveries` in the PATCH response shows how many there are. List them with
 `GET /admin/deliveries?rider_id={riderId}`, then reassign each one to an on-duty rider
-(`POST /admin/deliveries/{id}/reassign`) or reactivate the rider. An order that is still `ACCEPTED` can also be
+(`POST /admin/deliveries/{id}/reassign`; a script over more than 60 should pace at one per second or retry a
+`429 RATE_LIMITED`, which moved nothing) or reactivate the rider. An order that is still `ACCEPTED` can also be
 cancelled (`PATCH /orders/{id}/status`, which cancels the delivery and releases the rider); a `PREPARING` one cannot.
 Do not clear them with `POST /admin/deliveries/{id}/delivered`: that completes the customer's order and sends "Order
 delivered" for food nobody delivered.
@@ -740,7 +867,7 @@ and goes back to the dead-letter topic; a replay after the customer cancelled as
 | `app.fulfilment.delivery-topic` (`KAFKA_DELIVERY_TOPIC`) | `delivery-events` | Delivery event topic |
 | `app.fulfilment.merchant-topic` (`KAFKA_MERCHANT_TOPIC`) | `merchant-events` | Merchant event topic (`merchant.order_received`) |
 | `app.fulfilment.*-group` | see the table above | Consumer group per module |
-| `app.fulfilment.listener-concurrency` (`FULFILMENT_LISTENER_CONCURRENCY`) | `app.kafka.listener-concurrency` (3) | Consumer threads of each of the six fulfilment listeners |
+| `app.fulfilment.listener-concurrency` (`FULFILMENT_LISTENER_CONCURRENCY`) | `app.kafka.listener-concurrency` (3) | Consumer threads of each of the six fulfilment listeners and the two after-sales listeners |
 
 Metrics: `onlineorder.fulfilment.merchant.decisions{decision=accepted|rejected|timeout}`,
 `onlineorder.fulfilment.merchant.orders_received{staffing=staffed|unstaffed}`,
@@ -748,11 +875,11 @@ Metrics: `onlineorder.fulfilment.merchant.decisions{decision=accepted|rejected|t
 `onlineorder.fulfilment.dispatch.assignments{result=assigned|duplicate|cancelled|no_rider_attempt}`. `no_rider_attempt`
 counts attempts, not orders: with no active rider each listener retry and each DLT replay counts once more.
 
-Capacity: with Kafka on, the app runs 8 listener containers (the 6 fulfilment listeners, notifications, the DLT). At the
-default concurrency of 3 that is 24 consumer threads, against 6 before these modules. A thread holds a pooled
-connection only while it handles a record, but they share the 30-connection pool with HTTP requests, the outbox
-publisher and the deadline poller, and every order event now costs one short transaction in each of the 4 groups on
-`order-events` instead of 1. The k6 order flow has not been rerun with these consumers yet; if it shows connection
+Capacity: with Kafka on, the app runs 10 listener containers (the 6 fulfilment listeners, the 2 after-sales listeners
+on `after-sales-events`, notifications, the DLT). At the default concurrency of 3 that is 30 consumer threads, against 6
+before these modules. A thread holds a pooled connection only while it handles a record, but they share the
+30-connection pool with HTTP requests, the outbox publisher and the deadline and after-sales pollers, and every order
+event now costs one short transaction in each of the 4 groups on `order-events` instead of 1. The k6 order flow has not been rerun with these consumers yet; if it shows connection
 waits, lower `FULFILMENT_LISTENER_CONCURRENCY` before raising the pool.
 
 ### Timeouts: why a deadline table instead of a Kafka delay
@@ -774,8 +901,313 @@ the guarded transition only if the order still waits, and deletes the row, all i
 poller runs on its own thread instead of the shared scheduler (4 threads), so a burst of due deadlines cannot delay
 the outbox publisher.
 
-Follow-ups: real rider location and ETA, refunds for cancelled paid orders, and a k6 run with the fulfilment consumers
-on.
+Follow-ups: real rider location and ETA, and a k6 run with the fulfilment consumers on.
+
+---
+
+## After-Sales Refunds
+
+After-sales covers refunds only: a customer asks for money back on a completed order, the restaurant answers once,
+the platform arbitrates a dispute, and every step that waits for someone has a deadline. A paid order that is
+cancelled is refunded through the same cases. The module is `com.laioffer.onlineorder.aftersales`
+(cases, refunds, the deadline and refund poller, the customer and admin APIs); the merchant's side lives in
+`fulfilment.merchant` and the customer notifications in `fulfilment.notification`. Migrations: `V12` (the tables,
+`order_payments` included), `V12_1` (currency checks, Java), `V12_2` (idempotency records bound to a case) and
+`V12_3` (a refund's failed claims in a row) and `V12_4` (`orders.picked_up_at`, the pickup that makes a customer's
+cancel refund only a share). Design
+and the record of what was built: [ADR 0002](docs/adr/0002-after-sales-state-machine.md). To try it on H2, see
+[After-sales demo](#after-sales-demo).
+
+| Who | What they can do |
+| --- | --- |
+| Customer | Ask for a refund of their `COMPLETED` order that has a restaurant and a captured payment, within `request-window` of its completion: the whole order or chosen lines (at most the quantities ordered), a reason (`MISSING_ITEM`, `WRONG_ITEM`, `QUALITY_ISSUE`, `DAMAGED_PACKAGING`, `FOOD_SAFETY`, `LATE_DELIVERY`, `OTHER`) and a description. Accept or decline a counter-offer, ask the platform to step in after a rejection, withdraw an open case, and ask once more after withdrawing a request the merchant had not answered or had made a counter-offer on. |
+| Merchant | Answer each request on their restaurant's orders once, before its deadline: approve the requested amount, reject with a reason, or offer a partial refund (more than 0, less than requested). |
+| Admin | Read any case with its whole history, arbitrate an escalated case (`FULL`, `PARTIAL` with an amount, or `REJECT`, each with a note the customer sees), list refunds by status with their last error, retry a `FAILED` refund. |
+| System | Fire the timeout of each waiting status, open the automatic refund of a cancelled paid order, execute refunds. |
+
+### Case states
+
+The declaration in `AfterSalesStateMachine`, drawn by its `toMermaid()` (pinned by `AfterSalesStateMachineTests`):
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING_MERCHANT
+    [*] --> REFUNDING
+    PENDING_MERCHANT --> REFUNDING: MERCHANT_APPROVE
+    PENDING_MERCHANT --> REJECTED: MERCHANT_REJECT
+    PENDING_MERCHANT --> COUNTER_OFFERED: MERCHANT_OFFER
+    PENDING_MERCHANT --> REFUNDING: MERCHANT_TIMEOUT
+    COUNTER_OFFERED --> REFUNDING: CUSTOMER_ACCEPT_OFFER
+    COUNTER_OFFERED --> REJECTED: CUSTOMER_DECLINE_OFFER
+    COUNTER_OFFERED --> REFUNDING: OFFER_TIMEOUT
+    REJECTED --> IN_ARBITRATION: CUSTOMER_ESCALATE
+    REJECTED --> CLOSED: CUSTOMER_TIMEOUT
+    PENDING_MERCHANT --> CLOSED: CUSTOMER_WITHDRAW
+    COUNTER_OFFERED --> CLOSED: CUSTOMER_WITHDRAW
+    REJECTED --> CLOSED: CUSTOMER_WITHDRAW
+    IN_ARBITRATION --> CLOSED: CUSTOMER_WITHDRAW
+    IN_ARBITRATION --> REFUNDING: ADMIN_APPROVE_FULL
+    IN_ARBITRATION --> REFUNDING: ADMIN_APPROVE_PARTIAL
+    IN_ARBITRATION --> CLOSED: ADMIN_REJECT
+    IN_ARBITRATION --> REFUNDING: ARBITRATION_TIMEOUT
+    REFUNDING --> REFUNDED: REFUND_SUCCEEDED
+    REFUNDED --> [*]
+    CLOSED --> [*]
+```
+
+- A customer's request (`kind` `CUSTOMER_REQUEST`) opens in `PENDING_MERCHANT`; the automatic refund of a cancelled
+  order (`ORDER_CANCELLED`) opens in `REFUNDING`. Opening is not a trigger: `AfterSalesTransitions`, the single writer
+  of cases, inserts it.
+- Entering `REFUNDING` fixes the approved amount and its `resolution`: the requested amount for `MERCHANT_APPROVE`,
+  `MERCHANT_TIMEOUT`, `ADMIN_APPROVE_FULL` and `ARBITRATION_TIMEOUT`, the offered amount for `CUSTOMER_ACCEPT_OFFER` and
+  `OFFER_TIMEOUT`, the admin's amount for `ADMIN_APPROVE_PARTIAL`. The refund row is inserted in the same transaction.
+  `CLOSED` carries a `close_reason`: `WITHDRAWN`, `CUSTOMER_TIMEOUT` or `ARBITRATION_REJECTED`.
+- An answer repeated after it happened returns the case unchanged (a counter-offer only with the same amount); a
+  command the status does not allow is `409 AFTER_SALES_STATUS_CONFLICT` ("After-sales case is REFUNDING; only
+  PENDING_MERCHANT cases can be approved").
+- Every applied step writes, in one transaction: the case with a compare-and-set on its status and version, an
+  `after_sales_case_history` row with the actor (`CUSTOMER`, `MERCHANT`, `ADMIN`, `SYSTEM`), the refund when entering
+  `REFUNDING`, and the step's event to the outbox.
+
+Refunds have their own machine (`RefundStateMachine`, pinned by `RefundStateMachineTests`):
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> PROCESSING: CLAIM
+    PROCESSING --> PROCESSING: RECLAIM
+    PROCESSING --> SUCCEEDED: SUCCEED
+    PROCESSING --> PENDING: RETRY_LATER
+    PROCESSING --> FAILED: GIVE_UP
+    FAILED --> PENDING: ADMIN_RETRY
+    SUCCEEDED --> [*]
+```
+
+### Deadlines
+
+A case gets a `deadline_at` every time it enters a waiting status, from the settings below (a changed value applies to
+the steps taken after the change). The after-sales poller fires the timeout once it is due:
+
+| Waiting in | Deadline (default) | When it passes |
+| --- | --- | --- |
+| `PENDING_MERCHANT` | `merchant-response-timeout` (24h) | `MERCHANT_TIMEOUT`: approved at the requested amount, `REFUNDING` |
+| `COUNTER_OFFERED` | `customer-response-timeout` (48h) | `OFFER_TIMEOUT`: the offer is taken, `REFUNDING` at the offered amount |
+| `REJECTED` | `customer-response-timeout` (48h) | `CUSTOMER_TIMEOUT`: `CLOSED` without a refund |
+| `IN_ARBITRATION` | `arbitration-timeout` (72h) | `ARBITRATION_TIMEOUT`: approved at the requested amount, `REFUNDING` |
+
+- A request is accepted until `request-window` (24h) after the order completed (`orders.updated_at` of the
+  `COMPLETED` order).
+- Deadlines are hard for the customer's and the merchant's answers: from `deadline_at` on they are refused with
+  `409 AFTER_SALES_DEADLINE_PASSED`, whether the poller has fired yet or not. Withdrawing and arbitrating have no
+  deadline: until the poller fires the timeout, whoever locks the case first wins.
+- `deadline_at` and `request_deadline` are UTC, like every timestamp (see "Timestamps and time zone"): in any browser
+  zone a countdown, and the answer buttons it disables, end when the backend's hard deadline does.
+- The merchant timeout applies to every restaurant, also one without an active merchant account (unlike the order
+  accept timeout, which only runs for staffed restaurants).
+- The poller (`AfterSalesPoller`) runs on its own thread, `after-sales-poller`, not on the shared scheduler, on every
+  instance where it is enabled (by default wherever Kafka is). Each tick it fires the due deadlines, most overdue first,
+  one case per transaction, claimed with `FOR UPDATE SKIP LOCKED`, then executes the due refunds, so a refund a timeout
+  created runs in the same tick; both share `tick-budget`. A firing that fails rolls back and the case is retried after
+  `retry-backoff`; its `deadline_at` does not move, so late answers stay refused meanwhile.
+
+### Asking again after a withdrawal
+
+An order gets at most two customer requests (`attempt_no` 1 and 2). The second is accepted only when the customer
+withdrew the first while it was `PENDING_MERCHANT` or `COUNTER_OFFERED` (the `from_status` of its `CUSTOMER_WITHDRAW`
+history step), and only within the same request window (counted from the completion, not restarted). A first request
+withdrawn after a rejection (`REJECTED`, whether the merchant rejected it or the customer declined the offer) or from
+`IN_ARBITRATION` allows no other: a second request would restart the merchant's clock, whose timeout refunds in full,
+and so bypass the rejection or the platform. Neither does a request rejected by arbitration, closed by the customer
+timeout, or refunded: `409 AFTER_SALES_NOT_ELIGIBLE` "This order cannot be submitted for after-sales again"; while
+one is open it is "An after-sales case is already open for this order". `eligible_orders` applies the same rule, so
+the order is not offered again. The order's row lock serializes two concurrent requests, and
+`UNIQUE (order_id, kind, attempt_no)` turns one that slipped past it into the same `409`. A withdrawn case was never
+refunded, so at most one case of an order reaches `REFUNDING`. The second request needs a new `Idempotency-Key`: a
+request's key is scoped to the order, so the first request's key with the same body replays the withdrawn case, and
+with another body is `409 CONFLICT`.
+
+Every request must add up to more than 0 (`400` "Refund amount must be greater than zero") and stay within the order's
+captured payment minus what was already approved for it (`409 AFTER_SALES_NOT_ELIGIBLE`). `GET /after-sales/cases`
+lists the orders that can get a request now, with the `attempt_no` the next one would have and its `request_deadline`.
+The list does not look at amounts: a completed order whose total and capture are 0.00 is listed too, but every request
+on it is `400` "Refund amount must be greater than zero".
+
+### Automatic refund of a cancelled paid order
+
+When a `PAID` or `ACCEPTED` order is cancelled (the customer's cancel, the merchant's reject, the accept timeout or an
+admin's `PATCH`), `OrderService` calls `CancellationRefunds` in the cancel's transaction, under the order's row lock and
+after the order's own event: an `ORDER_CANCELLED` case opens straight in `REFUNDING` with every order line, the order
+total requested, and its refund of what it approves (resolution `ORDER_CANCELLED`): the whole total, except after the
+pickup for a customer's cancel, which approves `AFTER_SALES_PICKED_UP_CANCEL_REFUND_PERCENT` (50) of it, half-even, and
+opens nothing when that is 0.00. A failure there rolls the cancel back.
+
+- **It needs an `order_payments` row.** `POST /payments/checkout` records the capture (`CAPTURED`, a `SIMPAY-`
+  reference) in the transaction that creates the `PAID` order. `POST /cart/checkout` creates a `PLACED` order without
+  one, so an order an admin later moved to `PAID` has none, nor do orders paid before V12. Such an order, or one with a
+  total of 0.00, is cancelled without a case (a missing capture is logged as a WARN) and keeps the old cancellation
+  notices; with a capture above 0.00 every cancellation notice says the payment will be refunded automatically, and
+  a customer's cancel after the pickup says how much ("8.04 USD of your 16.09 USD payment will be refunded
+  automatically.", or that nothing is).
+- A refund above the capture still opens the case, logs a WARN and counts
+  `onlineorder.aftersales.cancellations.undercaptured`; the refund executor then gives that refund up before calling
+  the gateway (see below), for support to refund by hand.
+- `ORDER_CANCELLED` cases never reach the merchant and notify the customer only once refunded ("Refund completed").
+
+### Refund execution
+
+A refund is inserted `PENDING` and due at once when its case enters `REFUNDING`: exactly the approved amount, against
+the order's payment (`payment_reference`), with the gateway key `after-sales-case:{caseId}`, the same for every
+attempt. The poller's refund job (`RefundExecutor`) takes one refund at a time in three parts:
+
+1. **Claim** (a transaction, `FOR UPDATE SKIP LOCKED`): a `PROCESSING` refund whose lease expired first (`RECLAIM`),
+   otherwise a due `PENDING` one (`CLAIM`). Either counts as an attempt and leases the refund for `claim-timeout`.
+   Before any money moves the refund is checked once more: its case is `REFUNDING`, its amount is the case's approved
+   amount, it names the order's payment, and that payment captured at least as much. A refund that fails the check, or
+   whose lease expired on its last attempt, becomes `FAILED` without a gateway call.
+2. **Gateway call**, outside any transaction, waited for at most `refund-gateway.timeout` (which must be shorter than
+   `claim-timeout`, checked at startup) on at most `refund-gateway.max-threads` threads. While every thread is held by
+   a call that outlived its timeout, nothing is claimed.
+3. **Record** (a transaction, the refund's row lock): a success makes the refund `SUCCEEDED` and the case `REFUNDED`
+   (`REFUND_SUCCEEDED`, `aftersales.case_refunded`); a retryable failure moves it back to `PENDING` after
+   `retry-backoff` x 2^(attempts - 1), at most `retry-backoff-max`, while fewer than `max-attempts` were made; a
+   permanent failure, or one with no attempt left, makes it `FAILED` with its `last_error`. A result for a refund that
+   another executor reclaimed meanwhile is discarded. A claim transaction that fails backs only that refund off by
+   `retry-backoff`, without using an attempt; once `max-claim-failures` of its claims failed in a row, the last one
+   gives it up (`FAILED`, attempts unchanged) instead of backing it off again. Any other step of the refund starts
+   that count over.
+
+A `FAILED` refund leaves its case in `REFUNDING` until an operator acts: `GET /admin/refunds` (by default the
+`FAILED` ones) shows `last_error`, which customers never see, and `POST /admin/refunds/{refundId}/retry` moves the
+refund back to `PENDING`, due at once, with its attempts starting over (audited as `refund.retry`; a refund already
+`PENDING` is returned unchanged, any other status is `409 REFUND_STATUS_CONFLICT`). The gateway must be idempotent per
+gateway key, so a retry after an attempt that did refund gets the same refund back instead of paying twice.
+
+The gateway here is `SimulatedRefundGateway`. It refunds every request with the reference `SIMREF-` followed by the
+first 20 hex digits of the SHA-256 of the gateway key (so the same key always gets the same refund), and fails the
+first `refund-gateway.fail-first-attempts` attempts of every refund with a retryable "simulated gateway timeout". It
+never fails permanently. A real provider would implement `RefundGateway`.
+
+### After-sales APIs
+
+Customers reach only their own orders and cases (anyone else's is `404`). Merchants reach only their restaurant's cases
+and are checked for an active account on every request (`403`), like the merchant order commands.
+
+| Method | Path | Role | Idempotency-Key | Purpose |
+| --- | --- | --- | --- | --- |
+| `GET` | `/after-sales/cases?limit=50` | signed in | | `{"cases": [...], "eligible_orders": [...]}`: the newest cases without history, and the orders that can get a request now (`order_id`, `order_no`, `attempt_no`, `request_deadline`; a 0.00 order is listed but refused with `400`) |
+| `GET` | `/after-sales/cases/{caseId}` | signed in | | One case with its lines, its refund (no `last_error`) and its history |
+| `POST` | `/orders/{orderId}/after-sales` | signed in | required | Ask for a refund: `{"scope": "WHOLE_ORDER", "reason_code": "MISSING_ITEM", "description": "..."}`, or `"scope": "ITEMS"` with `"lines": [{"order_item_id": 12, "quantity": 1}]` |
+| `POST` | `/after-sales/cases/{caseId}/accept-offer` | signed in | required | `COUNTER_OFFERED -> REFUNDING` at the offered amount |
+| `POST` | `/after-sales/cases/{caseId}/decline-offer` | signed in | required | `COUNTER_OFFERED -> REJECTED` |
+| `POST` | `/after-sales/cases/{caseId}/escalate` | signed in | required | `REJECTED -> IN_ARBITRATION`, optional body `{"note": "..."}` |
+| `POST` | `/after-sales/cases/{caseId}/withdraw` | signed in | required | Any waiting status `-> CLOSED` (`WITHDRAWN`); only a first request withdrawn from `PENDING_MERCHANT` or `COUNTER_OFFERED` leaves the order a second one |
+| `GET` | `/merchant/after-sales?status=&limit=50` | `MERCHANT` | | The restaurant's requests, newest first (status filter in any letter case) |
+| `POST` | `/merchant/after-sales/{caseId}/approve` | `MERCHANT` | | `PENDING_MERCHANT -> REFUNDING` at the requested amount |
+| `POST` | `/merchant/after-sales/{caseId}/reject` | `MERCHANT` | | `PENDING_MERCHANT -> REJECTED`, body `{"reason": "..."}` (required) |
+| `POST` | `/merchant/after-sales/{caseId}/offer` | `MERCHANT` | | `PENDING_MERCHANT -> COUNTER_OFFERED`, body `{"amount": 4.50, "note": "..."}` |
+| `GET` | `/admin/after-sales?status=IN_ARBITRATION&limit=50` | `ADMIN` | | Cases of one status (any letter case; 400 for an unknown status); the waiting ones by deadline, the others newest first |
+| `GET` | `/admin/after-sales/{caseId}` | `ADMIN` | | Any case with its history and its refund's `last_error` |
+| `POST` | `/admin/after-sales/{caseId}/arbitrate` | `ADMIN` | required | `{"decision": "FULL" \| "PARTIAL" \| "REJECT", "amount": 4.50, "note": "..."}` (`amount` for `PARTIAL` only); audited as `after_sales_case.arbitrate` |
+| `GET` | `/admin/refunds?status=FAILED&limit=50` | `ADMIN` | | Refunds of one status (any letter case; 400 for an unknown status) |
+| `POST` | `/admin/refunds/{refundId}/retry` | `ADMIN` | | `FAILED -> PENDING` (see above); audited as `refund.retry` |
+
+- **Idempotency.** A customer command or an arbitration runs once per login, key and scope (the order for a request,
+  the case and command otherwise); its idempotency record is bound to the case it opened or changed, and a replay
+  answers with that case as it is now. The same key with another request is `409 CONFLICT`. Merchant answers and the
+  refund retry take no key: repeating one that already happened returns the case or refund unchanged.
+- **Rate limits.** Per login: the customer's five commands share one bucket (20, one more every 3 s, like the cart
+  checkout), the merchant's approve, reject and offer another (30, one every 2 s), and arbitration and the refund retry
+  have one each (10, one every 6 s). The limit runs before the idempotency check, so a replay with the same key takes a
+  token too; a command refused with `429 RATE_LIMITED` did not run, and retrying it later with its key is safe. Like
+  every rate-limited route, these take their ids as decimal digits only (`+42`, `0x2A` and the like are `404`), so no
+  spelling of an id gets past the limit.
+- **Errors.** `409 AFTER_SALES_NOT_ELIGIBLE` (the order cannot get a request: not `COMPLETED`, no restaurant, no
+  captured payment, the window closed, a request open or none left, or more than the capture allows),
+  `409 AFTER_SALES_STATUS_CONFLICT`, `409 AFTER_SALES_DEADLINE_PASSED`, `409 REFUND_STATUS_CONFLICT`, and `400` for a
+  malformed request (an unknown scope or reason, a line not on the order or above its quantity, an offer or a partial
+  arbitration not between 0 and the requested amount, more decimals than the currency has).
+- **The merchant's inbox is a projection.** Merchant commands lock their row in `merchant_after_sales_cases`, which the
+  merchant consumer group fills from `after-sales-events`; until that group has consumed the case's first event the
+  case is `404` for the merchant, and with Kafka off it never appears.
+
+### Events and notifications
+
+Every step publishes one event on `after-sales-events` (key: the order id; aggregate `AFTER_SALES_CASE` with the case
+id, sequenced per case) carrying the whole case after the step: amounts with their currency, the lines, `attempt_no`,
+`version`, the `action` and actor, and the deadline of the status entered. Each type has its schema under
+`event-schemas/` (see [Event contracts](#event-contracts)).
+
+| Event type | Published when the case | Customer notification |
+| --- | --- | --- |
+| `aftersales.case_opened` | is opened (either kind) | "Refund requested", with the merchant's deadline (customer requests only) |
+| `aftersales.offer_made` | enters `COUNTER_OFFERED` | "Partial refund offered" |
+| `aftersales.request_rejected` | enters `REJECTED` | "Refund request declined", or "Offer declined" when the customer declined the offer |
+| `aftersales.case_escalated` | enters `IN_ARBITRATION` | "Platform review requested" |
+| `aftersales.refund_approved` | enters `REFUNDING` | "Refund approved" |
+| `aftersales.case_refunded` | enters `REFUNDED` | "Refund completed" (also for an automatic refund) |
+| `aftersales.case_closed` | enters `CLOSED` | "Refund request closed", worded by the close reason |
+
+Two consumer groups read the topic, both through `orderEventKafkaListenerContainerFactory` and idempotent like the
+others:
+
+- `onlineorder-merchant-aftersales` (merchant module) upserts the merchant's inbox row from each event of a customer
+  request and drops those of `ORDER_CANCELLED` cases. An event older by sequence than the last one it applied for the
+  case is skipped, and the upsert never moves a row back to an older case `version`, also for an event without a
+  sequence.
+- `onlineorder-aftersales-notification` (notifications) writes `order_notifications`, one per order, event type and
+  case (`dedup_scope = 'case:' || case_id`), so a redelivered event adds nothing while the second request of an order
+  notifies again.
+
+### After-sales configuration and metrics
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `app.after-sales.topic` (`KAFKA_AFTER_SALES_TOPIC`) | `after-sales-events` | After-sales event topic |
+| `app.after-sales.merchant-group` (`AFTER_SALES_MERCHANT_GROUP`) | `onlineorder-merchant-aftersales` | The merchant inbox's consumer group |
+| `app.after-sales.notification-group` (`AFTER_SALES_NOTIFICATION_GROUP`) | `onlineorder-aftersales-notification` | The notifications' consumer group |
+| `app.after-sales.request-window` (`AFTER_SALES_REQUEST_WINDOW`) | `24h` (demo `2h`) | How long after completion an order can get a request, the second one included |
+| `app.after-sales.merchant-response-timeout` (`AFTER_SALES_MERCHANT_RESPONSE_TIMEOUT`) | `24h` (demo `2m`) | The merchant's deadline |
+| `app.after-sales.customer-response-timeout` (`AFTER_SALES_CUSTOMER_RESPONSE_TIMEOUT`) | `48h` (demo `3m`) | The customer's deadline on a counter-offer or a rejection |
+| `app.after-sales.arbitration-timeout` (`AFTER_SALES_ARBITRATION_TIMEOUT`) | `72h` (demo `5m`) | The platform's deadline |
+| `app.after-sales.poller.enabled` (`AFTER_SALES_POLLER_ENABLED`) | follows `app.kafka.enabled` (demo `true`) | Run the deadline and refund poller |
+| `app.after-sales.poller.interval` (`AFTER_SALES_POLL_INTERVAL`) | `1s` | Delay between ticks |
+| `app.after-sales.poller.batch-size` (`AFTER_SALES_POLL_BATCH_SIZE`) | `100` | Cases fired, and refunds executed, per tick |
+| `app.after-sales.poller.retry-backoff` (`AFTER_SALES_DEADLINE_RETRY_BACKOFF`) | `30s` | Delay before a deadline whose firing failed is tried again |
+| `app.after-sales.poller.tick-budget` (`AFTER_SALES_POLL_TICK_BUDGET`) | `5s` | Time a tick may spend claiming, deadlines and refunds together (one item at least each) |
+| `app.after-sales.refund.max-attempts` (`AFTER_SALES_REFUND_MAX_ATTEMPTS`) | `8` | Gateway calls before a refund is given up (a reclaim counts) |
+| `app.after-sales.refund.retry-backoff` (`AFTER_SALES_REFUND_RETRY_BACKOFF`) | `10s` | First wait after a failed call, doubling per attempt; also the back-off of a failed claim |
+| `app.after-sales.refund.retry-backoff-max` (`AFTER_SALES_REFUND_RETRY_BACKOFF_MAX`) | `10m` | Longest wait between attempts |
+| `app.after-sales.refund.claim-timeout` (`AFTER_SALES_REFUND_CLAIM_TIMEOUT`) | `60s` | Lease of a claimed refund |
+| `app.after-sales.refund.max-claim-failures` (`AFTER_SALES_REFUND_MAX_CLAIM_FAILURES`) | `10` | Failed claims in a row before a refund is given up (no attempt used up) |
+| `app.after-sales.refund-gateway.timeout` (`AFTER_SALES_REFUND_GATEWAY_TIMEOUT`) | `10s` | Wait for one gateway call; must be shorter than `claim-timeout` |
+| `app.after-sales.refund-gateway.max-threads` (`AFTER_SALES_REFUND_GATEWAY_MAX_THREADS`) | `4` | Gateway calls running at once, timed-out ones included |
+| `app.after-sales.refund-gateway.fail-first-attempts` (`AFTER_SALES_REFUND_GATEWAY_FAIL_FIRST_ATTEMPTS`) | `0` | Simulated gateway: fail the first N attempts of every refund (retryable) |
+
+Startup refuses a time limit, back-off or budget that is not positive, `max-attempts`, `max-claim-failures` or
+`max-threads` below 1, a negative `fail-first-attempts`, `retry-backoff-max` below `retry-backoff`, and a gateway
+timeout not shorter than `claim-timeout`. `poller.interval` and `poller.batch-size` are not checked: an interval below
+1 ms runs as 1 ms, a batch size below 1 as 1. The `demo` profile (`application-demo.yml`) sets the demo values above.
+The two listeners use `app.fulfilment.listener-concurrency` (see the capacity note under
+[Configuration](#configuration)).
+
+Metrics (tag values are lower case):
+
+- `onlineorder.aftersales.steps{action, from, to}`: committed steps; `action` is the trigger, or `open` /
+  `order_cancelled` for an opening (`from="none"`).
+- `onlineorder.aftersales.deadlines{trigger, outcome=fired|skipped|failed}`: `skipped` is a timeout the machine
+  refused (only when the clock went back), `failed` one that rolled back and backs off.
+- `onlineorder.aftersales.refunds{outcome=succeeded|retried|failed|superseded|unrecorded|skipped|backed_off}`:
+  `failed` refunds wait for an admin retry; `backed_off` is a claim transaction that failed.
+- `onlineorder.aftersales.refund_gateway.threads.busy` and `.threads.max` (gauges), and
+  `onlineorder.aftersales.refund_gateway.saturated`: runs that claimed nothing because every gateway thread was held by
+  a call past its timeout (alert `OnlineOrderRefundGatewaySaturated`).
+- `onlineorder.aftersales.merchant_decisions{decision=approved|rejected|offered}`: answers that changed a case (not
+  retries).
+- `onlineorder.aftersales.cancellations.undercaptured`: automatic refunds whose order total exceeds the capture.
+
+The alerts `OnlineOrderRefundsGivenUp`, `OnlineOrderRefundsBackingOff`, `OnlineOrderRefundGatewaySaturated` and
+`OnlineOrderCancellationsUndercaptured` watch these refunds; [docs/operations.md](docs/operations.md) section 12 has
+their runbook, the V12-V12_4 rollout and the connection pool sizing for the after-sales listeners.
 
 ---
 
@@ -822,7 +1254,7 @@ Type-check, lint, test, and build the React app:
 (cd frontend && npm run typecheck && npm run lint && npm test && npm run build)
 ```
 
-`npm run typecheck` runs `tsc --noEmit` (strict TypeScript). `npm test` runs Vitest with jsdom and React Testing Library against an in-memory fake API (login, cart and the clear-cart dialog, checkout success and failure, Idempotency-Key reuse on retry, session expiry, stale responses, polling, order status history, role-based workspaces, the merchant, rider, and admin consoles). `npm run build` writes `frontend/build` and fails if `index.html` contains an inline script, which the backend CSP would block.
+`npm run typecheck` runs `tsc --noEmit` (strict TypeScript). `npm test` runs Vitest with jsdom and React Testing Library against an in-memory fake API (login, cart and the clear-cart dialog, checkout success and failure, Idempotency-Key reuse on retry, session expiry, stale responses, polling, order status history, role-based workspaces, the merchant, rider, and admin consoles, and the after-sales screens of all three, with the customer's and the admin's Idempotency-Key reuse across workspace switches). `npm run build` writes `frontend/build` and fails if `index.html` contains an inline script, which the backend CSP would block.
 
 Build the backend jar with embedded frontend assets:
 
@@ -875,6 +1307,21 @@ The test suite covers:
   checkout with exact totals, its event and the database's single-currency carts on PostgreSQL and H2
   (`CurrencyCheckout*IntegrationTests`), the `currency` fields of the API (`ApiContractIntegrationTests`), and the
   frontend's decoding and formatting (`src/lib/format.test.ts`, `src/api/client.test.ts`, `src/App.test.tsx`)
+- state machines: the declaration checks of the generic component (`StateMachineTests`), and for the order, delivery,
+  after-sales and refund machines the decision of every trigger from every state, the allowed actors, the guards and
+  the Mermaid drawing (`OrderStateMachineTests`, `DeliveryStateMachineTests`, `AfterSalesStateMachineTests`,
+  `RefundStateMachineTests`)
+- after-sales on PostgreSQL and H2: requests, eligibility, the second request and idempotent replays
+  (`AfterSalesApi*IntegrationTests`), each timeout's outcome, answers racing their timeout, late answers refused and
+  failed firings backing off (`AfterSalesDeadline*IntegrationTests`), refund retries, give-ups, reclaimed leases, a
+  stalled executor against its reclaimer and claims that skip locked rows (`RefundExecutor*IntegrationTests`),
+  automatic refunds of cancelled orders (`CancellationRefund*IntegrationTests`), arbitration and refund retries
+  (`AfterSalesAdmin*IntegrationTests`), the merchant's inbox and answers
+  (`MerchantAfterSales*IntegrationTests`); races run every serial order of two commands by queueing them on a
+  held row lock (`PostgresRowLocks`); the `demo` profile without Kafka (`AfterSalesDemoProfileTests`); and end to end
+  on PostgreSQL, Redis and Kafka through the three roles' APIs, each refund failing once first: approve, counter-offer,
+  rejection and partial arbitration, the merchant timeout, a cancelled paid order, and a second request after a
+  withdrawal (`AfterSalesFlowContainerTests`)
 
 Some integration tests use Testcontainers and require Docker. Tests annotated with `@Testcontainers(disabledWithoutDocker = true)` may skip when Docker is unavailable.
 
@@ -890,6 +1337,8 @@ The backend runs on Spring Boot 4.1; [docs/spring-boot-4-migration.md](docs/spri
 |-- backend/                          Spring Boot application
 |   |-- src/main/java/.../controller   HTTP API surface
 |   |-- src/main/java/.../service      business logic and transactions
+|   |-- src/main/java/.../statemachine the generic declared state machine
+|   |-- src/main/java/.../aftersales   after-sales cases, refunds, their poller and APIs
 |   |-- src/main/java/.../messaging    Kafka, outbox, DLT handling
 |   |-- src/main/java/.../observability metrics and tracing
 |   |-- src/main/resources/db          Flyway migrations and demo seed data
@@ -898,7 +1347,7 @@ The backend runs on Spring Boot 4.1; [docs/spring-boot-4-migration.md](docs/spri
 |-- deploy/observability/              OTel Collector, Tempo, Prometheus (alerts), Grafana (dashboards)
 |-- deploy/k8s/                        kustomize base + staging/prod overlays
 |-- docs/operations.md                 observability, deployment, CI/CD gates, data tier
-|-- docs/adr/                          architecture decision records (0001: order sharding)
+|-- docs/adr/                          architecture decision records (0001: order sharding; 0002: state machines and after-sales)
 |-- Dockerfile                         full source build image
 `-- README.md
 ```
@@ -913,6 +1362,7 @@ The backend runs on Spring Boot 4.1; [docs/spring-boot-4-migration.md](docs/spri
 | Run backend tests | `cd backend && ./gradlew test -x buildFrontend -x syncFrontendBuild --no-daemon` |
 | Run backend with demo seed | `cd backend && FLYWAY_LOCATIONS=classpath:db/migration,classpath:db/demo ./gradlew bootRun` |
 | Run backend with H2 profile | `cd backend && SPRING_PROFILES_ACTIVE=h2 ./gradlew bootRun` |
+| Run the after-sales demo on H2 | `cd backend && SPRING_PROFILES_ACTIVE=h2,demo ./gradlew bootRun` |
 | Start frontend dev server | `cd frontend && npm start` |
 | Type-check, lint and test frontend | `cd frontend && npm run typecheck && npm run lint && npm test` |
 | Build frontend | `cd frontend && npm run build` |
@@ -930,10 +1380,12 @@ The backend runs on Spring Boot 4.1; [docs/spring-boot-4-migration.md](docs/spri
 
 This project is intentionally strong on backend correctness patterns, but it is still a demo application:
 
-- Payment is simulated with local request validation. There is no real payment provider, authorization, capture, webhook, or settlement flow.
+- Payment is simulated with local request validation. There is no real payment provider, authorization, capture, webhook, or settlement flow. The recorded capture (`SIMPAY-...`) and the refunds (`SimulatedRefundGateway`, which always succeeds after its configured failures) are simulated the same way.
+- After-sales is refund-only: no returns, replacements or vouchers, one answer per restaurant per request, and at most two requests per order. A customer can still cancel an `ACCEPTED` order after the rider picked it up; that cancel refunds only a share (50% by default), and a cancel in the moment between the pickup and its event reaching the order module (the outbox delay) is still refunded in full (ADR 0002 section 27, follow-up 17).
+- Timestamps, after-sales deadlines included, carry no offset in the API: they are UTC by convention (the server runs in UTC and the UI reads them as UTC, see "Timestamps and time zone"), not by type. Rows a server wrote in another zone before keep that zone's wall-clock time.
 - There is no inventory reservation or stock decrement model.
 - Amounts carry their currency, but there is no conversion: a restaurant prices in one currency and a cart or order stays in it. There are no taxes, discounts or tips, and no currencies with three minor digits.
-- The merchant and rider consoles poll every 15 seconds instead of receiving pushed updates, and the rider console has no map, location, or ETA.
+- The merchant and rider consoles poll every 15 seconds instead of receiving pushed updates, and the rider console has no map, location, or ETA. The customer's order list does not poll: it and the refund cases are read again when a notification poll brings a new notification, so with notification polling turned off a newly completed order shows "Request a refund" only after Refresh or after the page is shown again.
 - Kafka delivery is treated as at-least-once with consumer-side idempotency, not end-to-end exactly-once delivery. The
   outbox keeps each aggregate's events in order on their way to Kafka, so one `FAILED` event stops its order until an
   operator retries it, or abandons it and reconciles what its consumers missed.

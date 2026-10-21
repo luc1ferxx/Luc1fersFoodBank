@@ -8,6 +8,11 @@ import org.springframework.stereotype.Service;
 @Service
 public class ApplicationMetricsService {
 
+    /**
+     * Registered at zero by the refund executor, so that its first increment shows as an increase.
+     */
+    public static final String AFTER_SALES_REFUND_GATEWAY_SATURATED = "onlineorder.aftersales.refund_gateway.saturated";
+
     private final MeterRegistry meterRegistry;
 
 
@@ -50,11 +55,95 @@ public class ApplicationMetricsService {
 
 
     /**
+     * A committed step of an after-sales case: its opening or a transition of the after-sales state machine.
+     *
+     * @param action     OPEN or ORDER_CANCELLED for an opening, otherwise the after-sales trigger
+     * @param fromStatus the status the case left; none for an opening
+     * @param toStatus   the status the case entered
+     */
+    public void recordAfterSalesStep(String action, String fromStatus, String toStatus) {
+        meterRegistry.counter(
+                "onlineorder.aftersales.steps",
+                "action", normalize(action),
+                "from", normalize(fromStatus),
+                "to", normalize(toStatus)
+        ).increment();
+    }
+
+
+    /**
+     * An after-sales deadline the poller handled.
+     *
+     * @param trigger the timeout: MERCHANT_TIMEOUT, OFFER_TIMEOUT, CUSTOMER_TIMEOUT or ARBITRATION_TIMEOUT
+     * @param outcome fired (the step committed), skipped (the after-sales machine refused it, so nothing was written) or
+     *                failed (it rolled back and the deadline backs off)
+     */
+    public void recordAfterSalesDeadline(String trigger, String outcome) {
+        meterRegistry.counter(
+                "onlineorder.aftersales.deadlines",
+                "trigger", normalize(trigger),
+                "outcome", normalize(outcome)
+        ).increment();
+    }
+
+
+    /**
+     * A refund the refund executor handled, counted once its transaction committed.
+     *
+     * @param outcome succeeded (the gateway refunded it and its case is REFUNDED), retried (the gateway call failed and
+     *                the refund waits for its backoff), failed (given up: a permanent failure, the attempts used up or a
+     *                refund that no longer matches its case or payment), superseded (another executor reclaimed it
+     *                after the lease expired, so this result was discarded), unrecorded (the result could not be
+     *                recorded; the refund is reclaimed once its lease expires), skipped (claimed but not due after
+     *                all) or backed_off (its claim transaction failed before the gateway call; the refund waits for
+     *                the retry backoff without using up an attempt)
+     */
+    public void recordAfterSalesRefund(String outcome) {
+        meterRegistry.counter(
+                "onlineorder.aftersales.refunds",
+                "outcome", normalize(outcome)
+        ).increment();
+    }
+
+
+    /**
+     * A run of the refund executor that claimed nothing because every refund gateway thread was held by a call that
+     * outlived its timeout (ADR 0002 section 27, follow-up 10). One per poller tick while the gateway hangs.
+     */
+    public void recordAfterSalesRefundGatewaySaturated() {
+        meterRegistry.counter(AFTER_SALES_REFUND_GATEWAY_SATURATED).increment();
+    }
+
+
+    /**
+     * The automatic refund of a cancelled order whose total is more than its payment captured: the case was opened,
+     * and the refund executor will give its refund up before calling the gateway, for support to refund by hand.
+     */
+    public void recordAfterSalesUndercapturedCancellation() {
+        meterRegistry.counter("onlineorder.aftersales.cancellations.undercaptured").increment();
+    }
+
+
+    /**
      * @param decision accepted, rejected or timeout (the merchant did not answer within app.fulfilment.accept-timeout)
      */
     public void recordMerchantDecision(String decision) {
         meterRegistry.counter(
                 "onlineorder.fulfilment.merchant.decisions",
+                "decision", normalize(decision)
+        ).increment();
+    }
+
+
+    /**
+     * A merchant's answer to an after-sales request, counted once its transaction committed and only when it changed
+     * the case (not a retry).
+     *
+     * @param decision approved, rejected or offered
+     */
+    public void recordAfterSalesMerchantDecision(String decision) {
+        meterRegistry.counter(
+                "onlineorder.aftersales.merchant_decisions",
                 "decision", normalize(decision)
         ).increment();
     }
@@ -114,7 +203,8 @@ public class ApplicationMetricsService {
      *
      * @param side      producer (an event the application tried to write: a bug, its transaction was rolled back) or
      *                  consumer (a record read from Kafka: dead-lettered without retries)
-     * @param topic     the contract topic (order-events, delivery-events, merchant-events), or unknown
+     * @param topic     the contract topic (order-events, delivery-events, merchant-events, after-sales-events), or
+     *                  unknown
      * @param eventType a published event type, or unknown
      */
     public void recordEventSchemaViolation(String side, String topic, String eventType) {

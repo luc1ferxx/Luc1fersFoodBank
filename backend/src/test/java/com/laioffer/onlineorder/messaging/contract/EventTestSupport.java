@@ -47,7 +47,8 @@ public final class EventTestSupport {
                 Map.of(
                         "order-events", EventTopic.ORDER_EVENTS,
                         "delivery-events", EventTopic.DELIVERY_EVENTS,
-                        "merchant-events", EventTopic.MERCHANT_EVENTS
+                        "merchant-events", EventTopic.MERCHANT_EVENTS,
+                        "after-sales-events", EventTopic.AFTER_SALES_EVENTS
                 )
         );
     }

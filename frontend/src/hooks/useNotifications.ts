@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { isAbortError } from "../api/client";
 import type { CurrentUser, OrderNotification } from "../api/dto";
 import { getNotifications } from "../api/endpoints";
@@ -8,21 +8,37 @@ import { usePolling } from "./usePolling";
 
 export const NOTIFICATION_POLL_MS = 15000;
 
+const newestIdOf = (notifications: readonly OrderNotification[]) =>
+  notifications.reduce((newest, notification) => Math.max(newest, notification.id), 0);
+
 /**
  * Order notifications for the signed-in user, polled every 15 seconds while polling
  * is enabled. Polling stops while the tab is hidden and catches up with one
  * immediate request when the tab becomes visible again. It also stops while the
  * ordering page is not the shown workspace (`shown: false`).
+ *
+ * `onNewNotifications` is called when a read (a poll, `load()` or `reload()`) brings
+ * a notification newer than every one an earlier read brought: ids only grow, so a
+ * higher id means the backend wrote something since (an order completed, say), and
+ * the page reads the data it is about again. The first read only sets that baseline,
+ * and a superseded or failed read changes nothing.
  */
 export function useNotifications(
   user: CurrentUser | null,
-  { shown = true }: { shown?: boolean } = {},
+  { shown = true, onNewNotifications }: { shown?: boolean; onNewNotifications?: () => void } = {},
 ) {
   const [notifications, setNotifications] = useState<OrderNotification[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [polling, setPolling] = useState(true);
   const nextNotificationsSignal = useLatestRequest();
+  // The highest id a read has brought; null until the first read answers.
+  const newestIdRef = useRef<number | null>(null);
+  // The latest callback, so a new one does not change `load` (and read again).
+  const onNewNotificationsRef = useRef(onNewNotifications);
+  useEffect(() => {
+    onNewNotificationsRef.current = onNewNotifications;
+  }, [onNewNotifications]);
 
   const load = useCallback(() => {
     const signal = nextNotificationsSignal();
@@ -31,6 +47,12 @@ export function useNotifications(
         if (!signal.aborted) {
           setNotifications(data);
           setError("");
+          const seen = newestIdRef.current;
+          const newest = newestIdOf(data);
+          newestIdRef.current = Math.max(seen ?? 0, newest);
+          if (seen !== null && newest > seen) {
+            onNewNotificationsRef.current?.();
+          }
         }
       })
       .catch((requestError: unknown) => {

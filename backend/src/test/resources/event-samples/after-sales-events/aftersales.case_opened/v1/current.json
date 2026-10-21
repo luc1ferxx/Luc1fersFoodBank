@@ -1,0 +1,41 @@
+{
+  "event_id": "5d1c9a7e-2b4f-4c8d-9e3a-000000000201",
+  "event_version": 1,
+  "event_type": "aftersales.case_opened",
+  "aggregate_type": "AFTER_SALES_CASE",
+  "aggregate_id": 501,
+  "sequence": 1,
+  "occurred_at": "2026-04-25T13:10:05.120394",
+  "correlation_id": "after-sales-open-7f3c",
+  "idempotency_key": "after-sales-open-7f3c",
+  "data": {
+    "case_id": 501,
+    "order_id": 1001,
+    "order_no": "7254189912938504192",
+    "customer_id": 3,
+    "restaurant_id": 1,
+    "kind": "CUSTOMER_REQUEST",
+    "attempt_no": 1,
+    "status": "PENDING_MERCHANT",
+    "action": "OPEN",
+    "actor_type": "CUSTOMER",
+    "actor_id": 3,
+    "version": 0,
+    "reason_code": "MISSING_ITEM",
+    "description": "The burger was missing from the bag.",
+    "requested_amount": 10.59,
+    "currency": "USD",
+    "deadline_at": "2026-04-26T13:10:05.120394",
+    "lines": [
+      {
+        "order_item_id": 41,
+        "menu_item_name": "Whopper Meal",
+        "quantity": 1,
+        "unit_price": 10.59,
+        "amount": 10.59,
+        "currency": "USD"
+      }
+    ],
+    "opened_at": "2026-04-25T13:10:05.120394"
+  }
+}

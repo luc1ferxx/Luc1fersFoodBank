@@ -229,7 +229,8 @@ app:
     # off also drops pending ACCEPT deadlines without cancelling.
     accept-timeout-enabled: ${FULFILMENT_ACCEPT_TIMEOUT_ENABLED:true}
     # Consumer threads per fulfilment listener (merchant, timeout, timeout-merchant, dispatch, order-delivery,
-    # notification-delivery). With Kafka on there are 8 listener containers (these 6, notifications, the DLT); each
+    # notification-delivery) and per after-sales listener (merchant-aftersales, aftersales-notification). With Kafka on
+    # there are 10 listener containers (these 8, notifications, the DLT), 30 consumer threads at the default of 3; each
     # consumer thread holds a pooled database connection only while it handles a record, but all of them share the
     # Hikari pool above.
     listener-concurrency: ${FULFILMENT_LISTENER_CONCURRENCY:${app.kafka.listener-concurrency}}
@@ -242,6 +243,73 @@ app:
       batch-size: ${FULFILMENT_DEADLINE_BATCH_SIZE:100}
       # Delay before a deadline whose firing failed (for example a lock timeout) is tried again.
       retry-backoff: ${FULFILMENT_DEADLINE_RETRY_BACKOFF:30s}
+  # After-sales refunds (com.laioffer.onlineorder.aftersales, docs/adr/0002-after-sales-state-machine.md).
+  after-sales:
+    # After-sales events (aftersales.*) published by the after-sales module, keyed by the order id (same partition
+    # count as the order topic).
+    topic: ${KAFKA_AFTER_SALES_TOPIC:after-sales-events}
+    # The merchant module's consumer group on it: builds the merchant's after-sales inbox (merchant_after_sales_cases).
+    merchant-group: ${AFTER_SALES_MERCHANT_GROUP:onlineorder-merchant-aftersales}
+    # A customer can ask for a refund until request-window after the order completed (orders.updated_at), a second
+    # time only after withdrawing the first and within the same window. Each open step waits for its answer until a
+    # deadline set when the case enters it: the merchant's answer (merchant-response-timeout), the customer's answer to
+    # a counter-offer or a rejection (customer-response-timeout) and the platform's arbitration (arbitration-timeout).
+    # A changed value applies to the steps taken after the change.
+    request-window: ${AFTER_SALES_REQUEST_WINDOW:24h}
+    merchant-response-timeout: ${AFTER_SALES_MERCHANT_RESPONSE_TIMEOUT:24h}
+    customer-response-timeout: ${AFTER_SALES_CUSTOMER_RESPONSE_TIMEOUT:48h}
+    arbitration-timeout: ${AFTER_SALES_ARBITRATION_TIMEOUT:72h}
+    # A cancelled paid order is refunded automatically in full, except when the customer cancels it after the rider
+    # picked it up (delivery.picked_up): then this percent of its total (0-100, rounded half-even to the currency's
+    # minor unit; 0 refunds nothing). An admin's cancel always refunds in full. Applies to cancels after a change.
+    picked-up-cancel-refund-percent: ${AFTER_SALES_PICKED_UP_CANCEL_REFUND_PERCENT:50}
+    poller:
+      # Fires the deadlines of the open cases, then executes the due refunds
+      # (com.laioffer.onlineorder.aftersales.AfterSalesPoller), on its own thread, not on the shared scheduler the
+      # outbox publisher uses. Follows Kafka like the fulfilment deadline poller; set AFTER_SALES_POLLER_ENABLED=true
+      # to run them in the h2 profile (the demo profile does).
+      enabled: ${AFTER_SALES_POLLER_ENABLED:${app.kafka.enabled:true}}
+      interval: ${AFTER_SALES_POLL_INTERVAL:1s}
+      # Cases fired, and refunds executed, per run: one transaction each (a refund has two, around its gateway call).
+      batch-size: ${AFTER_SALES_POLL_BATCH_SIZE:100}
+      # Delay before a case whose deadline failed to fire (for example a lock timeout) is tried again. Its deadline_at
+      # stays as it was, so the customer's and the merchant's answers stay refused meanwhile.
+      retry-backoff: ${AFTER_SALES_DEADLINE_RETRY_BACKOFF:30s}
+      # Time a tick may spend claiming work, shared by the deadlines and then the refunds; each stops claiming once it
+      # is spent, after one case or refund at least, and a gateway call already started runs to its timeout. A slow or
+      # hung refund gateway so delays the next tick's deadlines by about this plus refund-gateway.timeout at most.
+      tick-budget: ${AFTER_SALES_POLL_TICK_BUDGET:5s}
+    refund:
+      # Gateway calls a refund may make (a reclaim after an expired lease counts as one) before it is given up
+      # (FAILED, its case stays REFUNDING) for an admin to retry.
+      max-attempts: ${AFTER_SALES_REFUND_MAX_ATTEMPTS:8}
+      # Wait after a failed call: retry-backoff x 2^(attempts - 1), at most retry-backoff-max. A failed claim (its
+      # transaction failed after the claim, before any call; outcome backed_off) waits retry-backoff as well, never
+      # doubled, and uses up no attempt.
+      retry-backoff: ${AFTER_SALES_REFUND_RETRY_BACKOFF:10s}
+      retry-backoff-max: ${AFTER_SALES_REFUND_RETRY_BACKOFF_MAX:10m}
+      # The lease of a claimed refund: when an executor died or stalled after its claim, another one reclaims the refund
+      # after this long and calls the gateway again with the same key.
+      claim-timeout: ${AFTER_SALES_REFUND_CLAIM_TIMEOUT:60s}
+      # Claims of one refund that may fail in a row after the claim (outcome backed_off) before the last of them gives
+      # the refund up (FAILED, no attempt used up) for an admin to retry, instead of backing it off forever. At least 1
+      # (checked at startup); any other step of the refund starts the count over.
+      max-claim-failures: ${AFTER_SALES_REFUND_MAX_CLAIM_FAILURES:10}
+    refund-gateway:
+      # How long a gateway call is waited for before it counts as a retryable failure; the call is then interrupted.
+      # Must be shorter than refund.claim-timeout (checked at startup), so that no refund is reclaimed while the call
+      # is still waited for. A call that ignores the interrupt may still be in flight when the refund is retried or,
+      # once its lease ended, reclaimed: the gateway must be idempotent per gateway_key (one key per case, the same for
+      # every attempt), which is what keeps a refund from being paid twice.
+      timeout: ${AFTER_SALES_REFUND_GATEWAY_TIMEOUT:10s}
+      # Gateway calls running at once at most, calls that outlived their timeout included. While all of them are held
+      # by such calls no refund is claimed: a hung gateway ties up this many threads at most, and the refunds that
+      # wait meanwhile use up no attempt.
+      max-threads: ${AFTER_SALES_REFUND_GATEWAY_MAX_THREADS:4}
+      # The simulated gateway fails the first N attempts of every refund (retryable), for demos and tests.
+      fail-first-attempts: ${AFTER_SALES_REFUND_GATEWAY_FAIL_FIRST_ATTEMPTS:0}
+    # Consumer group of the customer notifications for after-sales events (fulfilment.notification).
+    notification-group: ${AFTER_SALES_NOTIFICATION_GROUP:onlineorder-aftersales-notification}
   cleanup:
     enabled: ${CLEANUP_ENABLED:true}
     fixed-delay-ms: ${CLEANUP_FIXED_DELAY_MS:3600000}

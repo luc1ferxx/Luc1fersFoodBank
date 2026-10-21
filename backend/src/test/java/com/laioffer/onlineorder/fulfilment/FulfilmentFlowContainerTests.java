@@ -3,9 +3,13 @@ package com.laioffer.onlineorder.fulfilment;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
@@ -46,6 +50,24 @@ class FulfilmentFlowContainerTests extends FulfilmentContainerTestSupport {
         // The accept timeout runs (it is on by default), but far longer than any wait below: a slow runner must not let
         // it cancel an order before the test accepts it.
         registry.add("app.fulfilment.accept-timeout", () -> "10m");
+    }
+
+
+    @Autowired
+    private ApplicationContext applicationContext;
+
+
+    /**
+     * Spring Boot backs off its own scheduler, the pool every {@code @Scheduled} job runs on, as soon as the context
+     * holds any other TaskScheduler bean, and the cache's delayed second delete only runs on a unique one. The pollers
+     * therefore run on their own threads. Checked here because this context has every bean of a production instance:
+     * Kafka, the outbox publisher and the deadline poller are all on.
+     */
+    @Test
+    void applicationContext_shouldHoldExactlyOneTaskScheduler() {
+        Assertions.assertEquals(List.of("taskScheduler"), List.of(applicationContext.getBeanNamesForType(TaskScheduler.class)));
+        ThreadPoolTaskScheduler scheduler = applicationContext.getBean("taskScheduler", ThreadPoolTaskScheduler.class);
+        Assertions.assertEquals("scheduling-", scheduler.getThreadNamePrefix());
     }
 
 

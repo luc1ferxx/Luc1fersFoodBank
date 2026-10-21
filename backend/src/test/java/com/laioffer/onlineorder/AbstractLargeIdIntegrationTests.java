@@ -54,7 +54,7 @@ abstract class AbstractLargeIdIntegrationTests {
             "customers", "restaurants", "menu_items", "carts", "order_items", "orders", "order_history_items",
             "authorities", "outbox_events", "processed_events", "order_notifications", "dead_letter_events",
             "idempotency_requests", "merchant_accounts", "merchant_orders", "order_deadlines", "riders", "deliveries",
-            "order_status_history", "audit_log"
+            "order_status_history", "audit_log", "order_payments"
     );
 
     @Autowired
@@ -188,7 +188,11 @@ abstract class AbstractLargeIdIntegrationTests {
         assertBeyondInt(orderId,
                 idOf("SELECT id FROM order_history_items WHERE order_id = ?", orderId),
                 idOf("SELECT id FROM idempotency_requests WHERE order_id = ?", orderId),
-                idOf("SELECT MAX(id) FROM outbox_events WHERE aggregate_id = ?", orderId));
+                idOf("SELECT MAX(id) FROM outbox_events WHERE aggregate_id = ?", orderId),
+                idOf("SELECT id FROM order_payments WHERE order_id = ? AND customer_id = ?", orderId, customerId));
+        // The paid checkout captured its total once; the retry returned the order without a second capture.
+        Assertions.assertEquals(1L, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM order_payments WHERE order_id = ?", Long.class, orderId));
         Assertions.assertEquals(
                 List.of(orderId),
                 orderService.getOrdersByCustomerId(customerId).stream().map(OrderDto::id).toList()
@@ -230,6 +234,8 @@ abstract class AbstractLargeIdIntegrationTests {
         // A second order, left unpaid until its payment deadline fires.
         cartService.addMenuItemToCart(customerId, menuItemId);
         long placedOrderId = cartService.checkout(customerId, "PLACED").id();
+        Assertions.assertEquals(0L, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM order_payments WHERE order_id = ?", Long.class, placedOrderId));
         orderDeadlineService.handle(latestOrderEvent(placedOrderId, "order.created"));
         long deadlineId = idOf("SELECT id FROM order_deadlines WHERE order_id = ?", placedOrderId);
         assertBeyondInt(placedOrderId, deadlineId);

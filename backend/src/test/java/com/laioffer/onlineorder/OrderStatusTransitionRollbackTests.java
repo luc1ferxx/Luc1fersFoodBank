@@ -1,5 +1,6 @@
 package com.laioffer.onlineorder;
 
+import com.laioffer.onlineorder.audit.AuditLogService;
 import com.laioffer.onlineorder.entity.CartEntity;
 import com.laioffer.onlineorder.entity.CustomerEntity;
 import com.laioffer.onlineorder.entity.MenuItemEntity;
@@ -12,6 +13,8 @@ import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.OrderService;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -21,6 +24,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.test.util.AopTestUtils;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -73,8 +78,14 @@ class OrderStatusTransitionRollbackTests {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private MeterRegistry meterRegistry;
+
     @MockitoBean
     private OrderEventOutboxService orderEventOutboxService;
+
+    @MockitoSpyBean
+    private AuditLogService auditLogService;
 
     @Test
     void transitionOrderStatus_whenOutboxStepFails_shouldRollbackUpdatedStatusAndLeaveNoOutboxResidue() {
@@ -131,6 +142,46 @@ class OrderStatusTransitionRollbackTests {
         ));
     }
 
+    @Test
+    void transitionMetric_shouldNotCountARolledBackTransition() {
+        SeededOrder seededOrder = createOrderWithHistory("PAID");
+        double before = transitionCount("paid", "accepted");
+        // The audit entry is written after the transition itself, so the order row, its history and its event were
+        // already written when this fails and the whole transaction rolls back. The spy sits behind the service's
+        // transactional proxy, whose MANDATORY propagation would reject a stubbing call made outside a transaction.
+        AuditLogService auditSpy = AopTestUtils.getUltimateTargetObject(auditLogService);
+        Mockito.doThrow(new IllegalStateException("forced audit failure after the status transition"))
+                .doCallRealMethod()
+                .when(auditSpy)
+                .record(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+
+        IllegalStateException ex = Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> orderService.idempotentTransitionOrderStatus(
+                        seededOrder.customerId(),
+                        seededOrder.orderId(),
+                        "ACCEPTED",
+                        "metric-rollback-key"
+                )
+        );
+
+        Assertions.assertTrue(ex.getMessage().contains("forced audit failure after the status transition"));
+        Assertions.assertEquals("PAID", orderRepository.findById(seededOrder.orderId()).orElseThrow().status());
+        Assertions.assertEquals(0, countRows("order_status_history", "order_id", seededOrder.orderId()));
+        Assertions.assertEquals(before, transitionCount("paid", "accepted"));
+
+        // The same transition counts once it commits.
+        orderService.idempotentTransitionOrderStatus(
+                seededOrder.customerId(),
+                seededOrder.orderId(),
+                "ACCEPTED",
+                "metric-commit-key"
+        );
+
+        Assertions.assertEquals("ACCEPTED", orderRepository.findById(seededOrder.orderId()).orElseThrow().status());
+        Assertions.assertEquals(before + 1, transitionCount("paid", "accepted"));
+    }
+
     private SeededOrder createOrderWithHistory(String status) {
         long suffix = System.nanoTime();
         LocalDateTime now = LocalDateTime.now();
@@ -165,6 +216,12 @@ class OrderStatusTransitionRollbackTests {
                 "USD"
         ));
         return new SeededOrder(customer.id(), order.id());
+    }
+
+    private double transitionCount(String from, String to) {
+        return meterRegistry.find("onlineorder.order.transition").tag("from", from).tag("to", to).counters().stream()
+                .mapToDouble(Counter::count)
+                .sum();
     }
 
     private long countOrderHistoryItemsForOrder(Long orderId) {

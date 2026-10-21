@@ -31,5 +31,8 @@ export default defineConfig({
     css: false,
     restoreMocks: true,
     unstubGlobals: true,
+    // Behind UTC, so a backend timestamp (UTC without an offset) read as local time is
+    // hours off and fails the tests; src/lib/format.test.ts checks the zone took effect.
+    env: { TZ: "America/New_York" },
   },
 });

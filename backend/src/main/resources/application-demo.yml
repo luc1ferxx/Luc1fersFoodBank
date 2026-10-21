@@ -1,0 +1,16 @@
+# Demo profile (docs/adr/0002-after-sales-state-machine.md section 20.4): after-sales time limits short enough to
+# watch a deadline fire and a refund complete within minutes. Meant to be combined with the h2 profile:
+#
+#   SPRING_PROFILES_ACTIVE=h2,demo ./gradlew bootRun
+#
+# The defaults in application.yml (24h window, 24h, 48h and 72h to answer) stay as they are for every other run, and
+# the environment variables still override the values below.
+app:
+  after-sales:
+    request-window: ${AFTER_SALES_REQUEST_WINDOW:2h}
+    merchant-response-timeout: ${AFTER_SALES_MERCHANT_RESPONSE_TIMEOUT:2m}
+    customer-response-timeout: ${AFTER_SALES_CUSTOMER_RESPONSE_TIMEOUT:3m}
+    arbitration-timeout: ${AFTER_SALES_ARBITRATION_TIMEOUT:5m}
+    poller:
+      # The poller follows Kafka, which the h2 profile turns off; the demo runs the deadlines and the refunds anyway.
+      enabled: ${AFTER_SALES_POLLER_ENABLED:true}

@@ -252,3 +252,66 @@ groups:
         annotations:
           summary: Read replica {{ $labels.replica }} gets no reads on {{ $labels.instance }}
           description: For 5 minutes {{ $labels.replica }} has been lagging, unreachable or not a standby (the instance logs "Read replica ... gets no reads" with the reason). Its reads go to the primary.
+
+      # After-sales refunds (docs/operations.md section 12). onlineorder.aftersales.refunds counts every refund the
+      # executor handled, once per outcome; each outcome's series is registered by its first refund, so it starts at 1
+      # and the given-up alert has the second branch of the dead-letter alert. A FAILED refund stays FAILED, with its
+      # case REFUNDING, until an admin retries it; the alert only marks when it happened.
+      - alert: OnlineOrderRefundsGivenUp
+        expr: |
+          sum(increase(onlineorder_aftersales_refunds_total{application="OnlineOrder", outcome="failed"}[15m])) > 0
+          or
+          count(
+            onlineorder_aftersales_refunds_total{application="OnlineOrder", outcome="failed"}
+            unless
+            onlineorder_aftersales_refunds_total{application="OnlineOrder", outcome="failed"} offset 15m
+          ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: After-sales refunds were given up
+          description: Refunds reached FAILED in the last 15 minutes and their customers are not refunded. List them with GET /admin/refunds (FAILED by default), read last_error, fix the cause, then retry with POST /admin/refunds/{id}/retry. A refund that does not match its case or payment fails the same way again (docs/operations.md section 12).
+
+      # backed_off: the claim transaction failed after it claimed a refund (a database error, or an exception while the
+      # refund was checked against its case and payment). The refund waits app.after-sales.refund.retry-backoff (10s)
+      # and is claimed again without using up an attempt, every 10-11 seconds with the defaults, until the cause is fixed
+      # or app.after-sales.refund.max-claim-failures (10) of its claims failed in a row, which gives it up (FAILED,
+      # OnlineOrderRefundsGivenUp). This fires when claims keep failing, refund after refund.
+      - alert: OnlineOrderRefundsBackingOff
+        expr: sum(increase(onlineorder_aftersales_refunds_total{application="OnlineOrder", outcome="backed_off"}[5m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: After-sales refund claims keep failing
+          description: '{{ $value | humanize }} refund claim(s) failed and backed off in the last 5 minutes, and claims have kept failing for 15 minutes. These refunds wait without using up attempts; one is given up (FAILED) once 10 of its claims failed in a row. Find them with GET /admin/refunds?status=PENDING or status=PROCESSING (last_error "The claim of attempt ... failed") and the WARN log "The claim of refund ... failed" (docs/operations.md section 12).'
+
+      # Every refund gateway thread is held by a call that outlived app.after-sales.refund-gateway.timeout and ignored
+      # its interrupt, so the executor claims no refund: each poller tick that finds no free thread counts once (about
+      # one a second). The counter is registered at zero on startup. A few minutes of it is a gateway that hangs.
+      - alert: OnlineOrderRefundGatewaySaturated
+        expr: sum(increase(onlineorder_aftersales_refund_gateway_saturated_total{application="OnlineOrder"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Refund gateway threads are all held by hung calls
+          description: 'No refund was claimed in {{ $value | humanize }} poller run(s) of the last 5 minutes because every refund gateway thread is held by a call that did not return within its timeout, and this has lasted 10 minutes. Due refunds wait without using up attempts. Check the payment gateway; onlineorder_aftersales_refund_gateway_threads_busy shows the held threads (docs/operations.md section 12, "A hung gateway").'
+
+      # A paid order was cancelled with a refund above its captured payment. Its ORDER_CANCELLED case is open, and the
+      # refund executor gives its refund up before calling the gateway (OnlineOrderRefundsGivenUp follows). The counter
+      # is registered by the first such cancellation, hence the second branch.
+      - alert: OnlineOrderCancellationsUndercaptured
+        expr: |
+          sum(increase(onlineorder_aftersales_cancellations_undercaptured_total{application="OnlineOrder"}[15m])) > 0
+          or
+          count(
+            onlineorder_aftersales_cancellations_undercaptured_total{application="OnlineOrder"}
+            unless
+            onlineorder_aftersales_cancellations_undercaptured_total{application="OnlineOrder"} offset 15m
+          ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Paid orders were cancelled with less captured than their refund
+          description: The automatic refund of these cancellations will be given up before the gateway is called, and an admin retry fails the same way. The WARN log "Order ... was cancelled with a refund of ..." names the order, the payment and the case; support refunds them by hand (docs/operations.md section 12).

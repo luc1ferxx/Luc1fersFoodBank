@@ -27,4 +27,33 @@ class ApplicationMetricsServiceTests {
                 "reason", "badrequestexception"
         ).count());
     }
+
+
+    @Test
+    void afterSalesRefundMetric_shouldCountEachOutcome() {
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+        ApplicationMetricsService metricsService = new ApplicationMetricsService(meterRegistry);
+
+        metricsService.recordAfterSalesRefund("succeeded");
+        metricsService.recordAfterSalesRefund("succeeded");
+        metricsService.recordAfterSalesRefund("superseded");
+
+        Assertions.assertEquals(2.0, meterRegistry.counter("onlineorder.aftersales.refunds", "outcome", "succeeded")
+                .count());
+        Assertions.assertEquals(1.0, meterRegistry.counter("onlineorder.aftersales.refunds", "outcome", "superseded")
+                .count());
+    }
+
+
+    @Test
+    void afterSalesUndercapturedCancellationMetric_shouldCountEachOpening() {
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+        ApplicationMetricsService metricsService = new ApplicationMetricsService(meterRegistry);
+
+        metricsService.recordAfterSalesUndercapturedCancellation();
+        metricsService.recordAfterSalesUndercapturedCancellation();
+
+        Assertions.assertEquals(2.0, meterRegistry.counter("onlineorder.aftersales.cancellations.undercaptured")
+                .count());
+    }
 }

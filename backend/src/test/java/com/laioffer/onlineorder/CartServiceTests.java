@@ -7,6 +7,7 @@ import com.laioffer.onlineorder.entity.MenuItemEntity;
 import com.laioffer.onlineorder.entity.OrderEntity;
 import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.entity.OrderItemEntity;
+import com.laioffer.onlineorder.entity.OrderPaymentEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.fulfilment.order.OrderActor;
@@ -21,6 +22,7 @@ import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.MenuItemRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderItemRepository;
+import com.laioffer.onlineorder.repository.OrderPaymentRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
 import com.laioffer.onlineorder.service.CartItemQuantityUpdater;
 import com.laioffer.onlineorder.service.CartService;
@@ -82,6 +84,9 @@ public class CartServiceTests {
     private OrderStatusHistoryService orderStatusHistoryService;
 
     @Mock
+    private OrderPaymentRepository orderPaymentRepository;
+
+    @Mock
     private ApplicationMetricsService metricsService;
 
     private CartService cartService;
@@ -100,6 +105,7 @@ public class CartServiceTests {
                 orderHistoryItemRepository,
                 orderEventOutboxService,
                 orderStatusHistoryService,
+                orderPaymentRepository,
                 metricsService
         );
     }
@@ -214,6 +220,70 @@ public class CartServiceTests {
                 null,
                 savedOrder.getValue().createdAt()
         );
+    }
+
+
+    @Test
+    void checkout_paid_shouldRecordTheCaptureOfTheTotalWithTheOrder() {
+        long customerId = 1L;
+        long cartId = 2L;
+        long menuItemId = 3L;
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("14.67"), "EUR");
+        OrderItemEntity cartItem = new OrderItemEntity(5L, menuItemId, cartId, amount("4.89"), 3, "EUR");
+        MenuItemEntity menuItem = new MenuItemEntity(menuItemId, 9L, "Crepe", "", amount("4.89"), "", "EUR");
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(List.of(cartItem));
+        Mockito.when(menuItemRepository.findAllById(List.of(menuItemId))).thenReturn(List.of(menuItem));
+        Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class)))
+                .thenAnswer(invocation -> {
+                    OrderEntity order = invocation.getArgument(0);
+                    return new OrderEntity(4L, order.customerId(), order.total(), order.status(),
+                            order.createdAt(), order.restaurantId(), order.cancelReason());
+                });
+        Mockito.when(orderHistoryItemRepository.saveAll(Mockito.anyIterable())).thenReturn(List.of());
+
+        cartService.checkout(customerId, "PAID");
+
+        // The capture is written after the order (its foreign key) and before the order event, in the checkout's
+        // transaction.
+        ArgumentCaptor<OrderEntity> savedOrder = ArgumentCaptor.forClass(OrderEntity.class);
+        ArgumentCaptor<OrderPaymentEntity> payment = ArgumentCaptor.forClass(OrderPaymentEntity.class);
+        InOrder inOrder = Mockito.inOrder(orderRepository, orderPaymentRepository, orderEventOutboxService);
+        inOrder.verify(orderRepository).save(savedOrder.capture());
+        inOrder.verify(orderPaymentRepository).save(payment.capture());
+        inOrder.verify(orderEventOutboxService).enqueueOrderEvent(Mockito.any(), Mockito.anyList(), Mockito.isNull(),
+                Mockito.any());
+        Assertions.assertNull(payment.getValue().id());
+        Assertions.assertEquals(4L, payment.getValue().orderId());
+        Assertions.assertEquals(customerId, payment.getValue().customerId());
+        Assertions.assertEquals(Money.of("14.67", "EUR"), payment.getValue().captured());
+        Assertions.assertEquals(OrderPaymentEntity.CAPTURED, payment.getValue().status());
+        Assertions.assertTrue(payment.getValue().providerReference().matches("SIMPAY-[0-9a-f]{32}"),
+                payment.getValue().providerReference());
+        Assertions.assertEquals(savedOrder.getValue().createdAt(), payment.getValue().capturedAt());
+    }
+
+
+    @Test
+    void checkout_placed_shouldRecordNoPayment() {
+        long customerId = 1L;
+        long cartId = 2L;
+        long menuItemId = 3L;
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.00"), "USD");
+        OrderItemEntity cartItem = new OrderItemEntity(5L, menuItemId, cartId, amount("10.00"), 1, "USD");
+        MenuItemEntity menuItem = new MenuItemEntity(menuItemId, 9L, "Burger", "", amount("10.00"), "", "USD");
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(List.of(cartItem));
+        Mockito.when(menuItemRepository.findAllById(List.of(menuItemId))).thenReturn(List.of(menuItem));
+        Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class)))
+                .thenReturn(new OrderEntity(4L, customerId, usd("10.00"), "PLACED", LocalDateTime.of(2026, 4, 4, 12, 0)));
+        Mockito.when(orderHistoryItemRepository.saveAll(Mockito.anyIterable())).thenReturn(List.of());
+
+        Assertions.assertEquals("PLACED", cartService.checkout(customerId, "PLACED").status());
+
+        Mockito.verifyNoInteractions(orderPaymentRepository);
     }
 
 
@@ -436,7 +506,8 @@ public class CartServiceTests {
                 Mockito.any(LocalDateTime.class),
                 Mockito.any(LocalDateTime.class)
         );
-        Mockito.verifyNoInteractions(orderEventOutboxService);
+        // A replay returns the stored order: no second order, event or payment capture.
+        Mockito.verifyNoInteractions(orderEventOutboxService, orderPaymentRepository);
     }
 
 

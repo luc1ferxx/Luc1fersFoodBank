@@ -22,12 +22,15 @@ import java.util.regex.Pattern;
  *     column of amounts carries no upward bias. Sums and multiples by a quantity are exact and never round.</li>
  *     <li>Only currencies with 0 to 2 minor digits are supported (USD, EUR, JPY, ...); a currency with 3 (BHD, KWD)
  *     or none at all (XAU) does not fit the storage scale and is rejected.</li>
- *     <li>Arithmetic combines amounts of one currency only: adding EUR to USD throws
- *     {@link CurrencyMismatchException}. A cart and an order are single-currency (they are single-restaurant, and a
- *     restaurant prices in one currency), so their totals are sums in one currency by construction.</li>
+ *     <li>Arithmetic and comparisons combine amounts of one currency only: adding EUR to USD, or asking whether
+ *     EUR is more than USD, throws {@link CurrencyMismatchException}. A cart and an order are single-currency (they
+ *     are single-restaurant, and a restaurant prices in one currency), so their totals are sums in one currency by
+ *     construction.</li>
+ *     <li>Amounts compare by value ({@link #compareTo}), never with {@link BigDecimal#equals}, which tells 5.0 from
+ *     5.00. Every value has scale 2, so the order is consistent with {@link #equals}.</li>
  * </ul>
  */
-public record Money(BigDecimal amount, Currency currency) {
+public record Money(BigDecimal amount, Currency currency) implements Comparable<Money> {
 
     /**
      * The scale of every amount: the scale of the NUMERIC(12,2) money columns.
@@ -164,6 +167,18 @@ public record Money(BigDecimal amount, Currency currency) {
 
 
     /**
+     * The exact difference. It is negative when {@code other} is larger, like any amount of this type may be.
+     *
+     * @throws CurrencyMismatchException when {@code other} is in another currency
+     * @throws MoneyOverflowException    when the difference exceeds {@link #MAX_AMOUNT} in absolute value
+     */
+    public Money minus(Money other) {
+        requireSameCurrency(other);
+        return new Money(amount.subtract(other.amount), currency);
+    }
+
+
+    /**
      * This amount {@code quantity} times, exactly: the total of a cart line.
      *
      * @throws MoneyOverflowException when the product exceeds {@link #MAX_AMOUNT}
@@ -184,6 +199,60 @@ public record Money(BigDecimal amount, Currency currency) {
 
     public boolean isZero() {
         return amount.signum() == 0;
+    }
+
+
+    /**
+     * Whether this amount is more than zero: the smallest refund is one minor unit.
+     */
+    public boolean isPositive() {
+        return amount.signum() > 0;
+    }
+
+
+    /**
+     * Orders amounts of one currency by value.
+     *
+     * @throws CurrencyMismatchException when {@code other} is in another currency: amounts of two currencies have no
+     *                                   order without an exchange rate
+     * @throws NullPointerException      when {@code other} is null
+     */
+    @Override
+    public int compareTo(Money other) {
+        requireSameCurrency(other);
+        return amount.compareTo(other.amount);
+    }
+
+
+    /**
+     * @throws CurrencyMismatchException when {@code other} is in another currency
+     */
+    public boolean isGreaterThan(Money other) {
+        return compareTo(other) > 0;
+    }
+
+
+    /**
+     * @throws CurrencyMismatchException when {@code other} is in another currency
+     */
+    public boolean isGreaterThanOrEqualTo(Money other) {
+        return compareTo(other) >= 0;
+    }
+
+
+    /**
+     * @throws CurrencyMismatchException when {@code other} is in another currency
+     */
+    public boolean isLessThan(Money other) {
+        return compareTo(other) < 0;
+    }
+
+
+    /**
+     * @throws CurrencyMismatchException when {@code other} is in another currency
+     */
+    public boolean isLessThanOrEqualTo(Money other) {
+        return compareTo(other) <= 0;
     }
 
 

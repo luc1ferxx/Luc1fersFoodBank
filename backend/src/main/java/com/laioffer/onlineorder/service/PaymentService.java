@@ -34,6 +34,11 @@ public class PaymentService {
     }
 
 
+    /**
+     * Checks out the cart as a PAID order (POST /payments/checkout). The card is only validated: payments are
+     * simulated. The checkout records the payment capture (order_payments) in the transaction that creates the order;
+     * a replay of the same Idempotency-Key returns that order without a second capture.
+     */
     public OrderDto payAndCheckout(Long customerId, String idempotencyKey, PaymentCheckoutBody body) {
         try {
             validate(body);

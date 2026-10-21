@@ -23,7 +23,7 @@ The backend is intentionally stateful and correctness-focused: it uses server se
 - CSRF: disabled in backend config.
 - CORS: no explicit CORS config. Same-origin deployment is the expected path unless backend CORS is added.
 - Traceability: every HTTP response includes `X-Trace-Id`; surface this in debug/error tooling if useful.
-- Rate limits exist on login, signup, checkout, payment checkout, admin order status, and dead-letter replay.
+- Every write endpoint except logout is rate-limited; the README section "Security and Abuse Controls" lists the buckets.
 
 ## 3. Main User Flows
 
@@ -333,6 +333,7 @@ username=demo%40laifood.com&password=demo123
 - Errors:
   - `401 Unauthorized`.
   - `404 Not Found` if menu item or cart is missing.
+  - `429 Too Many Requests` once the cart bucket is empty (60 cart edits, one more every second, per user; shared by `POST`/`DELETE /cart` and `PUT`/`DELETE /cart/items/{orderItemId}`).
 
 #### `PUT /cart/items/{orderItemId}`
 
@@ -356,6 +357,7 @@ username=demo%40laifood.com&password=demo123
   - `400 Bad Request` when `quantity` is null or negative.
   - `404 Not Found` when item is not in the user's cart and requested quantity is nonzero.
   - `401 Unauthorized`.
+  - `429 Too Many Requests` once the shared cart bucket is empty.
 
 #### `DELETE /cart/items/{orderItemId}`
 
@@ -409,7 +411,7 @@ username=demo%40laifood.com&password=demo123
 - Errors:
   - `400 Bad Request` for missing payment details, invalid card fields, missing idempotency key, or empty cart.
   - `409 Conflict` when idempotency key is reused with a different logical request.
-  - `429 Too Many Requests` after 20 payment checkout attempts per rate-limit window per authenticated user.
+  - `429 Too Many Requests` after 10 payment checkout attempts per rate-limit window per authenticated user.
 - Security note: this is a demo/local validation flow, not a real payment processor integration. Do not persist or log card details in the frontend.
 
 ### Orders
@@ -438,6 +440,7 @@ username=demo%40laifood.com&password=demo123
   - `400 Bad Request` when idempotency key is missing/too long.
   - `404 Not Found` when order does not exist or is not owned by current user.
   - `409 Conflict` for invalid state transitions such as `PREPARING -> CANCELLED`, terminal states, reused key with different request, or in-progress idempotent operation.
+  - `429 Too Many Requests` after 20 cancels, one more every 3 s, per user; a retry with the same key takes a token too and is safe to repeat later.
 
 #### `PATCH /orders/{orderId}/status`
 
@@ -531,7 +534,12 @@ Rate-limit responses are custom:
 
 ```json
 {
-  "message": "Too many requests"
+  "code": "RATE_LIMITED",
+  "message": "Too many requests",
+  "trace_id": "...",
+  "status": 429,
+  "path": "/cart/checkout",
+  "timestamp": "..."
 }
 ```
 

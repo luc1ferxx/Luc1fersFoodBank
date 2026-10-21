@@ -10,16 +10,23 @@ import com.laioffer.onlineorder.entity.OrderHistoryItemEntity;
 import com.laioffer.onlineorder.exception.BadRequestException;
 import com.laioffer.onlineorder.exception.ConflictException;
 import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.fulfilment.AfterCommit;
 import com.laioffer.onlineorder.fulfilment.order.OrderActor;
 import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
+import com.laioffer.onlineorder.model.OrderStateMachine;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.model.OrderStatusHistoryDto;
+import com.laioffer.onlineorder.model.OrderTransitionContext;
+import com.laioffer.onlineorder.model.OrderTrigger;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.repository.IdempotencyRequestRepository;
 import com.laioffer.onlineorder.repository.OrderHistoryItemRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
+import com.laioffer.onlineorder.statemachine.CompareAndSet;
+import com.laioffer.onlineorder.statemachine.Decision;
+import com.laioffer.onlineorder.statemachine.StaleTransitionException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,6 +35,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.HashMap;
@@ -36,13 +44,22 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
 
 
 /**
  * The order module: reads orders and owns the order state machine. Every status change goes through
- * {@link #applyTransition}, which saves the new status and updated_at, writes the order_status_history row and the
- * order event to the outbox, all in the caller's transaction and under the order's row lock.
+ * {@link #applyTransition} with the trigger its caller names: {@link OrderStateMachine} decides it on the status read
+ * under the order's row lock, and an applied move writes the new status and updated_at with a compare-and-set on that
+ * status, the order_status_history row and the order event to the outbox, all in the caller's transaction. A write
+ * that does not change exactly one row throws {@link StaleTransitionException} and rolls back; with the lock held it
+ * cannot happen. Each caller maps a trigger that already happened or that the status does not allow to its own answer.
+ *
+ * <p>A move from PAID or ACCEPTED to CANCELLED also opens the order's automatic refund ({@link CancellationRefunds}),
+ * after the order's event and in the same transaction, so the cancel and its refund commit or roll back together. The
+ * merchant's answers to after-sales requests go to the after-sales module ({@link AfterSalesMerchantCommands}), the
+ * other half of the seam's after-sales command.
  */
 @Service
 public class OrderService implements OrderLifecycleCommands {
@@ -51,6 +68,17 @@ public class OrderService implements OrderLifecycleCommands {
      * The history reason of the steps a delivered order is completed with.
      */
     static final String DELIVERED_REASON = "DELIVERED";
+
+    /**
+     * The row named in a {@link StaleTransitionException}.
+     */
+    private static final String ORDER_ROW = "order";
+
+    /**
+     * The statuses of a paid order that can be cancelled (ADR 0002 D12): a cancel from one of them is refunded. A
+     * PLACED order was never paid.
+     */
+    private static final Set<OrderStatus> REFUNDED_WHEN_CANCELLED = Set.of(OrderStatus.PAID, OrderStatus.ACCEPTED);
 
     private static final int IDEMPOTENCY_KEY_MAX_LENGTH = 255;
     private static final String IDEMPOTENCY_STATUS_PROCESSING = "PROCESSING";
@@ -72,6 +100,8 @@ public class OrderService implements OrderLifecycleCommands {
     private final OrderHistoryItemRepository orderHistoryItemRepository;
     private final OrderStatusHistoryService orderStatusHistoryService;
     private final AuditLogService auditLogService;
+    private final CancellationRefunds cancellationRefunds;
+    private final AfterSalesMerchantCommands afterSalesMerchantCommands;
 
 
     public OrderService(
@@ -82,7 +112,9 @@ public class OrderService implements OrderLifecycleCommands {
             IdempotencyRequestRepository idempotencyRequestRepository,
             IdempotencyRequestInitializer idempotencyRequestInitializer,
             OrderStatusHistoryService orderStatusHistoryService,
-            AuditLogService auditLogService
+            AuditLogService auditLogService,
+            CancellationRefunds cancellationRefunds,
+            AfterSalesMerchantCommands afterSalesMerchantCommands
     ) {
         this.orderRepository = orderRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
@@ -92,6 +124,8 @@ public class OrderService implements OrderLifecycleCommands {
         this.idempotencyRequestInitializer = idempotencyRequestInitializer;
         this.orderStatusHistoryService = orderStatusHistoryService;
         this.auditLogService = auditLogService;
+        this.cancellationRefunds = cancellationRefunds;
+        this.afterSalesMerchantCommands = afterSalesMerchantCommands;
     }
 
 
@@ -152,8 +186,14 @@ public class OrderService implements OrderLifecycleCommands {
         if (order == null) {
             throw new ResourceNotFoundException("Order not found");
         }
-        return transitionLockedOrder(order, OrderStatus.normalize(targetStatus), OrderLifecycleCommands.ADMIN_CANCELLED, actor)
-                .order();
+        OrderStatus normalizedTargetStatus = OrderStatus.normalize(targetStatus);
+        return transitionLockedOrder(
+                order,
+                OrderStateMachine.adminTrigger(normalizedTargetStatus),
+                normalizedTargetStatus,
+                OrderLifecycleCommands.ADMIN_CANCELLED,
+                actor
+        ).order();
     }
 
 
@@ -187,6 +227,7 @@ public class OrderService implements OrderLifecycleCommands {
                     }
                     TransitionResult result = transitionLockedOrder(
                             order,
+                            OrderStateMachine.adminTrigger(normalizedTargetStatus),
                             normalizedTargetStatus,
                             OrderLifecycleCommands.ADMIN_CANCELLED,
                             OrderActor.admin(actorCustomerId)
@@ -217,6 +258,7 @@ public class OrderService implements OrderLifecycleCommands {
         }
         return transitionLockedOrder(
                 order,
+                OrderTrigger.CUSTOMER_CANCEL,
                 OrderStatus.CANCELLED,
                 OrderLifecycleCommands.CUSTOMER_CANCELLED,
                 OrderActor.customer(customerId)
@@ -249,6 +291,7 @@ public class OrderService implements OrderLifecycleCommands {
                     }
                     return transitionLockedOrder(
                             order,
+                            OrderTrigger.CUSTOMER_CANCEL,
                             OrderStatus.CANCELLED,
                             OrderLifecycleCommands.CUSTOMER_CANCELLED,
                             OrderActor.customer(actorCustomerId)
@@ -314,39 +357,31 @@ public class OrderService implements OrderLifecycleCommands {
             String cancelReason,
             OrderActor actor
     ) {
+        OrderTrigger trigger = OrderStateMachine.restaurantTrigger(requiredStatus, targetStatus);
         OrderEntity order = orderRepository.lockById(orderId);
         if (order == null || restaurantId == null || !restaurantId.equals(order.restaurantId())) {
             throw new ResourceNotFoundException("Order not found");
         }
-        OrderStatus currentStatus = OrderStatus.normalize(order.status());
-        if (currentStatus == targetStatus
-                && (targetStatus != OrderStatus.CANCELLED
-                || Objects.equals(cancelReasonCode(order.cancelReason()), cancelReasonCode(cancelReason)))) {
-            return new RestaurantOrderTransition(getOrderDto(order), false);
-        }
-        if (currentStatus != requiredStatus) {
-            String reason = currentStatus == OrderStatus.CANCELLED && order.cancelReason() != null
-                    ? " (" + cancelReasonCode(order.cancelReason()) + ")"
+        TransitionOutcome outcome = applyTransition(
+                order,
+                trigger,
+                new OrderTransitionContext(order.cancelReason(), cancelReason),
+                actor,
+                cancelReason,
+                targetStatus == OrderStatus.CANCELLED ? cancelReason : null
+        );
+        if (outcome.decision() instanceof Decision.Rejected<OrderStatus, OrderTrigger> rejected) {
+            String reason = rejected.current() == OrderStatus.CANCELLED && order.cancelReason() != null
+                    ? " (" + OrderTransitionContext.cancelReasonCode(order.cancelReason()) + ")"
                     : "";
             throw new ConflictException(
                     OrderLifecycleCommands.ORDER_STATUS_CONFLICT,
-                    "Order is " + currentStatus + reason + "; only " + requiredStatus + " orders can move to "
+                    "Order is " + rejected.current() + reason + "; only " + requiredStatus + " orders can move to "
                             + targetStatus
             );
         }
-        return new RestaurantOrderTransition(transitionLockedOrder(order, targetStatus, cancelReason, actor).order(), true);
-    }
-
-
-    /**
-     * The code of a cancel reason: MERCHANT_REJECTED for "MERCHANT_REJECTED: out of buns".
-     */
-    private static String cancelReasonCode(String cancelReason) {
-        if (cancelReason == null) {
-            return null;
-        }
-        int separator = cancelReason.indexOf(':');
-        return (separator < 0 ? cancelReason : cancelReason.substring(0, separator)).trim();
+        // Already done: a repeated command gets the order unchanged.
+        return new RestaurantOrderTransition(orderDto(outcome), outcome.applied());
     }
 
 
@@ -358,11 +393,14 @@ public class OrderService implements OrderLifecycleCommands {
             String cancelReason,
             OrderActor actor
     ) {
+        OrderTrigger trigger = OrderStateMachine.timeoutTrigger(expectedStatus);
         OrderEntity order = orderRepository.lockById(orderId);
-        if (order == null || OrderStatus.normalize(order.status()) != expectedStatus) {
+        if (order == null) {
             return Optional.empty();
         }
-        return Optional.of(transitionLockedOrder(order, OrderStatus.CANCELLED, cancelReason, actor).order());
+        // A timeout fires only from the status it waits in; the machine rejects it from any other and nothing changes.
+        TransitionOutcome outcome = applyTransition(order, trigger, null, actor, cancelReason, cancelReason);
+        return outcome.applied() ? Optional.of(orderDto(outcome)) : Optional.empty();
     }
 
 
@@ -373,14 +411,16 @@ public class OrderService implements OrderLifecycleCommands {
         if (order == null) {
             return DeliveryCompletion.NOT_FOUND;
         }
+        // Each step is fired only from the status it moves from, so the machine applies it.
         return switch (OrderStatus.normalize(order.status())) {
             case PREPARING -> {
-                applyTransition(order, OrderStatus.COMPLETED, null, actor, DELIVERED_REASON);
+                applyTransition(order, OrderTrigger.DELIVERY_COMPLETE, null, actor, null, DELIVERED_REASON);
                 yield DeliveryCompletion.COMPLETED;
             }
             case ACCEPTED -> {
-                OrderEntity preparing = applyTransition(order, OrderStatus.PREPARING, null, actor, DELIVERED_REASON).order();
-                applyTransition(preparing, OrderStatus.COMPLETED, null, actor, DELIVERED_REASON);
+                OrderEntity preparing = applyTransition(
+                        order, OrderTrigger.DELIVERY_PREPARE, null, actor, null, DELIVERED_REASON).order();
+                applyTransition(preparing, OrderTrigger.DELIVERY_COMPLETE, null, actor, null, DELIVERED_REASON);
                 yield DeliveryCompletion.COMPLETED;
             }
             case COMPLETED -> DeliveryCompletion.ALREADY_COMPLETED;
@@ -389,47 +429,109 @@ public class OrderService implements OrderLifecycleCommands {
     }
 
 
+    @Override
+    @Transactional
+    public boolean recordPickup(Long orderId, LocalDateTime pickedUpAt, OrderActor actor) {
+        Objects.requireNonNull(pickedUpAt, "pickedUpAt");
+        if (actor.type() != OrderActor.Type.RIDER && actor.type() != OrderActor.Type.SYSTEM) {
+            throw new IllegalStateException("A pickup is recorded for a rider or the system, not " + actor);
+        }
+        return orderRepository.recordPickup(orderId, pickedUpAt.truncatedTo(ChronoUnit.MICROS)) == 1;
+    }
+
+
     /**
+     * The after-sales module locks the case, decides with the after-sales machine and writes the step, all in this
+     * transaction.
+     */
+    @Override
+    @Transactional
+    public AfterSalesDecision decideAfterSalesCase(
+            Long caseId,
+            Long restaurantId,
+            AfterSalesResponse response,
+            OrderActor actor
+    ) {
+        return afterSalesMerchantCommands.decide(caseId, restaurantId, response, actor);
+    }
+
+
+    /**
+     * Fires a customer or admin trigger on a locked order. A trigger that already happened returns the order unchanged
+     * (changed false); one the order's status does not allow is a 409 CONFLICT naming the move.
+     *
+     * @param targetStatus the status the caller asked for, named in the 409
      * @param cancelReason stored on the order (and as the history reason) when {@code targetStatus} is CANCELLED;
      *                     ignored otherwise
      */
     private TransitionResult transitionLockedOrder(
             OrderEntity currentOrder,
+            OrderTrigger trigger,
             OrderStatus targetStatus,
             String cancelReason,
             OrderActor actor
     ) {
         OrderStatus currentStatus = OrderStatus.normalize(currentOrder.status());
-        currentStatus.validateTransitionTo(targetStatus);
-        if (currentStatus == targetStatus) {
-            return new TransitionResult(getOrderDto(currentOrder), currentStatus, false);
+        TransitionOutcome outcome = applyTransition(
+                currentOrder,
+                trigger,
+                null,
+                actor,
+                cancelReason,
+                targetStatus == OrderStatus.CANCELLED ? cancelReason : null
+        );
+        if (outcome.decision() instanceof Decision.Rejected) {
+            throw new ConflictException("Invalid order status transition: " + currentStatus + " -> " + targetStatus);
         }
-
-        String historyReason = targetStatus == OrderStatus.CANCELLED ? cancelReason : null;
-        AppliedTransition transition = applyTransition(currentOrder, targetStatus, cancelReason, actor, historyReason);
-        return new TransitionResult(new OrderDto(transition.order(), transition.items()), currentStatus, true);
+        // Already done: a retry, or an admin PATCH to the status the order is in, gets the order unchanged.
+        return new TransitionResult(orderDto(outcome), currentStatus, outcome.applied());
     }
 
 
     /**
-     * Saves the new status (and updated_at) of a locked order, and writes its order_status_history row and its order
-     * event to the outbox, in the same transaction.
+     * Decides {@code trigger} on a locked order with {@link OrderStateMachine}. When the machine applies it, writes the
+     * new status (with its cancel reason and updated_at) with a compare-and-set on the status the order was read in,
+     * then its order_status_history row and its order event to the outbox, in the same transaction and all with the
+     * same time. A cancel of a paid order (PAID or ACCEPTED) then opens its refund, still in that transaction and at
+     * that time. A trigger that already happened or that the status does not allow writes nothing.
+     *
+     * @param context       what the trigger's checks read; null for the triggers that read none
+     * @param cancelReason  stored on the order when the trigger cancels it; the order keeps its reason otherwise
+     * @param historyReason the reason recorded in the history row
+     * @throws StaleTransitionException when the compare-and-set does not change exactly one row
      */
-    private AppliedTransition applyTransition(
+    private TransitionOutcome applyTransition(
             OrderEntity currentOrder,
-            OrderStatus targetStatus,
-            String cancelReason,
+            OrderTrigger trigger,
+            OrderTransitionContext context,
             OrderActor actor,
+            String cancelReason,
             String historyReason
     ) {
         OrderStatus currentStatus = OrderStatus.normalize(currentOrder.status());
-        currentStatus.validateTransitionTo(targetStatus);
-        LocalDateTime transitionedAt = LocalDateTime.now();
-        OrderEntity updatedOrder = orderRepository.save(currentOrder.withStatus(
+        Decision<OrderStatus, OrderTrigger> decision =
+                OrderStateMachine.DEFINITION.decide(currentStatus, trigger, actor.type(), context);
+        if (!(decision instanceof Decision.Apply<OrderStatus, OrderTrigger> move)) {
+            return new TransitionOutcome(decision, currentOrder, null);
+        }
+        OrderStatus targetStatus = move.to();
+        // Microseconds, what the timestamp columns keep: the order row, its history and the events it writes (the
+        // order's and a cancellation refund's) then carry one instant. A Linux clock has nanoseconds, which the
+        // database would round, so the events would not match the rows.
+        LocalDateTime transitionedAt = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
+        OrderEntity updatedOrder = currentOrder.withStatus(
                 targetStatus.name(),
                 targetStatus == OrderStatus.CANCELLED ? cancelReason : currentOrder.cancelReason(),
                 transitionedAt
-        ));
+        );
+        int rows = orderRepository.compareAndSetStatus(
+                updatedOrder.id(),
+                currentStatus.name(),
+                updatedOrder.status(),
+                updatedOrder.cancelReason(),
+                transitionedAt
+        );
+        CompareAndSet.expectOneRow(rows, ORDER_ROW, updatedOrder.id(), currentStatus);
         orderStatusHistoryService.record(
                 updatedOrder.id(),
                 currentStatus,
@@ -440,12 +542,46 @@ public class OrderService implements OrderLifecycleCommands {
         );
         List<OrderHistoryItemDto> items = getOrderItems(updatedOrder.id());
         orderEventOutboxService.enqueueOrderEvent(updatedOrder, items, null, transitionedAt);
-        metricsService.recordOrderTransition(currentStatus.name(), targetStatus.name());
-        return new AppliedTransition(updatedOrder, items);
+        if (targetStatus == OrderStatus.CANCELLED && REFUNDED_WHEN_CANCELLED.contains(currentStatus)) {
+            // After the order's own event (ADR 0002 D12): the order row stays locked, and the refund commits with the
+            // cancel or rolls it back. A pickup that committed before this cancel took the lock is seen here.
+            cancellationRefunds.refundCancelledOrder(new CancellationRefunds.Cancellation(
+                    updatedOrder,
+                    trigger,
+                    orderRepository.findPickedUpAt(updatedOrder.id()).orElse(null),
+                    transitionedAt
+            ));
+        }
+        // Counted once the transition commits: a later step of the caller (its audit entry, its idempotency record)
+        // can still roll it back.
+        AfterCommit.run(() -> metricsService.recordOrderTransition(currentStatus.name(), targetStatus.name()));
+        return new TransitionOutcome(decision, updatedOrder, items);
     }
 
 
-    private record AppliedTransition(OrderEntity order, List<OrderHistoryItemDto> items) {
+    /**
+     * The order after a trigger: as written (with the items its event carries) when the trigger was applied, the
+     * locked order with its items otherwise.
+     */
+    private OrderDto orderDto(TransitionOutcome outcome) {
+        return outcome.applied() ? new OrderDto(outcome.order(), outcome.items()) : getOrderDto(outcome.order());
+    }
+
+
+    /**
+     * @param decision what the machine decided
+     * @param order    the order as written for an applied trigger; the locked order, unchanged, otherwise
+     * @param items    the order's items, loaded for its event; null when nothing was applied
+     */
+    private record TransitionOutcome(
+            Decision<OrderStatus, OrderTrigger> decision,
+            OrderEntity order,
+            List<OrderHistoryItemDto> items
+    ) {
+
+        boolean applied() {
+            return decision instanceof Decision.Apply;
+        }
     }
 
 

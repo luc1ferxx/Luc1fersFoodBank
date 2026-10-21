@@ -1021,3 +1021,218 @@ button:disabled {
     width: fit-content;
   }
 }
+
+/* After-sales: shared by the customer, merchant and admin views. */
+
+.status-badge--PENDING_MERCHANT,
+.status-badge--COUNTER_OFFERED,
+.status-badge--IN_ARBITRATION,
+.status-badge--PENDING,
+.status-badge--PROCESSING {
+  background: #fff4dc;
+  color: #7c520f;
+}
+
+.status-badge--REJECTED,
+.status-badge--FAILED {
+  background: #fff0ec;
+  color: #90301e;
+}
+
+.status-badge--REFUNDING {
+  background: #e9f4ff;
+  color: #1e5c8e;
+}
+
+.status-badge--REFUNDED,
+.status-badge--SUCCEEDED {
+  background: #e9f7ec;
+  color: #246238;
+}
+
+.status-badge--CLOSED {
+  background: #eef0ea;
+  color: #4e554b;
+}
+
+.countdown {
+  color: #7c520f;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.countdown--passed {
+  color: #90301e;
+}
+
+.countdown time {
+  color: #6b7566;
+  font-weight: 700;
+}
+
+.after-sales {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #e3e7dd;
+}
+
+.after-sales__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.after-sales__amounts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+
+.after-sales__amounts dt {
+  color: #6b7566;
+  font-weight: 700;
+}
+
+.after-sales__amounts dd {
+  margin: 0;
+  color: #20221d;
+  font-weight: 800;
+}
+
+/* After-sales: merchant */
+
+.merchant-tabs {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #1e5c8e;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+/* After-sales: admin */
+
+.admin-tabs {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.after-sales-admin {
+  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.after-sales-admin .order-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.decision-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.decision-options legend {
+  margin-bottom: 6px;
+  color: #4e554b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.decision-options .toggle-row {
+  margin-bottom: 0;
+}
+
+@media (max-width: 900px) {
+  .after-sales-admin {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* After-sales: customer */
+
+.after-sales textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #cfd5c8;
+  border-radius: 8px;
+  background: #fbfcfa;
+  color: #20221d;
+  font: inherit;
+  resize: vertical;
+}
+
+.after-sales h4 {
+  margin: 0;
+}
+
+.after-sales--automatic {
+  font-weight: 800;
+}
+
+.after-sales-form {
+  margin-top: 10px;
+}
+
+.after-sales-form textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #cfd5c8;
+  border-radius: 8px;
+  background: #fbfcfa;
+  color: #20221d;
+  font: inherit;
+  resize: vertical;
+}
+
+.after-sales-form__scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.after-sales-form__scope legend {
+  margin-bottom: 6px;
+  color: #4e554b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.after-sales-form__items {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.after-sales-form__items li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.after-sales-form__preview {
+  margin: 0;
+}

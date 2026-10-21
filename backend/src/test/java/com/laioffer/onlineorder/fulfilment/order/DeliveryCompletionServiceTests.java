@@ -4,9 +4,11 @@ package com.laioffer.onlineorder.fulfilment.order;
 import com.laioffer.onlineorder.messaging.DeliveryEventEnvelope;
 import com.laioffer.onlineorder.messaging.DeliveryEventPayload;
 import com.laioffer.onlineorder.service.ProcessedEventService;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -47,6 +49,27 @@ class DeliveryCompletionServiceTests {
     }
 
 
+    /**
+     * ADR 0002 I14 (section 4.1): the processed_events mark (an advisory lock on the event) comes before the order
+     * module locks the order.
+     */
+    @Test
+    void deliveryDelivered_shouldMarkTheEventBeforeCompletingTheOrder() {
+        Mockito.when(processedEventService.markIfUnseen(
+                "order-delivery-consumer", "evt-1", "evt-1", "delivery.delivered", "DELIVERY", 7L)).thenReturn(true);
+        Mockito.when(orderLifecycleCommands.completeDeliveredOrder(10L, OrderActor.rider(4L)))
+                .thenReturn(OrderLifecycleCommands.DeliveryCompletion.COMPLETED);
+
+        service.handle(event("delivery.delivered"));
+
+        InOrder steps = Mockito.inOrder(processedEventService, orderLifecycleCommands);
+        steps.verify(processedEventService).markIfUnseen(
+                "order-delivery-consumer", "evt-1", "evt-1", "delivery.delivered", "DELIVERY", 7L);
+        steps.verify(orderLifecycleCommands).completeDeliveredOrder(10L, OrderActor.rider(4L));
+        Mockito.verifyNoMoreInteractions(processedEventService, orderLifecycleCommands);
+    }
+
+
     @Test
     void deliveryDeliveredWithoutARider_shouldCompleteTheOrderAsSystem() {
         Mockito.when(processedEventService.markIfUnseen(
@@ -76,9 +99,53 @@ class DeliveryCompletionServiceTests {
     @Test
     void otherDeliveryEvents_shouldNotTouchTheOrder() {
         service.handle(event("delivery.assigned"));
-        service.handle(event("delivery.picked_up"));
+        service.handle(event("delivery.reassigned"));
+        service.handle(event("delivery.cancelled"));
 
         Mockito.verifyNoInteractions(orderLifecycleCommands, processedEventService);
+    }
+
+
+    /**
+     * Section 27, follow-up 17: the pickup is recorded on the order at the time of the event, after the processed_events
+     * mark, so a later customer cancel refunds only part of it.
+     */
+    @Test
+    void deliveryPickedUp_shouldRecordThePickupAtTheEventTime() {
+        Mockito.when(processedEventService.markIfUnseen(
+                "order-delivery-consumer", "evt-1", "evt-1", "delivery.picked_up", "DELIVERY", 7L)).thenReturn(true);
+        Mockito.when(orderLifecycleCommands.recordPickup(10L, LocalDateTime.of(2026, 4, 4, 12, 30), OrderActor.rider(4L))).thenReturn(true);
+
+        service.handle(event("delivery.picked_up"));
+
+        InOrder steps = Mockito.inOrder(processedEventService, orderLifecycleCommands);
+        steps.verify(processedEventService).markIfUnseen(
+                "order-delivery-consumer", "evt-1", "evt-1", "delivery.picked_up", "DELIVERY", 7L);
+        steps.verify(orderLifecycleCommands).recordPickup(10L, LocalDateTime.of(2026, 4, 4, 12, 30), OrderActor.rider(4L));
+        Mockito.verifyNoMoreInteractions(processedEventService, orderLifecycleCommands);
+    }
+
+
+    @Test
+    void duplicateDeliveryPickedUp_shouldRecordThePickupOnce() {
+        Mockito.when(processedEventService.markIfUnseen(
+                "order-delivery-consumer", "evt-1", "evt-1", "delivery.picked_up", "DELIVERY", 7L)).thenReturn(false);
+
+        service.handle(event("delivery.picked_up"));
+
+        Mockito.verifyNoInteractions(orderLifecycleCommands);
+    }
+
+
+    @Test
+    void deliveryPickedUpWithoutItsTime_shouldBeRefused() {
+        Mockito.when(processedEventService.markIfUnseen(
+                "order-delivery-consumer", "evt-1", "evt-1", "delivery.picked_up", "DELIVERY", 7L)).thenReturn(true);
+
+        Assertions.assertThrows(IllegalArgumentException.class, () -> service.handle(new DeliveryEventEnvelope(
+                "evt-1", 1, "delivery.picked_up", "DELIVERY", 7L, null, "evt-1", null,
+                new DeliveryEventPayload(10L, 3L, 2L, 4L, "Alice", "PICKED_UP"))));
+        Mockito.verifyNoInteractions(orderLifecycleCommands);
     }
 
 

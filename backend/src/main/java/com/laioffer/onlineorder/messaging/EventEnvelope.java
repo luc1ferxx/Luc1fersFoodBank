@@ -11,7 +11,8 @@ import java.time.LocalDateTime;
  * <p>The outbox assigns {@link #sequence()} when it stores the event ({@code OrderEventOutboxService.enqueueEvent});
  * producers build envelopes without one.
  */
-public sealed interface EventEnvelope permits OrderEventEnvelope, DeliveryEventEnvelope, MerchantEventEnvelope {
+public sealed interface EventEnvelope
+        permits OrderEventEnvelope, DeliveryEventEnvelope, MerchantEventEnvelope, AfterSalesEventEnvelope {
 
     String eventId();
 

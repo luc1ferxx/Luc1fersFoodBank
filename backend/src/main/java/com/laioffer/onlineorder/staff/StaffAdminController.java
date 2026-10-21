@@ -53,7 +53,7 @@ public class StaffAdminController {
     }
 
 
-    @PatchMapping("/admin/merchants/{merchantId}")
+    @PatchMapping("/admin/merchants/{merchantId:\\d+}")
     public AdminMerchantDto updateMerchant(
             Principal principal,
             @PathVariable Long merchantId,
@@ -76,7 +76,7 @@ public class StaffAdminController {
     }
 
 
-    @PatchMapping("/admin/riders/{riderId}")
+    @PatchMapping("/admin/riders/{riderId:\\d+}")
     public AdminRiderDto updateRider(
             Principal principal,
             @PathVariable Long riderId,

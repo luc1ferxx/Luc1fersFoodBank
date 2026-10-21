@@ -85,6 +85,31 @@ class MetricsConfigurationTests {
     }
 
 
+    @Test
+    void requestMetrics_shouldNameConstrainedRoutesWithoutTheirIdConstraint() {
+        String adminCookie = login("demo@laifood.com", "demo123");
+        HttpHeaders headers = new HttpHeaders();
+        headers.add(HttpHeaders.COOKIE, adminCookie);
+        ResponseEntity<String> retry = restTemplate.exchange(
+                url("/admin/refunds/987654321/retry"),
+                HttpMethod.POST,
+                new HttpEntity<>(headers),
+                String.class
+        );
+        Assertions.assertEquals(HttpStatus.NOT_FOUND, retry.getStatusCode());
+
+        String scrape = restTemplate.exchange(
+                url("/actuator/prometheus"),
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                String.class
+        ).getBody();
+        Assertions.assertNotNull(scrape);
+        assertSample(scrape, "http_server_requests_seconds_count\\{[^}]*uri=\"/admin/refunds/\\{refundId}/retry\"");
+        Assertions.assertFalse(scrape.contains("refundId:"), "the uri tag keeps the \\d+ constraint");
+    }
+
+
     private static void assertSample(String scrape, String regex) {
         Assertions.assertTrue(
                 Pattern.compile(regex).matcher(scrape).find(),

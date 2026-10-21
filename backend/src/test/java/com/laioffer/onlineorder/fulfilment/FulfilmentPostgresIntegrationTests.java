@@ -1,8 +1,16 @@
 package com.laioffer.onlineorder.fulfilment;
 
 
+import com.laioffer.onlineorder.PostgresRowLocks;
+import com.laioffer.onlineorder.PostgresRowLocks.RowLockHolder;
+import com.laioffer.onlineorder.audit.AuditActor;
 import com.laioffer.onlineorder.exception.ConflictException;
+import com.laioffer.onlineorder.exception.ResourceNotFoundException;
+import com.laioffer.onlineorder.fulfilment.dispatch.DeliveryAdminService;
+import com.laioffer.onlineorder.fulfilment.dispatch.DeliveryDto;
+import com.laioffer.onlineorder.fulfilment.dispatch.DeliveryRepository;
 import com.laioffer.onlineorder.fulfilment.dispatch.DispatchService;
+import com.laioffer.onlineorder.fulfilment.dispatch.RiderService;
 import com.laioffer.onlineorder.fulfilment.merchant.MerchantInboxService;
 import com.laioffer.onlineorder.fulfilment.notification.DeliveryNotificationService;
 import com.laioffer.onlineorder.fulfilment.order.DeliveryCompletionService;
@@ -16,6 +24,7 @@ import com.laioffer.onlineorder.messaging.MerchantEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
+import com.laioffer.onlineorder.repository.OrderRepository;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.CustomerService;
 import com.laioffer.onlineorder.service.OrderService;
@@ -24,6 +33,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -33,20 +44,26 @@ import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 
 import java.time.LocalDateTime;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.LongStream;
 
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -73,6 +90,8 @@ class FulfilmentPostgresIntegrationTests {
     static final String BURGER_KING_MERCHANT = "merchant.burgerking@laifood.com";
     static final String SGD_TOFU_MERCHANT = "merchant.sgdtofu@laifood.com";
     static final String MERCHANT_PASSWORD = "merchant123";
+    static final String ALICE_RIDER = "rider.alice@laifood.com";
+    static final String BOB_RIDER = "rider.bob@laifood.com";
 
     @Container
     static PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine")
@@ -130,6 +149,18 @@ class FulfilmentPostgresIntegrationTests {
     private DispatchService dispatchService;
 
     @Autowired
+    private RiderService riderService;
+
+    @Autowired
+    private DeliveryAdminService deliveryAdminService;
+
+    @Autowired
+    private DeliveryRepository deliveryRepository;
+
+    @Autowired
+    private OrderRepository orderRepository;
+
+    @Autowired
     private OrderService orderService;
 
     @Autowired
@@ -140,6 +171,9 @@ class FulfilmentPostgresIntegrationTests {
 
     @Autowired
     private MeterRegistry meterRegistry;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
 
     @Test
@@ -359,6 +393,943 @@ class FulfilmentPostgresIntegrationTests {
                     Assertions.assertEquals(
                             "PAID->ACCEPTED|MERCHANT|" + customerIdOf(BURGER_KING_MERCHANT) + "|null", history.get(1));
                 }
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+
+    // ---- order commands racing on the order row, and order behaviour a new state machine must keep ----
+    // ADR 0002 P1, invariants I2-I12 and I24. Each race queues both commands on the order row behind a lock holder
+    // (holdRow): one command first in the even rounds, the other first in the odd rounds. Every run so goes through both
+    // serial outcomes, and the second command is shown to wait for the row and decide on what the first committed (I7).
+
+
+    @Test
+    void customerCancelRacingMerchantAccept_shouldEndInOneOfTheTwoSerialOutcomes() throws Exception {
+        Long merchantId = customerIdOf(BURGER_KING_MERCHANT);
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+        try {
+            for (int round = 0; round < 6; round++) {
+                PaidOrder order = paidOrderAt("Burger King");
+                deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+                String key = "cancel-" + order.orderId();
+                boolean cancelFirst = round % 2 == 0;
+                Callable<String> acceptCommand = () -> {
+                    try {
+                        return merchantOrderService.accept(merchantId, order.orderId()).status();
+                    } catch (ConflictException ex) {
+                        return conflictOutcome(ex);
+                    }
+                };
+                Callable<OrderDto> cancelCommand = () ->
+                        orderService.idempotentCancelOrder(order.customerId(), order.orderId(), key);
+
+                Future<String> accept;
+                Future<OrderDto> cancel;
+                try (RowLockHolder orderRow = holdRow(executor, "orders", order.orderId())) {
+                    if (cancelFirst) {
+                        cancel = orderRow.queue(cancelCommand);
+                        accept = orderRow.queue(acceptCommand);
+                    } else {
+                        accept = orderRow.queue(acceptCommand);
+                        cancel = orderRow.queue(cancelCommand);
+                    }
+                    orderRow.release();
+                }
+
+                String acceptResult = accept.get(20, TimeUnit.SECONDS);
+                // The customer is never refused: a PAID and an ACCEPTED order can both be cancelled.
+                OrderDto cancelled = cancel.get(20, TimeUnit.SECONDS);
+                Assertions.assertEquals("CANCELLED", cancelled.status());
+                Assertions.assertEquals(OrderLifecycleCommands.CUSTOMER_CANCELLED, cancelled.cancelReason());
+                Assertions.assertEquals("CANCELLED", orderStatus(order.orderId()));
+                Assertions.assertEquals(OrderLifecycleCommands.CUSTOMER_CANCELLED, cancelReason(order.orderId()));
+                String paid = "->PAID|CUSTOMER|" + order.customerId() + "|null";
+                String customerCancelled = "CANCELLED|CUSTOMER|" + order.customerId() + "|"
+                        + OrderLifecycleCommands.CUSTOMER_CANCELLED;
+                if (cancelFirst) {
+                    // The accept found the order cancelled.
+                    Assertions.assertEquals(
+                            "CONFLICT|" + OrderLifecycleCommands.ORDER_STATUS_CONFLICT
+                                    + "|Order is CANCELLED (CUSTOMER_CANCELLED); only PAID orders can move to ACCEPTED",
+                            acceptResult
+                    );
+                    Assertions.assertEquals(List.of("order.paid", "order.cancelled"), orderEventTypes(order.orderId()));
+                    Assertions.assertEquals(List.of(paid, "PAID->" + customerCancelled), statusHistory(order.orderId()));
+                    // The refused accept threw before its inbox update; the inbox learns of the cancel from its event.
+                    Assertions.assertEquals("PAID", inboxStatus(order.orderId()));
+                } else {
+                    Assertions.assertEquals("ACCEPTED", acceptResult);
+                    Assertions.assertEquals(
+                            List.of("order.paid", "order.accepted", "order.cancelled"),
+                            orderEventTypes(order.orderId())
+                    );
+                    Assertions.assertEquals(List.of(
+                            paid,
+                            "PAID->ACCEPTED|MERCHANT|" + merchantId + "|null",
+                            "ACCEPTED->" + customerCancelled
+                    ), statusHistory(order.orderId()));
+                    Assertions.assertEquals("ACCEPTED", inboxStatus(order.orderId()));
+                }
+                Assertions.assertEquals(
+                        List.of("order-cancel:v1:" + order.orderId() + "|" + key + "|SUCCEEDED|" + order.orderId()),
+                        orderIdempotencyRequests(order.orderId())
+                );
+                Assertions.assertEquals(List.of(), orderStatusAudits(order.orderId()), "a customer cancel is not audited");
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+
+    @Test
+    void adminPatchPaidRacingThePaymentTimeout_shouldHaveExactlyOneWinner() throws Exception {
+        Long adminId = customerIdOf("demo@laifood.com");
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+        try {
+            for (int round = 0; round < 6; round++) {
+                PaidOrder order = placedOrderAt("SGD Tofu House");
+                deliverOrderEvent(order.orderId(), "order.created", orderDeadlineService::handle);
+                Assertions.assertEquals(List.of("PAYMENT"), deadlineTypes(order.orderId()));
+                makeDeadlinesDue(order.orderId());
+                String key = "mark-paid-" + order.orderId();
+                boolean timeoutFirst = round % 2 == 0;
+                Callable<String> patchCommand = () -> {
+                    try {
+                        return orderService.idempotentTransitionOrderStatus(adminId, order.orderId(), "PAID", key).status();
+                    } catch (ConflictException ex) {
+                        return conflictOutcome(ex);
+                    }
+                };
+                // The poller fires every due deadline in the database, up to its batch size, not only this order's. No
+                // test leaves a deadline due; with a full batch of others the poller would never queue for this row.
+                Callable<Integer> pollerCommand = orderDeadlineProcessor::fireDueDeadlines;
+
+                Future<String> patch;
+                Future<Integer> poller;
+                try (RowLockHolder orderRow = holdRow(executor, "orders", order.orderId())) {
+                    if (timeoutFirst) {
+                        poller = orderRow.queue(pollerCommand);
+                        patch = orderRow.queue(patchCommand);
+                    } else {
+                        patch = orderRow.queue(patchCommand);
+                        poller = orderRow.queue(pollerCommand);
+                    }
+                    orderRow.release();
+                }
+
+                String patchResult = patch.get(20, TimeUnit.SECONDS);
+                Assertions.assertTrue(poller.get(20, TimeUnit.SECONDS) >= 1, "the poller handled the due deadline");
+                // Either way the deadline is gone: fired, or dropped because the order was no longer PLACED.
+                Assertions.assertTrue(deadlineTypes(order.orderId()).isEmpty());
+                List<String> history = statusHistory(order.orderId());
+                Assertions.assertEquals(2, history.size(), history.toString());
+                Assertions.assertEquals("->PLACED|CUSTOMER|" + order.customerId() + "|null", history.get(0));
+                if (timeoutFirst) {
+                    // The PATCH found the order cancelled by the timeout.
+                    Assertions.assertEquals("CONFLICT|CONFLICT|Invalid order status transition: CANCELLED -> PAID", patchResult);
+                    Assertions.assertEquals("CANCELLED", orderStatus(order.orderId()));
+                    Assertions.assertEquals(OrderLifecycleCommands.PAYMENT_TIMEOUT, cancelReason(order.orderId()));
+                    Assertions.assertEquals(List.of("order.created", "order.cancelled"), orderEventTypes(order.orderId()));
+                    Assertions.assertEquals(
+                            "PLACED->CANCELLED|SYSTEM|null|" + OrderLifecycleCommands.PAYMENT_TIMEOUT, history.get(1));
+                    // The refused PATCH rolled back whole: no audit row, and no idempotency row for its key.
+                    Assertions.assertEquals(List.of(), orderStatusAudits(order.orderId()));
+                    Assertions.assertEquals(List.of(), orderIdempotencyRequests(order.orderId()));
+                } else {
+                    // The poller found the order paid and dropped the deadline without cancelling it.
+                    Assertions.assertEquals("PAID", patchResult);
+                    Assertions.assertEquals("PAID", orderStatus(order.orderId()));
+                    Assertions.assertNull(cancelReason(order.orderId()));
+                    Assertions.assertEquals(List.of("order.created", "order.paid"), orderEventTypes(order.orderId()));
+                    Assertions.assertEquals("PLACED->PAID|ADMIN|" + adminId + "|null", history.get(1));
+                    Assertions.assertEquals(List.of(adminId + "|PLACED->PAID|true|" + key), orderStatusAudits(order.orderId()));
+                    Assertions.assertEquals(
+                            List.of("order-status:v1:" + order.orderId() + "|" + key + "|SUCCEEDED|" + order.orderId()),
+                            orderIdempotencyRequests(order.orderId())
+                    );
+                }
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+
+    /**
+     * The delivery.delivered consumer and an admin PATCH to COMPLETED, with the order in ACCEPTED (the merchant never
+     * marked it PREPARING) or in PREPARING when the rider delivers.
+     */
+    @ParameterizedTest
+    @EnumSource(value = OrderStatus.class, names = {"ACCEPTED", "PREPARING"})
+    void deliveryCompletionRacingAdminPatchCompleted_shouldCompleteOnce(OrderStatus statusWhenDelivered) throws Exception {
+        Long merchantId = customerIdOf(BURGER_KING_MERCHANT);
+        Long adminId = customerIdOf("demo@laifood.com");
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+        try {
+            for (int round = 0; round < 6; round++) {
+                PaidOrder order = paidOrderAt("Burger King");
+                deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+                merchantOrderService.accept(merchantId, order.orderId());
+                deliverOrderEvent(order.orderId(), "order.accepted", dispatchService::handle);
+                if (statusWhenDelivered == OrderStatus.PREPARING) {
+                    merchantOrderService.markPreparing(merchantId, order.orderId());
+                }
+                Long deliveryId = jdbcTemplate.queryForObject(
+                        "SELECT id FROM deliveries WHERE order_id = ?", Long.class, order.orderId());
+                dispatchService.markPickedUp(deliveryId);
+                dispatchService.markDelivered(deliveryId);
+                DeliveryEventEnvelope delivered = latestDeliveryEvent(deliveryId, "delivery.delivered");
+                Long riderId = delivered.data().riderId();
+                String key = "complete-" + order.orderId();
+                boolean completionFirst = round % 2 == 0;
+                Callable<Object> completionCommand = () -> {
+                    deliveryCompletionService.handle(delivered);
+                    return null;
+                };
+                Callable<String> patchCommand = () -> {
+                    try {
+                        return orderService.idempotentTransitionOrderStatus(adminId, order.orderId(), "COMPLETED", key)
+                                .status();
+                    } catch (ConflictException ex) {
+                        return conflictOutcome(ex);
+                    }
+                };
+
+                Future<Object> completion;
+                Future<String> patch;
+                try (RowLockHolder orderRow = holdRow(executor, "orders", order.orderId())) {
+                    if (completionFirst) {
+                        completion = orderRow.queue(completionCommand);
+                        patch = orderRow.queue(patchCommand);
+                    } else {
+                        patch = orderRow.queue(patchCommand);
+                        completion = orderRow.queue(completionCommand);
+                    }
+                    orderRow.release();
+                }
+
+                completion.get(20, TimeUnit.SECONDS);
+                String patchResult = patch.get(20, TimeUnit.SECONDS);
+                // Completed exactly once, whoever got there first.
+                Assertions.assertEquals("COMPLETED", orderStatus(order.orderId()));
+                List<String> events = orderEventTypes(order.orderId());
+                Assertions.assertEquals(List.of("order.paid", "order.accepted", "order.preparing", "order.completed"), events);
+                Assertions.assertEquals(1, Collections.frequency(events, "order.completed"));
+                List<String> history = statusHistory(order.orderId());
+                Assertions.assertEquals(
+                        1L, history.stream().filter(row -> row.contains("->COMPLETED|")).count(), history.toString());
+                assertUpdatedAtIsTheLastStatusChange(order.orderId());
+                String paid = "->PAID|CUSTOMER|" + order.customerId() + "|null";
+                String accepted = "PAID->ACCEPTED|MERCHANT|" + merchantId + "|null";
+                String riderCompleted = "PREPARING->COMPLETED|RIDER|" + riderId + "|DELIVERED";
+                String noOpAudit = adminId + "|COMPLETED->COMPLETED|false|" + key;
+                String statusRequest = "order-status:v1:" + order.orderId() + "|" + key + "|SUCCEEDED|" + order.orderId();
+                if (statusWhenDelivered == OrderStatus.ACCEPTED) {
+                    // An admin cannot skip PREPARING, so only the completion moves the order, through PREPARING.
+                    Assertions.assertEquals(List.of(
+                            paid,
+                            accepted,
+                            "ACCEPTED->PREPARING|RIDER|" + riderId + "|DELIVERED",
+                            riderCompleted
+                    ), history);
+                    if (!completionFirst) {
+                        // The PATCH found the order ACCEPTED and was refused; the completion then moved it.
+                        Assertions.assertEquals(
+                                "CONFLICT|CONFLICT|Invalid order status transition: ACCEPTED -> COMPLETED", patchResult);
+                        Assertions.assertEquals(List.of(), orderStatusAudits(order.orderId()));
+                        Assertions.assertEquals(List.of(), orderIdempotencyRequests(order.orderId()));
+                    } else {
+                        // The PATCH found the order COMPLETED: an audited no-op.
+                        Assertions.assertEquals("COMPLETED", patchResult);
+                        Assertions.assertEquals(List.of(noOpAudit), orderStatusAudits(order.orderId()));
+                        Assertions.assertEquals(List.of(statusRequest), orderIdempotencyRequests(order.orderId()));
+                    }
+                } else {
+                    // From PREPARING both may complete the order, so the PATCH is never refused.
+                    Assertions.assertEquals("COMPLETED", patchResult);
+                    String prepared = "ACCEPTED->PREPARING|MERCHANT|" + merchantId + "|null";
+                    String adminCompleted = "PREPARING->COMPLETED|ADMIN|" + adminId + "|null";
+                    if (!completionFirst) {
+                        // The completion then found the order COMPLETED (ALREADY_COMPLETED).
+                        Assertions.assertEquals(List.of(paid, accepted, prepared, adminCompleted), history);
+                        Assertions.assertEquals(
+                                List.of(adminId + "|PREPARING->COMPLETED|true|" + key), orderStatusAudits(order.orderId()));
+                    } else {
+                        Assertions.assertEquals(List.of(paid, accepted, prepared, riderCompleted), history);
+                        Assertions.assertEquals(List.of(noOpAudit), orderStatusAudits(order.orderId()));
+                    }
+                    Assertions.assertEquals(List.of(statusRequest), orderIdempotencyRequests(order.orderId()));
+                }
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+        assertEveryRiderLoadMatchesTheirOpenDeliveries();
+    }
+
+
+    @Test
+    void customerCancelRacingTheAcceptTimeout_shouldKeepTheWinnersReason() throws Exception {
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+        try {
+            for (int round = 0; round < 6; round++) {
+                PaidOrder order = paidOrderAt("Burger King");
+                deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+                deliverMerchantOrderReceived(order.orderId());
+                Assertions.assertEquals(List.of("ACCEPT"), deadlineTypes(order.orderId()));
+                makeDeadlinesDue(order.orderId());
+                String key = "cancel-" + order.orderId();
+                boolean customerFirst = round % 2 == 0;
+                Callable<OrderDto> cancelCommand = () ->
+                        orderService.idempotentCancelOrder(order.customerId(), order.orderId(), key);
+                // As in the race above, the poller fires every due deadline in the database, not only this order's.
+                Callable<Integer> pollerCommand = orderDeadlineProcessor::fireDueDeadlines;
+
+                Future<OrderDto> cancel;
+                Future<Integer> poller;
+                try (RowLockHolder orderRow = holdRow(executor, "orders", order.orderId())) {
+                    if (customerFirst) {
+                        cancel = orderRow.queue(cancelCommand);
+                        poller = orderRow.queue(pollerCommand);
+                    } else {
+                        poller = orderRow.queue(pollerCommand);
+                        cancel = orderRow.queue(cancelCommand);
+                    }
+                    orderRow.release();
+                }
+
+                // The customer is never refused: an order the timeout cancelled first is returned as it is.
+                OrderDto cancelled = cancel.get(20, TimeUnit.SECONDS);
+                Assertions.assertTrue(poller.get(20, TimeUnit.SECONDS) >= 1, "the poller handled the due deadline");
+                Assertions.assertTrue(deadlineTypes(order.orderId()).isEmpty());
+                Assertions.assertEquals("CANCELLED", orderStatus(order.orderId()));
+                String reason = cancelReason(order.orderId());
+                List<String> history = statusHistory(order.orderId());
+                Assertions.assertEquals(2, history.size(), history.toString());
+                if (!customerFirst) {
+                    // The timeout cancelled the order; the customer's cancel was a no-op that kept its reason.
+                    Assertions.assertEquals(OrderLifecycleCommands.MERCHANT_TIMEOUT, reason);
+                    Assertions.assertEquals(
+                            "PAID->CANCELLED|SYSTEM|null|" + OrderLifecycleCommands.MERCHANT_TIMEOUT, history.get(1));
+                } else {
+                    // The poller found the order cancelled and dropped the deadline.
+                    Assertions.assertEquals(OrderLifecycleCommands.CUSTOMER_CANCELLED, reason);
+                    Assertions.assertEquals(
+                            "PAID->CANCELLED|CUSTOMER|" + order.customerId() + "|" + OrderLifecycleCommands.CUSTOMER_CANCELLED,
+                            history.get(1)
+                    );
+                }
+                // One cancel, and the winner's reason everywhere: the order, its event and the customer's answer.
+                Assertions.assertEquals("CANCELLED", cancelled.status());
+                Assertions.assertEquals(reason, cancelled.cancelReason());
+                Assertions.assertEquals(List.of("order.paid", "order.cancelled"), orderEventTypes(order.orderId()));
+                Assertions.assertEquals(reason, latestOrderEvent(order.orderId(), "order.cancelled").data().reason());
+                Assertions.assertEquals(
+                        List.of("order-cancel:v1:" + order.orderId() + "|" + key + "|SUCCEEDED|" + order.orderId()),
+                        orderIdempotencyRequests(order.orderId())
+                );
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+
+    @Test
+    void twoAdminsPatchingTheSameTargetWithDifferentKeys_shouldAuditOneChange() throws Exception {
+        Long firstAdmin = customerIdOf("demo@laifood.com");
+        Long secondAdmin = newAdmin();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 6; round++) {
+                PaidOrder order = paidOrderAt("Fashion Wok");
+                String firstKey = "first-admin-" + order.orderId();
+                String secondKey = "second-admin-" + order.orderId();
+                CountDownLatch start = new CountDownLatch(1);
+
+                Future<String> first = executor.submit(awaiting(start, () -> orderService.idempotentTransitionOrderStatus(
+                        firstAdmin, order.orderId(), "ACCEPTED", firstKey).status()));
+                Future<String> second = executor.submit(awaiting(start, () -> orderService.idempotentTransitionOrderStatus(
+                        secondAdmin, order.orderId(), "ACCEPTED", secondKey).status()));
+                start.countDown();
+
+                // Both are answered with the accepted order; only the first to lock the row changed it.
+                Assertions.assertEquals("ACCEPTED", first.get(20, TimeUnit.SECONDS));
+                Assertions.assertEquals("ACCEPTED", second.get(20, TimeUnit.SECONDS));
+                Assertions.assertEquals("ACCEPTED", orderStatus(order.orderId()));
+                Assertions.assertEquals(List.of("order.paid", "order.accepted"), orderEventTypes(order.orderId()));
+                List<String> history = statusHistory(order.orderId());
+                Assertions.assertEquals(2, history.size(), history.toString());
+                boolean firstChangedIt = history.get(1).equals("PAID->ACCEPTED|ADMIN|" + firstAdmin + "|null");
+                if (!firstChangedIt) {
+                    Assertions.assertEquals("PAID->ACCEPTED|ADMIN|" + secondAdmin + "|null", history.get(1));
+                }
+                String change = "|PAID->ACCEPTED|true|";
+                String noOp = "|ACCEPTED->ACCEPTED|false|";
+                List<String> audits = orderStatusAudits(order.orderId());
+                Assertions.assertEquals(2, audits.size(), audits.toString());
+                Assertions.assertEquals(Set.of(
+                        firstAdmin + (firstChangedIt ? change : noOp) + firstKey,
+                        secondAdmin + (firstChangedIt ? noOp : change) + secondKey
+                ), Set.copyOf(audits));
+                Assertions.assertEquals(Set.of(
+                        "order-status:v1:" + order.orderId() + "|" + firstKey + "|SUCCEEDED|" + order.orderId(),
+                        "order-status:v1:" + order.orderId() + "|" + secondKey + "|SUCCEEDED|" + order.orderId()
+                ), Set.copyOf(orderIdempotencyRequests(order.orderId())));
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+
+    /**
+     * The merchant commands through the merchant module record a MERCHANT actor (not SYSTEM), so a state machine that
+     * checks actors has to allow the merchant on accept, reject and preparing (ADR 0002 section 4.1).
+     */
+    @Test
+    void merchantCommands_shouldRecordTheMerchantAsTheActorOfAcceptRejectAndPreparing() {
+        Long merchantId = customerIdOf(BURGER_KING_MERCHANT);
+        PaidOrder prepared = paidOrderAt("Burger King");
+        PaidOrder rejected = paidOrderAt("Burger King");
+        deliverOrderEvent(prepared.orderId(), "order.paid", merchantInboxService::handle);
+        deliverOrderEvent(rejected.orderId(), "order.paid", merchantInboxService::handle);
+
+        Assertions.assertEquals("ACCEPTED", merchantOrderService.accept(merchantId, prepared.orderId()).status());
+        Assertions.assertEquals("PREPARING", merchantOrderService.markPreparing(merchantId, prepared.orderId()).status());
+        Assertions.assertEquals("CANCELLED", merchantOrderService.reject(merchantId, rejected.orderId(), "Out of buns").status());
+
+        Assertions.assertEquals(List.of(
+                "->PAID|CUSTOMER|" + prepared.customerId() + "|null",
+                "PAID->ACCEPTED|MERCHANT|" + merchantId + "|null",
+                "ACCEPTED->PREPARING|MERCHANT|" + merchantId + "|null"
+        ), statusHistory(prepared.orderId()));
+        Assertions.assertEquals(
+                List.of("order.paid", "order.accepted", "order.preparing"), orderEventTypes(prepared.orderId()));
+        Assertions.assertEquals(List.of(
+                "->PAID|CUSTOMER|" + rejected.customerId() + "|null",
+                "PAID->CANCELLED|MERCHANT|" + merchantId + "|MERCHANT_REJECTED: Out of buns"
+        ), statusHistory(rejected.orderId()));
+        Assertions.assertEquals(List.of("order.paid", "order.cancelled"), orderEventTypes(rejected.orderId()));
+    }
+
+
+    /**
+     * A known gap (ADR 0002 I24): an admin PATCH to COMPLETED does not close the order's delivery, which stays with its
+     * rider until the rider finishes it.
+     */
+    @Test
+    void adminPatchCompletedFromPreparing_shouldLeaveTheDeliveryOpen() {
+        Long merchantId = customerIdOf(BURGER_KING_MERCHANT);
+        Long adminId = customerIdOf("demo@laifood.com");
+        PaidOrder order = paidOrderAt("Burger King");
+        deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+        merchantOrderService.accept(merchantId, order.orderId());
+        int totalLoadBefore = totalRiderLoad();
+        deliverOrderEvent(order.orderId(), "order.accepted", dispatchService::handle);
+        merchantOrderService.markPreparing(merchantId, order.orderId());
+        Long deliveryId = jdbcTemplate.queryForObject(
+                "SELECT id FROM deliveries WHERE order_id = ?", Long.class, order.orderId());
+
+        OrderDto completed = orderService.idempotentTransitionOrderStatus(
+                adminId, order.orderId(), "COMPLETED", "complete-" + order.orderId());
+        // The dispatch module follows order.accepted and order.cancelled only.
+        deliverOrderEvent(order.orderId(), "order.completed", dispatchService::handle);
+
+        Assertions.assertEquals("COMPLETED", completed.status());
+        Assertions.assertEquals("ASSIGNED", jdbcTemplate.queryForObject(
+                "SELECT status FROM deliveries WHERE id = ?", String.class, deliveryId));
+        Assertions.assertEquals(totalLoadBefore + 1, totalRiderLoad(), "the rider still carries the delivery");
+        Assertions.assertEquals(List.of("delivery.assigned"), deliveryEventTypes(deliveryId));
+
+        // The rider can still finish it; the completion then finds the order COMPLETED and changes nothing.
+        dispatchService.markPickedUp(deliveryId);
+        dispatchService.markDelivered(deliveryId);
+        deliveryCompletionService.handle(latestDeliveryEvent(deliveryId, "delivery.delivered"));
+
+        Assertions.assertEquals(totalLoadBefore, totalRiderLoad());
+        Assertions.assertEquals(
+                List.of("order.paid", "order.accepted", "order.preparing", "order.completed"),
+                orderEventTypes(order.orderId())
+        );
+        Assertions.assertEquals(List.of(
+                "->PAID|CUSTOMER|" + order.customerId() + "|null",
+                "PAID->ACCEPTED|MERCHANT|" + merchantId + "|null",
+                "ACCEPTED->PREPARING|MERCHANT|" + merchantId + "|null",
+                "PREPARING->COMPLETED|ADMIN|" + adminId + "|null"
+        ), statusHistory(order.orderId()));
+        assertEveryRiderLoadMatchesTheirOpenDeliveries();
+    }
+
+
+    @Test
+    void eventSequences_shouldGrowByOnePerAppliedTransition() {
+        Long merchantId = customerIdOf(BURGER_KING_MERCHANT);
+        Long adminId = customerIdOf("demo@laifood.com");
+        PaidOrder order = paidOrderAt("Burger King");
+        Long orderId = order.orderId();
+        deliverOrderEvent(orderId, "order.paid", merchantInboxService::handle);
+        Assertions.assertEquals(List.of(1L), aggregateSequences("ORDER", orderId));
+
+        merchantOrderService.accept(merchantId, orderId);
+        // Commands that change nothing or are refused take no number: a repeated accept, an admin PATCH to the
+        // current status, a reject of an accepted order and an illegal admin PATCH.
+        merchantOrderService.accept(merchantId, orderId);
+        orderService.idempotentTransitionOrderStatus(adminId, orderId, "ACCEPTED", "same-status-" + orderId);
+        Assertions.assertThrows(ConflictException.class, () -> merchantOrderService.reject(merchantId, orderId, "Too late"));
+        Assertions.assertThrows(ConflictException.class,
+                () -> orderService.idempotentTransitionOrderStatus(adminId, orderId, "PAID", "backwards-" + orderId));
+        Assertions.assertEquals(List.of(1L, 2L), aggregateSequences("ORDER", orderId));
+        Assertions.assertEquals(2L, lastAggregateSequence("ORDER", orderId));
+
+        deliverOrderEvent(orderId, "order.accepted", dispatchService::handle);
+        Long deliveryId = jdbcTemplate.queryForObject("SELECT id FROM deliveries WHERE order_id = ?", Long.class, orderId);
+        dispatchService.markPickedUp(deliveryId);
+        dispatchService.markDelivered(deliveryId);
+        DeliveryEventEnvelope delivered = latestDeliveryEvent(deliveryId, "delivery.delivered");
+        // The two completion steps take a number each; a redelivery and a direct repeat take none.
+        deliveryCompletionService.handle(delivered);
+        deliveryCompletionService.handle(delivered);
+        Assertions.assertEquals(
+                OrderLifecycleCommands.DeliveryCompletion.ALREADY_COMPLETED,
+                orderLifecycleCommands.completeDeliveredOrder(orderId, OrderActor.rider(delivered.data().riderId()))
+        );
+        Assertions.assertThrows(ConflictException.class, () -> orderService.cancelOrder(order.customerId(), orderId));
+
+        Assertions.assertEquals(
+                List.of("order.paid", "order.accepted", "order.preparing", "order.completed"),
+                orderEventTypes(orderId)
+        );
+        Assertions.assertEquals(List.of(1L, 2L, 3L, 4L), aggregateSequences("ORDER", orderId));
+        Assertions.assertEquals(4L, lastAggregateSequence("ORDER", orderId));
+        Assertions.assertEquals(4L, latestOrderEvent(orderId, "order.completed").sequence(), "the envelope carries it");
+        Assertions.assertEquals(4, statusHistory(orderId).size(), "one history row per numbered event");
+        // The delivery is an aggregate of its own, numbered from 1.
+        Assertions.assertEquals(List.of(1L, 2L, 3L), aggregateSequences("DELIVERY", deliveryId));
+        Assertions.assertEquals(3L, lastAggregateSequence("DELIVERY", deliveryId));
+    }
+
+
+    /**
+     * ADR 0002 I2 on the stored rows: every applied transition, whichever command makes it, writes one history row and
+     * one event of its target status at the same instant, keyed by the order id, and leaves that instant in the order's
+     * updated_at.
+     */
+    @Test
+    void appliedOrderTransitions_shouldWriteTheHistoryRowAndTheEventAtTheOrdersUpdateTime() {
+        Long merchantId = customerIdOf(BURGER_KING_MERCHANT);
+        Long adminId = customerIdOf("demo@laifood.com");
+
+        // The merchant accepts, then the rider's delivery completes the order through PREPARING (two steps, one
+        // transaction).
+        PaidOrder delivered = paidOrderAt("Burger King");
+        deliverOrderEvent(delivered.orderId(), "order.paid", merchantInboxService::handle);
+        merchantOrderService.accept(merchantId, delivered.orderId());
+        assertEveryOrderEventMatchesItsHistoryRow(delivered.orderId());
+        deliverOrderEvent(delivered.orderId(), "order.accepted", dispatchService::handle);
+        Long deliveryId = jdbcTemplate.queryForObject(
+                "SELECT id FROM deliveries WHERE order_id = ?", Long.class, delivered.orderId());
+        dispatchService.markPickedUp(deliveryId);
+        dispatchService.markDelivered(deliveryId);
+        deliveryCompletionService.handle(latestDeliveryEvent(deliveryId, "delivery.delivered"));
+        Assertions.assertEquals("COMPLETED", orderStatus(delivered.orderId()));
+        assertEveryOrderEventMatchesItsHistoryRow(delivered.orderId());
+
+        // A merchant reject, two admin PATCHes, a customer cancel and the payment timeout.
+        PaidOrder rejected = paidOrderAt("Burger King");
+        deliverOrderEvent(rejected.orderId(), "order.paid", merchantInboxService::handle);
+        merchantOrderService.reject(merchantId, rejected.orderId(), "Out of buns");
+        PaidOrder patched = paidOrderAt("Fashion Wok");
+        orderService.idempotentTransitionOrderStatus(adminId, patched.orderId(), "ACCEPTED", "accept-" + patched.orderId());
+        orderService.idempotentTransitionOrderStatus(adminId, patched.orderId(), "PREPARING", "prepare-" + patched.orderId());
+        PaidOrder cancelled = paidOrderAt("SGD Tofu House");
+        orderService.idempotentCancelOrder(cancelled.customerId(), cancelled.orderId(), "cancel-" + cancelled.orderId());
+        PaidOrder timedOut = placedOrderAt("SGD Tofu House");
+        deliverOrderEvent(timedOut.orderId(), "order.created", orderDeadlineService::handle);
+        makeDeadlinesDue(timedOut.orderId());
+        orderDeadlineProcessor.fireDueDeadlines();
+        Assertions.assertEquals("CANCELLED", orderStatus(timedOut.orderId()));
+
+        for (PaidOrder order : List.of(rejected, patched, cancelled, timedOut)) {
+            assertEveryOrderEventMatchesItsHistoryRow(order.orderId());
+        }
+    }
+
+
+    // ---- delivery commands racing on the delivery row ----
+    // ADR 0002 P1, invariants I7 and I17-I24. As in the order races above, both commands queue on the delivery row
+    // behind a lock holder, each side first in every other round; the rider loads and the delivery's timestamps (I19)
+    // are checked after every round.
+
+
+    /**
+     * ADR 0002 I19 on the stored row: a status change sets its own timestamp and updated_at to the time of the change
+     * and keeps the others; a reassignment only moves updated_at; a repeated move or a late cancellation writes nothing;
+     * assigned_at never moves.
+     */
+    @Test
+    void deliveryTimestamps_shouldSetTheTargetStatusTimeAndKeepTheOthers() {
+        Long aliceId = riderIdOf(ALICE_RIDER);
+        Long bobId = riderIdOf(BOB_RIDER);
+
+        // Assigned, reassigned, picked up, reassigned again, delivered.
+        PaidOrder delivered = paidOrderAt("Burger King");
+        Long deliveryId = dispatchTo(delivered, aliceId);
+        DeliveryTimes assigned = deliveryTimes(deliveryId);
+        Assertions.assertNotNull(assigned.assignedAt());
+        Assertions.assertEquals(new DeliveryTimes(assigned.assignedAt(), null, null, null, assigned.updatedAt()), assigned);
+        Assertions.assertFalse(assigned.updatedAt().isBefore(assigned.assignedAt()));
+
+        dispatchService.reassign(deliveryId, bobId);
+        DeliveryTimes reassigned = deliveryTimes(deliveryId);
+        Assertions.assertEquals(assigned.touched(reassigned.updatedAt()), reassigned);
+
+        dispatchService.markPickedUp(deliveryId);
+        DeliveryTimes pickedUp = deliveryTimes(deliveryId);
+        Assertions.assertEquals(reassigned.pickedUp(pickedUp.updatedAt()), pickedUp);
+        // A repeated pick-up writes nothing, not even updated_at (I17).
+        dispatchService.markPickedUp(deliveryId);
+        Assertions.assertEquals(pickedUp, deliveryTimes(deliveryId));
+
+        dispatchService.reassign(deliveryId, aliceId);
+        DeliveryTimes reassignedAgain = deliveryTimes(deliveryId);
+        Assertions.assertEquals(pickedUp.touched(reassignedAgain.updatedAt()), reassignedAgain);
+
+        dispatchService.markDelivered(deliveryId);
+        DeliveryTimes done = deliveryTimes(deliveryId);
+        Assertions.assertEquals(reassignedAgain.delivered(done.updatedAt()), done);
+        dispatchService.markDelivered(deliveryId);
+        Assertions.assertEquals(done, deliveryTimes(deliveryId), "a repeated delivery writes nothing");
+        // The order is still ACCEPTED (its completion was not handled here), so the customer can cancel it; the
+        // cancellation leaves the delivered delivery alone (I23).
+        orderService.cancelOrder(delivered.customerId(), delivered.orderId());
+        deliverOrderEvent(delivered.orderId(), "order.cancelled", dispatchService::handle);
+        Assertions.assertEquals(done, deliveryTimes(deliveryId));
+        assertUpdatedAtOnlyMovesForward(List.of(assigned, reassigned, pickedUp, reassignedAgain, done));
+
+        // Cancelled after the pick-up: picked_up_at stays and delivered_at stays empty.
+        PaidOrder cancelledAfterPickUp = paidOrderAt("Burger King");
+        Long pickedUpId = dispatchTo(cancelledAfterPickUp, aliceId);
+        dispatchService.markPickedUp(pickedUpId);
+        DeliveryTimes beforeCancel = deliveryTimes(pickedUpId);
+        Assertions.assertNotNull(beforeCancel.pickedUpAt());
+        orderService.cancelOrder(cancelledAfterPickUp.customerId(), cancelledAfterPickUp.orderId());
+        deliverOrderEvent(cancelledAfterPickUp.orderId(), "order.cancelled", dispatchService::handle);
+        DeliveryTimes cancelledAfterThePickUp = deliveryTimes(pickedUpId);
+        Assertions.assertEquals(beforeCancel.cancelled(cancelledAfterThePickUp.updatedAt()), cancelledAfterThePickUp);
+        assertUpdatedAtOnlyMovesForward(List.of(beforeCancel, cancelledAfterThePickUp));
+
+        // Cancelled before the pick-up: only cancelled_at is set.
+        PaidOrder cancelledAssigned = paidOrderAt("Burger King");
+        Long assignedId = dispatchTo(cancelledAssigned, aliceId);
+        DeliveryTimes stillAssigned = deliveryTimes(assignedId);
+        orderService.cancelOrder(cancelledAssigned.customerId(), cancelledAssigned.orderId());
+        deliverOrderEvent(cancelledAssigned.orderId(), "order.cancelled", dispatchService::handle);
+        DeliveryTimes cancelledBeforeThePickUp = deliveryTimes(assignedId);
+        Assertions.assertEquals(stillAssigned.cancelled(cancelledBeforeThePickUp.updatedAt()), cancelledBeforeThePickUp);
+        Assertions.assertNull(cancelledBeforeThePickUp.pickedUpAt());
+        assertUpdatedAtOnlyMovesForward(List.of(stillAssigned, cancelledBeforeThePickUp));
+        assertEveryRiderLoadMatchesTheirOpenDeliveries();
+    }
+
+
+    /**
+     * ADR 0002 section 4.2 on the stored row: the compare-and-set writes change a delivery only while it still has the
+     * status and rider the caller read under the lock. A write from a stale read changes nothing and returns 0, which
+     * DispatchService turns into a rolled-back StaleTransitionException.
+     */
+    @Test
+    void deliveryCompareAndSet_shouldOnlyChangeARowThatStillHasTheExpectedStatusAndRider() {
+        Long aliceId = riderIdOf(ALICE_RIDER);
+        Long bobId = riderIdOf(BOB_RIDER);
+        Long deliveryId = dispatchTo(paidOrderAt("Burger King"), aliceId);
+        DeliveryTimes assigned = deliveryTimes(deliveryId);
+        LocalDateTime now = LocalDateTime.now();
+
+        Assertions.assertEquals(0, deliveryRepository.compareAndSetStatus(
+                deliveryId, "PICKED_UP", aliceId, "DELIVERED", assigned.assignedAt(), now, null, now),
+                "another status");
+        Assertions.assertEquals(0, deliveryRepository.compareAndSetStatus(
+                deliveryId, "ASSIGNED", bobId, "PICKED_UP", now, null, null, now),
+                "another rider");
+        Assertions.assertEquals(0, deliveryRepository.compareAndSetRider(deliveryId, bobId, aliceId, now),
+                "another rider");
+        Assertions.assertEquals("ASSIGNED|" + aliceId, deliveryState(deliveryId));
+        Assertions.assertEquals(assigned, deliveryTimes(deliveryId));
+
+        // Through the service each write changes exactly one row (it throws otherwise).
+        dispatchService.markPickedUp(deliveryId);
+        dispatchService.markDelivered(deliveryId);
+        DeliveryTimes delivered = deliveryTimes(deliveryId);
+
+        Assertions.assertEquals(0, deliveryRepository.compareAndSetRider(deliveryId, aliceId, bobId, now),
+                "a finished delivery keeps its rider");
+        Assertions.assertEquals("DELIVERED|" + aliceId, deliveryState(deliveryId));
+        Assertions.assertEquals(delivered, deliveryTimes(deliveryId));
+        assertEveryRiderLoadMatchesTheirOpenDeliveries();
+    }
+
+
+    /**
+     * ADR 0002 section 4.1 on the stored row: the compare-and-set write changes an order only while it is still in the
+     * status the caller read under the lock. A write from a stale read changes nothing (status, cancel reason,
+     * updated_at) and returns 0, which OrderService turns into a rolled-back StaleTransitionException.
+     */
+    @Test
+    void orderCompareAndSet_shouldOnlyChangeARowThatIsStillInTheExpectedStatus() {
+        PaidOrder order = paidOrderAt("Burger King");
+        Map<String, Object> paid = orderRow(order.orderId());
+        LocalDateTime later = LocalDateTime.now().plusHours(1);
+
+        Assertions.assertEquals(0, orderRepository.compareAndSetStatus(
+                order.orderId(), "PLACED", "CANCELLED", OrderLifecycleCommands.PAYMENT_TIMEOUT, later),
+                "another status");
+        Assertions.assertEquals(0, orderRepository.compareAndSetStatus(
+                order.orderId(), "ACCEPTED", "PREPARING", null, later),
+                "another status");
+        Assertions.assertEquals("PAID", paid.get("status"));
+        Assertions.assertEquals(paid, orderRow(order.orderId()));
+
+        // Through the service the write changes exactly one row (it throws otherwise).
+        orderService.cancelOrder(order.customerId(), order.orderId());
+        Map<String, Object> cancelled = orderRow(order.orderId());
+        Assertions.assertEquals("CANCELLED", cancelled.get("status"));
+        Assertions.assertEquals(OrderLifecycleCommands.CUSTOMER_CANCELLED, cancelled.get("cancel_reason"));
+        assertUpdatedAtIsTheLastStatusChange(order.orderId());
+
+        Assertions.assertEquals(0, orderRepository.compareAndSetStatus(
+                order.orderId(), "PAID", "ACCEPTED", null, later),
+                "a cancelled order");
+        Assertions.assertEquals(cancelled, orderRow(order.orderId()));
+    }
+
+
+    /**
+     * The rider delivering a picked-up delivery while an admin reassigns it to another rider. Both lock the delivery row
+     * before they change anything: either the rider delivered it and the reassignment is refused, or it moved to the
+     * other rider and the first rider no longer reaches it (404). The first rider is released exactly once either way.
+     */
+    @Test
+    void riderDeliveredRacingAdminReassign_shouldKeepRiderLoadsConsistent() throws Exception {
+        Long adminId = customerIdOf("demo@laifood.com");
+        Long aliceLogin = customerIdOf(ALICE_RIDER);
+        Long aliceId = riderIdOf(ALICE_RIDER);
+        Long bobLogin = customerIdOf(BOB_RIDER);
+        Long bobId = riderIdOf(BOB_RIDER);
+        // Another open delivery keeps Alice's load above one during the race, so a second release would show (a load
+        // never drops below zero).
+        dispatchTo(paidOrderAt("Burger King"), aliceId);
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+        try {
+            for (int round = 0; round < 6; round++) {
+                PaidOrder order = paidOrderAt("Burger King");
+                Long deliveryId = dispatchTo(order, aliceId);
+                dispatchService.markPickedUp(deliveryId);
+                List<String> eventsBefore = deliveryEventTypes(deliveryId);
+                DeliveryTimes timesBefore = deliveryTimes(deliveryId);
+                int aliceLoadBefore = riderLoad(aliceId);
+                int bobLoadBefore = riderLoad(bobId);
+                int totalLoadBefore = totalRiderLoad();
+                Assertions.assertTrue(aliceLoadBefore >= 2, "Alice's load before the race: " + aliceLoadBefore);
+                Assertions.assertEquals(List.of(), deliveryAudits(deliveryId));
+                boolean riderFirst = round % 2 == 0;
+                Callable<String> deliverCommand = () -> {
+                    try {
+                        return riderService.markDelivered(aliceLogin, deliveryId).status();
+                    } catch (ResourceNotFoundException ex) {
+                        return "NOT_FOUND|" + ex.getMessage();
+                    }
+                };
+                Callable<String> reassignCommand = () -> {
+                    try {
+                        DeliveryDto reassigned = deliveryAdminService.reassign(deliveryId, bobId, AuditActor.admin(adminId));
+                        return reassigned.status() + "|" + reassigned.riderId();
+                    } catch (ConflictException ex) {
+                        return conflictOutcome(ex);
+                    }
+                };
+
+                Future<String> delivered;
+                Future<String> reassign;
+                try (RowLockHolder deliveryRow = holdRow(executor, "deliveries", deliveryId)) {
+                    if (riderFirst) {
+                        delivered = deliveryRow.queue(deliverCommand);
+                        reassign = deliveryRow.queue(reassignCommand);
+                    } else {
+                        reassign = deliveryRow.queue(reassignCommand);
+                        delivered = deliveryRow.queue(deliverCommand);
+                    }
+                    deliveryRow.release();
+                }
+
+                String deliveredResult = delivered.get(20, TimeUnit.SECONDS);
+                String reassignResult = reassign.get(20, TimeUnit.SECONDS);
+                // Alice is released once either way: she delivered it, or its load moved to Bob.
+                Assertions.assertEquals(aliceLoadBefore - 1, riderLoad(aliceId), "round " + round);
+                assertEveryRiderLoadMatchesTheirOpenDeliveries();
+                List<String> events = new java.util.ArrayList<>(eventsBefore);
+                // One audit row, by the winner; the refused side rolled back whole.
+                List<String> audits = deliveryAudits(deliveryId);
+                DeliveryTimes times = deliveryTimes(deliveryId);
+                if (riderFirst) {
+                    // The reassignment found the delivery delivered.
+                    Assertions.assertEquals("DELIVERED", deliveredResult);
+                    Assertions.assertEquals(
+                            "CONFLICT|DELIVERY_STATUS_CONFLICT|Delivery is DELIVERED; only an open delivery can be reassigned",
+                            reassignResult
+                    );
+                    Assertions.assertEquals("DELIVERED|" + aliceId, deliveryState(deliveryId));
+                    Assertions.assertEquals(bobLoadBefore, riderLoad(bobId));
+                    Assertions.assertEquals(totalLoadBefore - 1, totalRiderLoad());
+                    events.add("delivery.delivered");
+                    Assertions.assertEquals(List.of("delivery.delivered|ROLE_RIDER|" + aliceLogin), audits);
+                    Assertions.assertEquals(timesBefore.delivered(times.updatedAt()), times);
+                } else {
+                    // The reassignment went first: the delivery is no longer Alice's, so she gets the 404 of a stranger
+                    // (her locking read, re-checked after the wait, no longer matches the row).
+                    Assertions.assertEquals("NOT_FOUND|Delivery not found", deliveredResult);
+                    Assertions.assertEquals("PICKED_UP|" + bobId, reassignResult);
+                    Assertions.assertEquals("PICKED_UP|" + bobId, deliveryState(deliveryId));
+                    Assertions.assertEquals(bobLoadBefore + 1, riderLoad(bobId));
+                    Assertions.assertEquals(totalLoadBefore, totalRiderLoad());
+                    events.add("delivery.reassigned");
+                    Assertions.assertEquals(List.of("delivery.reassign|ROLE_ADMIN|" + adminId), audits);
+                    Assertions.assertEquals(timesBefore.touched(times.updatedAt()), times, "a reassignment keeps the status times");
+                }
+                Assertions.assertFalse(times.updatedAt().isBefore(timesBefore.updatedAt()));
+                Assertions.assertEquals(events, deliveryEventTypes(deliveryId));
+                Assertions.assertEquals(
+                        LongStream.rangeClosed(1, events.size()).boxed().toList(),
+                        aggregateSequences("DELIVERY", deliveryId),
+                        "one sequence number per delivery event, without gaps"
+                );
+                if (!riderFirst) {
+                    // Bob finishes it through his own login and gives back the load he took over.
+                    Assertions.assertEquals("DELIVERED", riderService.markDelivered(bobLogin, deliveryId).status());
+                    Assertions.assertEquals(bobLoadBefore, riderLoad(bobId));
+                    assertEveryRiderLoadMatchesTheirOpenDeliveries();
+                    DeliveryTimes deliveredByBob = deliveryTimes(deliveryId);
+                    Assertions.assertEquals(timesBefore.delivered(deliveredByBob.updatedAt()), deliveredByBob);
+                }
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+
+    /**
+     * The rider delivering a picked-up delivery while the dispatch consumer handles the cancellation of its order (the
+     * customer cancelled the accepted order after the pick-up). Either the delivery was delivered first and stays
+     * DELIVERED, or it was cancelled first and the rider is refused. The rider is released exactly once either way, and
+     * the tombstone is set either way.
+     */
+    @Test
+    void riderDeliveredRacingOrderCancelled_shouldReleaseTheRiderOnce() throws Exception {
+        Long merchantId = customerIdOf(BURGER_KING_MERCHANT);
+        Long aliceLogin = customerIdOf(ALICE_RIDER);
+        Long aliceId = riderIdOf(ALICE_RIDER);
+        // Another open delivery keeps Alice's load above one during the race, so a second release would show.
+        dispatchTo(paidOrderAt("Burger King"), aliceId);
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+        try {
+            for (int round = 0; round < 6; round++) {
+                PaidOrder order = paidOrderAt("Burger King");
+                Long deliveryId = dispatchTo(order, aliceId);
+                dispatchService.markPickedUp(deliveryId);
+                // The order module does not know about the pick-up: an ACCEPTED order can still be cancelled.
+                orderService.cancelOrder(order.customerId(), order.orderId());
+                OrderEventEnvelope cancelled = latestOrderEvent(order.orderId(), "order.cancelled");
+                List<String> eventsBefore = deliveryEventTypes(deliveryId);
+                DeliveryTimes timesBefore = deliveryTimes(deliveryId);
+                int aliceLoadBefore = riderLoad(aliceId);
+                int totalLoadBefore = totalRiderLoad();
+                Assertions.assertTrue(aliceLoadBefore >= 2, "Alice's load before the race: " + aliceLoadBefore);
+                // The consumer marks the event processed and locks the dispatch row before it queues for the delivery.
+                boolean riderFirst = round % 2 == 0;
+                Callable<String> deliverCommand = () -> {
+                    try {
+                        return riderService.markDelivered(aliceLogin, deliveryId).status();
+                    } catch (ConflictException ex) {
+                        return conflictOutcome(ex);
+                    }
+                };
+                Callable<Object> cancellationCommand = () -> {
+                    dispatchService.handle(cancelled);
+                    return null;
+                };
+
+                Future<String> delivered;
+                Future<Object> cancellation;
+                try (RowLockHolder deliveryRow = holdRow(executor, "deliveries", deliveryId)) {
+                    if (riderFirst) {
+                        delivered = deliveryRow.queue(deliverCommand);
+                        cancellation = deliveryRow.queue(cancellationCommand);
+                    } else {
+                        cancellation = deliveryRow.queue(cancellationCommand);
+                        delivered = deliveryRow.queue(deliverCommand);
+                    }
+                    deliveryRow.release();
+                }
+
+                String deliveredResult = delivered.get(20, TimeUnit.SECONDS);
+                cancellation.get(20, TimeUnit.SECONDS);
+                Assertions.assertEquals(aliceLoadBefore - 1, riderLoad(aliceId), "round " + round);
+                Assertions.assertEquals(totalLoadBefore - 1, totalRiderLoad());
+                assertEveryRiderLoadMatchesTheirOpenDeliveries();
+                // The tombstone is set whoever won, so a late order.accepted could not dispatch the order again.
+                Assertions.assertTrue(dispatchTombstoned(order.orderId()));
+                List<String> events = new java.util.ArrayList<>(eventsBefore);
+                DeliveryTimes times = deliveryTimes(deliveryId);
+                if (riderFirst) {
+                    // The cancellation found the delivery finished and left it as it was.
+                    Assertions.assertEquals("DELIVERED", deliveredResult);
+                    Assertions.assertEquals("DELIVERED|" + aliceId, deliveryState(deliveryId));
+                    Assertions.assertEquals(timesBefore.delivered(times.updatedAt()), times);
+                    events.add("delivery.delivered");
+                    Assertions.assertEquals(List.of("delivery.delivered|ROLE_RIDER|" + aliceLogin), deliveryAudits(deliveryId));
+                    // The known trade-off (I24): the delivery does not complete the cancelled order, but the customer is
+                    // still told that it was delivered.
+                    DeliveryEventEnvelope deliveredEvent = latestDeliveryEvent(deliveryId, "delivery.delivered");
+                    deliveryCompletionService.handle(deliveredEvent);
+                    deliveryNotificationService.handle(deliveredEvent);
+                    Assertions.assertEquals(List.of("Order delivered"), jdbcTemplate.queryForList(
+                            "SELECT title FROM order_notifications WHERE order_id = ? AND event_type = 'delivery.delivered'",
+                            String.class,
+                            order.orderId()
+                    ));
+                } else {
+                    // The rider found the delivery cancelled.
+                    Assertions.assertEquals(
+                            "CONFLICT|DELIVERY_STATUS_CONFLICT|Delivery is CANCELLED; it cannot move to DELIVERED",
+                            deliveredResult
+                    );
+                    Assertions.assertEquals("CANCELLED|" + aliceId, deliveryState(deliveryId));
+                    Assertions.assertEquals(timesBefore.cancelled(times.updatedAt()), times);
+                    events.add("delivery.cancelled");
+                    // The refused delivery rolled back, its audit row with it.
+                    Assertions.assertEquals(List.of(), deliveryAudits(deliveryId));
+                }
+                Assertions.assertEquals(events, deliveryEventTypes(deliveryId));
+                Assertions.assertEquals(
+                        LongStream.rangeClosed(1, events.size()).boxed().toList(),
+                        aggregateSequences("DELIVERY", deliveryId),
+                        "one sequence number per delivery event, without gaps"
+                );
+                // Neither side touches the order: it stays cancelled by the customer.
+                Assertions.assertEquals("CANCELLED", orderStatus(order.orderId()));
+                Assertions.assertEquals(OrderLifecycleCommands.CUSTOMER_CANCELLED, cancelReason(order.orderId()));
+                Assertions.assertEquals(
+                        List.of("order.paid", "order.accepted", "order.cancelled"), orderEventTypes(order.orderId()));
+                Assertions.assertEquals(List.of(
+                        "->PAID|CUSTOMER|" + order.customerId() + "|null",
+                        "PAID->ACCEPTED|MERCHANT|" + merchantId + "|null",
+                        "ACCEPTED->CANCELLED|CUSTOMER|" + order.customerId() + "|" + OrderLifecycleCommands.CUSTOMER_CANCELLED
+                ), statusHistory(order.orderId()));
             }
         } finally {
             executor.shutdownNow();
@@ -663,12 +1634,7 @@ class FulfilmentPostgresIntegrationTests {
                 "ACCEPTED->PREPARING|RIDER|" + riderId + "|DELIVERED",
                 "PREPARING->COMPLETED|RIDER|" + riderId + "|DELIVERED"
         ), statusHistory(order.orderId()));
-        Assertions.assertEquals(
-                jdbcTemplate.queryForObject("SELECT MAX(occurred_at) FROM order_status_history WHERE order_id = ?",
-                        LocalDateTime.class, order.orderId()),
-                jdbcTemplate.queryForObject("SELECT updated_at FROM orders WHERE id = ?", LocalDateTime.class, order.orderId()),
-                "updated_at is the time of the last status change"
-        );
+        assertUpdatedAtIsTheLastStatusChange(order.orderId());
 
         for (String eventType : List.of("delivery.assigned", "delivery.picked_up", "delivery.delivered")) {
             DeliveryEventEnvelope event = latestDeliveryEvent(deliveryId, eventType);
@@ -748,14 +1714,7 @@ class FulfilmentPostgresIntegrationTests {
             Assertions.assertEquals(List.of("delivery.assigned"), deliveryEventTypes(deliveryId));
         }
         Assertions.assertEquals(totalLoadBefore + acceptedEvents.size(), totalRiderLoad());
-        Assertions.assertEquals(0, jdbcTemplate.queryForObject("""
-                SELECT COUNT(*)
-                FROM riders
-                WHERE active_deliveries <> (
-                    SELECT COUNT(*) FROM deliveries
-                    WHERE deliveries.rider_id = riders.id AND deliveries.status IN ('ASSIGNED', 'PICKED_UP')
-                )
-                """, Integer.class), "Every rider's load matches their open deliveries");
+        assertEveryRiderLoadMatchesTheirOpenDeliveries();
     }
 
 
@@ -931,14 +1890,7 @@ class FulfilmentPostgresIntegrationTests {
         } finally {
             dispatchers.shutdownNow();
         }
-        Assertions.assertEquals(0, jdbcTemplate.queryForObject("""
-                SELECT COUNT(*)
-                FROM riders
-                WHERE active_deliveries <> (
-                    SELECT COUNT(*) FROM deliveries
-                    WHERE deliveries.rider_id = riders.id AND deliveries.status IN ('ASSIGNED', 'PICKED_UP')
-                )
-                """, Integer.class), "Every rider's load matches their open deliveries");
+        assertEveryRiderLoadMatchesTheirOpenDeliveries();
     }
 
 
@@ -958,6 +1910,168 @@ class FulfilmentPostgresIntegrationTests {
                 + "|" + row.getString("actor_type")
                 + "|" + row.getObject("actor_id")
                 + "|" + row.getString("reason"), orderId);
+    }
+
+
+    /**
+     * The order's admin status change audit rows, oldest first, as "actor_customer_id|from->to|changed|idempotency_key".
+     */
+    List<String> orderStatusAudits(Long orderId) {
+        return jdbcTemplate.query("""
+                SELECT actor_customer_id, details
+                FROM audit_log
+                WHERE action = 'order.status.update'
+                  AND target_type = 'ORDER'
+                  AND target_id = ?
+                ORDER BY id
+                """, (row, index) -> {
+            JsonNode details = objectMapper.readTree(row.getString("details"));
+            return row.getObject("actor_customer_id")
+                    + "|" + details.get("from_status").asString() + "->" + details.get("to_status").asString()
+                    + "|" + details.get("changed").asBoolean()
+                    + "|" + details.get("idempotency_key").asString();
+        }, String.valueOf(orderId));
+    }
+
+
+    /**
+     * The idempotency rows of the order's admin status changes and customer cancels, oldest first, as
+     * "scope|idempotency_key|status|order_id".
+     */
+    List<String> orderIdempotencyRequests(Long orderId) {
+        return jdbcTemplate.query("""
+                SELECT scope, idempotency_key, status, order_id
+                FROM idempotency_requests
+                WHERE scope IN (?, ?)
+                ORDER BY id
+                """, (row, index) -> row.getString("scope")
+                + "|" + row.getString("idempotency_key")
+                + "|" + row.getString("status")
+                + "|" + row.getObject("order_id"), "order-status:v1:" + orderId, "order-cancel:v1:" + orderId);
+    }
+
+
+    /**
+     * The aggregate sequences of an aggregate's outbox events, in insertion order.
+     */
+    List<Long> aggregateSequences(String aggregateType, Long aggregateId) {
+        return jdbcTemplate.queryForList("""
+                SELECT aggregate_sequence
+                FROM outbox_events
+                WHERE aggregate_type = ?
+                  AND aggregate_id = ?
+                ORDER BY id
+                """, Long.class, aggregateType, aggregateId);
+    }
+
+
+    Long lastAggregateSequence(String aggregateType, Long aggregateId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT last_sequence FROM outbox_aggregate_sequences WHERE aggregate_type = ? AND aggregate_id = ?",
+                Long.class,
+                aggregateType,
+                aggregateId
+        );
+    }
+
+
+    void assertUpdatedAtIsTheLastStatusChange(Long orderId) {
+        Assertions.assertEquals(
+                jdbcTemplate.queryForObject("SELECT MAX(occurred_at) FROM order_status_history WHERE order_id = ?",
+                        LocalDateTime.class, orderId),
+                jdbcTemplate.queryForObject("SELECT updated_at FROM orders WHERE id = ?", LocalDateTime.class, orderId),
+                "updated_at is the time of the last status change"
+        );
+    }
+
+
+    /**
+     * ADR 0002 I2 on the stored rows: the order's events and its history rows pair up one to one, in order. Each event
+     * is of its row's target status, keyed by the order id on the order topic, carries the reason of a cancel row, and
+     * happened at the row's time (to the database's microsecond: the event keeps every digit of the Java clock); the
+     * order's status and updated_at are those of the last row.
+     */
+    void assertEveryOrderEventMatchesItsHistoryRow(Long orderId) {
+        record HistoryRow(OrderStatus toStatus, String reason, LocalDateTime occurredAt) {
+        }
+        List<HistoryRow> history = jdbcTemplate.query("""
+                SELECT to_status, reason, occurred_at
+                FROM order_status_history
+                WHERE order_id = ?
+                ORDER BY id
+                """, (row, index) -> new HistoryRow(
+                OrderStatus.valueOf(row.getString("to_status")),
+                row.getString("reason"),
+                row.getObject("occurred_at", LocalDateTime.class)
+        ), orderId);
+        List<OrderEventEnvelope> events = jdbcTemplate.queryForList("""
+                        SELECT payload
+                        FROM outbox_events
+                        WHERE aggregate_type = 'ORDER'
+                          AND aggregate_id = ?
+                        ORDER BY id
+                        """, String.class, orderId).stream()
+                .map(payload -> objectMapper.readValue(payload, OrderEventEnvelope.class))
+                .toList();
+
+        Assertions.assertEquals(history.size(), events.size(), "one event per history row of order " + orderId);
+        for (int step = 0; step < history.size(); step++) {
+            HistoryRow row = history.get(step);
+            OrderEventEnvelope event = events.get(step);
+            String where = "order " + orderId + ", step " + step + " to " + row.toStatus();
+            Assertions.assertEquals(row.toStatus().eventType(), event.eventType(), where);
+            Assertions.assertEquals(orderId, event.aggregateId(), where);
+            Assertions.assertEquals(row.toStatus().name(), event.data().status(), where);
+            if (row.toStatus() == OrderStatus.CANCELLED) {
+                Assertions.assertEquals(row.reason(), event.data().reason(), where);
+            }
+            Assertions.assertTrue(
+                    java.time.Duration.between(row.occurredAt(), event.occurredAt()).abs().toNanos() < 1_000,
+                    where + ": the event happened at " + event.occurredAt() + ", the history row at " + row.occurredAt()
+            );
+        }
+        Assertions.assertEquals(List.of("order-events|" + orderId), jdbcTemplate.queryForList(
+                "SELECT DISTINCT topic || '|' || event_key FROM outbox_events WHERE aggregate_type = 'ORDER' AND aggregate_id = ?",
+                String.class,
+                orderId
+        ), "every order event is keyed by the order id");
+        HistoryRow last = history.get(history.size() - 1);
+        Assertions.assertEquals(last.toStatus().name(), orderStatus(orderId));
+        Assertions.assertEquals(
+                last.occurredAt(),
+                jdbcTemplate.queryForObject("SELECT updated_at FROM orders WHERE id = ?", LocalDateTime.class, orderId),
+                "updated_at is the time of the last status change"
+        );
+    }
+
+
+    static void assertUpdatedAtOnlyMovesForward(List<DeliveryTimes> changes) {
+        for (int index = 1; index < changes.size(); index++) {
+            Assertions.assertFalse(
+                    changes.get(index).updatedAt().isBefore(changes.get(index - 1).updatedAt()),
+                    "updated_at moved back: " + changes
+            );
+        }
+    }
+
+
+    /**
+     * A command refused with a 409, as "CONFLICT|code|message".
+     */
+    static String conflictOutcome(ConflictException conflict) {
+        return "CONFLICT|" + conflict.getCode() + "|" + conflict.getMessage();
+    }
+
+
+    /**
+     * A second admin login (ROLE_ADMIN), besides the demo admin. There is no endpoint that grants ROLE_ADMIN, so the
+     * authority is inserted directly; the login stays for the rest of the class, whose assertions are per order.
+     */
+    Long newAdmin() {
+        String email = "fulfilment-admin-" + System.nanoTime() + "@example.com";
+        customerService.signUp(email, "demo123", "Second", "Admin");
+        jdbcTemplate.update("INSERT INTO authorities (email, authority) VALUES (?, 'ROLE_ADMIN')", email);
+        return customerIdOf(email);
     }
 
 
@@ -981,6 +2095,111 @@ class FulfilmentPostgresIntegrationTests {
 
     int totalRiderLoad() {
         return jdbcTemplate.queryForObject("SELECT COALESCE(SUM(active_deliveries), 0) FROM riders", Integer.class);
+    }
+
+
+    void assertEveryRiderLoadMatchesTheirOpenDeliveries() {
+        Assertions.assertEquals(0, jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM riders
+                WHERE active_deliveries <> (
+                    SELECT COUNT(*) FROM deliveries
+                    WHERE deliveries.rider_id = riders.id AND deliveries.status IN ('ASSIGNED', 'PICKED_UP')
+                )
+                """, Integer.class), "Every rider's load matches their open deliveries");
+    }
+
+
+    int riderLoad(Long riderId) {
+        return jdbcTemplate.queryForObject("SELECT active_deliveries FROM riders WHERE id = ?", Integer.class, riderId);
+    }
+
+
+    /**
+     * The riders.id of a rider login.
+     */
+    Long riderIdOf(String email) {
+        return jdbcTemplate.queryForObject("""
+                SELECT riders.id
+                FROM riders
+                JOIN customers ON customers.id = riders.customer_id
+                WHERE LOWER(customers.email) = LOWER(?)
+                """, Long.class, email);
+    }
+
+
+    /**
+     * Accepts the order (a Burger King one) as its merchant and dispatches it, then moves the delivery to
+     * {@code riderId} when the dispatcher chose another rider (it takes the least-loaded one). Returns the id of the
+     * ASSIGNED delivery.
+     */
+    Long dispatchTo(PaidOrder order, Long riderId) {
+        deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
+        merchantOrderService.accept(customerIdOf(BURGER_KING_MERCHANT), order.orderId());
+        deliverOrderEvent(order.orderId(), "order.accepted", dispatchService::handle);
+        Long deliveryId = jdbcTemplate.queryForObject(
+                "SELECT id FROM deliveries WHERE order_id = ?", Long.class, order.orderId());
+        if (!riderId.equals(jdbcTemplate.queryForObject(
+                "SELECT rider_id FROM deliveries WHERE id = ?", Long.class, deliveryId))) {
+            dispatchService.reassign(deliveryId, riderId);
+        }
+        Assertions.assertEquals("ASSIGNED|" + riderId, deliveryState(deliveryId));
+        return deliveryId;
+    }
+
+
+    /**
+     * The delivery's status and rider, as "status|rider_id".
+     */
+    String deliveryState(Long deliveryId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT status || '|' || rider_id FROM deliveries WHERE id = ?", String.class, deliveryId);
+    }
+
+
+    DeliveryTimes deliveryTimes(Long deliveryId) {
+        return jdbcTemplate.queryForObject("""
+                SELECT assigned_at, picked_up_at, delivered_at, cancelled_at, updated_at
+                FROM deliveries
+                WHERE id = ?
+                """, (row, index) -> new DeliveryTimes(
+                row.getObject("assigned_at", LocalDateTime.class),
+                row.getObject("picked_up_at", LocalDateTime.class),
+                row.getObject("delivered_at", LocalDateTime.class),
+                row.getObject("cancelled_at", LocalDateTime.class),
+                row.getObject("updated_at", LocalDateTime.class)
+        ), deliveryId);
+    }
+
+
+    /**
+     * Holds row {@code id} of {@code table} FOR UPDATE, for commands to queue behind in a chosen order (see
+     * {@link PostgresRowLocks}). The executor needs a thread for the holder and one per queued command.
+     */
+    RowLockHolder holdRow(ExecutorService executor, String table, Long id) throws Exception {
+        return PostgresRowLocks.holdRowLock(executor, transactionManager, jdbcTemplate, table, id);
+    }
+
+
+    /**
+     * The delivery's audit rows, oldest first, as "action|actor_role|actor_customer_id".
+     */
+    List<String> deliveryAudits(Long deliveryId) {
+        return jdbcTemplate.query("""
+                SELECT action, actor_role, actor_customer_id
+                FROM audit_log
+                WHERE target_type = 'DELIVERY'
+                  AND target_id = ?
+                ORDER BY id
+                """, (row, index) -> row.getString("action")
+                + "|" + row.getString("actor_role")
+                + "|" + row.getObject("actor_customer_id"), String.valueOf(deliveryId));
+    }
+
+
+    boolean dispatchTombstoned(Long orderId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT cancelled_at IS NOT NULL FROM dispatch_orders WHERE order_id = ?", Boolean.class, orderId);
     }
 
 
@@ -1057,6 +2276,11 @@ class FulfilmentPostgresIntegrationTests {
     }
 
 
+    Map<String, Object> orderRow(Long orderId) {
+        return jdbcTemplate.queryForMap("SELECT status, cancel_reason, updated_at FROM orders WHERE id = ?", orderId);
+    }
+
+
     String cancelReason(Long orderId) {
         return jdbcTemplate.queryForObject("SELECT cancel_reason FROM orders WHERE id = ?", String.class, orderId);
     }
@@ -1069,6 +2293,20 @@ class FulfilmentPostgresIntegrationTests {
         Long customerId = jdbcTemplate.queryForObject("SELECT id FROM customers WHERE email = ?", Long.class, email);
         cartService.addMenuItemToCart(customerId, menuItemAt(restaurantName));
         OrderDto order = cartService.checkout(customerId, "PAID");
+        return new PaidOrder(order.id(), customerId, email, order.restaurantId());
+    }
+
+
+    /**
+     * A PLACED order (checked out without payment), in the same record as a paid one.
+     */
+    PaidOrder placedOrderAt(String restaurantName) {
+        String email = "fulfilment-placed-" + System.nanoTime() + "@example.com";
+        customerService.signUp(email, "demo123", "Placed", "Customer");
+        Long customerId = jdbcTemplate.queryForObject("SELECT id FROM customers WHERE email = ?", Long.class, email);
+        cartService.addMenuItemToCart(customerId, menuItemAt(restaurantName));
+        OrderDto order = cartService.checkout(customerId);
+        Assertions.assertEquals("PLACED", order.status());
         return new PaidOrder(order.id(), customerId, email, order.restaurantId());
     }
 
@@ -1164,5 +2402,41 @@ class FulfilmentPostgresIntegrationTests {
 
 
     record PaidOrder(Long orderId, Long customerId, String customerEmail, Long restaurantId) {
+    }
+
+
+    /**
+     * A delivery row's timestamps. ADR 0002 I19: a status change sets its own timestamp (and updated_at) to the time of
+     * the change and keeps every other one; a reassignment only moves updated_at.
+     */
+    record DeliveryTimes(
+            LocalDateTime assignedAt,
+            LocalDateTime pickedUpAt,
+            LocalDateTime deliveredAt,
+            LocalDateTime cancelledAt,
+            LocalDateTime updatedAt
+    ) {
+
+        DeliveryTimes pickedUp(LocalDateTime at) {
+            return new DeliveryTimes(assignedAt, at, deliveredAt, cancelledAt, at);
+        }
+
+
+        DeliveryTimes delivered(LocalDateTime at) {
+            return new DeliveryTimes(assignedAt, pickedUpAt, at, cancelledAt, at);
+        }
+
+
+        DeliveryTimes cancelled(LocalDateTime at) {
+            return new DeliveryTimes(assignedAt, pickedUpAt, deliveredAt, at, at);
+        }
+
+
+        /**
+         * Only updated_at moved (a reassignment).
+         */
+        DeliveryTimes touched(LocalDateTime at) {
+            return new DeliveryTimes(assignedAt, pickedUpAt, deliveredAt, cancelledAt, at);
+        }
     }
 }

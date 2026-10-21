@@ -41,7 +41,7 @@ public class CatalogAdminController {
     }
 
 
-    @PatchMapping("/admin/menu-items/{menuItemId}")
+    @PatchMapping("/admin/menu-items/{menuItemId:\\d+}")
     public CatalogMenuItemDto updateMenuItem(
             Principal principal,
             @PathVariable("menuItemId") long menuItemId,
@@ -51,7 +51,7 @@ public class CatalogAdminController {
     }
 
 
-    @PatchMapping("/admin/restaurants/{restaurantId}")
+    @PatchMapping("/admin/restaurants/{restaurantId:\\d+}")
     public CatalogRestaurantDto updateRestaurant(
             Principal principal,
             @PathVariable("restaurantId") long restaurantId,

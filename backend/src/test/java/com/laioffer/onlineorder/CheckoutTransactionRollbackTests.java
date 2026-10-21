@@ -4,12 +4,15 @@ import com.laioffer.onlineorder.entity.CartEntity;
 import com.laioffer.onlineorder.entity.CustomerEntity;
 import com.laioffer.onlineorder.entity.MenuItemEntity;
 import com.laioffer.onlineorder.entity.OrderItemEntity;
+import com.laioffer.onlineorder.model.OrderDto;
+import com.laioffer.onlineorder.model.PaymentCheckoutBody;
 import com.laioffer.onlineorder.repository.CartRepository;
 import com.laioffer.onlineorder.repository.CustomerRepository;
 import com.laioffer.onlineorder.repository.MenuItemRepository;
 import com.laioffer.onlineorder.repository.OrderItemRepository;
 import com.laioffer.onlineorder.service.CartService;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
+import com.laioffer.onlineorder.service.PaymentService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -53,6 +56,9 @@ class CheckoutTransactionRollbackTests {
 
     @Autowired
     private CartService cartService;
+
+    @Autowired
+    private PaymentService paymentService;
 
     @Autowired
     private CustomerRepository customerRepository;
@@ -100,6 +106,34 @@ class CheckoutTransactionRollbackTests {
         CartEntity cart = cartRepository.getByCustomerId(testCustomer.customerId());
         Assertions.assertNotNull(cart);
         Assertions.assertEquals(testCustomer.expectedCartTotal(), cart.totalPrice());
+    }
+
+    @Test
+    void payAndCheckout_whenOutboxStepFails_shouldRollbackThePaymentCaptureWithTheOrder() {
+        TestCustomer testCustomer = createCustomerWithOneItemInCart();
+        PaymentCheckoutBody card = new PaymentCheckoutBody("Rollback Test", "4242424242424242", "12/30", "123");
+        Mockito.doThrow(new IllegalStateException("forced outbox failure"))
+                .when(orderEventOutboxService)
+                .enqueueOrderEvent(Mockito.any(), Mockito.anyList(), Mockito.any(), Mockito.any());
+
+        Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> paymentService.payAndCheckout(testCustomer.customerId(), "rollback-pay-key", card)
+        );
+
+        // The capture was written before the outbox step and rolled back with the order.
+        Assertions.assertEquals(0, countOrdersForCustomer(testCustomer.customerId()));
+        Assertions.assertEquals(0, countPaymentsForCustomer(testCustomer.customerId()));
+        Assertions.assertEquals(0, countIdempotencyRequestsForCustomer(testCustomer.customerId(), "rollback-pay-key"));
+        Assertions.assertEquals(1, orderItemRepository.getAllByCartId(testCustomer.cartId()).size());
+
+        // The same key then checks out once the outbox works, with exactly one capture of the total.
+        Mockito.reset(orderEventOutboxService);
+        OrderDto order = paymentService.payAndCheckout(testCustomer.customerId(), "rollback-pay-key", card);
+        Assertions.assertEquals("PAID", order.status());
+        Assertions.assertEquals(1, countPaymentsForCustomer(testCustomer.customerId()));
+        Assertions.assertEquals(0, testCustomer.expectedCartTotal().compareTo(jdbcTemplate.queryForObject(
+                "SELECT amount FROM order_payments WHERE order_id = ?", BigDecimal.class, order.id())));
     }
 
     private TestCustomer createCustomerWithOneItemInCart() {
@@ -159,6 +193,15 @@ class CheckoutTransactionRollbackTests {
                         WHERE oe.aggregate_type = 'ORDER'
                           AND o.customer_id = ?
                         """,
+                Long.class,
+                customerId
+        );
+        return count == null ? 0 : count;
+    }
+
+    private long countPaymentsForCustomer(Long customerId) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM order_payments WHERE customer_id = ?",
                 Long.class,
                 customerId
         );

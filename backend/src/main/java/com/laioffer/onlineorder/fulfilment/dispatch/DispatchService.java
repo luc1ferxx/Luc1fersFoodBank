@@ -13,6 +13,9 @@ import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
+import com.laioffer.onlineorder.statemachine.CompareAndSet;
+import com.laioffer.onlineorder.statemachine.Decision;
+import com.laioffer.onlineorder.statemachine.StaleTransitionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -42,13 +45,18 @@ import java.util.UUID;
  * <p>order.cancelled: the tombstone is set, and an open delivery is cancelled and its rider released
  * (delivery.cancelled).
  *
- * <p>Rider actions: picked up and delivered, each a guarded {@link DeliveryStatus} transition under the delivery row
- * lock that writes its delivery event to the outbox in the same transaction. Repeating an action that already happened
- * returns the delivery unchanged. The rider API ({@link RiderService}) only reaches the rider's own deliveries; the
- * admin endpoints (ops and tests) reach any delivery.
+ * <p>Rider actions: picked up and delivered, each a guarded transition under the delivery row lock that writes its
+ * delivery event to the outbox in the same transaction. Repeating an action that already happened returns the delivery
+ * unchanged. The rider API ({@link RiderService}) only reaches the rider's own deliveries; the admin endpoints (ops and
+ * tests) reach any delivery.
  *
  * <p>Reassignment (admin): an open delivery moves to another active, on-duty rider, for example when its rider was
  * deactivated. The delivery keeps its status, the load moves with it, and delivery.reassigned is published.
+ *
+ * <p>Every change of a delivery's status or rider is decided by {@link DeliveryStateMachine} on the row read under the
+ * lock and written with a compare-and-set on the status and rider read there. A write that does not change exactly one
+ * row throws {@link StaleTransitionException} and rolls back; with the lock held it cannot happen. A delivery that
+ * leaves a status holding its rider releases that rider (the one the compare-and-set confirmed) once.
  */
 @Service
 public class DispatchService {
@@ -57,6 +65,11 @@ public class DispatchService {
     static final String DELIVERY_STATUS_CONFLICT = "DELIVERY_STATUS_CONFLICT";
     static final String RIDER_NOT_DISPATCHABLE = "RIDER_NOT_DISPATCHABLE";
     static final String DELIVERY_AGGREGATE = "DELIVERY";
+
+    /**
+     * The row named in a {@link StaleTransitionException}.
+     */
+    private static final String DELIVERY_ROW = "delivery";
 
     /**
      * The schema version of the delivery events written here: event-schemas/delivery-events/&lt;event_type&gt;/v1.json.
@@ -128,12 +141,18 @@ public class DispatchService {
     }
 
 
+    /**
+     * The admin's simulated pick-up (an {@link DeliveryActor#ADMIN} move).
+     */
     @Transactional
     public DeliveryDto markPickedUp(Long deliveryId) {
         return advance(deliveryId, DeliveryStatus.PICKED_UP);
     }
 
 
+    /**
+     * The admin's simulated delivery (an {@link DeliveryActor#ADMIN} move).
+     */
     @Transactional
     public DeliveryDto markDelivered(Long deliveryId) {
         return advance(deliveryId, DeliveryStatus.DELIVERED);
@@ -141,8 +160,10 @@ public class DispatchService {
 
 
     /**
-     * The same guarded transition as the admin actions, only on a delivery assigned to {@code riderId}.
+     * The same guarded transition as the admin actions, only on a delivery assigned to {@code riderId} (an
+     * {@link DeliveryActor#RIDER} move).
      *
+     * @param target PICKED_UP or DELIVERED
      * @throws ResourceNotFoundException for another rider's delivery, the same as for one that does not exist
      * @throws ConflictException         DELIVERY_STATUS_CONFLICT when the delivery cannot move to {@code target}
      */
@@ -152,7 +173,7 @@ public class DispatchService {
         if (delivery == null) {
             throw new ResourceNotFoundException("Delivery not found");
         }
-        return transition(delivery, target);
+        return transition(delivery, target, DeliveryActor.RIDER);
     }
 
 
@@ -173,11 +194,18 @@ public class DispatchService {
         if (delivery == null) {
             throw new ResourceNotFoundException("Delivery not found");
         }
-        if (riderId.equals(delivery.riderId())) {
+        DeliveryStatus status = DeliveryStatus.valueOf(delivery.status());
+        Decision<DeliveryStatus, DeliveryTrigger> decision = DeliveryStateMachine.DEFINITION.decide(
+                status,
+                DeliveryTrigger.REASSIGN,
+                DeliveryActor.ADMIN,
+                new DeliveryCommandContext(delivery.riderId(), riderId)
+        );
+        // The same rider is answered before the status: a retry also gets a finished delivery unchanged.
+        if (decision instanceof Decision.AlreadyDone) {
             return new DeliveryDto(delivery, riderName(riderId));
         }
-        DeliveryStatus status = DeliveryStatus.valueOf(delivery.status());
-        if (!status.holdsRider()) {
+        if (decision instanceof Decision.Rejected) {
             throw new ConflictException(
                     DELIVERY_STATUS_CONFLICT,
                     "Delivery is " + status + "; only an open delivery can be reassigned"
@@ -193,7 +221,8 @@ public class DispatchService {
         }
 
         LocalDateTime now = LocalDateTime.now();
-        deliveryRepository.updateRider(delivery.id(), riderId, now);
+        int rows = deliveryRepository.compareAndSetRider(delivery.id(), previousRiderId, riderId, now);
+        CompareAndSet.expectOneRow(rows, DELIVERY_ROW, delivery.id(), status + " with rider " + previousRiderId);
         riderRepository.decrementLoad(previousRiderId, now);
         riderRepository.incrementLoad(riderId, now);
         DeliveryEntity reassigned = new DeliveryEntity(
@@ -306,10 +335,20 @@ public class DispatchService {
         // The tombstone, also when the order has no delivery yet: a later order.accepted must not assign a rider.
         dispatchOrderRepository.markCancelled(orderId, LocalDateTime.now());
         DeliveryEntity delivery = deliveryRepository.lockByOrderId(orderId);
-        if (delivery == null || !DeliveryStatus.valueOf(delivery.status()).holdsRider()) {
+        if (delivery == null) {
             return;
         }
-        applyTransition(delivery, DeliveryStatus.CANCELLED);
+        Decision<DeliveryStatus, DeliveryTrigger> decision = DeliveryStateMachine.DEFINITION.decide(
+                DeliveryStatus.valueOf(delivery.status()),
+                DeliveryTrigger.CANCEL_FOR_ORDER,
+                DeliveryActor.SYSTEM,
+                null
+        );
+        // Only an open delivery is cancelled. A cancelled one (AlreadyDone) released its rider already, and a delivered
+        // one (Rejected) stays delivered: the order was cancelled after the rider delivered it.
+        if (decision instanceof Decision.Apply<DeliveryStatus, DeliveryTrigger> apply) {
+            applyTransition(delivery, apply);
+        }
     }
 
 
@@ -332,7 +371,7 @@ public class DispatchService {
         if (delivery == null) {
             throw new ResourceNotFoundException("Delivery not found");
         }
-        DeliveryEntity updated = transition(delivery, target);
+        DeliveryEntity updated = transition(delivery, target, DeliveryActor.ADMIN);
         return new DeliveryDto(updated, riderName(updated.riderId()));
     }
 
@@ -341,48 +380,68 @@ public class DispatchService {
      * @param delivery locked by the caller
      * @return the delivery after the transition, or unchanged when it already is in {@code target} (a retry)
      */
-    private DeliveryEntity transition(DeliveryEntity delivery, DeliveryStatus target) {
+    private DeliveryEntity transition(DeliveryEntity delivery, DeliveryStatus target, DeliveryActor actor) {
         DeliveryStatus current = DeliveryStatus.valueOf(delivery.status());
-        if (current == target) {
-            return delivery;
+        Decision<DeliveryStatus, DeliveryTrigger> decision = DeliveryStateMachine.DEFINITION.decide(
+                current,
+                DeliveryStateMachine.advanceTrigger(target),
+                actor,
+                null
+        );
+        if (decision instanceof Decision.Apply<DeliveryStatus, DeliveryTrigger> apply) {
+            return applyTransition(delivery, apply);
         }
-        if (!current.canTransitionTo(target)) {
+        if (decision instanceof Decision.Rejected) {
             throw new ConflictException(
                     DELIVERY_STATUS_CONFLICT,
                     "Delivery is " + current + "; it cannot move to " + target
             );
         }
-        return applyTransition(delivery, target);
+        // Already done: a retry of a move that happened.
+        return delivery;
     }
 
 
-    private DeliveryEntity applyTransition(DeliveryEntity delivery, DeliveryStatus target) {
+    /**
+     * Writes the move with a compare-and-set on the status and rider of the locked row, releases the rider when the
+     * delivery leaves a status that holds one, and writes the delivery event; all with the same time.
+     */
+    private DeliveryEntity applyTransition(
+            DeliveryEntity delivery,
+            Decision.Apply<DeliveryStatus, DeliveryTrigger> move
+    ) {
+        DeliveryStatus from = move.from();
+        DeliveryStatus to = move.to();
+        Long riderId = delivery.riderId();
         LocalDateTime now = LocalDateTime.now();
         DeliveryEntity updated = new DeliveryEntity(
                 delivery.id(),
                 delivery.orderId(),
                 delivery.customerId(),
                 delivery.restaurantId(),
-                delivery.riderId(),
-                target.name(),
+                riderId,
+                to.name(),
                 delivery.assignedAt(),
-                target == DeliveryStatus.PICKED_UP ? now : delivery.pickedUpAt(),
-                target == DeliveryStatus.DELIVERED ? now : delivery.deliveredAt(),
-                target == DeliveryStatus.CANCELLED ? now : delivery.cancelledAt(),
+                to == DeliveryStatus.PICKED_UP ? now : delivery.pickedUpAt(),
+                to == DeliveryStatus.DELIVERED ? now : delivery.deliveredAt(),
+                to == DeliveryStatus.CANCELLED ? now : delivery.cancelledAt(),
                 now
         );
-        deliveryRepository.updateStatus(
+        int rows = deliveryRepository.compareAndSetStatus(
                 updated.id(),
+                from.name(),
+                riderId,
                 updated.status(),
                 updated.pickedUpAt(),
                 updated.deliveredAt(),
                 updated.cancelledAt(),
                 now
         );
-        if (!target.holdsRider()) {
-            riderRepository.decrementLoad(delivery.riderId(), now);
+        CompareAndSet.expectOneRow(rows, DELIVERY_ROW, updated.id(), from + " with rider " + riderId);
+        if (from.holdsRider() && !to.holdsRider()) {
+            riderRepository.decrementLoad(riderId, now);
         }
-        enqueueDeliveryEvent(updated, riderName(updated.riderId()), now);
+        enqueueDeliveryEvent(updated, riderName(riderId), now);
         return updated;
     }
 

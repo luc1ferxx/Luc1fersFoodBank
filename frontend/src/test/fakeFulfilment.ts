@@ -13,6 +13,8 @@ import { type FakeHandler, type FakeRoute, apiError, idParam, json, requestJson 
 /** What the fake's route groups share with the core fake backend. */
 export interface FakeContext {
   state: FakeState;
+  /** 401 without a session, like `anyRequest().authenticated()`. */
+  requireSession: (handler: FakeHandler) => FakeHandler;
   /** 401 without a session, 403 without `role`, like the backend's security config. */
   requireRole: (role: string, handler: FakeHandler) => FakeHandler;
   recordStatusChange: (
@@ -37,8 +39,8 @@ export const merchantOrderFixture = (
   currency: USD,
   items: [{ menu_item_id: 10, menu_item_name: "Whopper", price: 6.39, currency: USD, quantity: 2 }],
   cancel_reason: null,
-  paid_at: "2026-10-16T12:00:00Z",
-  updated_at: "2026-10-16T12:00:00Z",
+  paid_at: "2026-10-16T12:00:00",
+  updated_at: "2026-10-16T12:00:00",
   ...overrides,
 });
 
@@ -49,13 +51,13 @@ export const deliveryFixture = (
   restaurant_id: 1,
   restaurant_name: "Burger Barn",
   status: "ASSIGNED",
-  assigned_at: "2026-10-16T12:10:00Z",
+  assigned_at: "2026-10-16T12:10:00",
   picked_up_at: null,
   delivered_at: null,
   ...overrides,
 });
 
-const NOW = "2026-10-16T12:30:00Z";
+const NOW = "2026-10-16T12:30:00";
 
 const forbidden = () => apiError(403, "Access denied", { code: "FORBIDDEN" });
 
@@ -170,6 +172,10 @@ export function riderRoutes({ state, requireRole }: FakeContext) {
     delivery.status = target;
     if (target === "PICKED_UP") {
       delivery.picked_up_at = NOW;
+      // delivery.picked_up reaches the order module, which keeps the first pickup.
+      if (!state.orderPickups.has(delivery.order_id)) {
+        state.orderPickups.set(delivery.order_id, NOW);
+      }
     } else if (target === "DELIVERED") {
       delivery.delivered_at = NOW;
       if (state.riderProfile) {

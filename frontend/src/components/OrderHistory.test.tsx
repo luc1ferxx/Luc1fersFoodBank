@@ -19,7 +19,7 @@ const placed: OrderStatusChange = {
   actor_type: "CUSTOMER",
   actor_id: 1,
   reason: null,
-  occurred_at: "2026-10-16T12:00:00Z",
+  occurred_at: "2026-10-16T12:00:00",
 };
 
 const rejected: OrderStatusChange = {
@@ -28,7 +28,7 @@ const rejected: OrderStatusChange = {
   actor_type: "MERCHANT",
   actor_id: 42,
   reason: "MERCHANT_REJECTED: Out of buns",
-  occurred_at: "2026-10-16T12:05:00Z",
+  occurred_at: "2026-10-16T12:05:00",
 };
 
 const historyName = `Status history of Order #${orderNoFor(7)}`;
@@ -63,6 +63,11 @@ describe("order status history", () => {
     expect(second).toHaveTextContent("by Restaurant");
     expect(second).toHaveTextContent("Reason: MERCHANT_REJECTED: Out of buns");
     expect(screen.getByText("Cancelled: MERCHANT_REJECTED: Out of buns")).toBeInTheDocument();
+    // The backend's UTC time, shown in the browser's zone (the tests run in New York).
+    const changedAt = within(section).getByText(
+      new Date(Date.UTC(2026, 9, 16, 12, 5)).toLocaleString(),
+    );
+    expect(changedAt).toHaveAttribute("datetime", "2026-10-16T12:05:00Z");
 
     const toggle = screen.getByRole("button", { name: "Hide status history" });
     expect(toggle).toHaveAttribute("aria-expanded", "true");

@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -83,6 +84,31 @@ class MerchantOrderServiceTests {
         Mockito.verify(merchantOrderRepository).updateStatus(
                 Mockito.eq(1L), Mockito.eq("ACCEPTED"), Mockito.isNull(), Mockito.any(LocalDateTime.class));
         Mockito.verify(metricsService).recordMerchantDecision("accepted");
+    }
+
+
+    /**
+     * ADR 0002 I14 (section 4.1): the account is checked first; the inbox row is locked before the order module locks
+     * the order row, and the inbox is updated after the order transition.
+     */
+    @Test
+    void decide_shouldLockTheInboxRowBeforeTheOrderAndUpdateItAfterTheTransition() {
+        bindMerchant();
+        Mockito.when(merchantOrderRepository.lockByOrderIdAndRestaurantId(ORDER_ID, RESTAURANT_ID))
+                .thenReturn(inboxOrder("PAID"));
+        Mockito.when(orderLifecycleCommands.transitionRestaurantOrder(
+                ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null, MERCHANT)).thenReturn(changed("ACCEPTED", null));
+
+        service.accept(MERCHANT_CUSTOMER_ID, ORDER_ID);
+
+        InOrder steps = Mockito.inOrder(merchantAccountRepository, merchantOrderRepository, orderLifecycleCommands);
+        steps.verify(merchantAccountRepository).findByCustomerId(MERCHANT_CUSTOMER_ID);
+        steps.verify(merchantOrderRepository).lockByOrderIdAndRestaurantId(ORDER_ID, RESTAURANT_ID);
+        steps.verify(orderLifecycleCommands).transitionRestaurantOrder(
+                ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null, MERCHANT);
+        steps.verify(merchantOrderRepository).updateStatus(
+                Mockito.eq(1L), Mockito.eq("ACCEPTED"), Mockito.isNull(), Mockito.any(LocalDateTime.class));
+        Mockito.verifyNoMoreInteractions(merchantAccountRepository, merchantOrderRepository, orderLifecycleCommands);
     }
 
 

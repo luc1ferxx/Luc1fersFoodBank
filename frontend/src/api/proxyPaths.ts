@@ -11,6 +11,7 @@ export const API_PATH_PREFIXES: readonly string[] = [
   "/cart",
   "/payments",
   "/orders",
+  "/after-sales",
   "/notifications",
   "/dead-letters",
   "/merchant",

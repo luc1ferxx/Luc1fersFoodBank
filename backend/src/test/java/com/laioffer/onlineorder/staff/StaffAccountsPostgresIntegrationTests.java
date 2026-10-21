@@ -3,6 +3,7 @@ package com.laioffer.onlineorder.staff;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import com.laioffer.onlineorder.PostgresRowLocks;
 import com.laioffer.onlineorder.fulfilment.dispatch.DispatchService;
 import com.laioffer.onlineorder.fulfilment.dispatch.RiderService;
 import com.laioffer.onlineorder.fulfilment.order.OrderActor;
@@ -646,7 +647,8 @@ class StaffAccountsPostgresIntegrationTests {
 
             // ... while the rider's own request still reads them as active and then waits for the row.
             Future<?> goOnDuty = executor.submit(() -> riderService.setOnDuty(customerId, true));
-            awaitLockWaiter();
+            PostgresRowLocks.awaitLockWaiters(
+                    jdbcTemplate, 1, "The rider's update never waited for the deactivation's row lock");
             commit.countDown();
             deactivation.get(30, TimeUnit.SECONDS);
 
@@ -701,7 +703,15 @@ class StaffAccountsPostgresIntegrationTests {
                 row(HttpMethod.GET, "/admin/deliveries", null, 401, 403, 403, 403, 200),
                 row(HttpMethod.GET, "/admin/deliveries?rider_id=" + demoRiderId, null, 401, 403, 403, 403, 200),
                 row(HttpMethod.POST, "/admin/deliveries/987654/reassign", "{\"rider_id\": " + demoRiderId + "}",
-                        401, 403, 403, 403, 404)
+                        401, 403, 403, 403, 404),
+                // After-sales (ADR 0002 section 11): every login has its own requests; the merchant's inbox and the
+                // platform's arbitration and refunds are for their roles only.
+                row(HttpMethod.GET, "/after-sales/cases", null, 401, 200, 200, 200, 200),
+                row(HttpMethod.GET, "/merchant/after-sales", null, 401, 403, 200, 403, 403),
+                row(HttpMethod.POST, "/merchant/after-sales/987654/approve", null, 401, 403, 404, 403, 403),
+                row(HttpMethod.GET, "/admin/after-sales", null, 401, 403, 403, 403, 200),
+                row(HttpMethod.GET, "/admin/refunds", null, 401, 403, 403, 403, 200),
+                row(HttpMethod.POST, "/admin/refunds/987654/retry", null, 401, 403, 403, 403, 404)
         );
         List<String> mismatches = new ArrayList<>();
         for (Object[] entry : matrix) {
@@ -803,27 +813,6 @@ class StaffAccountsPostgresIntegrationTests {
                   AND event_type = 'order.accepted'
                 """, String.class, order.id());
         return objectMapper.readValue(payload, OrderEventEnvelope.class);
-    }
-
-
-    /**
-     * Waits until some backend of this database is blocked on a lock (the rider's UPDATE behind the admin's).
-     */
-    private void awaitLockWaiter() throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
-        while (System.nanoTime() < deadline) {
-            Integer waiting = jdbcTemplate.queryForObject("""
-                    SELECT COUNT(*)
-                    FROM pg_stat_activity
-                    WHERE datname = current_database()
-                      AND wait_event_type = 'Lock'
-                    """, Integer.class);
-            if (waiting != null && waiting > 0) {
-                return;
-            }
-            Thread.sleep(20);
-        }
-        Assertions.fail("The rider's update never waited for the deactivation's row lock");
     }
 
 

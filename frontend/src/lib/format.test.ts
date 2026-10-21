@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { LEGACY_CURRENCY, currencyCode, isCurrencyCode } from "../api/currency";
-import { EMPTY_CART, formatMoney, lineTotal } from "./format";
+import {
+  EMPTY_CART,
+  formatDateTime,
+  formatMoney,
+  lineTotal,
+  minorDigits,
+  parseTimestamp,
+  timeLeft,
+  utcTimestamp,
+} from "./format";
+import { amountInputExample, amountInputRule, isPartialAmount, parseAmountInput } from "./forms";
 
 describe("formatMoney", () => {
   it("writes an amount with its currency's symbol and decimals", () => {
@@ -37,5 +47,98 @@ describe("currency codes", () => {
     expect(isCurrencyCode("US")).toBe(false);
     expect(isCurrencyCode(840)).toBe(false);
     expect(() => currencyCode("EURO")).toThrow(RangeError);
+  });
+});
+
+describe("backend timestamps", () => {
+  const noonUtc = Date.UTC(2026, 9, 20, 12);
+
+  it("are tested in a zone behind UTC, where reading them as local time is hours off", () => {
+    // vite.config.ts sets TZ for the tests; in UTC itself local and UTC parsing would agree.
+    expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe("America/New_York");
+    expect(new Date(noonUtc).getTimezoneOffset()).toBe(4 * 60);
+    expect(Date.parse("2026-10-20T12:00:00")).toBe(noonUtc + 4 * 60 * 60 * 1000);
+  });
+
+  it("are read as UTC when they carry no offset, the way the backend writes them", () => {
+    expect(parseTimestamp("2026-10-20T12:00:00")).toBe(noonUtc);
+    // Java leaves out zero seconds and writes up to nine decimals; a Date keeps milliseconds.
+    expect(parseTimestamp("2026-10-20T12:00")).toBe(noonUtc);
+    expect(parseTimestamp("2026-10-20T12:00:00.250")).toBe(noonUtc + 250);
+    expect(parseTimestamp("2026-10-20T12:00:00.123456")).toBe(noonUtc + 123);
+    expect(utcTimestamp("2026-10-20T12:00:00.123456")).toBe("2026-10-20T12:00:00.123456Z");
+  });
+
+  it("keep an explicit Z or offset, and stay invalid when they do not parse", () => {
+    expect(utcTimestamp("2026-10-20T12:00:00Z")).toBe("2026-10-20T12:00:00Z");
+    expect(parseTimestamp("2026-10-20T12:00:00Z")).toBe(noonUtc);
+    expect(utcTimestamp("2026-10-20T14:00:00+02:00")).toBe("2026-10-20T14:00:00+02:00");
+    expect(parseTimestamp("2026-10-20T14:00:00+02:00")).toBe(noonUtc);
+    expect(parseTimestamp("2026-10-20T08:00:00-04:00")).toBe(noonUtc);
+    ["", "soon", "2026-10-20T25:00:00", "2026-13-01T12:00:00", "20261020T120000"].forEach((value) =>
+      expect(parseTimestamp(value)).toBeNaN(),
+    );
+    expect(utcTimestamp("soon")).toBe("soon");
+  });
+
+  it("are shown in the browser's zone, and as they came when they do not parse", () => {
+    expect(formatDateTime("2026-10-20T12:00:00")).toBe(new Date(noonUtc).toLocaleString());
+    expect(formatDateTime("2026-10-20T12:00:00")).toBe(
+      new Date(noonUtc).toLocaleString(undefined, { timeZone: "America/New_York" }),
+    );
+    expect(formatDateTime("soon")).toBe("soon");
+    expect(formatDateTime(null)).toBe("Pending timestamp");
+  });
+});
+
+describe("timeLeft", () => {
+  const now = Date.UTC(2026, 9, 20, 12);
+
+  it("counts down to a backend LocalDateTime (UTC) with the two largest units", () => {
+    expect(timeLeft("2026-10-21T16:30:00", now)).toBe("1d 4h");
+    expect(timeLeft("2026-10-20T15:12:59", now)).toBe("3h 12m");
+    expect(timeLeft("2026-10-20T12:02:05", now)).toBe("2m 05s");
+    expect(timeLeft("2026-10-20T12:00:40", now)).toBe("40s");
+  });
+
+  it("is null once the deadline passed or when it does not parse", () => {
+    expect(timeLeft("2026-10-20T12:00:00", now)).toBeNull();
+    expect(timeLeft("2026-10-19T12:00:00", now)).toBeNull();
+    expect(timeLeft("soon", now)).toBeNull();
+  });
+});
+
+describe("amount inputs", () => {
+  const usd = currencyCode("USD");
+  const jpy = currencyCode("JPY");
+
+  it("accept digits with at most two decimals", () => {
+    expect(parseAmountInput(" 4.5 ", usd)).toBe(4.5);
+    expect(parseAmountInput("4.50", usd)).toBe(4.5);
+    expect(parseAmountInput("12", usd)).toBe(12);
+    ["", "4.567", "-1", "1e2", "4,50", ".5", "abc"].forEach((input) =>
+      expect(parseAmountInput(input, usd)).toBeNull(),
+    );
+  });
+
+  it("accept only whole amounts in a currency without minor unit", () => {
+    expect(minorDigits(jpy)).toBe(0);
+    expect(minorDigits(currencyCode("KRW"))).toBe(0);
+    expect(minorDigits(currencyCode("EUR"))).toBe(2);
+    expect(parseAmountInput(" 450 ", jpy)).toBe(450);
+    ["4.50", "4.5", "4.", "", "abc"].forEach((input) =>
+      expect(parseAmountInput(input, jpy)).toBeNull(),
+    );
+    expect(amountInputRule(jpy)).toBe("as a whole number");
+    expect(amountInputExample(jpy)).toBe("5");
+    expect(amountInputRule(usd)).toBe("with at most two decimals");
+    expect(amountInputExample(usd)).toBe("4.50");
+  });
+
+  it("compare a partial amount with the total in hundredths", () => {
+    expect(isPartialAmount(0.1 + 0.2, 0.31)).toBe(true);
+    expect(isPartialAmount(6.39, 6.39)).toBe(false);
+    expect(isPartialAmount(0, 6.39)).toBe(false);
+    expect(isPartialAmount(6.38, 6.39)).toBe(true);
   });
 });

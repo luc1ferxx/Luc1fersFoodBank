@@ -129,8 +129,8 @@ public class OrderEventOutboxService {
      *     <li>the row is inserted with the aggregate, event id, event type and sequence of the envelope.</li>
      * </ol>
      *
-     * @param topic    the Kafka topic name (app.kafka.order-topic, app.fulfilment.delivery-topic or
-     *                 app.fulfilment.merchant-topic)
+     * @param topic    the Kafka topic name (app.kafka.order-topic, app.fulfilment.delivery-topic,
+     *                 app.fulfilment.merchant-topic or app.after-sales.topic)
      * @param eventKey the Kafka record key: events with the same key keep their order. Use the order id, so that
      *                 all events about one order land on the same partition of each topic.
      * @param envelope the event without a sequence; serialized to JSON (snake_case) as the record value

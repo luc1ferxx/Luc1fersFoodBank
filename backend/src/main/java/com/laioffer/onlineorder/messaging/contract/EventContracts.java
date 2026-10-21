@@ -51,13 +51,14 @@ public final class EventContracts {
             ApplicationMetricsService metricsService,
             @Value("${app.kafka.order-topic:order-events}") String orderTopic,
             @Value("${app.fulfilment.delivery-topic:delivery-events}") String deliveryTopic,
-            @Value("${app.fulfilment.merchant-topic:merchant-events}") String merchantTopic
+            @Value("${app.fulfilment.merchant-topic:merchant-events}") String merchantTopic,
+            @Value("${app.after-sales.topic:after-sales-events}") String afterSalesTopic
     ) {
         this(
                 objectMapper,
                 EventSchemaRegistry.published(),
                 metricsService,
-                topics(orderTopic, deliveryTopic, merchantTopic)
+                topics(orderTopic, deliveryTopic, merchantTopic, afterSalesTopic)
         );
     }
 
@@ -182,13 +183,20 @@ public final class EventContracts {
     }
 
 
-    private static Map<String, EventTopic> topics(String orderTopic, String deliveryTopic, String merchantTopic) {
+    private static Map<String, EventTopic> topics(
+            String orderTopic,
+            String deliveryTopic,
+            String merchantTopic,
+            String afterSalesTopic
+    ) {
         Map<String, EventTopic> topics = new HashMap<>();
         topics.put(orderTopic, EventTopic.ORDER_EVENTS);
         topics.put(deliveryTopic, EventTopic.DELIVERY_EVENTS);
         topics.put(merchantTopic, EventTopic.MERCHANT_EVENTS);
+        topics.put(afterSalesTopic, EventTopic.AFTER_SALES_EVENTS);
         if (topics.size() != EventTopic.values().length) {
-            throw new IllegalStateException("The order, delivery and merchant topics must have different names");
+            throw new IllegalStateException(
+                    "The order, delivery, merchant and after-sales topics must have different names");
         }
         return topics;
     }

@@ -1,3 +1,4 @@
+import type { AfterSalesState } from "../hooks/useAfterSales";
 import type { CartState } from "../hooks/useCart";
 import type { CheckoutState } from "../hooks/useCheckout";
 import type { NotificationsState } from "../hooks/useNotifications";
@@ -16,6 +17,7 @@ interface OperationsPanelProps {
   cart: CartState;
   checkout: CheckoutState;
   orders: OrdersState;
+  afterSales: AfterSalesState;
   notifications: NotificationsState;
 }
 
@@ -26,6 +28,7 @@ export function OperationsPanel({
   cart,
   checkout,
   orders,
+  afterSales,
   notifications,
 }: OperationsPanelProps) {
   const tabs: [OperationsTab, string][] = [
@@ -53,7 +56,9 @@ export function OperationsPanel({
         {activePanel === "cart" ? (
           <CartPanel signedIn={signedIn} cart={cart} checkout={checkout} />
         ) : null}
-        {activePanel === "orders" ? <OrdersPanel signedIn={signedIn} orders={orders} /> : null}
+        {activePanel === "orders" ? (
+          <OrdersPanel signedIn={signedIn} orders={orders} afterSales={afterSales} />
+        ) : null}
         {activePanel === "notifications" ? (
           <NotificationsPanel signedIn={signedIn} notifications={notifications} />
         ) : null}

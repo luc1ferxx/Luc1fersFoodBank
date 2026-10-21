@@ -13,18 +13,29 @@ const MONEY_LOCALE = "en-US";
 
 const moneyFormats = new Map<CurrencyCode, Intl.NumberFormat>();
 
-/**
- * `amount` in `currency`, with the currency's symbol and its own number of decimals
- * (two for USD and EUR, none for JPY). The one place the UI formats money.
- */
-export const formatMoney = (amount: number, currency: CurrencyCode): string => {
+const moneyFormat = (currency: CurrencyCode): Intl.NumberFormat => {
   let format = moneyFormats.get(currency);
   if (!format) {
     format = new Intl.NumberFormat(MONEY_LOCALE, { style: "currency", currency });
     moneyFormats.set(currency, format);
   }
-  return format.format(amount);
+  return format;
 };
+
+/**
+ * `amount` in `currency`, with the currency's symbol and its own number of decimals
+ * (two for USD and EUR, none for JPY). The one place the UI formats money.
+ */
+export const formatMoney = (amount: number, currency: CurrencyCode): string =>
+  moneyFormat(currency).format(amount);
+
+/**
+ * The decimals of an amount in `currency`, as ISO 4217 has them and the backend's `Money`
+ * checks them: two for USD and EUR, none for JPY and KRW.
+ */
+export const minorDigits = (currency: CurrencyCode): number =>
+  // A currency format always resolves its decimals; the lib types them as optional.
+  moneyFormat(currency).resolvedOptions().maximumFractionDigits ?? 2;
 
 /**
  * `price` times `quantity`, computed in integer hundredths: amounts have two decimals,
@@ -33,18 +44,62 @@ export const formatMoney = (amount: number, currency: CurrencyCode): string => {
 export const lineTotal = (price: number, quantity: number): number =>
   (Math.round(price * 100) * quantity) / 100;
 
+/** A date and time without an offset, as Java writes a LocalDateTime: 2026-10-20T12:00, ...:00, ...:00.123456. */
+const LOCAL_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+
+/**
+ * A backend timestamp with its zone made explicit. The backend runs in UTC and writes every
+ * timestamp as a LocalDateTime, without an offset ("2026-10-20T12:00:00"), which a browser
+ * would read in its own zone; such a string gets a "Z". One that already carries "Z" or an
+ * offset, and anything that is not a date and time, is returned as it is.
+ */
+export const utcTimestamp = (value: string): string =>
+  LOCAL_DATE_TIME.test(value) ? `${value}Z` : value;
+
+/**
+ * Milliseconds since the epoch of a backend timestamp, read as UTC when it has no offset
+ * (see `utcTimestamp`); NaN when it does not parse. The one way the UI reads a backend time.
+ */
+export const parseTimestamp = (value: string): number => Date.parse(utcTimestamp(value));
+
+/** A backend timestamp in the browser's zone and locale. */
 export const formatDateTime = (value: string | null | undefined): string => {
   if (!value) {
     return "Pending timestamp";
   }
 
-  const date = new Date(value);
+  const time = parseTimestamp(value);
 
-  if (Number.isNaN(date.getTime())) {
+  if (Number.isNaN(time)) {
     return value;
   }
 
-  return date.toLocaleString();
+  return new Date(time).toLocaleString();
+};
+
+/**
+ * The time left until `deadline` (a backend timestamp, see `parseTimestamp`) at `now`:
+ * "1d 4h", "3h 12m", "2m 05s", "40s"; null once it passed or when it does not parse.
+ */
+export const timeLeft = (deadline: string, now: number): string | null => {
+  const left = parseTimestamp(deadline) - now;
+  if (Number.isNaN(left) || left <= 0) {
+    return null;
+  }
+  const seconds = Math.floor(left / 1000);
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  }
+  return `${seconds}s`;
 };
 
 export const formatCardNumberInput = (value = ""): string =>

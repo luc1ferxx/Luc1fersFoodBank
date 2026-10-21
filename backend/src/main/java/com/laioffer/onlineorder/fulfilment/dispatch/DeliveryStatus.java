@@ -4,14 +4,9 @@ package com.laioffer.onlineorder.fulfilment.dispatch;
 import com.laioffer.onlineorder.fulfilment.FulfilmentEvents;
 
 
-import java.util.EnumSet;
-import java.util.Map;
-import java.util.Set;
-
-
 /**
  * ASSIGNED -> PICKED_UP -> DELIVERED; ASSIGNED or PICKED_UP -> CANCELLED when the order is cancelled. A rider must
- * pick an order up before delivering it.
+ * pick an order up before delivering it. The transitions are declared in {@link DeliveryStateMachine}.
  */
 public enum DeliveryStatus {
     ASSIGNED,
@@ -19,19 +14,18 @@ public enum DeliveryStatus {
     DELIVERED,
     CANCELLED;
 
-    private static final Map<DeliveryStatus, Set<DeliveryStatus>> TRANSITIONS = Map.of(
-            ASSIGNED, EnumSet.of(PICKED_UP, CANCELLED),
-            PICKED_UP, EnumSet.of(DELIVERED, CANCELLED),
-            DELIVERED, EnumSet.noneOf(DeliveryStatus.class),
-            CANCELLED, EnumSet.noneOf(DeliveryStatus.class)
-    );
 
-
+    /**
+     * True when some delivery command moves this status to {@code target}; staying in the same status is not a move.
+     */
     public boolean canTransitionTo(DeliveryStatus target) {
-        return TRANSITIONS.get(this).contains(target);
+        return DeliveryStateMachine.DEFINITION.canMove(this, target);
     }
 
 
+    /**
+     * True while the delivery is open (ASSIGNED or PICKED_UP): it counts towards its rider's load.
+     */
     public boolean holdsRider() {
         return this == ASSIGNED || this == PICKED_UP;
     }

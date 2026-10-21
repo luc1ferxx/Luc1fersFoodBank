@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://onlineorder.example/event-schemas/after-sales-events/aftersales.request_rejected/v1.json",
+  "title": "aftersales.request_rejected, version 1",
+  "description": "No refund was agreed: the merchant rejected the request (action MERCHANT_REJECT, with the merchant's reason in merchant_note) or the customer declined the counter-offer (action CUSTOMER_DECLINE_OFFER). The customer may ask the platform to step in until deadline_at. Topic after-sales-events, record key: the order id, aggregate: AFTER_SALES_CASE (aggregate_id = the case id).",
+  "$ref": "../../common/envelope/v1.json",
+  "properties": {
+    "event_type": {
+      "const": "aftersales.request_rejected"
+    },
+    "aggregate_type": {
+      "const": "AFTER_SALES_CASE"
+    },
+    "data": {
+      "$ref": "../../common/after-sales-case-data/v1.json",
+      "required": [
+        "merchant_decision",
+        "deadline_at"
+      ],
+      "properties": {
+        "status": {
+          "const": "REJECTED"
+        }
+      },
+      "if": {
+        "properties": {
+          "action": {
+            "const": "MERCHANT_REJECT"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "merchant_note"
+        ],
+        "properties": {
+          "merchant_decision": {
+            "const": "REJECTED"
+          }
+        }
+      }
+    }
+  }
+}

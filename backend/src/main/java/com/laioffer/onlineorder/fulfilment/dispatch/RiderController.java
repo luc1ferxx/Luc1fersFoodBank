@@ -76,13 +76,13 @@ public class RiderController {
     }
 
 
-    @PostMapping("/rider/deliveries/{deliveryId}/picked-up")
+    @PostMapping("/rider/deliveries/{deliveryId:\\d+}/picked-up")
     public RiderDeliveryDto markPickedUp(Principal principal, @PathVariable Long deliveryId) {
         return withRestaurantName(riderService.markPickedUp(customerId(principal), deliveryId));
     }
 
 
-    @PostMapping("/rider/deliveries/{deliveryId}/delivered")
+    @PostMapping("/rider/deliveries/{deliveryId:\\d+}/delivered")
     public RiderDeliveryDto markDelivered(Principal principal, @PathVariable Long deliveryId) {
         return withRestaurantName(riderService.markDelivered(customerId(principal), deliveryId));
     }

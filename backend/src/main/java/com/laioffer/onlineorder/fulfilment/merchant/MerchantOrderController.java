@@ -43,13 +43,13 @@ public class MerchantOrderController {
     }
 
 
-    @PostMapping("/merchant/orders/{orderId}/accept")
+    @PostMapping("/merchant/orders/{orderId:\\d+}/accept")
     public MerchantOrderDto accept(Principal principal, @PathVariable Long orderId) {
         return merchantOrderService.accept(merchantId(principal), orderId);
     }
 
 
-    @PostMapping("/merchant/orders/{orderId}/reject")
+    @PostMapping("/merchant/orders/{orderId:\\d+}/reject")
     public MerchantOrderDto reject(
             Principal principal,
             @PathVariable Long orderId,
@@ -59,7 +59,7 @@ public class MerchantOrderController {
     }
 
 
-    @PostMapping("/merchant/orders/{orderId}/preparing")
+    @PostMapping("/merchant/orders/{orderId:\\d+}/preparing")
     public MerchantOrderDto markPreparing(Principal principal, @PathVariable Long orderId) {
         return merchantOrderService.markPreparing(merchantId(principal), orderId);
     }

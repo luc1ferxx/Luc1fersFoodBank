@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.fulfilment;
 
 
+import com.laioffer.onlineorder.money.Money;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -18,7 +19,9 @@ import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 
+import java.math.BigDecimal;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 
@@ -89,8 +92,39 @@ class FulfilmentTimeoutContainerTests extends FulfilmentContainerTestSupport {
                     ? cancelled
                     : null;
         });
-        // Refunds are not automated: the notification must not promise one.
-        Assertions.assertFalse(String.valueOf(notification.get("message")).contains("refunded"));
+        // ADR 0002 D12: the timeout opened the refund of the captured payment, which the notification promises, and
+        // the after-sales poller (on wherever Kafka is) executes it through the simulated gateway.
+        Assertions.assertTrue(
+                String.valueOf(notification.get("message")).endsWith("Your payment will be refunded automatically."),
+                () -> String.valueOf(notification.get("message"))
+        );
+        await("the after-sales poller to refund the cancelled order", EVENT_WAIT, () ->
+                List.of("ORDER_CANCELLED|REFUNDED|SUCCEEDED").equals(jdbcTemplate.query("""
+                        SELECT after_sales_cases.kind, after_sales_cases.status, refunds.status AS refund_status
+                        FROM after_sales_cases
+                        JOIN refunds ON refunds.case_id = after_sales_cases.id
+                        WHERE after_sales_cases.order_id = ?
+                        """,
+                        (row, index) -> row.getString("kind") + "|" + row.getString("status") + "|"
+                                + row.getString("refund_status"),
+                        paidOrderId
+                )));
+        // ADR 0002 P3-10: the after-sales notification group tells the customer the refund went through, in the
+        // order's currency and under its public number. The case's opening sent nothing (the cancellation notice
+        // already promised the refund), and it came before the refund on the order's partition.
+        Map<?, ?> refunded = awaitValue("the refund notification", EVENT_WAIT, () ->
+                notificationOf(customer, paidOrderId, "aftersales.case_refunded"));
+        Map<String, Object> paid = jdbcTemplate.queryForMap(
+                "SELECT total_price, currency, order_no FROM orders WHERE id = ?", paidOrderId);
+        Assertions.assertEquals("Refund completed", refunded.get("title"));
+        Assertions.assertEquals("Your payment of "
+                        + Money.of((BigDecimal) paid.get("total_price"), String.valueOf(paid.get("currency")))
+                        + " for cancelled order #" + paid.get("order_no") + " was refunded.",
+                refunded.get("message"));
+        Assertions.assertNull(notificationOf(customer, paidOrderId, "aftersales.case_opened"));
+        Assertions.assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM after_sales_cases WHERE order_id = ?", Integer.class, placedOrderId),
+                "the payment timeout cancelled an unpaid order");
         await("the merchant inbox to show the cancelled order", EVENT_WAIT, () ->
                 "CANCELLED".equals(inboxStatus(fashionWok, paidOrderId)));
         ResponseEntity<Map> lateAccept = post("/merchant/orders/" + paidOrderId + "/accept", fashionWok);
