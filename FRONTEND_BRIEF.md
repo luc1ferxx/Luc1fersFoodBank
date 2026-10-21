@@ -333,6 +333,7 @@ username=demo%40laifood.com&password=demo123
 - Errors:
   - `401 Unauthorized`.
   - `404 Not Found` if menu item or cart is missing.
+  - `429 Too Many Requests` once the cart bucket is empty (60 cart edits, one more every second, per user; shared by `POST`/`DELETE /cart` and `PUT`/`DELETE /cart/items/{orderItemId}`).
 
 #### `PUT /cart/items/{orderItemId}`
 
@@ -356,6 +357,7 @@ username=demo%40laifood.com&password=demo123
   - `400 Bad Request` when `quantity` is null or negative.
   - `404 Not Found` when item is not in the user's cart and requested quantity is nonzero.
   - `401 Unauthorized`.
+  - `429 Too Many Requests` once the shared cart bucket is empty.
 
 #### `DELETE /cart/items/{orderItemId}`
 
@@ -438,6 +440,7 @@ username=demo%40laifood.com&password=demo123
   - `400 Bad Request` when idempotency key is missing/too long.
   - `404 Not Found` when order does not exist or is not owned by current user.
   - `409 Conflict` for invalid state transitions such as `PREPARING -> CANCELLED`, terminal states, reused key with different request, or in-progress idempotent operation.
+  - `429 Too Many Requests` after 20 cancels, one more every 3 s, per user; a retry with the same key takes a token too and is safe to repeat later.
 
 #### `PATCH /orders/{orderId}/status`
 

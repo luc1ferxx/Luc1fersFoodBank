@@ -217,14 +217,16 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             return new RateLimitRule("cart", 60, 1, Duration.ofSeconds(1), 1, false);
         }
         if (HttpMethod.POST.matches(method) && path.matches("^/merchant/orders/\\d+/(accept|reject|preparing)$")) {
-            return new RateLimitRule("merchant-orders", 30, 1, Duration.ofSeconds(2), 1, false);
+            return new RateLimitRule("merchant-orders", 60, 1, Duration.ofSeconds(1), 1, false);
         }
-        if (HttpMethod.POST.matches(method) && path.matches("^/rider/deliveries/\\d+/(picked-up|delivered)$")
-                || HttpMethod.PUT.matches(method) && "/rider/me/availability".equals(path)) {
-            return new RateLimitRule("rider-commands", 30, 1, Duration.ofSeconds(2), 1, false);
+        if (HttpMethod.POST.matches(method) && path.matches("^/rider/deliveries/\\d+/(picked-up|delivered)$")) {
+            return new RateLimitRule("rider-deliveries", 30, 1, Duration.ofSeconds(2), 1, false);
+        }
+        if (HttpMethod.PUT.matches(method) && "/rider/me/availability".equals(path)) {
+            return new RateLimitRule("rider-availability", 10, 1, Duration.ofSeconds(6), 1, false);
         }
         if (HttpMethod.POST.matches(method) && path.matches("^/admin/deliveries/\\d+/(picked-up|delivered|reassign)$")) {
-            return new RateLimitRule("admin-deliveries", 30, 1, Duration.ofSeconds(2), 1, false);
+            return new RateLimitRule("admin-deliveries", 60, 1, Duration.ofSeconds(1), 1, false);
         }
         return null;
     }

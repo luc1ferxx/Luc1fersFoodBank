@@ -215,8 +215,10 @@ Fulfilment staffing (README "Provisioning merchants and riders"):
   fails again.
 - Deactivating a rider leaves their open deliveries with them (`active_deliveries` in the response). List them with
   `GET /admin/deliveries?rider_id={id}` and move each with `POST /admin/deliveries/{id}/reassign` `{"rider_id": n}` to
-  an active, on-duty rider, or reactivate the rider (an order still `ACCEPTED` can also be cancelled). Never clear them
-  with the admin `delivered` endpoint: it completes the order.
+  an active, on-duty rider, or reactivate the rider (an order still `ACCEPTED` can also be cancelled). The moves share
+  the admin's `admin-deliveries` bucket (60, one more per second): a loop over more than 60 paces at one per second or
+  retries a `429 RATE_LIMITED`, which moved nothing. Never clear them with the admin `delivered` endpoint: it completes
+  the order.
 - `onlineorder_fulfilment_merchant_orders_received_total{staffing="unstaffed"}` counts paid orders of restaurants with
   no active merchant account. They get no accept deadline and wait as `PAID` until a merchant is provisioned
   (`POST /admin/merchants`; the order is already in that restaurant's inbox) or an admin moves them.

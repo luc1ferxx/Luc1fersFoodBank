@@ -572,7 +572,7 @@ settings and failure modes: [docs/operations.md](docs/operations.md), section 11
 - Authentication uses server-side sessions backed by Redis, under a namespace that carries the session format version (`onlineorder:session:v2`), so pods of two releases never read each other's sessions during a rolling update or rollback.
 - Customer accounts track status, failed login count, lockout time, last login, and audit timestamps.
 - Login lookup is case-insensitive.
-- Every write endpoint except `POST /logout` has a token bucket in `RateLimitingFilter` (Redis): login and signup per remote IP, the rest per login (per IP when the request is anonymous, before its `401`). Each bucket refills fully in a minute; a refused request answers `429 RATE_LIMITED` before its handler runs, and counts in `onlineorder_security_rate_limit_rejected_total{route}`. A replay with the same `Idempotency-Key` takes a token like any request. The ids of these routes are decimal digits only (`{id:\d+}` in the mapping), so another spelling of the same number (`+42`, `0x2A`) is `404` instead of reaching the handler past the limit. `RateLimitedRouteMappingTests` checks both for every controller mapping.
+- Every write endpoint of the API controllers has a token bucket (`POST /logout` and the dev-only H2 console have none) in `RateLimitingFilter` (Redis): login and signup per remote IP, the rest per login (per IP when the request is anonymous, before its `401`). Each bucket refills fully in a minute; a refused request answers `429 RATE_LIMITED` before its handler runs, and counts in `onlineorder_security_rate_limit_rejected_total{route}`. A replay with the same `Idempotency-Key` takes a token like any request. The ids of these routes are decimal digits only (`{id:\d+}` in the mapping), so another spelling of the same number (`+42`, `0x2A`) is `404` instead of reaching the handler past the limit. `RateLimitedRouteMappingTests` checks both for every controller mapping.
 
   | Bucket | Requests | Capacity, refill |
   | --- | --- | --- |
@@ -583,11 +583,12 @@ settings and failure modes: [docs/operations.md](docs/operations.md), section 11
   | `payment-checkout` | `POST /payments/checkout` | 10, one every 6 s |
   | `order-cancel` | `POST /orders/{id}/cancel` | 20, one every 3 s |
   | `customer-after-sales` | `POST /orders/{id}/after-sales`, `POST /after-sales/cases/{id}/accept-offer`, `decline-offer`, `escalate`, `withdraw` | 20, one every 3 s |
-  | `merchant-orders` | `POST /merchant/orders/{id}/accept`, `reject`, `preparing` | 30, one every 2 s |
+  | `merchant-orders` | `POST /merchant/orders/{id}/accept`, `reject`, `preparing` | 60, one every second |
   | `merchant-after-sales` | `POST /merchant/after-sales/{id}/approve`, `reject`, `offer` | 30, one every 2 s |
-  | `rider-commands` | `POST /rider/deliveries/{id}/picked-up`, `delivered`, `PUT /rider/me/availability` | 30, one every 2 s |
+  | `rider-deliveries` | `POST /rider/deliveries/{id}/picked-up`, `delivered` | 30, one every 2 s |
+  | `rider-availability` | `PUT /rider/me/availability` | 10, one every 6 s |
   | `order-status` | `PATCH /orders/{id}/status` (admin) | 30, one every 2 s |
-  | `admin-deliveries` | `POST /admin/deliveries/{id}/picked-up`, `delivered`, `reassign` | 30, one every 2 s |
+  | `admin-deliveries` | `POST /admin/deliveries/{id}/picked-up`, `delivered`, `reassign` | 60, one every second |
   | `admin-catalog` | `PATCH /admin/menu-items/{id}`, `PATCH /admin/restaurants/{id}` | 30, one every 2 s |
   | `admin-provisioning` | `POST /admin/merchants`, `POST /admin/riders` | 10, one every 6 s |
   | `admin-staff-status` | `PATCH /admin/merchants/{id}`, `PATCH /admin/riders/{id}` | 30, one every 2 s |
@@ -791,7 +792,8 @@ rider's own availability change cannot put them back on duty even when it races 
 Deliveries a deactivated rider already holds stay assigned to them, and that rider can no longer move them (`403`).
 The `active_deliveries` in the PATCH response shows how many there are. List them with
 `GET /admin/deliveries?rider_id={riderId}`, then reassign each one to an on-duty rider
-(`POST /admin/deliveries/{id}/reassign`) or reactivate the rider. An order that is still `ACCEPTED` can also be
+(`POST /admin/deliveries/{id}/reassign`; a script over more than 60 should pace at one per second or retry a
+`429 RATE_LIMITED`, which moved nothing) or reactivate the rider. An order that is still `ACCEPTED` can also be
 cancelled (`PATCH /orders/{id}/status`, which cancels the delivery and releases the rider); a `PREPARING` one cannot.
 Do not clear them with `POST /admin/deliveries/{id}/delivered`: that completes the customer's order and sends "Order
 delivered" for food nobody delivered.

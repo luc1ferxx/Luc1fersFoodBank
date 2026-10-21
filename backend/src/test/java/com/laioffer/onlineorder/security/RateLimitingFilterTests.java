@@ -469,15 +469,15 @@ class RateLimitingFilterTests {
                 new String[]{"DELETE", "/cart", "cart", "60", "1000"},
                 new String[]{"PUT", "/cart/items/3", "cart", "60", "1000"},
                 new String[]{"DELETE", "/cart/items/3", "cart", "60", "1000"},
-                new String[]{"POST", "/merchant/orders/42/accept", "merchant-orders", "30", "2000"},
-                new String[]{"POST", "/merchant/orders/42/reject", "merchant-orders", "30", "2000"},
-                new String[]{"POST", "/merchant/orders/42/preparing", "merchant-orders", "30", "2000"},
-                new String[]{"POST", "/rider/deliveries/8/picked-up", "rider-commands", "30", "2000"},
-                new String[]{"POST", "/rider/deliveries/8/delivered", "rider-commands", "30", "2000"},
-                new String[]{"PUT", "/rider/me/availability", "rider-commands", "30", "2000"},
-                new String[]{"POST", "/admin/deliveries/8/picked-up", "admin-deliveries", "30", "2000"},
-                new String[]{"POST", "/admin/deliveries/8/delivered", "admin-deliveries", "30", "2000"},
-                new String[]{"POST", "/admin/deliveries/8/reassign", "admin-deliveries", "30", "2000"}
+                new String[]{"POST", "/merchant/orders/42/accept", "merchant-orders", "60", "1000"},
+                new String[]{"POST", "/merchant/orders/42/reject", "merchant-orders", "60", "1000"},
+                new String[]{"POST", "/merchant/orders/42/preparing", "merchant-orders", "60", "1000"},
+                new String[]{"POST", "/rider/deliveries/8/picked-up", "rider-deliveries", "30", "2000"},
+                new String[]{"POST", "/rider/deliveries/8/delivered", "rider-deliveries", "30", "2000"},
+                new String[]{"PUT", "/rider/me/availability", "rider-availability", "10", "6000"},
+                new String[]{"POST", "/admin/deliveries/8/picked-up", "admin-deliveries", "60", "1000"},
+                new String[]{"POST", "/admin/deliveries/8/delivered", "admin-deliveries", "60", "1000"},
+                new String[]{"POST", "/admin/deliveries/8/reassign", "admin-deliveries", "60", "1000"}
         )) {
             String route = expected[0] + " " + expected[1];
             Mockito.clearInvocations(redisTemplate);
@@ -569,8 +569,8 @@ class RateLimitingFilterTests {
             "DELETE, /cart//items/3/, cart",
             "POST, /merchant/orders/%34%32/accept, merchant-orders",
             "POST, /merchant//orders/42/preparing/, merchant-orders",
-            "POST, /rider/deliveries/%38/picked-up, rider-commands",
-            "PUT, /rider/me/availability/, rider-commands",
+            "POST, /rider/deliveries/%38/picked-up, rider-deliveries",
+            "PUT, /rider/me/availability/, rider-availability",
             "POST, /admin/deliveries/8/%72eassign, admin-deliveries",
             "POST, /admin//deliveries/8/delivered/, admin-deliveries",
             "POST, /admin/%6Derchants, admin-provisioning",
