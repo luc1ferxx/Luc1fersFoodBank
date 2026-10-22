@@ -191,8 +191,10 @@ describe("push signals", () => {
         backend.receiveMerchantOrder(merchantOrderFixture({ order_id: orderId }));
       }
     });
-    expect(await orderCard(9)).toBeInTheDocument();
+    // The first signal read at once. Checked before any real-time wait: the fake clock follows
+    // real time, so on a slow runner the window could end, and read again, while a card is awaited.
     expect(reads(backend, "/merchant/orders")).toBe(3);
+    expect(await orderCard(9)).toBeInTheDocument();
 
     // The window ends with reads owed: one read brings everything that changed meanwhile.
     endCoalesceWindow();
@@ -345,7 +347,8 @@ describe("push signals", () => {
     }
     await user.click(logout);
     expect(await screen.findByText("Signed out.")).toBeInTheDocument();
-    expect(first.closedByClient).toBe(true);
+    // The shell closes the stream in an effect cleanup, which may run after the text is on screen.
+    await waitFor(() => expect(first.closedByClient).toBe(true));
     await flushPromises();
     expect(eventStreams()).toHaveLength(1);
 
@@ -370,7 +373,8 @@ describe("push signals", () => {
     act(() => backend.receiveMerchantOrder(merchantOrderFixture({ order_id: 9 })));
 
     expect(await screen.findByText(SESSION_EXPIRED_MESSAGE)).toBeInTheDocument();
-    expect(stream.closedByClient).toBe(true);
+    // The shell closes the stream in an effect cleanup, which may run after the text is on screen.
+    await waitFor(() => expect(stream.closedByClient).toBe(true));
     await flushPromises();
     expect(eventStreams()).toHaveLength(1);
   });
