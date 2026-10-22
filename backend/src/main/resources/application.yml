@@ -376,6 +376,26 @@ app:
     # interval per instance before the 404, so a restaurant created outside the admin API is served at once
     # while random ids still cannot hammer the database. 0 checks every unknown id.
     unknown-restaurant-recheck-interval: ${CATALOG_UNKNOWN_RESTAURANT_RECHECK_INTERVAL:1s}
+  # Push signals over Server-Sent Events (GET /events/stream, com.laioffer.onlineorder.push,
+  # docs/adr/0003-push-signals.md): after a commit that changes a merchant's orders or after-sales cases, a rider's
+  # deliveries or a customer's notifications, the open streams of that restaurant, rider or customer get a signal
+  # without data and re-read the REST list. The clients keep a slower polling fallback, so nothing depends on a signal.
+  push:
+    # redis: every instance publishes on and subscribes to the Redis channel below, so a signal written on one instance
+    # reaches the streams on all of them. local: this instance's streams only (tests, the h2 profile, one instance).
+    fanout: ${PUSH_FANOUT:redis}
+    channel: ${PUSH_CHANNEL:onlineorder:push:v1}
+    # A stream is completed after this long and the browser reconnects (EventSource, retry: 5000). The stream's own
+    # async timeout, so spring.mvc.async.request-timeout and Tomcat's 30s default do not cut it.
+    stream-timeout: ${PUSH_STREAM_TIMEOUT:30m}
+    # A ":keepalive" comment to every stream, from one thread of its own ("push-keepalive", not a TaskScheduler bean),
+    # which also re-checks the active flag of merchant and rider streams. Keep it well below every proxy's read
+    # timeout (the ingress allows 120s on /events/stream).
+    keepalive-interval: ${PUSH_KEEPALIVE_INTERVAL:25s}
+    # Per instance: a login over this is refused with 429 PUSH_STREAM_LIMIT, any stream over max-streams with 503.
+    # Each stream holds one connection (no thread); keep max-streams below server.tomcat.max-connections.
+    max-streams-per-user: ${PUSH_MAX_STREAMS_PER_USER:5}
+    max-streams: ${PUSH_MAX_STREAMS:2000}
   security:
     rate-limit:
       enabled: ${SECURITY_RATE_LIMIT_ENABLED:true}
