@@ -702,3 +702,134 @@ tests:
       - eval_time: 40m
         alertname: OnlineOrderRateLimiterFailingOpen
         exp_alerts: []
+
+  # onlineorder.push.publish_failures is registered at zero on startup. Redis refuses the PUBLISH from minute 5 to
+  # minute 36 (three signals a minute fail), then the publishes go through again.
+  - name: push publishes failing for 10 minutes
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_push_publish_failures_total{application="OnlineOrder", instance="app:8081"}'
+        values: '0x5 3+3x30 93x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: OnlineOrderPushPublishFailures
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: OnlineOrderPushPublishFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Push signals are lost before Redis
+              description: '15 push signal(s) could not be published in the last 5 minutes, and publishes have kept failing for 10 minutes; their recipients'' consoles see each change on their next fallback poll (60 s) instead of at once. The WARN log "Could not publish a push signal on Redis channel ..." (one per streak) has the cause; check that the instances reach Redis (redis-cli PING, --latency) and that their Redis user may PUBLISH on onlineorder:push:v1 (docs/operations.md section 13).'
+      - eval_time: 45m
+        alertname: OnlineOrderPushPublishFailures
+        exp_alerts: []
+
+  # A Redis blip: two publishes fail within a minute, then they go through again.
+  - name: a short push publish blip raises nothing
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_push_publish_failures_total{application="OnlineOrder", instance="app:8081"}'
+        values: '0x5 2 4x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OnlineOrderPushPublishFailures
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: OnlineOrderPushPublishFailures
+        exp_alerts: []
+
+  # No instance is subscribed: five signals a minute are published, three streams are open, nothing is delivered. The
+  # counters are registered at zero on startup.
+  - name: push signals published but none delivered
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_push_signals_total{application="OnlineOrder", instance="app:8081", topic="merchant.orders"}'
+        values: '0+5x40'
+      - series: 'onlineorder_push_deliveries_total{application="OnlineOrder", instance="app:8081", topic="merchant.orders"}'
+        values: '0x40'
+      - series: 'onlineorder_push_streams{application="OnlineOrder", instance="app:8081"}'
+        values: '3x40'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: OnlineOrderPushSignalsUndelivered
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: OnlineOrderPushSignalsUndelivered
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Push signals reach no stream
+              description: '75 push signals were published in the last 15 minutes and streams are open, but none was written to a stream: no instance receives the signals, so every console is on its 60 s fallback poll. redis-cli PUBSUB NUMSUB onlineorder:push:v1 should show one subscriber per instance; an instance that lost its subscription logs "Subscribed to push channel ..." once it is back, and a restart renews it. Instances of two releases with different PUSH_CHANNEL values do not see each other''s signals (docs/operations.md section 13).'
+
+  # Some recipients have a console open: a share of the signals is delivered.
+  - name: delivered push signals raise nothing
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_push_signals_total{application="OnlineOrder", instance="app:8081", topic="merchant.orders"}'
+        values: '0+5x40'
+      - series: 'onlineorder_push_deliveries_total{application="OnlineOrder", instance="app:8081", topic="merchant.orders"}'
+        values: '0+2x40'
+      - series: 'onlineorder_push_streams{application="OnlineOrder", instance="app:8081"}'
+        values: '3x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OnlineOrderPushSignalsUndelivered
+        exp_alerts: []
+
+  # Orders through the API only (a load test): signals are published, but no stream is open to deliver them to.
+  - name: push signals with no stream open raise nothing
+    interval: 1m
+    input_series:
+      - series: 'onlineorder_push_signals_total{application="OnlineOrder", instance="app:8081", topic="notifications"}'
+        values: '0+50x40'
+      - series: 'onlineorder_push_deliveries_total{application="OnlineOrder", instance="app:8081", topic="notifications"}'
+        values: '0x40'
+      - series: 'onlineorder_push_streams{application="OnlineOrder", instance="app:8081"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OnlineOrderPushSignalsUndelivered
+        exp_alerts: []
+
+  # An instance at PUSH_MAX_STREAMS refuses two connects a minute from minute 5 to minute 36. The 503 series is
+  # registered by the first refusal; the streams that opened do not count.
+  - name: push streams refused for 10 minutes
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="OnlineOrder", instance="app:8081", uri="/events/stream", method="GET", status="503", outcome="SERVER_ERROR"}'
+        values: '_x5 1+2x30 61x20'
+      - series: 'http_server_requests_seconds_count{application="OnlineOrder", instance="app:8081", uri="/events/stream", method="GET", status="200", outcome="SUCCESS"}'
+        values: '0+1x57'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: OnlineOrderPushStreamsRefused
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: OnlineOrderPushStreamsRefused
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: app:8081
+            exp_annotations:
+              summary: Push streams are refused with 503 on app:8081
+              description: '10 push stream(s) were refused in the last 5 minutes on app:8081, and refusals have gone on for 10 minutes; those browsers poll instead. onlineorder_push_streams near PUSH_MAX_STREAMS (2000) means the instance is full: add instances or raise the limit, keeping it below SERVER_TOMCAT_MAX_CONNECTIONS. Otherwise the instance cannot reach the database for the login lookups (the 5xx rate and the Hikari alerts show it too) or has been shutting down for longer than its grace period (docs/operations.md section 13).'
+      - eval_time: 45m
+        alertname: OnlineOrderPushStreamsRefused
+        exp_alerts: []
+
+  # A rolling restart: a pod refuses a few connects in its shutdown window, then its replacement takes the streams.
+  - name: a burst of refused push streams at a restart raises nothing
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="OnlineOrder", instance="app:8081", uri="/events/stream", method="GET", status="503", outcome="SERVER_ERROR"}'
+        values: '_x5 1 4 6x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OnlineOrderPushStreamsRefused
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: OnlineOrderPushStreamsRefused
+        exp_alerts: []

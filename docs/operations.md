@@ -172,6 +172,8 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 - JVM and Tomcat: heap, GC pause share, CPU, threads, connections.
 - Rate limits: `429` refusals per bucket, and in red the requests let through because the rate-limit store failed
   (above zero means requests went through unchecked, all of them when Redis is down; `OnlineOrderRateLimiterFailingOpen`).
+- Push signals (SSE): open streams per instance, signals published and delivered per topic, and in red the signals
+  lost before Redis, next to the streams refused with `429` or `503` (section 13; `OnlineOrderPush*`).
 
 ### Alerts
 
@@ -202,6 +204,9 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 | `OnlineOrderRefundGatewaySaturated` | every refund gateway thread was held by a hung call in every 5m window for 10m; no refund is claimed meanwhile (section 12, "A hung gateway") | warning |
 | `OnlineOrderAfterSalesDeadlinesFailing` | after-sales deadlines failed and backed off (`outcome="failed"`) in every 5m window for 15m; their cases stay past their deadline (section 12, "Deadlines") | warning |
 | `OnlineOrderCancellationsUndercaptured` | a paid order was cancelled with a refund above its captured payment in the last 15m; its refund will be given up (section 12) | warning |
+| `OnlineOrderPushPublishFailures` | push signals could not be published in every 5m window for 10m; their recipients' consoles fall back to the 60 s poll (section 13) | warning |
+| `OnlineOrderPushSignalsUndelivered` | more than 20 push signals published and streams open in the last 15m, but none written to a stream: no instance is subscribed to the Redis channel (section 13) | warning |
+| `OnlineOrderPushStreamsRefused` | an instance answered `503` to stream connects in every 5m window for 10m: at `PUSH_MAX_STREAMS`, shutting down, or its database unreachable (section 13) | warning |
 
 On Kubernetes, load the same file into Prometheus (or wrap it in a `PrometheusRule` for the Prometheus Operator) and
 make sure the scrape job is named `onlineorder` or adjust `OnlineOrderTargetDown`.
@@ -1581,6 +1586,17 @@ signals during the rollout, which only costs the fallback polls. `PUSH_FANOUT=lo
 | `rate(onlineorder_push_publish_failures_total[5m])` | Signals lost before Redis: Redis unreachable or slow (`spring.data.redis.timeout`), or a full queue. Clients poll meanwhile |
 | `http_server_requests_seconds_count{uri="/events/stream",status=~"429\|503"}` | Streams refused at a limit |
 
+The dashboard row "Push signals (SSE)" plots them: open streams per instance, signals published and delivered per
+topic, and the publish failures with the refused streams.
+
+### Alerts
+
+| Alert | Fires when | Do |
+| --- | --- | --- |
+| `OnlineOrderPushPublishFailures` | `onlineorder_push_publish_failures_total` rose in every 5-minute window for 10 minutes | The WARN log "Could not publish a push signal on Redis channel ...; clients fall back to polling" (one per streak) has the cause. Check Redis as for `OnlineOrderRateLimiterFailingOpen` (`PING`, latency, memory) and that the application's Redis user may `PUBLISH` on the channel (`ACL GETUSER <user>`). A Redis outage fires the rate-limit alert and breaks the sessions too; failures here alone are pub/sub or the `push-publisher` thread (its queue full behind a stuck publish shows in a thread dump). The INFO log "Push signals reach Redis channel ... again" ends the streak; the signals lost meanwhile are not replayed, the consoles' next poll shows the changes |
+| `OnlineOrderPushSignalsUndelivered` | more than 20 signals were published in 15 minutes and streams are open, but no instance wrote one to a stream | No pod is subscribed: `redis-cli PUBSUB NUMSUB onlineorder:push:v1` should show one subscriber per running pod. A pod that lost its subscription logs "Subscribed to push channel ..." once it is back; one that never gets it back is restarted. Pods of two releases with different `PUSH_CHANNEL` values do not see each other's signals. The sums are cluster-wide, so one pod of several that lost its subscription does not fire it: `sum by (instance) (rate(onlineorder_push_deliveries_total[5m]))` shows that pod at zero. A load test with a console open on the side raises it too (its customers hold no streams) |
+| `OnlineOrderPushStreamsRefused` | an instance answered `503` to stream connects in every 5-minute window for 10 minutes | `onlineorder_push_streams` of that instance near `PUSH_MAX_STREAMS` (2000): add pods or raise the limit (below `SERVER_TOMCAT_MAX_CONNECTIONS`). Otherwise the instance's login lookups cannot reach the database (the 5xx rate and the Hikari alerts show it too), or it has been shutting down for longer than its grace period. The refused browsers poll and try again after 30 s, doubling to 5 minutes; nothing needs replaying |
+
 ### Limits and capacity
 
 A stream holds a connection, never a thread (servlet async). `PUSH_MAX_STREAMS` (2000 per pod) answers `503` above it,
@@ -1618,7 +1634,8 @@ appears until the stream ends.
 
 ### Failure modes
 
-- Redis down: publishes fail (`onlineorder_push_publish_failures_total` grows, one warning per streak in the log) and
+- Redis down: publishes fail (`onlineorder_push_publish_failures_total` grows, `OnlineOrderPushPublishFailures` after
+  10 minutes of it, one warning per streak in the log) and
   the subscription waits for Lettuce to reconnect; streams stay open and get only keepalives, and the consoles poll
   every 60 s. When Redis is back the log says `Subscribed to push channel onlineorder:push:v1`; signals published in
   between are lost, the next poll or signal shows the change.

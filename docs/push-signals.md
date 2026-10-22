@@ -74,4 +74,8 @@ buffering off ([docs/operations.md](operations.md) section 13).
 
 Metrics: `onlineorder.push.streams` (gauge, open streams on this instance), `onlineorder.push.signals{topic}`
 (published after a commit), `onlineorder.push.deliveries{topic}` (written to a stream of this instance) and
-`onlineorder.push.publish_failures` (signals that could not be handed on: Redis unavailable, a full queue).
+`onlineorder.push.publish_failures` (signals that could not be handed on: Redis unavailable, a full queue). The Grafana
+row "Push signals (SSE)" shows them, and three alerts watch them: `OnlineOrderPushPublishFailures` (signals lost before
+Redis for 10 minutes), `OnlineOrderPushSignalsUndelivered` (signals published and streams open, but none delivered for
+15 minutes: no instance is subscribed to the channel) and `OnlineOrderPushStreamsRefused` (an instance answered 503 to
+streams for 10 minutes). docs/operations.md section 13 has the runbook for each.

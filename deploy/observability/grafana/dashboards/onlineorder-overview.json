@@ -1,7 +1,7 @@
 {
   "uid": "onlineorder-overview",
   "title": "OnlineOrder - Service overview",
-  "description": "RED per endpoint, HikariCP, outbox, Kafka, dead letters and JVM for the OnlineOrder service.",
+  "description": "RED per endpoint, HikariCP, outbox, Kafka, dead letters, JVM, partitions, rate limits and push signals for the OnlineOrder service.",
   "tags": [
     "onlineorder",
     "spring-boot"
@@ -2339,6 +2339,310 @@
         }
       ],
       "description": "Requests refused with 429 RATE_LIMITED per bucket (route), and in red the requests let through unchecked because their bucket check failed in the rate-limit store (Redis): those are not limited, and when every check fails (Redis down) no bucket refuses anything. Rates over 5m; OnlineOrderRateLimiterFailingOpen fires when failures were seen in 8 of the last 20 half-minutes (about 4 minutes into an outage, within about 8 minutes for sparse failing traffic) and resolves about 8.5 minutes after the last one. The first refusal or failure of a route registers its series and is not counted here."
+    },
+    {
+      "type": "row",
+      "id": 37,
+      "title": "Push signals (SSE)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 91
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 38,
+      "title": "Open streams",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 92
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance) (onlineorder_push_streams{application=\"OnlineOrder\", instance=~\"$instance\"})",
+          "legendFormat": "{{instance}}",
+          "range": true,
+          "exemplar": false
+        }
+      ],
+      "description": "Open push streams (GET /events/stream) per instance: about one per open console tab of a signed-in user, none for guests. An instance refuses more above PUSH_MAX_STREAMS (2000, 503) and a login's sixth tab on it (PUSH_MAX_STREAMS_PER_USER, 429 PUSH_STREAM_LIMIT); keep the cap below SERVER_TOMCAT_MAX_CONNECTIONS, which every request shares. A stream ends after 30 minutes and the browser reconnects, so a slow sawtooth is normal."
+    },
+    {
+      "type": "timeseries",
+      "id": 39,
+      "title": "Signals published",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 92
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (topic) (rate(onlineorder_push_signals_total{application=\"OnlineOrder\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{topic}}",
+          "range": true,
+          "exemplar": false
+        }
+      ],
+      "description": "Signals published per topic after a commit changed a list (counted on the writing instance, rates over 5m): merchant.orders and notifications follow the order flow, merchant.after_sales the after-sales steps, rider.deliveries the dispatch. A signal carries no data; the recipient's console re-reads its REST list. Zero here with orders flowing means the writers publish nothing: check the ERROR log of the writing instance."
+    },
+    {
+      "type": "timeseries",
+      "id": 40,
+      "title": "Signals delivered",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 92
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (topic) (rate(onlineorder_push_deliveries_total{application=\"OnlineOrder\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{topic}}",
+          "range": true,
+          "exemplar": false
+        }
+      ],
+      "description": "Signals written to an open stream, per topic (counted on the instance holding the stream, rates over 5m). Below the published rate while recipients have no stream open (a customer who ordered through the API, a merchant whose console is closed). Zero while signals are published and streams are open means no instance is subscribed to the Redis channel (OnlineOrderPushSignalsUndelivered after 15 minutes): redis-cli PUBSUB NUMSUB onlineorder:push:v1 should show one subscriber per instance, and each instance's log \"Subscribed to push channel\" after a reconnect."
+    },
+    {
+      "type": "timeseries",
+      "id": 41,
+      "title": "Publish failures and refused streams",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 92
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(onlineorder_push_publish_failures_total{application=\"OnlineOrder\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "publish failures (signals lost)",
+          "range": true,
+          "exemplar": false
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (status) (rate(http_server_requests_seconds_count{application=\"OnlineOrder\", instance=~\"$instance\", uri=\"/events/stream\", status=~\"429|503\"}[5m]))",
+          "legendFormat": "refused {{status}}",
+          "range": true,
+          "exemplar": false
+        }
+      ],
+      "description": "In red the signals lost before Redis (Redis unreachable or slower than REDIS_TIMEOUT, or the 10,000-signal publisher queue full; OnlineOrderPushPublishFailures after 10 minutes of them): their recipients see the change on the next fallback poll (60 s) instead of at once. Streams refused with 429 (a login past PUSH_MAX_STREAMS_PER_USER on that instance) or 503 (the instance at PUSH_MAX_STREAMS, shutting down, or unable to reach the database for the login lookups; OnlineOrderPushStreamsRefused after 10 minutes): those browsers poll and try the stream again after 30 s, doubling to 5 minutes. The first refusal of a status registers its series and is not counted here."
     }
   ]
 }
