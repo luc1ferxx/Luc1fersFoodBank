@@ -31,8 +31,16 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  # The test classes are split over several runners (-PtestShard=i/N, backend/build.gradle); each shard uploads its
+  # results and its JaCoCo data, and backend-coverage merges the data for the coverage gate. SpotBugs runs on its own.
   backend-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      SHARDS: 4
     defaults:
       run:
         working-directory: backend
@@ -44,10 +52,51 @@ jobs:
           java-version: 17
           cache: gradle
       - run: chmod +x gradlew
-      # Tests (Testcontainers needs the runner's Docker), JaCoCo report and coverage minimums, SpotBugs.
-      - name: Test, coverage gate and SpotBugs
+      # Testcontainers needs the runner's Docker.
+      - name: Tests (shard ${{ matrix.shard }} of ${{ env.SHARDS }})
         run: >-
-          ./gradlew test jacocoTestReport jacocoTestCoverageVerification spotbugsMain
+          ./gradlew test -PtestShard=${{ matrix.shard }}/${{ env.SHARDS }}
+          -x buildFrontend -x syncFrontendBuild --no-daemon
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-reports-${{ matrix.shard }}
+          path: |
+            backend/build/test-results/test
+            backend/build/reports/tests/test
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload coverage data
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-jacoco-${{ matrix.shard }}
+          path: backend/build/jacoco/test.exec
+          if-no-files-found: error
+          retention-days: 1
+
+  backend-coverage:
+    runs-on: ubuntu-latest
+    needs: backend-test
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - run: chmod +x gradlew
+      - name: Download the shards' coverage data
+        uses: actions/download-artifact@v7
+        with:
+          pattern: backend-jacoco-*
+          path: backend/build/jacoco/shards
+      - name: Coverage report and gate
+        run: >-
+          ./gradlew jacocoTestReport jacocoTestCoverageVerification -PjacocoShards -x test
           -x buildFrontend -x syncFrontendBuild --no-daemon
       - name: Coverage summary
         if: always()
@@ -65,16 +114,36 @@ jobs:
               covered, missed = int(counter.get("covered")), int(counter.get("missed"))
               print(f"| {counter.get('type')} | {covered} | {missed} | {covered / (covered + missed):.1%} |")
           EOF
-      - name: Upload test and quality reports
+      - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: backend-test-reports
-          path: |
-            backend/build/test-results/test
-            backend/build/reports/tests/test
-            backend/build/reports/jacoco/test
-            backend/build/reports/spotbugs
+          name: backend-coverage-report
+          path: backend/build/reports/jacoco/test
+          if-no-files-found: ignore
+          retention-days: 14
+
+  backend-static:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - run: chmod +x gradlew
+      - name: SpotBugs
+        run: ./gradlew spotbugsMain -x buildFrontend -x syncFrontendBuild --no-daemon
+      - name: Upload SpotBugs report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-spotbugs-report
+          path: backend/build/reports/spotbugs
           if-no-files-found: ignore
           retention-days: 14
 
@@ -110,7 +179,7 @@ jobs:
             -strict -summary -kubernetes-version 1.31.0 /manifests
       - name: Workflow files (actionlint)
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
-      # EventSchemaContractTests (backend-test) checks the schema files against SHA256SUMS; this keeps a pull request
+      # EventSchemaContractTests (backend-test shards) checks the schema files against SHA256SUMS; this keeps a pull request
       # from changing a published file and its checksum together. Only new files and new SHA256SUMS lines may appear;
       # catalog.json may change (new versions, retirements).
       - name: Published event schemas are append-only
@@ -134,11 +203,9 @@ jobs:
             exit 1
           fi
 
+  # Independent of the test jobs: the jar is only an artifact of the run, which is red anyway when a test fails.
   package-backend:
     runs-on: ubuntu-latest
-    needs:
-      - frontend-build
-      - backend-test
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6

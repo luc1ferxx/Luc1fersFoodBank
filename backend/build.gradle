@@ -115,6 +115,27 @@ tasks.named('test') {
             ?: Math.max(1, Math.min(4, Runtime.runtime.availableProcessors().intdiv(2)))) as Integer
     // The server runs in UTC (OnlineOrderApplication.main sets it); tests do not run main, so their JVM starts in UTC.
     systemProperty 'user.timezone', 'UTC'
+    // CI runs the classes on several runners (.github/workflows/ci.yml): -PtestShard=i/N runs the i-th (from 1) of N
+    // round-robin slices of the compiled top-level test classes, sorted by name, nested classes with their outer
+    // class. Every class is in exactly one slice, whatever it is named; the slices' JaCoCo files are merged by the
+    // report tasks below.
+    def shard = findProperty('testShard')
+    if (shard) {
+        def (index, count) = shard.toString().split('/').collect { it as Integer }
+        doFirst {
+            def names = testClassesDirs.files.findAll { it.isDirectory() }.collectMany { dir ->
+                project.fileTree(dir) { include '**/*.class'; exclude '**/*$*.class' }.files.collect { f ->
+                    (dir.toPath().relativize(f.toPath()).toString() - ~/\.class$/).replace(File.separator, '.')
+                }
+            }.sort()
+            names.eachWithIndex { name, i ->
+                if (i % count == index - 1) {
+                    filter.includeTestsMatching(name)
+                    filter.includeTestsMatching(name + '$*')
+                }
+            }
+        }
+    }
 }
 
 
@@ -177,8 +198,17 @@ jacoco {
 }
 
 
+// CI's coverage job downloads the test shards' JaCoCo files under build/jacoco/shards and reports them with
+// -PjacocoShards. Without the property only the local test.exec counts, so a stale shards directory cannot inflate a
+// local run's coverage.
+def jacocoExecutionData = hasProperty('jacocoShards')
+        ? fileTree(layout.buildDirectory.dir('jacoco/shards')) { include '**/*.exec' }
+        : files()
+
+
 tasks.named('jacocoTestReport') {
     dependsOn tasks.named('test')
+    executionData.from(jacocoExecutionData)
     reports {
         xml.required = true
         html.required = true
@@ -188,6 +218,7 @@ tasks.named('jacocoTestReport') {
 
 tasks.named('jacocoTestCoverageVerification') {
     dependsOn tasks.named('test')
+    executionData.from(jacocoExecutionData)
     violationRules {
         rule {
             limit {

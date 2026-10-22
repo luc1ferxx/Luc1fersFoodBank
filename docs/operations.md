@@ -366,10 +366,15 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
 
 `.github/workflows/ci.yml` (push to main/master, pull requests, and called by the release):
 
-- `backend-test`: `./gradlew test jacocoTestReport jacocoTestCoverageVerification spotbugsMain -x buildFrontend -x
-  syncFrontendBuild --no-daemon`. Testcontainers suites run on the runner's Docker. The job summary shows the
-  coverage table; JUnit XML, the HTML test report, JaCoCo and SpotBugs reports are uploaded as
-  `backend-test-reports`, also on failure.
+- `backend-test`: 4 shards, each `./gradlew test -PtestShard=i/4 -x buildFrontend -x syncFrontendBuild --no-daemon`
+  on its own runner (a round-robin slice of the test classes, `backend/build.gradle`; the classes also run in 2 JVMs
+  per runner). Testcontainers suites run on the runner's Docker. JUnit XML and the HTML test report of each shard are
+  uploaded as `backend-test-reports-<shard>`, also on failure, and its JaCoCo file as `backend-jacoco-<shard>`.
+- `backend-coverage`: downloads the shards' JaCoCo files into `backend/build/jacoco/shards` and runs
+  `./gradlew jacocoTestReport jacocoTestCoverageVerification -PjacocoShards -x test ...`. The job summary shows the coverage table;
+  the report is uploaded as `backend-coverage-report`.
+- `backend-static`: `./gradlew spotbugsMain ...`; the report is uploaded as `backend-spotbugs-report`.
+- `package-backend`: builds the jar with the embedded frontend, independently of the test jobs.
   - Coverage minimums: 87% lines, 72% branches (measured 88.6% / 73.9% with Docker available). Without Docker the
     container suites skip and the verification fails; raise the minimums as coverage grows.
   - SpotBugs scans production classes; `backend/config/spotbugs/exclude.xml` is the reviewed baseline. Its first entry
