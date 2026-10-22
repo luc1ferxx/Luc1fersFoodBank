@@ -7,6 +7,9 @@ import com.laioffer.onlineorder.messaging.AfterSalesCasePayload;
 import com.laioffer.onlineorder.messaging.AfterSalesEventEnvelope;
 import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.ProcessedEventService;
+import com.laioffer.onlineorder.push.PushRecipient;
+import com.laioffer.onlineorder.push.PushSignals;
+import com.laioffer.onlineorder.push.PushTopic;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -46,13 +49,16 @@ class MerchantAfterSalesInboxServiceTests {
     @Mock
     private EventSequenceTracker sequenceTracker;
 
+    @Mock
+    private PushSignals pushSignals;
+
     private MerchantAfterSalesInboxService service;
 
 
     @BeforeEach
     void setup() {
         service = new MerchantAfterSalesInboxService(
-                new MerchantAfterSalesProjection(repository, snakeCase()),
+                new MerchantAfterSalesProjection(repository, snakeCase(), pushSignals),
                 processedEventService,
                 sequenceTracker
         );
@@ -99,6 +105,7 @@ class MerchantAfterSalesInboxServiceTests {
                 Mockito.any(LocalDateTime.class)
         );
         Mockito.verifyNoMoreInteractions(repository);
+        Mockito.verify(pushSignals).publish(PushRecipient.restaurant(2L), PushTopic.MERCHANT_AFTER_SALES);
         // Stored snake_case like every JSON of the application, each line with the case's currency.
         Assertions.assertTrue(lines.getValue().contains("\"menu_item_name\":\"Whopper Meal\""), lines.getValue());
         Assertions.assertEquals(
@@ -129,6 +136,8 @@ class MerchantAfterSalesInboxServiceTests {
                 Mockito.eq(1L),
                 Mockito.any(LocalDateTime.class)
         );
+        // The mocked update changed no row (the row already had this version or a newer one): nothing to re-read.
+        Mockito.verifyNoInteractions(pushSignals);
     }
 
 

@@ -10,6 +10,9 @@ import com.laioffer.onlineorder.messaging.DeliveryEventPayload;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.push.PushRecipient;
+import com.laioffer.onlineorder.push.PushSignals;
+import com.laioffer.onlineorder.push.PushTopic;
 import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
@@ -63,6 +66,10 @@ import java.util.UUID;
  * (created from a version 1 order.accepted) gets it from the next order.accepted or order.cancelled that carries it,
  * a stale one included: the number never changes, so no event order can make it wrong, and a stored one is never
  * replaced. Status changes and reassignments never write it, so they keep it.
+ *
+ * <p>Every change of a delivery that writes its delivery event (assignment, pickup, delivery, cancellation and
+ * reassignment) also signals the delivery's rider (push topic {@code rider.deliveries}) after the commit; a
+ * reassignment signals the previous rider as well, whose list loses the delivery.
  */
 @Service
 public class DispatchService {
@@ -91,6 +98,7 @@ public class DispatchService {
     private final ProcessedEventService processedEventService;
     private final EventSequenceTracker sequenceTracker;
     private final ApplicationMetricsService metricsService;
+    private final PushSignals pushSignals;
     private final String deliveryTopic;
 
 
@@ -102,6 +110,7 @@ public class DispatchService {
             ProcessedEventService processedEventService,
             EventSequenceTracker sequenceTracker,
             ApplicationMetricsService metricsService,
+            PushSignals pushSignals,
             @Value("${app.fulfilment.delivery-topic:delivery-events}") String deliveryTopic
     ) {
         this.deliveryRepository = deliveryRepository;
@@ -111,6 +120,7 @@ public class DispatchService {
         this.processedEventService = processedEventService;
         this.sequenceTracker = sequenceTracker;
         this.metricsService = metricsService;
+        this.pushSignals = pushSignals;
         this.deliveryTopic = deliveryTopic;
     }
 
@@ -248,6 +258,9 @@ public class DispatchService {
                 now
         );
         enqueueDeliveryEvent(reassigned, FulfilmentEvents.DELIVERY_REASSIGNED, rider.name(), now);
+        if (previousRiderId != null) {
+            pushSignals.publish(PushRecipient.rider(previousRiderId), PushTopic.RIDER_DELIVERIES);
+        }
         LOGGER.info(
                 "Delivery reassigned: delivery_id={}, order_id={}, status={}, from_rider_id={}, to_rider_id={}",
                 delivery.id(),
@@ -496,6 +509,9 @@ public class DispatchService {
     }
 
 
+    /**
+     * Writes the delivery event to the outbox and signals the delivery's rider: every change of a delivery passes here.
+     */
     private void enqueueDeliveryEvent(
             DeliveryEntity delivery,
             String eventType,
@@ -522,6 +538,9 @@ public class DispatchService {
                 )
         );
         outboxService.enqueueEvent(deliveryTopic, String.valueOf(delivery.orderId()), envelope);
+        if (delivery.riderId() != null) {
+            pushSignals.publish(PushRecipient.rider(delivery.riderId()), PushTopic.RIDER_DELIVERIES);
+        }
     }
 
 

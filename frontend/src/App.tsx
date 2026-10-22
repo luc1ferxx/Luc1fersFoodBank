@@ -2,6 +2,7 @@ import { useState } from "react";
 import "./App.css";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import type { OperationsTab } from "./components/OperationsPanel";
+import { ServerSignalsProvider } from "./components/ServerSignalsProvider";
 import { TopBar } from "./components/TopBar";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { type MenuBrowser, useMenu } from "./hooks/useMenu";
@@ -39,7 +40,9 @@ interface WorkspacesProps {
  * The workspace switcher and the workspaces of one signed-in user (or the guest).
  * App keys it by the user, and the user is null in between two sign-ins, so the
  * workspace choice and all session-scoped state start fresh on every login, logout,
- * or session expiry, even when the same user signs in again.
+ * or session expiry, even when the same user signs in again. That includes the user's
+ * one change-signal stream (ServerSignalsProvider): a workspace switch keeps it, a
+ * logout or an expiry closes it, and a guest gets none.
  */
 function Workspaces({ session, menu, ...ordering }: WorkspacesProps) {
   const { user } = session;
@@ -74,14 +77,14 @@ function Workspaces({ session, menu, ...ordering }: WorkspacesProps) {
   };
 
   return (
-    <>
+    <ServerSignalsProvider signedIn={user !== null}>
       <WorkspaceSwitcher workspaces={workspaces} active={active} onChange={switchTo} />
       {mounted.map((workspace) => (
         <div key={workspace} hidden={workspace !== active}>
           <ErrorBoundary label={WORKSPACE_LABELS[workspace]}>{content(workspace)}</ErrorBoundary>
         </div>
       ))}
-    </>
+    </ServerSignalsProvider>
   );
 }
 

@@ -11,6 +11,9 @@ import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderHistoryItemDto;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.push.PushRecipient;
+import com.laioffer.onlineorder.push.PushSignals;
+import com.laioffer.onlineorder.push.PushTopic;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.access.AccessDeniedException;
@@ -49,6 +52,7 @@ public class MerchantOrderService {
     private final ApplicationMetricsService metricsService;
     private final ObjectMapper objectMapper;
     private final ReadOnlyTransactions readOnlyTransactions;
+    private final PushSignals pushSignals;
 
 
     public MerchantOrderService(
@@ -57,7 +61,8 @@ public class MerchantOrderService {
             OrderLifecycleCommands orderLifecycleCommands,
             ApplicationMetricsService metricsService,
             ObjectMapper objectMapper,
-            ReadOnlyTransactions readOnlyTransactions
+            ReadOnlyTransactions readOnlyTransactions,
+            PushSignals pushSignals
     ) {
         this.merchantAccountRepository = merchantAccountRepository;
         this.merchantOrderRepository = merchantOrderRepository;
@@ -65,6 +70,7 @@ public class MerchantOrderService {
         this.metricsService = metricsService;
         this.objectMapper = objectMapper;
         this.readOnlyTransactions = readOnlyTransactions;
+        this.pushSignals = pushSignals;
     }
 
 
@@ -133,6 +139,10 @@ public class MerchantOrderService {
         OrderDto order = transition.order();
         LocalDateTime now = LocalDateTime.now();
         merchantOrderRepository.updateStatus(inboxOrder.id(), order.status(), order.cancelReason(), now);
+        if (!order.status().equals(inboxOrder.status())) {
+            // The restaurant's other merchant tabs and logins re-read the inbox (push topic merchant.orders).
+            pushSignals.publish(PushRecipient.restaurant(restaurantId), PushTopic.MERCHANT_ORDERS);
+        }
 
         // Count only a decision this command made: not a retry, and not an order an admin had already moved before
         // this inbox row caught up (the order module reports which).

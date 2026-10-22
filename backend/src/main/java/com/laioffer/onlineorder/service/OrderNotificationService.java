@@ -13,6 +13,9 @@ import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.model.OrderNotificationDto;
 import com.laioffer.onlineorder.money.Money;
+import com.laioffer.onlineorder.push.PushRecipient;
+import com.laioffer.onlineorder.push.PushSignals;
+import com.laioffer.onlineorder.push.PushTopic;
 import com.laioffer.onlineorder.repository.OrderNotificationRepository;
 import com.laioffer.onlineorder.repository.OrderPaymentRepository;
 import com.laioffer.onlineorder.repository.OrderRepository;
@@ -101,6 +104,7 @@ public class OrderNotificationService {
     private final OrderNotificationRepository orderNotificationRepository;
     private final OrderRepository orderRepository;
     private final OrderPaymentRepository orderPaymentRepository;
+    private final PushSignals pushSignals;
 
     /**
      * app.after-sales.picked-up-cancel-refund-percent as a factor (the after-sales module checks its range at startup).
@@ -112,11 +116,13 @@ public class OrderNotificationService {
             OrderNotificationRepository orderNotificationRepository,
             OrderRepository orderRepository,
             OrderPaymentRepository orderPaymentRepository,
+            PushSignals pushSignals,
             @Value("${app.after-sales.picked-up-cancel-refund-percent:50}") int pickedUpRefundPercent
     ) {
         this.orderNotificationRepository = orderNotificationRepository;
         this.orderRepository = orderRepository;
         this.orderPaymentRepository = orderPaymentRepository;
+        this.pushSignals = pushSignals;
         this.pickedUpRefundShare = BigDecimal.valueOf(pickedUpRefundPercent).movePointLeft(2);
     }
 
@@ -128,7 +134,7 @@ public class OrderNotificationService {
     public void recordOrderEvent(OrderEventEnvelope event) {
         validate(event);
         OrderEventPayload data = event.data();
-        orderNotificationRepository.insertIfAbsent(
+        int inserted = orderNotificationRepository.insertIfAbsent(
                 event.aggregateId(),
                 data.customerId(),
                 event.eventType(),
@@ -136,6 +142,7 @@ public class OrderNotificationService {
                 buildMessage(event, orderNumber(event.aggregateId()), event.aggregateId()),
                 LocalDateTime.now()
         );
+        signalIfInserted(inserted, data.customerId());
     }
 
 
@@ -170,7 +177,7 @@ public class OrderNotificationService {
                 return;
             }
         }
-        orderNotificationRepository.insertIfAbsent(
+        int inserted = orderNotificationRepository.insertIfAbsent(
                 data.orderId(),
                 data.customerId(),
                 event.eventType(),
@@ -178,6 +185,7 @@ public class OrderNotificationService {
                 message,
                 LocalDateTime.now()
         );
+        signalIfInserted(inserted, data.customerId());
     }
 
 
@@ -225,7 +233,7 @@ public class OrderNotificationService {
         if (notice.isEmpty()) {
             return;
         }
-        orderNotificationRepository.insertIfAbsentInScope(
+        int inserted = orderNotificationRepository.insertIfAbsentInScope(
                 data.orderId(),
                 data.customerId(),
                 eventType,
@@ -234,6 +242,7 @@ public class OrderNotificationService {
                 notice.get().message(),
                 LocalDateTime.now()
         );
+        signalIfInserted(inserted, data.customerId());
     }
 
 
@@ -279,6 +288,17 @@ public class OrderNotificationService {
             results.add(new OrderNotificationDto(entity, orderNumbers.get(entity.orderId())));
         }
         return results;
+    }
+
+
+    /**
+     * Tells the customer's open streams that their notifications changed (push topic {@code notifications}), after
+     * the commit and only when this call inserted one: a redelivered event adds nothing and signals nothing.
+     */
+    private void signalIfInserted(int inserted, Long customerId) {
+        if (inserted > 0) {
+            pushSignals.publish(PushRecipient.customer(customerId), PushTopic.NOTIFICATIONS);
+        }
     }
 
 

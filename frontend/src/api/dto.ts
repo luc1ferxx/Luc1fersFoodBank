@@ -938,3 +938,27 @@ export interface ArbitrateAfterSalesRequest {
   amount?: number;
   note: string;
 }
+
+// ---- Push signals (ADR 0003) ----
+
+/**
+ * The lists GET /events/stream signals a change of (`event: signal`). A signal carries
+ * no data: its subscriber reads the list again over REST.
+ */
+export const PUSH_TOPICS = [
+  "notifications",
+  "merchant.orders",
+  "merchant.after_sales",
+  "rider.deliveries",
+] as const;
+export type PushTopic = (typeof PUSH_TOPICS)[number];
+
+/** The data of one `event: signal`, e.g. `{"topic":"merchant.orders"}`. */
+export interface PushSignal {
+  topic: PushTopic;
+}
+
+export const decodePushSignal: Decoder<PushSignal> = (value, path) => {
+  const f = fieldsOf(value, path);
+  return { topic: f.oneOf("topic", PUSH_TOPICS) };
+};

@@ -8,6 +8,9 @@ import com.laioffer.onlineorder.messaging.MerchantEventPayload;
 import com.laioffer.onlineorder.messaging.OrderEventEnvelope;
 import com.laioffer.onlineorder.messaging.OrderEventPayload;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.push.PushRecipient;
+import com.laioffer.onlineorder.push.PushSignals;
+import com.laioffer.onlineorder.push.PushTopic;
 import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
@@ -24,6 +27,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.IntSupplier;
 
 
 /**
@@ -90,6 +94,7 @@ public class MerchantInboxService {
     private final ObjectMapper objectMapper;
     private final ProcessedEventService processedEventService;
     private final EventSequenceTracker sequenceTracker;
+    private final PushSignals pushSignals;
     private final String merchantTopic;
 
 
@@ -101,6 +106,7 @@ public class MerchantInboxService {
             ObjectMapper objectMapper,
             ProcessedEventService processedEventService,
             EventSequenceTracker sequenceTracker,
+            PushSignals pushSignals,
             @Value("${app.fulfilment.merchant-topic:merchant-events}") String merchantTopic
     ) {
         this.merchantOrderRepository = merchantOrderRepository;
@@ -110,6 +116,7 @@ public class MerchantInboxService {
         this.objectMapper = objectMapper;
         this.processedEventService = processedEventService;
         this.sequenceTracker = sequenceTracker;
+        this.pushSignals = pushSignals;
         this.merchantTopic = merchantTopic;
     }
 
@@ -119,6 +126,9 @@ public class MerchantInboxService {
      * already reflects a later state, so its status stays. A stale order.paid still records the payment time when the
      * row has none (a later event created it first), exactly like an order.paid without a sequence that finds a row,
      * and any stale event still records the order number when the row has none.
+     *
+     * <p>A handled event that changed the restaurant's row signals its merchants' streams (push topic
+     * {@code merchant.orders}) after the commit.
      */
     @Transactional
     public void handle(OrderEventEnvelope event) {
@@ -133,16 +143,28 @@ public class MerchantInboxService {
             return;
         }
 
+        int changed = apply(event, data);
+        if (changed > 0) {
+            pushSignals.publish(PushRecipient.restaurant(data.restaurantId()), PushTopic.MERCHANT_ORDERS);
+        }
+    }
+
+
+    /**
+     * @return the inbox rows the event inserted or updated
+     */
+    private int apply(OrderEventEnvelope event, OrderEventPayload data) {
         LocalDateTime now = LocalDateTime.now();
         Long orderId = event.aggregateId();
         if (!sequenceTracker.advance(MERCHANT_INBOX_CONSUMER, event)) {
+            int changed = 0;
             if (FulfilmentEvents.ORDER_PAID.equals(event.eventType())) {
-                merchantOrderRepository.recordPayment(orderId, event.occurredAt() == null ? now : event.occurredAt(), now);
+                changed += merchantOrderRepository.recordPayment(
+                        orderId, event.occurredAt() == null ? now : event.occurredAt(), now);
             }
-            recordOrderNo(orderId, data);
-            return;
+            return changed + recordOrderNo(orderId, data);
         }
-        switch (event.eventType()) {
+        return switch (event.eventType()) {
             case FulfilmentEvents.ORDER_PAID -> {
                 LocalDateTime paidAt = event.occurredAt() == null ? now : event.occurredAt();
                 int inserted = merchantOrderRepository.insertPaidOrderIfAbsent(
@@ -157,49 +179,55 @@ public class MerchantInboxService {
                         now
                 );
                 if (inserted == 0) {
-                    merchantOrderRepository.recordPayment(orderId, paidAt, now);
-                    recordOrderNo(orderId, data);
-                } else {
-                    announceIfStaffed(event, orderId, data.restaurantId(), paidAt, now);
+                    yield merchantOrderRepository.recordPayment(orderId, paidAt, now) + recordOrderNo(orderId, data);
                 }
+                announceIfStaffed(event, orderId, data.restaurantId(), paidAt, now);
+                yield inserted;
             }
-            case FulfilmentEvents.ORDER_ACCEPTED -> {
-                if (insertUnpaidIfAbsent(orderId, data, "ACCEPTED", null, now) == 0) {
-                    merchantOrderRepository.advanceStatus(orderId, BEFORE_ACCEPTED, "ACCEPTED", now);
-                    recordOrderNo(orderId, data);
-                }
-            }
-            case FulfilmentEvents.ORDER_PREPARING -> {
-                if (insertUnpaidIfAbsent(orderId, data, "PREPARING", null, now) == 0) {
-                    merchantOrderRepository.advanceStatus(orderId, BEFORE_PREPARING, "PREPARING", now);
-                    recordOrderNo(orderId, data);
-                }
-            }
-            case FulfilmentEvents.ORDER_COMPLETED -> {
-                if (insertUnpaidIfAbsent(orderId, data, "COMPLETED", null, now) == 0) {
-                    merchantOrderRepository.advanceStatus(orderId, NOT_FINISHED, "COMPLETED", now);
-                    recordOrderNo(orderId, data);
-                }
-            }
-            case FulfilmentEvents.ORDER_CANCELLED -> {
-                if (insertUnpaidIfAbsent(orderId, data, "CANCELLED", data.reason(), now) == 0) {
-                    merchantOrderRepository.cancel(orderId, NOT_FINISHED, data.reason(), now);
-                    recordOrderNo(orderId, data);
-                }
-            }
-            default -> {
-            }
+            case FulfilmentEvents.ORDER_ACCEPTED -> advanceOrInsert(orderId, data, "ACCEPTED", null, now,
+                    () -> merchantOrderRepository.advanceStatus(orderId, BEFORE_ACCEPTED, "ACCEPTED", now));
+            case FulfilmentEvents.ORDER_PREPARING -> advanceOrInsert(orderId, data, "PREPARING", null, now,
+                    () -> merchantOrderRepository.advanceStatus(orderId, BEFORE_PREPARING, "PREPARING", now));
+            case FulfilmentEvents.ORDER_COMPLETED -> advanceOrInsert(orderId, data, "COMPLETED", null, now,
+                    () -> merchantOrderRepository.advanceStatus(orderId, NOT_FINISHED, "COMPLETED", now));
+            case FulfilmentEvents.ORDER_CANCELLED -> advanceOrInsert(orderId, data, "CANCELLED", data.reason(), now,
+                    () -> merchantOrderRepository.cancel(orderId, NOT_FINISHED, data.reason(), now));
+            default -> 0;
+        };
+    }
+
+
+    /**
+     * A later event: creates the row with the status it reports when the order has none yet, otherwise moves the
+     * existing row forward ({@code advance}) and gives it the order number.
+     *
+     * @return the rows inserted or updated
+     */
+    private int advanceOrInsert(
+            Long orderId,
+            OrderEventPayload data,
+            String status,
+            String cancelReason,
+            LocalDateTime now,
+            IntSupplier advance
+    ) {
+        if (insertUnpaidIfAbsent(orderId, data, status, cancelReason, now) == 1) {
+            return 1;
         }
+        return advance.getAsInt() + recordOrderNo(orderId, data);
     }
 
 
     /**
      * Gives an existing row the order number the event carries, unless the row has one already.
+     *
+     * @return 1 when the row got the number, else 0
      */
-    private void recordOrderNo(Long orderId, OrderEventPayload data) {
+    private int recordOrderNo(Long orderId, OrderEventPayload data) {
         if (data.orderNo() != null) {
-            merchantOrderRepository.recordOrderNo(orderId, data.orderNo());
+            return merchantOrderRepository.recordOrderNo(orderId, data.orderNo());
         }
+        return 0;
     }
 
 

@@ -95,6 +95,8 @@ abstract class FulfilmentContainerTestSupport {
         registry.add("app.cleanup.enabled", () -> "false");
         registry.add("app.security.rate-limit.enabled", () -> "false");
         registry.add("app.kafka.listener-backoff", () -> "200ms");
+        // Push signals take the production path through the Redis container (the tests' default is local).
+        registry.add("app.push.fanout", () -> "redis");
     }
 
 

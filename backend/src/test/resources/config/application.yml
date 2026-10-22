@@ -1,0 +1,7 @@
+# Test classpath only: Spring Boot reads classpath:/config/application.yml on top of classpath:/application.yml.
+# Push signals stay inside the test JVM, so no test publishes on, or keeps retrying to subscribe to, a Redis at
+# localhost:6379 (a developer's docker compose Redis included). The tests that run a Redis container and want the
+# production path set app.push.fanout=redis themselves.
+app:
+  push:
+    fanout: local

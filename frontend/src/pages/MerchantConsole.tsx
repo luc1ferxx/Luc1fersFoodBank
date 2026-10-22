@@ -253,7 +253,7 @@ function MerchantOrdersSection({
             disabled={merchant.forbidden}
             onChange={(event) => merchant.setPolling(event.target.checked)}
           />
-          Refresh every 15 seconds
+          Auto-refresh
         </label>
       </div>
 
@@ -346,7 +346,7 @@ function MerchantAfterSalesSection({
             disabled={afterSales.forbidden}
             onChange={(event) => afterSales.setPolling(event.target.checked)}
           />
-          Refresh every 15 seconds
+          Auto-refresh
         </label>
       </div>
 

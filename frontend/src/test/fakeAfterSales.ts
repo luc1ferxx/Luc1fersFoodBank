@@ -19,6 +19,7 @@ import type { CurrencyCode } from "../api/currency";
 import { minorDigits, parseTimestamp } from "../lib/format";
 import { USD, orderNoFor } from "./fixtures";
 import type { FakeState } from "./fakeBackend";
+import { publishSignal, restaurantRecipient } from "./fakeEventSource";
 import type { FakeContext } from "./fakeFulfilment";
 import {
   type FakeHandler,
@@ -233,9 +234,19 @@ const merchantView = (current: AfterSalesCase): MerchantAfterSalesCase => ({
 });
 
 /**
+ * The merchant projection applying a case's event (the case was opened or took a step):
+ * it signals `merchant.after_sales` to the restaurant, and drops ORDER_CANCELLED cases.
+ */
+const signalMerchantInbox = (current: AfterSalesCase) => {
+  if (current.kind === "CUSTOMER_REQUEST" && current.restaurant_id !== null) {
+    publishSignal(restaurantRecipient(current.restaurant_id), "merchant.after_sales");
+  }
+};
+
+/**
  * Moves `current` to `to` the way the backend's single writer does: a new deadline for
  * an open status (none otherwise), a history row, and a PENDING refund on entering
- * REFUNDING.
+ * REFUNDING. The merchant's inbox hears of it (`signalMerchantInbox`).
  */
 function step(
   state: FakeState,
@@ -277,6 +288,7 @@ function step(
     note,
     occurred_at: now,
   });
+  signalMerchantInbox(current);
 }
 
 /**
@@ -590,6 +602,7 @@ export function afterSalesRoutes(context: FakeContext): FakeRoute[] {
       occurred_at: now,
     });
     state.afterSalesCases.unshift(opened);
+    signalMerchantInbox(opened);
     return opened;
   };
 

@@ -8,6 +8,9 @@ import com.laioffer.onlineorder.observability.ApplicationMetricsService;
 import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
+import com.laioffer.onlineorder.push.PushRecipient;
+import com.laioffer.onlineorder.push.PushSignals;
+import com.laioffer.onlineorder.push.PushTopic;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -57,6 +60,9 @@ class MerchantInboxServiceTests {
     @Mock
     private EventSequenceTracker sequenceTracker;
 
+    @Mock
+    private PushSignals pushSignals;
+
     private MerchantInboxService service;
 
 
@@ -70,6 +76,7 @@ class MerchantInboxServiceTests {
                 JsonMapper.builder().build(),
                 processedEventService,
                 sequenceTracker,
+                pushSignals,
                 "merchant-events"
         );
         // Events built by FulfilmentTestEvents carry no sequence; the tracker applies them (EventSequenceTrackerTests).
@@ -102,6 +109,7 @@ class MerchantInboxServiceTests {
         assertTrue(items.getValue().contains("Whopper Meal"));
         Mockito.verify(merchantOrderRepository, Mockito.never())
                 .recordPayment(Mockito.anyLong(), Mockito.any(), Mockito.any());
+        Mockito.verify(pushSignals).publish(PushRecipient.restaurant(2L), PushTopic.MERCHANT_ORDERS);
     }
 
 
@@ -119,6 +127,8 @@ class MerchantInboxServiceTests {
                 .advanceStatus(Mockito.anyLong(), Mockito.anyCollection(), Mockito.anyString(), Mockito.any());
         Mockito.verify(merchantOrderRepository, Mockito.never())
                 .cancel(Mockito.anyLong(), Mockito.anyCollection(), Mockito.any(), Mockito.any());
+        // The row had its payment time already (the mock changes no row): nothing for the merchant to re-read.
+        Mockito.verifyNoInteractions(pushSignals);
     }
 
 
@@ -207,7 +217,7 @@ class MerchantInboxServiceTests {
 
         service.handle(paid);
 
-        Mockito.verifyNoInteractions(merchantOrderRepository);
+        Mockito.verifyNoInteractions(merchantOrderRepository, pushSignals);
     }
 
 

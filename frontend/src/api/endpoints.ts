@@ -673,3 +673,12 @@ export const retryRefund = async (refundId: number): Promise<Refund> =>
     }),
     "refund",
   );
+
+// ---- Push signals (ADR 0003) ----
+
+/**
+ * The change-signal stream (`text/event-stream`, the session cookie, same origin). The
+ * ServerSignals provider opens it with EventSource, not with request(); its events'
+ * data is decoded with `decodePushSignal`.
+ */
+export const EVENT_STREAM_PATH = "/events/stream";

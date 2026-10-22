@@ -11,6 +11,9 @@ import com.laioffer.onlineorder.model.OrderDto;
 import com.laioffer.onlineorder.model.OrderStatus;
 import com.laioffer.onlineorder.money.Money;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.push.PushRecipient;
+import com.laioffer.onlineorder.push.PushSignals;
+import com.laioffer.onlineorder.push.PushTopic;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,6 +53,9 @@ class MerchantOrderServiceTests {
     @Mock
     private ApplicationMetricsService metricsService;
 
+    @Mock
+    private PushSignals pushSignals;
+
     private MerchantOrderService service;
 
 
@@ -61,7 +67,8 @@ class MerchantOrderServiceTests {
                 orderLifecycleCommands,
                 metricsService,
                 JsonMapper.builder().build(),
-                new ReadOnlyTransactions(Mockito.mock(PlatformTransactionManager.class))
+                new ReadOnlyTransactions(Mockito.mock(PlatformTransactionManager.class)),
+                pushSignals
         );
     }
 
@@ -87,6 +94,7 @@ class MerchantOrderServiceTests {
         Mockito.verify(merchantOrderRepository).updateStatus(
                 Mockito.eq(1L), Mockito.eq("ACCEPTED"), Mockito.isNull(), Mockito.any(LocalDateTime.class));
         Mockito.verify(metricsService).recordMerchantDecision("accepted");
+        Mockito.verify(pushSignals).publish(PushRecipient.restaurant(RESTAURANT_ID), PushTopic.MERCHANT_ORDERS);
     }
 
 
@@ -178,7 +186,8 @@ class MerchantOrderServiceTests {
 
         Assertions.assertEquals("ACCEPTED", service.accept(MERCHANT_CUSTOMER_ID, ORDER_ID).status());
 
-        Mockito.verifyNoInteractions(metricsService);
+        // The inbox row was ACCEPTED already: no decision to count, nothing for the other tabs to re-read.
+        Mockito.verifyNoInteractions(metricsService, pushSignals);
     }
 
 

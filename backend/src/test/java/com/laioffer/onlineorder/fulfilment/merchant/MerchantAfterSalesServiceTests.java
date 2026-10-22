@@ -12,6 +12,9 @@ import com.laioffer.onlineorder.fulfilment.order.OrderLifecycleCommands.AfterSal
 import com.laioffer.onlineorder.messaging.AfterSalesCaseLinePayload;
 import com.laioffer.onlineorder.messaging.AfterSalesCasePayload;
 import com.laioffer.onlineorder.observability.ApplicationMetricsService;
+import com.laioffer.onlineorder.push.PushRecipient;
+import com.laioffer.onlineorder.push.PushSignals;
+import com.laioffer.onlineorder.push.PushTopic;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -61,6 +64,9 @@ class MerchantAfterSalesServiceTests {
     @Mock
     private ApplicationMetricsService metricsService;
 
+    @Mock
+    private PushSignals pushSignals;
+
     private MerchantAfterSalesService service;
 
 
@@ -71,7 +77,7 @@ class MerchantAfterSalesServiceTests {
                 merchantAfterSalesRepository,
                 new MerchantAfterSalesProjection(merchantAfterSalesRepository, JsonMapper.builder()
                         .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
-                        .build()),
+                        .build(), pushSignals),
                 orderLifecycleCommands,
                 metricsService,
                 new ReadOnlyTransactions(Mockito.mock(PlatformTransactionManager.class))
@@ -124,6 +130,8 @@ class MerchantAfterSalesServiceTests {
         steps.verify(merchantAfterSalesRepository).findById(ROW_ID);
         Mockito.verifyNoMoreInteractions(merchantAccountRepository, merchantAfterSalesRepository, orderLifecycleCommands);
         Mockito.verify(metricsService).recordAfterSalesMerchantDecision("approved");
+        // The restaurant's other merchant tabs and logins re-read the after-sales inbox.
+        Mockito.verify(pushSignals).publish(PushRecipient.restaurant(RESTAURANT_ID), PushTopic.MERCHANT_AFTER_SALES);
     }
 
 

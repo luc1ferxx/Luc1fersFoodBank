@@ -1146,7 +1146,7 @@ describe("notification polling", () => {
 
     await signedInLabel();
     fireEvent.click(screen.getByRole("button", { name: "Notifications (0)" }));
-    fireEvent.click(screen.getByLabelText("Poll every 15 seconds"));
+    fireEvent.click(screen.getByLabelText("Auto-refresh"));
     await waitFor(() => expect(notificationCalls()).toBe(1));
 
     act(() => {
