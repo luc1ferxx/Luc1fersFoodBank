@@ -227,7 +227,7 @@ describe("rider console", () => {
     await flushPromises();
     expect(backend.callsTo("GET", "/rider/me")).toHaveLength(1);
     expect(backend.callsTo("GET", "/rider/deliveries")).toHaveLength(1);
-    expect(screen.getByLabelText("Refresh every 15 seconds")).toBeDisabled();
+    expect(screen.getByLabelText("Auto-refresh")).toBeDisabled();
 
     // An admin reactivates the rider; Refresh checks again and polling resumes.
     setRiderActive(backend, true);

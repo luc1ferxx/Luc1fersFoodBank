@@ -34,7 +34,7 @@ export function NotificationsPanel({
               checked={notifications.polling}
               onChange={(event) => notifications.setPolling(event.target.checked)}
             />
-            Poll every 15 seconds
+            Auto-refresh
           </label>
           <Alert tone="danger">{notifications.error}</Alert>
           {notifications.loading ? (

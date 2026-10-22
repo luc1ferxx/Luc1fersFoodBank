@@ -178,7 +178,7 @@ export function RiderConsole({ user }: { user: CurrentUser }) {
               disabled={rider.forbidden}
               onChange={(event) => rider.setPolling(event.target.checked)}
             />
-            Refresh every 15 seconds
+            Auto-refresh
           </label>
         </div>
 
