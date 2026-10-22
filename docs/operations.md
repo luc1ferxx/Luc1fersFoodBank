@@ -1598,11 +1598,12 @@ compression of `text/event-stream`, and an idle timeout well above 25 s. A proxy
 
 ```sh
 curl -s -c /tmp/push-cookies -o /dev/null -w '%{http_code}\n' \
-  -d 'username=merchant.burgerking@laifood.com&password=merchant123' http://localhost:8080/login
+  --data-urlencode "username=$EMAIL" --data-urlencode "password=$PASSWORD" http://localhost:8080/login
 curl -N -b /tmp/push-cookies -H 'Accept: text/event-stream' http://localhost:8080/events/stream
 ```
 
-The second command prints `retry: 5000` at once, `:keepalive` every 25 seconds and, for example after a paid order of
+`EMAIL` and `PASSWORD` are a login of the role to check (locally, one of the demo merchants of
+`db/demo/afterMigrate__seed_demo_fulfilment.sql`). The second command prints `retry: 5000` at once, `:keepalive` every 25 seconds and, for example after a paid order of
 Burger King, `event: signal` with `data: {"topic":"merchant.orders"}`. `401` means the session cookie is missing,
 `403` a deactivated merchant or rider, `429` or `503` a limit above. Without `-N` curl buffers the output, and nothing
 appears until the stream ends.
