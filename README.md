@@ -176,11 +176,13 @@ between them with the tabs under the header; guests and logins without a known r
 | `ROLE_ADMIN` | Admin console: list, create, and deactivate merchants (restaurant picked from the catalog) and riders; the manual order-status change and dead-letter replay; the after-sales queue by status, a case's history with its refund attempts and last error, arbitration, and the failed refunds with Retry. |
 
 Switching workspaces keeps the ordering page and the admin console as they were, so a checkout, cancel, status
-change, refund request or arbitration retried after a switch reuses its Idempotency-Key. The merchant and rider
-consoles poll every 15 seconds while the tab is visible; the customer's refund cases every 10 seconds while the page is
-shown and a case is still open or refunding, and together with the order list whenever a notification poll (every 15
-seconds) brings a new notification, so an order that completes gets "Request a refund" without a refresh; the admin's
-after-sales section reads when opened and on Refresh. A
+change, refund request or arbitration retried after a switch reuses its Idempotency-Key. A signed-in user's browser
+holds one change-signal stream (`GET /events/stream`, ADR 0003): the merchant and rider consoles and the notifications
+read again on each signal of their list while the tab is visible, and poll only every 60 seconds while the stream is
+open, every 15 seconds while it is not. The customer's refund cases are read every 10 seconds while the page is
+shown and a case is still open or refunding, and together with the order list whenever a notification read (on a
+signal or a poll) brings a new notification, so an order that completes gets "Request a refund" without a refresh; the
+admin's after-sales section reads when opened and on Refresh. A
 deactivated merchant or rider (the backend answers `403` on `/merchant/**` and `/rider/**`) gets a notice instead of
 the raw error, polling stops, and Refresh checks again. A request the rate limiter refused (`429 RATE_LIMITED`) says
 "Too many requests. Try again in N seconds." in every workspace, N from its `Retry-After`.

@@ -12,16 +12,20 @@ const newestIdOf = (notifications: readonly OrderNotification[]) =>
   notifications.reduce((newest, notification) => Math.max(newest, notification.id), 0);
 
 /**
- * Order notifications for the signed-in user, polled every 15 seconds while polling
- * is enabled. Polling stops while the tab is hidden and catches up with one
- * immediate request when the tab becomes visible again. It also stops while the
- * ordering page is not the shown workspace (`shown: false`).
+ * Order notifications for the signed-in user, read again on every `notifications`
+ * signal while the user's stream is open (and every 60 seconds then, in case one was
+ * lost), else polled every 15 seconds, while polling is enabled. Polling stops while
+ * the tab is hidden and catches up with one immediate request when the tab becomes
+ * visible again. It also stops while the ordering page is not the shown workspace
+ * (`shown: false`).
  *
- * `onNewNotifications` is called when a read (a poll, `load()` or `reload()`) brings
- * a notification newer than every one an earlier read brought: ids only grow, so a
- * higher id means the backend wrote something since (an order completed, say), and
- * the page reads the data it is about again. The first read only sets that baseline,
- * and a superseded or failed read changes nothing.
+ * `onNewNotifications` is called when a read (on a signal, a poll, `load()` or
+ * `reload()`) brings a notification newer than every one an earlier read brought: ids
+ * only grow, so a higher id means the backend wrote something since (an order
+ * completed, say), and the page reads the data it is about again. The first read only
+ * sets that baseline, and a superseded or failed read changes nothing. That is how the
+ * order list and the after-sales overview follow the `notifications` signal: every
+ * change they show also writes a notification (ADR 0003), so they need no topic.
  */
 export function useNotifications(
   user: CurrentUser | null,
@@ -76,6 +80,7 @@ export function useNotifications(
   usePolling(() => void load(), {
     enabled: Boolean(user) && polling && shown,
     intervalMs: NOTIFICATION_POLL_MS,
+    signalTopic: "notifications",
   });
 
   return { notifications, loading, error, polling, setPolling, load, reload };

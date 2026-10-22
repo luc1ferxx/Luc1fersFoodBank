@@ -34,12 +34,12 @@ src/
                 decode.ts + dto.ts (typed DTOs and their decoders), endpoints.ts, proxyPaths.ts
   hooks/        useSession, useMenu, useCart, useCheckout, useOrders, useOrderHistory, useNotifications,
                 useMerchantOrders, useRiderConsole, useAccounts, useAdminTools,
-                useLatestRequest, useLiveResource, usePolling
-  components/   presentational sections, dialogs, ErrorBoundary
+                useLatestRequest, useLiveResource, usePolling, useServerSignals
+  components/   presentational sections, dialogs, ErrorBoundary, ServerSignalsProvider
   pages/        OrderingPage, MerchantConsole, RiderConsole, AdminConsole
   lib/          formatting, labels, workspaces (roles -> views), form and map helpers
   test/         fakeBackend.ts + fakeFulfilment.ts + fakeAdmin.ts + fixtures.ts (the in-memory API used by
-                the UI tests), helpers.tsx
+                the UI tests), fakeEventSource.ts (the EventSource jsdom lacks), helpers.tsx
 ```
 
 ## Workspaces
@@ -64,5 +64,5 @@ Behaviour worth knowing before changing things:
 - Retrying the same checkout, order cancel, or admin status change reuses its `Idempotency-Key`; editing the payment form starts a new attempt. Merchant and rider commands send no key: the backend makes them idempotent by state (a repeat returns the record unchanged), and a 404 or 409 re-reads the list.
 - Adding an item from another restaurant (`409 CART_RESTAURANT_CONFLICT`) opens a dialog: Cancel leaves the cart alone; "Clear cart & add" calls `DELETE /cart` and retries the add. A failed clear keeps the dialog; a failed add after the clear reports it next to the (now empty) cart.
 - Order cards load `GET /orders/{id}/history` on demand and again when the order's status changes.
-- Notifications and the merchant and rider consoles poll every 15 seconds only while the tab is visible, and refresh once when it becomes visible again (`usePolling`). Console lists go through `useLiveResource`: a filter switch or a command result drops any read still in flight, so an older response never replaces a newer one.
+- A signed-in user gets one change-signal stream (`EventSource` on `GET /events/stream`, `ServerSignalsProvider`, ADR 0003). Notifications and the merchant and rider consoles read again on each signal of their topic (`usePolling`'s `signalTopic`) and once whenever the stream (re)opens, and then poll only every 60 seconds (`PUSH_FALLBACK_POLL_MS`); without an open stream they poll every 15 seconds. Either way they read only while the tab is visible and refresh once when it becomes visible again. Console lists go through `useLiveResource`: a filter switch or a command result drops any read still in flight, so an older response never replaces a newer one.
 - Client-side environment variables must be prefixed `VITE_` (none are used today).

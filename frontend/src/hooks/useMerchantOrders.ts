@@ -58,10 +58,12 @@ const sendCommand = (orderId: number, command: MerchantCommand, reason: string) 
 
 /**
  * The merchant console's orders: GET /merchant/orders for the chosen status filter,
- * polled every 15 seconds while the tab is visible, plus accept / reject / preparing.
+ * plus accept / reject / preparing. The list is read again on every `merchant.orders`
+ * signal while the user's stream is open (and every 60 seconds then, in case one was
+ * lost), else polled every 15 seconds, in both cases only while the tab is visible.
  * `waiting` counts the PAID orders, which the accept timeout cancels when nobody
  * answers: from the list while the filter shows them all (ALL or PAID), from a PAID
- * read polled with the list otherwise.
+ * read made with the list otherwise.
  *
  * The commands are idempotent on the server (a repeat returns the order unchanged),
  * so a retry needs no Idempotency-Key. A command's result replaces the order on
@@ -97,7 +99,11 @@ export function useMerchantOrders() {
   }, [reloadList, reloadWaiting, waitingSource]);
 
   // Polling a 403 would only repeat it; Refresh checks again.
-  usePolling(reload, { enabled: polling && !forbidden, intervalMs: MERCHANT_POLL_MS });
+  usePolling(reload, {
+    enabled: polling && !forbidden,
+    intervalMs: MERCHANT_POLL_MS,
+    signalTopic: "merchant.orders",
+  });
 
   const waitingList = waitingSource === "list" ? orders.data : waitingOrders.data;
   const waiting = forbidden || waitingList === null ? null : waitingList.filter(isWaiting).length;
