@@ -191,8 +191,10 @@ describe("push signals", () => {
         backend.receiveMerchantOrder(merchantOrderFixture({ order_id: orderId }));
       }
     });
-    expect(await orderCard(9)).toBeInTheDocument();
+    // The first signal read at once. Checked before any real-time wait: the fake clock follows
+    // real time, so on a slow runner the window could end, and read again, while a card is awaited.
     expect(reads(backend, "/merchant/orders")).toBe(3);
+    expect(await orderCard(9)).toBeInTheDocument();
 
     // The window ends with reads owed: one read brings everything that changed meanwhile.
     endCoalesceWindow();
