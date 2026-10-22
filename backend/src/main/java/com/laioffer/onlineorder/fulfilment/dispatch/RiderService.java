@@ -82,8 +82,8 @@ public class RiderService {
     /**
      * Admin change of a rider's flags (PATCH /admin/riders/{riderId}); a null flag keeps its value. Deactivating takes
      * the rider off duty unless the same change says otherwise, and an inactive rider can never be on duty (409
-     * RIDER_INACTIVE). An admin putting a rider on duty is the operator's lever when no rider is on duty (README "No
-     * rider on duty"); otherwise riders set it themselves.
+     * RIDER_INACTIVE). An admin putting a rider on duty is the operator's lever when no rider is on duty
+     * (docs/fulfilment.md "No rider on duty"); otherwise riders set it themselves.
      *
      * <p>The rider row is locked first, so the change cannot interleave with the rider's own availability change or a
      * dispatch assignment of this rider. Deliveries the rider already holds stay assigned to them; an operator moves

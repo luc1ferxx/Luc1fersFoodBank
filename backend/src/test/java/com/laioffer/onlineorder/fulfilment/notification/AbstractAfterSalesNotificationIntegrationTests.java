@@ -149,9 +149,9 @@ abstract class AbstractAfterSalesNotificationIntegrationTests {
 
 
     /**
-     * Section 27, follow-up 13 (README "Out-of-order events"): a dead letter replayed after a later event of its case
-     * was notified is stale and writes no notification, which would describe a step the case has left; it keeps its
-     * mark and counts as skipped. A later event still notifies.
+     * Section 27, follow-up 13 (docs/fulfilment.md "Out-of-order events"): a dead letter replayed after a later event
+     * of its case was notified is stale and writes no notification, which would describe a step the case has left; it
+     * keeps its mark and counts as skipped. A later event still notifies.
      */
     @Test
     void staleEventReplayedAfterALaterOne_shouldNotNotify() {

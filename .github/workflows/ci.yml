@@ -123,7 +123,7 @@ jobs:
           changed=$(git diff --name-only --diff-filter=DMRT "$BASE_SHA" HEAD -- "$SCHEMAS" \
             ":(exclude)$SCHEMAS/catalog.json" ":(exclude)$SCHEMAS/SHA256SUMS")
           if [ -n "$changed" ]; then
-            echo "::error::Published event schemas never change; publish the next version instead (README \"Event contracts\"):"
+            echo "::error::Published event schemas never change; publish the next version instead (docs/correctness.md \"Event contracts\"):"
             echo "$changed"
             exit 1
           fi

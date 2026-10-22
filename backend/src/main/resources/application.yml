@@ -206,7 +206,7 @@ app:
     # unreachable after the send, can be claimed again once it is this old. Must exceed the longest
     # possible send: the producer's max.block.ms (5s) plus replay-timeout.
     replay-claim-timeout: ${DLT_REPLAY_CLAIM_TIMEOUT:30s}
-  # Event-driven order fulfilment (merchant, timeout, dispatch modules); see README "Order fulfilment".
+  # Event-driven order fulfilment (merchant, timeout, dispatch modules); see docs/fulfilment.md "Order fulfilment".
   # Each module consumes with its own consumer group, so each sees every event once.
   fulfilment:
     # Delivery events published by the dispatch module (same partition count as the order topic).

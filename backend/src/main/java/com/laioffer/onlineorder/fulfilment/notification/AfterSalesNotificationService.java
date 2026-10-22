@@ -14,9 +14,9 @@ import org.springframework.transaction.annotation.Transactional;
  * deduplicated like the delivery notifications: a processed_events mark per event, in the transaction of the
  * notification, plus one notification per order, event type and case (dedup_scope 'case:' || case id). A redelivered
  * event therefore adds nothing, while the second request of an order, whose events have the same types as the first's,
- * notifies again. A dead letter replayed after a later event of its case was notified is stale (README "Out-of-order
- * events"): its notice would describe a step the case has left, so it is not written. Only the events that notify
- * move this consumer's position in the case's events.
+ * notifies again. A dead letter replayed after a later event of its case was notified is stale (docs/fulfilment.md
+ * "Out-of-order events"): its notice would describe a step the case has left, so it is not written. Only the events
+ * that notify move this consumer's position in the case's events.
  */
 @Service
 public class AfterSalesNotificationService {

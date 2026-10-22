@@ -14,10 +14,10 @@ import java.util.List;
 
 
 /**
- * The CI check of the event contracts (README "Event contracts"): the published schemas are unchanged (SHA256SUMS), the
- * catalog matches the schema files, every version has sample events that it accepts, and every BACKWARD version accepts
- * the samples of the versions before it while those versions accept its samples. The fixture sets under
- * event-contract-fixtures show that each rule fails when it is broken.
+ * The CI check of the event contracts (docs/correctness.md "Event contracts"): the published schemas are unchanged
+ * (SHA256SUMS), the catalog matches the schema files, every version has sample events that it accepts, and every
+ * BACKWARD version accepts the samples of the versions before it while those versions accept its samples. The fixture
+ * sets under event-contract-fixtures show that each rule fails when it is broken.
  */
 class EventSchemaContractTests {
 

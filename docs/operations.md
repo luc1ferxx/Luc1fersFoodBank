@@ -215,7 +215,7 @@ docker run --rm --entrypoint /bin/promtool -v "$PWD:/etc/prometheus:ro" -w /etc/
 docker run --rm --entrypoint /bin/promtool -v "$PWD:/etc/prometheus:ro" -w /etc/prometheus prom/prometheus:v3.13.4 check config prometheus.yml
 ```
 
-Fulfilment staffing (README "Provisioning merchants and riders"):
+Fulfilment staffing (docs/fulfilment.md "Provisioning merchants and riders"):
 
 - A dead-lettered `order.accepted` with `onlineorder_fulfilment_dispatch_assignments_total{result="no_rider_attempt"}`
   rising means no rider was active and on duty. Get one on duty first: the rider uses `PUT /rider/me/availability`, or
@@ -236,7 +236,7 @@ Fulfilment staffing (README "Provisioning merchants and riders"):
   `rider.create`, `rider.update` and `delivery.reassign` with the admin, `rider.availability` and the rider's own
   `delivery.picked_up` / `delivery.delivered` with the rider's login (`ROLE_RIDER`).
 
-Rate limiter failing open (`OnlineOrderRateLimiterFailingOpen`, README "Security and Abuse Controls"):
+Rate limiter failing open (`OnlineOrderRateLimiterFailingOpen`, docs/correctness.md "Security and Abuse Controls"):
 
 - What it means: the token-bucket check of rate-limited requests (every write endpoint) failed in Redis, for some or all
   requests, in 8 of the last 20 half-minutes (a half-minute counts when a failure falls in the 2 minutes before it):
@@ -277,7 +277,7 @@ for another architecture.
 starts, so neither the host's or container's `TZ` nor `-Duser.timezone` in `JAVA_OPTS` changes it (the image sets
 neither). Every timestamp is UTC wall-clock time without an offset (`LocalDateTime` in `TIMESTAMP` columns and in the
 JSON), the PostgreSQL sessions of the pool and of Flyway are UTC, and so are the log timestamps; the frontend reads the
-JSON's timestamps as UTC (README "Timestamps and time zone"). Operator SQL that compares with the current time uses
+JSON's timestamps as UTC (docs/correctness.md "Timestamps and time zone"). Operator SQL that compares with the current time uses
 `now() AT TIME ZONE 'UTC'` (the runbook queries) or runs with `PGTZ=UTC` (`db/ops/repair_order_history.sql`).
 Rows written by a server in another zone keep that zone's wall-clock time; nothing converts them. The images already
 ran in UTC, so their deployments see no change. A backend whose JVM was not in UTC (`bootRun` on a laptop in another
@@ -566,7 +566,7 @@ runs the procedure for `orders` (a key other tables reference) and `idempotency_
 
 ## 8. Event contracts and per-aggregate order (V9-V9_2, V13, V14)
 
-README "Event contracts" describes the schemas, the validation and the evolution rules; this section is the operator's
+docs/correctness.md "Event contracts" describes the schemas, the validation and the evolution rules; this section is the operator's
 side.
 
 **Migrations.** V9 adds `outbox_events.aggregate_sequence` (nullable, no default: catalog only on PostgreSQL) and
@@ -576,7 +576,7 @@ published rows keep `NULL` until the outbox cleanup deletes them. `FAILED` rows 
 well: they stay what they were, terminal events that hold nothing back (the blocked-aggregate gauges ignore them), so
 the upgrade does not stall the orders they belong to. Triage them before or after the upgrade as before (`GET
 /admin/outbox/events/failed`, rows with `aggregate_sequence` null); a retry publishes such a row unordered, as before
-V9, and its consumers apply it under the out-of-order rules (README "Out-of-order events"). V9_1 builds the unique
+V9, and its consumers apply it under the out-of-order rules (docs/fulfilment.md "Out-of-order events"). V9_1 builds the unique
 partial index `idx_outbox_events_unpublished_aggregate (aggregate_type, aggregate_id, aggregate_sequence) WHERE status
 IN ('PENDING', 'PROCESSING', 'FAILED')` on PostgreSQL (H2 only records the version). Like V3 it is a plain `CREATE
 INDEX` in Flyway's transaction: it scans the table and blocks outbox writes (checkouts, status changes) meanwhile, about
@@ -847,7 +847,7 @@ at a random value below 2048 each millisecond). Checkout assigns it (`OrderNumbe
 order); the order APIs return it as `order_no`, a JSON string because JavaScript numbers lose digits past 2^53;
 notifications name the order by it, and so does the customer UI (`orderLabel` in `frontend/src/lib/labels.ts`; the
 merchant and rider consoles show the copy that the order events bring to their tables since V14, section 8, and the
-internal id for rows without one, see README "Honest Boundaries"). The internal `id` stays the key of
+internal id for rows without one, see docs/limitations.md "Honest Boundaries"). The internal `id` stays the key of
 every table and API path. Order numbers do not
 reveal how many orders exist, but they are not secrets: every endpoint still checks who may read the order.
 
@@ -892,7 +892,7 @@ own databases but one Kafka topology and shared order numbers would need disjoin
 ## 10. Money with currency (V11)
 
 V11 (`backend/src/main/java/db/migration/V11__Money_with_currency.java`) gives every amount a currency and a fixed
-scale; README "Money and currency" has the model. It creates the `currencies` reference table, adds
+scale; docs/correctness.md "Money and currency" has the model. It creates the `currencies` reference table, adds
 `currency CHAR(3) NOT NULL DEFAULT 'USD'` (checked to be three upper-case letters) to `restaurants`, `menu_items`,
 `carts`, `order_items`, `orders`, `order_history_items` and `merchant_orders`, turns every amount into `NUMERIC(12,2)`
 with a non-negative check, makes `restaurants.currency` reference `currencies`, and adds the composite keys that tie a
@@ -1198,7 +1198,7 @@ so the next tick's deadlines wait about the budget plus one gateway timeout (15s
 
 **Demo profile.** `SPRING_PROFILES_ACTIVE=h2,demo` (`application-demo.yml`) sets a 2h request window, 2m for the
 merchant, 3m for the customer and 5m for the platform, and turns the poller on although `h2` has no Kafka; the variables
-above still override it. The steps are in README "After-sales demo". With `h2` nothing consumes `after-sales-events`, so
+above still override it. The steps are in docs/after-sales.md "After-sales demo". With `h2` nothing consumes `after-sales-events`, so
 the merchant inbox stays empty (merchant commands answer 404) and no notifications are written; the merchant timeout
 still fires from the database and approves the request. `demo` on the full local stack shortens the same limits with
 Kafka on. The Kubernetes overlays do not set it.
@@ -1527,7 +1527,7 @@ rollout to staging, which has the real pod limits and a replica.
 
 ## 13. Push signals (SSE)
 
-`GET /events/stream` ([ADR 0003](adr/0003-push-signals.md), README "Push Signals (SSE)") keeps one text/event-stream
+`GET /events/stream` ([ADR 0003](adr/0003-push-signals.md), docs/push-signals.md "Push Signals (SSE)") keeps one text/event-stream
 response open per signed-in browser tab. After a commit that changes a merchant's orders or after-sales cases, a
 rider's deliveries or a customer's notifications, the writer publishes a signal without data, and the open streams of
 that restaurant, rider or customer tell their page to re-read its REST list. The consoles keep polling every 60

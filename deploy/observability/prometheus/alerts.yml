@@ -123,7 +123,7 @@ groups:
           summary: Outbox events reached FAILED
           description: '{{ $value }} outbox event(s) used up app.outbox.max-attempts. Fix the cause, then retry them with POST /admin/outbox/events/{id}/retry.'
 
-      # The publisher keeps each aggregate's events in order (README "Event contracts"), so a FAILED event holds back
+      # The publisher keeps each aggregate's events in order (docs/correctness.md "Event contracts"), so a FAILED event holds back
       # the later events of its order or delivery until an operator retries or abandons it: that order's fulfilment is
       # stuck.
       - alert: OnlineOrderOutboxAggregatesBlocked
@@ -216,7 +216,7 @@ groups:
           severity: warning
         annotations:
           summary: The rate limiter is failing open
-          description: 'The rate-limit store (Redis) failed bucket checks in {{ $value | humanize }} of the last 20 half-minutes (8 raise this alert), and the rate-limited requests whose check failed went through unchecked; when every check fails no bucket refuses anything (README "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
+          description: 'The rate-limit store (Redis) failed bucket checks in {{ $value | humanize }} of the last 20 half-minutes (8 raise this alert), and the rate-limited requests whose check failed went through unchecked; when every check fails no bucket refuses anything (docs/correctness.md "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
 
       # Monthly partitions of audit_log, order_status_history and processed_events (PostgreSQL, V10). The partition
       # maintenance job keeps app.partitions.months-ahead (3) partitions past the current month, so a healthy table

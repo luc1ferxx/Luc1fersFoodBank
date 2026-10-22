@@ -43,7 +43,7 @@ import java.util.UUID;
  * an order that already has a delivery, assigns no second rider. An order.accepted for an order whose order.cancelled
  * was already handled (a late or replayed event, for example the DLT replay below) assigns no rider. With no rider on
  * duty the event fails, is retried and finally dead-lettered; an operator gets a rider on duty and replays it
- * (README "Order fulfilment").
+ * (docs/fulfilment.md "Order fulfilment").
  *
  * <p>order.cancelled: the tombstone is set, and an open delivery is cancelled and its rider released
  * (delivery.cancelled).
