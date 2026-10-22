@@ -71,6 +71,10 @@ The customer's order list and after-sales overview need no topic of their own. E
 - Every instance subscribes and hands each message to its local streams for that recipient.
 - `app.push.fanout=redis` is the default. `local` delivers in-process only, for tests and single-instance runs.
 
+Amended 2026-10-22: each instance also subscribes to the sibling channel `onlineorder:push:v1:probe` and publishes there, every `app.push.probe-interval` (30 s), a probe `{"probe":"<instance id>","seq":N}` (a random UUID per instance and a counter); its own probe coming back before the next one keeps the gauge `onlineorder.push.subscribed` at 1, a missed or unpublishable probe sets it to 0, and every other instance's probe is ignored.
+
+The first alert on the subscription summed the signal and delivery counters cluster-wide (signals published, streams open, nothing delivered for 15 minutes), so it could not name the instance whose subscription was gone, stayed quiet while any other instance delivered, and fired on a load test whose customers held no streams; the per-instance gauge replaces it (`OnlineOrderPushSubscriptionDown`, 5 minutes at 0). With `fanout=local` the gauge is a constant 1.
+
 **Redis failure.** Publishing fails open: it logs, counts `onlineorder.push.publish_failures`, and lets the transaction stand. The clients notice nothing except that the polling fallback takes over.
 
 **Delivery guarantee.** At most once, best effort. A stream is told nothing about signals sent while it was down. Instead the client re-reads every subscribed list on each (re)connect.
@@ -103,6 +107,7 @@ Commands keep `applyAndReload`. Signals never bypass `useLiveResource`, so stale
 | `onlineorder.push.signals{topic}` | counter | Signals published |
 | `onlineorder.push.deliveries{topic}` | counter | Signals written to a local stream |
 | `onlineorder.push.publish_failures` | counter | Failed publishes |
+| `onlineorder.push.subscribed` | gauge | 1 while this instance receives the channel's messages (its own probe comes back), else 0 |
 
 Ingress (`deploy/k8s/base/ingress.yaml`) needs a read timeout above the keepalive and no response buffering for `/events/stream`.
 

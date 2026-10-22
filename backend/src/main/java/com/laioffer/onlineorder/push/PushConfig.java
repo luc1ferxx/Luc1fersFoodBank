@@ -96,15 +96,20 @@ public class PushConfig {
     @ConditionalOnProperty(name = "app.push.fanout", havingValue = "redis", matchIfMissing = true)
     PushSubscription pushSubscription(
             RedisConnectionFactory connectionFactory,
+            StringRedisTemplate redisTemplate,
             PushStreamRegistry registry,
+            PushMetrics metrics,
             ObjectMapper objectMapper,
             PushProperties properties
     ) {
         return new PushSubscription(
                 connectionFactory,
+                redisTemplate,
                 registry,
+                metrics,
                 objectMapper,
                 properties.channel(),
+                properties.probeInterval(),
                 SUBSCRIBE_RETRY_INITIAL_DELAY,
                 SUBSCRIBE_RETRY_MAX_DELAY
         );

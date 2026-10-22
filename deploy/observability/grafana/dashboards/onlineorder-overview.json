@@ -2546,7 +2546,7 @@
           "exemplar": false
         }
       ],
-      "description": "Signals written to an open stream, per topic (counted on the instance holding the stream, rates over 5m). Below the published rate while recipients have no stream open (a customer who ordered through the API, a merchant whose console is closed). Zero while signals are published and streams are open means no instance is subscribed to the Redis channel (OnlineOrderPushSignalsUndelivered after 15 minutes): redis-cli PUBSUB NUMSUB onlineorder:push:v1 should show one subscriber per instance, and each instance's log \"Subscribed to push channel\" after a reconnect."
+      "description": "Signals written to an open stream, per topic (counted on the instance holding the stream, rates over 5m). Below the published rate while recipients have no stream open (a customer who ordered through the API, a merchant whose console is closed). Zero while signals are published and streams are open means the instances holding the streams do not receive the channel's messages: the \"Push subscription\" stat below shows the share of instances whose own probe comes back (OnlineOrderPushSubscriptionDown after 5 minutes at 0 on an instance)."
     },
     {
       "type": "timeseries",
@@ -2643,6 +2643,69 @@
         }
       ],
       "description": "In red the signals lost before Redis (Redis unreachable or slower than REDIS_TIMEOUT, or the 10,000-signal publisher queue full; OnlineOrderPushPublishFailures after 10 minutes of them): their recipients see the change on the next fallback poll (60 s) instead of at once. Streams refused with 429 (a login past PUSH_MAX_STREAMS_PER_USER on that instance) or 503 (the instance at PUSH_MAX_STREAMS, shutting down, or unable to reach the database for the login lookups; OnlineOrderPushStreamsRefused after 10 minutes): those browsers poll and try the stream again after 30 s, doubling to 5 minutes. The first refusal of a status registers its series and is not counted here."
+    },
+    {
+      "type": "stat",
+      "id": 42,
+      "title": "Push subscription",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 100
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(onlineorder_push_subscribed{application=\"OnlineOrder\", instance=~\"$instance\"}) / count(onlineorder_push_subscribed{application=\"OnlineOrder\", instance=~\"$instance\"})",
+          "instant": false,
+          "range": true
+        }
+      ],
+      "description": "Share of the selected instances that receive their own push probe (onlineorder_push_subscribed: every PUSH_PROBE_INTERVAL (30s) an instance publishes a probe on onlineorder:push:v1:probe and expects it back before the next one). Below 100% an instance is not subscribed to the channel or cannot reach Redis: it publishes fine but receives nothing, its streams get keepalives only and its consoles poll every 60 s (OnlineOrderPushSubscriptionDown after 5 minutes). A fresh instance counts as 0 only until its first probe returns."
     }
   ]
 }

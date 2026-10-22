@@ -392,6 +392,11 @@ app:
     # which also re-checks the active flag of merchant and rider streams. Keep it well below every proxy's read
     # timeout (the ingress allows 120s on /events/stream).
     keepalive-interval: ${PUSH_KEEPALIVE_INTERVAL:25s}
+    # With the redis fan-out, every instance publishes a probe to itself this often on the ":probe" sibling of the
+    # channel above (its one listener container subscribes to both) and reports the gauge onlineorder.push.subscribed:
+    # 1 while its own probe comes back, 0 once one did not by the next probe or its publish failed, so an alert can name
+    # the instance whose subscription was lost (its streams fall back to polling meanwhile). The local fan-out reports 1.
+    probe-interval: ${PUSH_PROBE_INTERVAL:30s}
     # Per instance: a login over this is refused with 429 PUSH_STREAM_LIMIT, any stream over max-streams with 503.
     # Each stream holds one connection (no thread); keep max-streams below server.tomcat.max-connections.
     max-streams-per-user: ${PUSH_MAX_STREAMS_PER_USER:5}
