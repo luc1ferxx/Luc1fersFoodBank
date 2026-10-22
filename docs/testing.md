@@ -110,6 +110,7 @@ The backend runs on Spring Boot 4.1; [docs/spring-boot-4-migration.md](spring-bo
 | Build executable jar | `cd backend && ./gradlew bootJar --no-daemon` |
 | Run load test | `k6 run load-tests/order-flow.js`, against a backend started with `SECURITY_RATE_LIMIT_ENABLED=false` (the `signup` and `login` buckets per IP and `payment-checkout` per user refuse it otherwise) |
 | Backend CI gates | `cd backend && ./gradlew test jacocoTestReport jacocoTestCoverageVerification spotbugsMain -x buildFrontend -x syncFrontendBuild --no-daemon` |
+| One CI test shard (of 4) | `cd backend && ./gradlew test -PtestShard=2/4 -x buildFrontend -x syncFrontendBuild --no-daemon` |
 | Observability stack + app | `ONLINEORDER_SCRAPE_TARGETS=./prometheus/targets/compose docker compose -f deploy/observability/docker-compose.yml --profile app up -d --build` (Grafana on 3001) |
 | Build the image | `docker build -t onlineorder:local .` |
 | Render Kubernetes manifests | `kubectl kustomize deploy/k8s/overlays/staging` |
