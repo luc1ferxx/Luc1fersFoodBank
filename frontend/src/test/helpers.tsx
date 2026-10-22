@@ -1,11 +1,28 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import App from "../App";
+import { type FakeEventSource, latestEventStream } from "./fakeEventSource";
 
 export const renderApp = (): UserEvent => {
   const user = userEvent.setup();
   render(<App />);
   return user;
+};
+
+/**
+ * Waits for the signed-in user's change-signal stream and lets the fake backend accept
+ * it: the stream opens (or is refused) and every subscribed list reads once.
+ */
+export const connectEventStream = async (): Promise<FakeEventSource> => {
+  const stream = await waitFor(() => {
+    const latest = latestEventStream();
+    if (latest.readyState !== latest.CONNECTING || latest.closedByClient) {
+      throw new Error("No event stream is connecting.");
+    }
+    return latest;
+  });
+  act(() => stream.connect());
+  return stream;
 };
 
 /** Lets pending promise callbacks (e.g. a dropped stale response) run. */

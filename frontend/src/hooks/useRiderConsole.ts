@@ -31,10 +31,11 @@ const isForbidden = (error: unknown) => error instanceof ApiError && error.statu
 
 /**
  * The rider console: the rider's profile with the on-duty switch, and their own
- * deliveries with picked-up / delivered. Both are polled every 15 seconds while the
- * tab is visible, since assignments arrive asynchronously from the dispatch module.
- * The delivery commands are idempotent on the server; a 404 (not this rider's
- * delivery) or 409 (wrong state) re-reads the list.
+ * deliveries with picked-up / delivered. Assignments arrive asynchronously from the
+ * dispatch module, so both are read again on every `rider.deliveries` signal while the
+ * user's stream is open (and every 60 seconds then), else polled every 15 seconds, only
+ * while the tab is visible. The delivery commands are idempotent on the server; a 404
+ * (not this rider's delivery) or 409 (wrong state) re-reads the list.
  *
  * The backend re-checks the rider's active flag on every /rider/** request and
  * answers 403 for a deactivated rider (or a login bound to none). A 403 from either
@@ -62,7 +63,11 @@ export function useRiderConsole() {
   }, [reloadProfile, reloadDeliveries]);
 
   // Polling a 403 would only repeat it; Refresh checks again.
-  usePolling(reloadAll, { enabled: polling && !forbidden, intervalMs: RIDER_POLL_MS });
+  usePolling(reloadAll, {
+    enabled: polling && !forbidden,
+    intervalMs: RIDER_POLL_MS,
+    signalTopic: "rider.deliveries",
+  });
 
   const setOnDuty = useCallback(
     (onDuty: boolean) => {

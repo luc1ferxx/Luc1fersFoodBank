@@ -25,6 +25,15 @@ import {
   backendTimestamp,
   openCancellationRefund,
 } from "./fakeAfterSales";
+import {
+  type StreamAnswer,
+  customerRecipient,
+  publishSignal,
+  restaurantRecipient,
+  riderRecipient,
+  sendKeepalive,
+  serveEventStreams,
+} from "./fakeEventSource";
 import { type FakeContext, merchantRoutes, riderRoutes } from "./fakeFulfilment";
 import {
   type FakeHandler,
@@ -147,6 +156,12 @@ export interface FakeState {
  * endpoints answer 401 when no user is signed in and 403 without the route's role,
  * like the real security config. `on(method, path, handler)` overrides one route
  * (once by default) so a test can delay or fail a specific request.
+ *
+ * It also serves GET /events/stream (ADR 0003) to the FakeEventSource streams: a
+ * connect subscribes to the signed-in user's recipients, and every change of a list the
+ * ADR names publishes its topic to them, from the routes (a checkout's notification, a
+ * merchant command, a rider's move, an after-sales step) and from the helpers that play
+ * the other modules (`receiveMerchantOrder`, `assignDelivery`, `addNotification`).
  */
 export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOptions = {}) {
   const state: FakeState = {
@@ -216,6 +231,57 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
     },
   };
   const { recordStatusChange } = context;
+
+  /**
+   * GET /events/stream for the signed-in user, like the backend at connect: 401 without
+   * a session, 403 for a merchant or rider login that is not active (or bound to
+   * nothing), else the customer's recipient plus the restaurant's or the rider's.
+   */
+  const streamAnswer = (): StreamAnswer => {
+    const signedIn = state.user;
+    if (!signedIn) {
+      return { refusedWith: 401 };
+    }
+    const recipients = [customerRecipient(signedIn.id)];
+    if (signedIn.roles.includes(ROLES.merchant)) {
+      if (signedIn.merchant?.active !== true) {
+        return { refusedWith: 403 };
+      }
+      recipients.push(restaurantRecipient(signedIn.merchant.restaurant_id));
+    }
+    if (signedIn.roles.includes(ROLES.rider)) {
+      if (state.riderProfile?.active !== true) {
+        return { refusedWith: 403 };
+      }
+      recipients.push(riderRecipient(state.riderProfile.rider_id));
+    }
+    return { recipients };
+  };
+
+  /** OrderNotificationService's insert for the signed-in customer, and its signal. */
+  const addNotification = (notification: OrderNotification) => {
+    state.notifications.unshift(notification);
+    if (state.user) {
+      publishSignal(customerRecipient(state.user.id), "notifications");
+    }
+  };
+
+  /** The merchant inbox consumer received a paid order of `order.restaurant_id`. */
+  const receiveMerchantOrder = (order: MerchantOrder) => {
+    state.merchantOrders.unshift(order);
+    publishSignal(restaurantRecipient(order.restaurant_id), "merchant.orders");
+  };
+
+  /** Dispatch assigned `delivery` to the signed-in rider. */
+  const assignDelivery = (delivery: RiderDelivery) => {
+    const rider = state.riderProfile;
+    if (!rider) {
+      throw new Error("No rider to assign the delivery to");
+    }
+    state.deliveries.push(delivery);
+    rider.active_deliveries += 1;
+    publishSignal(riderRecipient(rider.rider_id), "rider.deliveries");
+  };
 
   // GET /me reads the rider row on every call, like the backend: a deactivation shows.
   const currentUser = (signedIn: CurrentUser): CurrentUser =>
@@ -367,7 +433,7 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
         };
         state.orders.unshift(order);
         recordStatusChange(order.id, null, "PAID", "CUSTOMER");
-        state.notifications.unshift({
+        addNotification({
           id: order.id,
           order_id: order.id,
           order_no: order.order_no,
@@ -503,13 +569,25 @@ export function createFakeBackend({ user = null, cartItems = [] }: FakeBackendOp
           : new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
       overrides.push({ method, pattern, handler, once });
     },
+    /** How GET /events/stream answers a connect now (`serveEventStreams`). */
+    streamAnswer,
+    /** The notification consumer wrote a notification for the signed-in customer. */
+    addNotification,
+    /** Another customer paid an order of `order.restaurant_id`: the merchant inbox got it. */
+    receiveMerchantOrder,
+    /** Dispatch assigned a delivery to the signed-in rider. */
+    assignDelivery,
+    /** A keepalive: open streams of a login deactivated meanwhile get `forbidden`. */
+    keepalive: sendKeepalive,
   };
 }
 
 export type FakeBackend = ReturnType<typeof createFakeBackend>;
 
+/** Installs the fake as global fetch and as the server of the FakeEventSource streams. */
 export function installFakeBackend(options?: FakeBackendOptions): FakeBackend {
   const backend = createFakeBackend(options);
   vi.stubGlobal("fetch", backend.fetch);
+  serveEventStreams(backend.streamAnswer);
   return backend;
 }

@@ -335,7 +335,7 @@ describe("merchant console", () => {
     const user = renderApp();
 
     await card(7);
-    await user.click(screen.getByLabelText("Refresh every 15 seconds"));
+    await user.click(screen.getByLabelText("Auto-refresh"));
     act(() => {
       vi.advanceTimersByTime(MERCHANT_POLL_MS * 3);
     });
@@ -378,7 +378,7 @@ describe("merchant console", () => {
     });
     await flushPromises();
     expect(ordersRequests(backend)).toHaveLength(2);
-    expect(screen.getByLabelText("Refresh every 15 seconds")).toBeDisabled();
+    expect(screen.getByLabelText("Auto-refresh")).toBeDisabled();
 
     backend.state.user = withMerchantActive(true);
     await user.click(screen.getByRole("button", { name: "Refresh" }));
@@ -700,7 +700,7 @@ describe("merchant after-sales", () => {
     });
     await flushPromises();
     expect(caseRequests(backend)).toHaveLength(2);
-    expect(screen.getByLabelText("Refresh every 15 seconds")).toBeDisabled();
+    expect(screen.getByLabelText("Auto-refresh")).toBeDisabled();
 
     backend.state.user = withMerchantActive(true);
     await user.click(screen.getByRole("button", { name: "Refresh" }));

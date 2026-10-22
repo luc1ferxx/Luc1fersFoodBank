@@ -7,6 +7,7 @@ import {
   type RiderDelivery,
 } from "../api/dto";
 import type { FakeState } from "./fakeBackend";
+import { publishSignal, restaurantRecipient, riderRecipient } from "./fakeEventSource";
 import { USD, orderNoFor } from "./fixtures";
 import { type FakeHandler, type FakeRoute, apiError, idParam, json, requestJson } from "./fakeHttp";
 
@@ -71,7 +72,8 @@ const forbidden = () => apiError(403, "Access denied", { code: "FORBIDDEN" });
  * `state.merchantOrders`. Commands are idempotent by state like the backend's: a
  * repeat returns the order unchanged, a wrong state is 409 ORDER_STATUS_CONFLICT.
  * Like the backend, every request re-checks the account: a login without an active
- * `state.user.merchant` gets 403 (replace `state.user` to deactivate mid-session).
+ * `state.user.merchant` gets 403 (replace `state.user` to deactivate mid-session). A
+ * command that changes an order signals `merchant.orders` to its restaurant.
  */
 export function merchantRoutes({ state, requireRole, recordStatusChange }: FakeContext) {
   const asActiveMerchant = (handler: FakeHandler): FakeHandler =>
@@ -104,6 +106,8 @@ export function merchantRoutes({ state, requireRole, recordStatusChange }: FakeC
     order.status = target;
     order.cancel_reason = cancelReason;
     order.updated_at = NOW;
+    // The inbox row changed: the restaurant's other consoles read it again.
+    publishSignal(restaurantRecipient(order.restaurant_id), "merchant.orders");
     return json({ ...order });
   };
 
@@ -150,6 +154,7 @@ export function merchantRoutes({ state, requireRole, recordStatusChange }: FakeC
  * `state.deliveries`; any other id is 404. Picked-up and delivered are idempotent
  * by state; a wrong state is 409 DELIVERY_STATUS_CONFLICT. Like the backend, every
  * request re-checks the rider: no profile, or `active: false`, is 403 on all of them.
+ * A move that changes a delivery signals `rider.deliveries` to the rider.
  */
 export function riderRoutes({ state, requireRole }: FakeContext) {
   const withProfile = (handler: FakeHandler): FakeHandler =>
@@ -189,6 +194,9 @@ export function riderRoutes({ state, requireRole }: FakeContext) {
           state.riderProfile.active_deliveries - 1,
         );
       }
+    }
+    if (state.riderProfile) {
+      publishSignal(riderRecipient(state.riderProfile.rider_id), "rider.deliveries");
     }
     return json({ ...delivery });
   };

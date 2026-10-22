@@ -17,6 +17,8 @@ export const API_PATH_PREFIXES: readonly string[] = [
   "/merchant",
   "/rider",
   "/admin",
+  // GET /events/stream, the change signals (EventSource, ADR 0003).
+  "/events",
 ];
 
 // Vite treats proxy keys that start with ^ as regular expressions matched against

@@ -269,6 +269,8 @@ describe("API endpoints", () => {
     const urls = fetchMock.mock.calls.map(([url]) => url);
     expect(urls).toHaveLength(calls.length);
     urls.forEach((url) => expect(url).toMatch(proxied));
+    // The change-signal stream is opened with EventSource, not fetch.
+    expect(api.EVENT_STREAM_PATH).toMatch(proxied);
     [
       "/",
       "/index.html",
