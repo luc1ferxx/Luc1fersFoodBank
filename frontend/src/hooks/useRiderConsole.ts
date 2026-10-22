@@ -32,9 +32,10 @@ const isForbidden = (error: unknown) => error instanceof ApiError && error.statu
 /**
  * The rider console: the rider's profile with the on-duty switch, and their own
  * deliveries with picked-up / delivered. Assignments arrive asynchronously from the
- * dispatch module, so both are read again on every `rider.deliveries` signal while the
- * user's stream is open (and every 60 seconds then), else polled every 15 seconds, only
- * while the tab is visible. The delivery commands are idempotent on the server; a 404
+ * dispatch module, so both are read again on a `rider.deliveries` signal while the
+ * user's stream is open, at most once a second (and every 60 seconds then), else polled
+ * every 15 seconds, only while the tab is visible. The delivery commands are idempotent
+ * on the server; a 404
  * (not this rider's delivery) or 409 (wrong state) re-reads the list.
  *
  * The backend re-checks the rider's active flag on every /rider/** request and

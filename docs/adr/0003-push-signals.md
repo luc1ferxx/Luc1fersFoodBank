@@ -84,7 +84,7 @@ The customer's order list and after-sales overview need no topic of their own. E
 
 **Polling with signals.** `usePolling` gets an optional `signalTopic`:
 
-- **Stream open:** the callback runs on every signal of that topic, plus once on every (re)connect. The interval is stretched to `PUSH_FALLBACK_POLL_MS` (60 s).
+- **Stream open:** the callback runs on every signal of that topic, plus once on every (re)connect. The interval is stretched to `PUSH_FALLBACK_POLL_MS` (60 s). Amended 2026-10-22: the callback runs at most once per `PUSH_SIGNAL_COALESCE_MS` (1 s) per topic, at once on the first signal of a quiet second and once more when that second ends for the signals it folded, after the deadline poller's cancellation of thousands of stale orders (6885 signals in 3 minutes) made a merchant console read its inbox about ten times a second, most reads aborted by the next.
 - **Stream closed or failed:** the screen polls at its old interval, as today.
 
 Commands keep `applyAndReload`. Signals never bypass `useLiveResource`, so stale responses are still dropped.

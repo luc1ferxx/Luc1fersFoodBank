@@ -1,6 +1,10 @@
 import { useEffect, useEffectEvent } from "react";
 import type { PushTopic } from "../api/dto";
-import { PUSH_FALLBACK_POLL_MS, useServerSignals } from "./useServerSignals";
+import {
+  PUSH_FALLBACK_POLL_MS,
+  PUSH_SIGNAL_COALESCE_MS,
+  useServerSignals,
+} from "./useServerSignals";
 
 const pageIsHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
 
@@ -9,8 +13,9 @@ export interface PollingOptions {
   intervalMs: number;
   /**
    * The change signal of the polled list (ADR 0003). While the user's stream is open,
-   * every signal of this topic and every (re)connect call `onTick` at once, and the
-   * interval stretches to PUSH_FALLBACK_POLL_MS; while it is closed, `intervalMs` holds.
+   * a signal of this topic or a (re)connect calls `onTick`, at most once per
+   * PUSH_SIGNAL_COALESCE_MS, and the interval stretches to PUSH_FALLBACK_POLL_MS; while
+   * it is closed, `intervalMs` holds.
    */
   signalTopic?: PushTopic;
 }
@@ -21,10 +26,14 @@ export interface PollingOptions {
  * latest `onTick` is always used, so a callback that changes (a new filter, say)
  * does not restart the interval.
  *
- * With a `signalTopic`, a signal of it (or a stream that reopens) calls `onTick` at once
- * while the tab is visible; one that arrives while it is hidden needs no call, since
- * showing the tab again calls once anyway. The open stream stretches the interval to
- * PUSH_FALLBACK_POLL_MS, which only catches a lost signal.
+ * With a `signalTopic`, the first signal of it (or a stream that reopens) after a quiet
+ * period calls `onTick` at once and opens a window of PUSH_SIGNAL_COALESCE_MS; the
+ * signals of that window fold into one more call when it ends, which opens the next
+ * window, so a burst of signals (an inbox changing thousands of times in a few minutes)
+ * reads once a second instead of once per signal. A signal that arrives while the tab is
+ * hidden needs no call, since showing the tab again calls once anyway; a call the window
+ * still owes when it ends on a hidden tab is dropped for the same reason. The open stream
+ * stretches the interval to PUSH_FALLBACK_POLL_MS, which only catches a lost signal.
  *
  * A tick checks `enabled` as of the latest committed render, not only the effect that
  * armed the interval: React clears the interval in an effect cleanup, which can run a
@@ -90,10 +99,43 @@ export function usePolling(
     if (!enabled || signalTopic === undefined) {
       return undefined;
     }
-    return subscribe(signalTopic, () => {
-      if (!pageIsHidden()) {
-        tick();
+
+    // The coalescing window: while it is open, signals only mark one read as pending.
+    let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
+    let pending = false;
+    const readAndOpenWindow = () => {
+      tick();
+      coalesceTimer = setTimeout(() => {
+        coalesceTimer = null;
+        if (!pending) {
+          return;
+        }
+        pending = false;
+        // On a hidden tab the owed read is dropped: showing the tab reads once anyway.
+        if (!pageIsHidden()) {
+          readAndOpenWindow();
+        }
+      }, PUSH_SIGNAL_COALESCE_MS);
+    };
+
+    const unsubscribe = subscribe(signalTopic, () => {
+      if (pageIsHidden()) {
+        return;
+      }
+      if (coalesceTimer === null) {
+        readAndOpenWindow();
+      } else {
+        pending = true;
       }
     });
+
+    return () => {
+      unsubscribe();
+      pending = false;
+      if (coalesceTimer !== null) {
+        clearTimeout(coalesceTimer);
+        coalesceTimer = null;
+      }
+    };
   }, [enabled, signalTopic, subscribe]);
 }

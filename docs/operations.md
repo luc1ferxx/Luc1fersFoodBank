@@ -75,6 +75,12 @@ Kafka listeners, and the outbox publisher's per-event lines ("Failed to publish 
 with the event's relay span in scope. The publisher's run-level lines (backoff, resume) cover many events at once and
 carry the trace id of the scheduled run, whose spans are not exported.
 
+A response whose client went away while it was written (a console's read aborted by its next one, a closed tab) logs
+one DEBUG line from `ApiExceptionHandler` ("Client went away while the response was written: GET /merchant/orders:
+...") instead of `DefaultHandlerExceptionResolver`'s WARN "Ignoring exception, response committed already"; the
+request still counts in `http_server_requests`, with the status the response already carried and `exception="none"`
+(the observation filter tags only an exception that escaped the dispatcher or was sent through `sendError`).
+
 ### Metrics and the management port
 
 `MANAGEMENT_SERVER_PORT=8081` (set by the Kubernetes ConfigMap and the `app` profile of `deploy/observability`; the

@@ -65,9 +65,10 @@ const sendAnswer = (caseId: number, answer: MerchantAfterSalesAnswer) => {
 /**
  * The merchant console's after-sales inbox: GET /merchant/after-sales for the chosen
  * status filter, plus the merchant's one answer to a request (approve, reject with a
- * reason, or a partial refund offer). Like the orders, the list is read again on every
- * `merchant.after_sales` signal while the user's stream is open (and every 60 seconds
- * then), else polled every 15 seconds, only while the tab is visible.
+ * reason, or a partial refund offer). Like the orders, the list is read again on a
+ * `merchant.after_sales` signal while the user's stream is open, at most once a second
+ * (and every 60 seconds then), else polled every 15 seconds, only while the tab is
+ * visible.
  *
  * Like the order commands, the answers are idempotent by state on the server (the same
  * answer again returns the case unchanged), so they carry no Idempotency-Key. An
