@@ -6,6 +6,11 @@ Run the normal backend verification path:
 (cd backend && ./gradlew test -x buildFrontend -x syncFrontendBuild --no-daemon)
 ```
 
+The test classes run in parallel JVMs: half the machine's CPUs, at most 4 (`maxParallelForks` in `backend/build.gradle`).
+Each JVM starts its own Testcontainers, so a Docker host with little memory may want fewer: `-PtestForks=2`, or
+`-PtestForks=1` to run the classes one after another, which is also the way to tell a real failure from one caused by
+the load of the other forks.
+
 Type-check, lint, test, and build the React app:
 
 ```sh
