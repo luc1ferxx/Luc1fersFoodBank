@@ -20,7 +20,7 @@ import java.util.Map;
 
 
 /**
- * Where events meet their published contracts (README "Event contracts"):
+ * Where events meet their published contracts (docs/correctness.md "Event contracts"):
  * <ul>
  *     <li>{@link #serialize}: the producer side. The outbox serializes every event with it before it stores the row,
  *     in the producing transaction. The event must match the exact schema version it declares; anything else is a bug,

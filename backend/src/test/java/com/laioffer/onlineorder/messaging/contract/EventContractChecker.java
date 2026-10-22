@@ -35,9 +35,9 @@ import java.util.regex.Pattern;
 
 
 /**
- * The evolution rules of the event contracts (README "Event contracts"), checked over a schema set and its sample events.
- * Each method returns the problems it found, worded for the developer who has to fix them; none means the set follows
- * the rules.
+ * The evolution rules of the event contracts (docs/correctness.md "Event contracts"), checked over a schema set and its
+ * sample events. Each method returns the problems it found, worded for the developer who has to fix them; none means
+ * the set follows the rules.
  *
  * <ul>
  *     <li>{@link #manifestProblems}: published schema files never change and are never deleted; SHA256SUMS holds the

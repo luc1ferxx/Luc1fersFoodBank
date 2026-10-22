@@ -11,7 +11,7 @@
 Everything lives in one PostgreSQL database today: the order domain, the catalog, customers and staff, the
 fulfilment modules (merchant, timeout, dispatch), the outbox, the consumers' deduplication marks, the audit trails.
 Checkout is one local ACID transaction (cart row lock, order, item snapshots, history row, outbox event, idempotency
-record; README "Correctness Model"), and the fulfilment modules already talk to the order module only through Kafka
+record; docs/correctness.md "Correctness Model"), and the fulfilment modules already talk to the order module only through Kafka
 events plus one synchronous seam, `OrderLifecycleCommands`.
 
 ### What the repository measured
@@ -24,7 +24,7 @@ events plus one synchronous seam, `OrderLifecycleCommands`.
 | Outbox relay before tuning (20 events / 3 s) | ~6.7 events/s; 164k of 166k events still pending after the run (~7 h to drain) | `app.outbox.batch-size` comment |
 | Outbox relay now | up to 200 events per 500 ms claim per instance | `application.yml` |
 | Outbox claim query with 1M published rows ahead of a 100k backlog | 115-225 ms per claim without the partial index, 0.1 ms with it (V3) | `V3__Add_outbox_unpublished_index` |
-| Cached catalog reads (`load-tests/catalog-read.js`, 50 VUs) | 52-56k req/s, p99 2.3-2.8 ms, no database connection | README "Catalog Caching" |
+| Cached catalog reads (`load-tests/catalog-read.js`, 50 VUs) | 52-56k req/s, p99 2.3-2.8 ms, no database connection | docs/correctness.md "Catalog Caching" |
 
 Connection budget (`deploy/k8s`): the base manifests allow 3 replicas x 30 pooled connections = 90 and staging
 2 x 30 = 60, under PostgreSQL's default `max_connections` of 100; production allows 6 replicas x 20 = 120, already

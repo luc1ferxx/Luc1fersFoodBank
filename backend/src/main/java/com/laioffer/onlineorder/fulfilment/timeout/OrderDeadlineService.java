@@ -37,7 +37,7 @@ import java.util.Set;
  * still in the status the deadline waits in. That also covers a merchant.order_received handled after the order was
  * accepted or cancelled (the two topics are consumed independently): its deadline fires as a no-op. Each event is
  * applied once per consumer (processed_events, same transaction). The module never reads the merchant module's
- * tables; the staffing decision reaches it only as that event. See README "Order fulfilment".
+ * tables; the staffing decision reaches it only as that event. See docs/fulfilment.md "Order fulfilment".
  */
 @Service
 public class OrderDeadlineService {

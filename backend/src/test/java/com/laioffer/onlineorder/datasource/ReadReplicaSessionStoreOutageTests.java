@@ -40,8 +40,8 @@ import java.util.function.BooleanSupplier;
 /**
  * Read/write splitting with the session store down: PostgreSQL primary and streaming replica, Spring Session in Redis
  * as deployed, and Redis paused (every command waits for its 500ms timeout). The public catalog never needed the
- * session store (README "What an outage still breaks"); routing, which consults the session for read-your-writes, must
- * not make it need it.
+ * session store (docs/correctness.md "What an outage still breaks"); routing, which consults the session for
+ * read-your-writes, must not make it need it.
  *
  * <p>A request without a session cookie has no session to look up, so its reads go to the replica at full speed. A
  * request with one (a signed-in user's) fails during such an outage in Spring MVC itself, with or without replicas:

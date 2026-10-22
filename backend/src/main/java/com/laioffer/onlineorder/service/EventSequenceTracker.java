@@ -13,10 +13,10 @@ import java.time.LocalDateTime;
 
 
 /**
- * Stale-event detection for consumers that keep per-aggregate state (README "Out-of-order events"). The outbox numbers
- * each aggregate's events (the envelope's {@code sequence}) and publishes them in that order, but a dead letter replayed
- * later still reaches a consumer after events that superseded it. Such a consumer calls {@link #advance} in its
- * transaction, after its processed_events mark and only for the events it applies:
+ * Stale-event detection for consumers that keep per-aggregate state (docs/fulfilment.md "Out-of-order events"). The
+ * outbox numbers each aggregate's events (the envelope's {@code sequence}) and publishes them in that order, but a dead
+ * letter replayed later still reaches a consumer after events that superseded it. Such a consumer calls
+ * {@link #advance} in its transaction, after its processed_events mark and only for the events it applies:
  * <ul>
  *     <li>true: the event is newer than every event of the aggregate this consumer applied, and is now the last one;</li>
  *     <li>false: the consumer already applied this or a later event of the aggregate. The event is stale; the consumer

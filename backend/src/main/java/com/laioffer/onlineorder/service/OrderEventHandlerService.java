@@ -9,8 +9,9 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Customer notifications for order events (order-notification consumer group): a processed_events mark per event, in
  * the transaction of the notification, plus one notification per order and event type. A dead letter replayed after a
- * later event of its order was notified is stale (README "Out-of-order events"): its notice would describe a step the
- * order has left, so it is not written. Every order event notifies, so each one moves this consumer's position.
+ * later event of its order was notified is stale (docs/fulfilment.md "Out-of-order events"): its notice would describe
+ * a step the order has left, so it is not written. Every order event notifies, so each one moves this consumer's
+ * position.
  */
 @Service
 public class OrderEventHandlerService {

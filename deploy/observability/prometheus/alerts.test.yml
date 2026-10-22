@@ -597,7 +597,7 @@ tests:
               severity: warning
             exp_annotations:
               summary: The rate limiter is failing open
-              description: 'The rate-limit store (Redis) failed bucket checks in 19 of the last 20 half-minutes (8 raise this alert), and the rate-limited requests whose check failed went through unchecked; when every check fails no bucket refuses anything (README "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
+              description: 'The rate-limit store (Redis) failed bucket checks in 19 of the last 20 half-minutes (8 raise this alert), and the rate-limited requests whose check failed went through unchecked; when every check fails no bucket refuses anything (docs/correctness.md "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
       # The last failure is at 30m; its half-minutes leave the 10m window by 37m.
       - eval_time: 40m
         alertname: OnlineOrderRateLimiterFailingOpen
@@ -623,7 +623,7 @@ tests:
               severity: warning
             exp_annotations:
               summary: The rate limiter is failing open
-              description: 'The rate-limit store (Redis) failed bucket checks in 8 of the last 20 half-minutes (8 raise this alert), and the rate-limited requests whose check failed went through unchecked; when every check fails no bucket refuses anything (README "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
+              description: 'The rate-limit store (Redis) failed bucket checks in 8 of the last 20 half-minutes (8 raise this alert), and the rate-limited requests whose check failed went through unchecked; when every check fails no bucket refuses anything (docs/correctness.md "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
       - eval_time: 20m
         alertname: OnlineOrderRateLimiterFailingOpen
         exp_alerts:
@@ -631,7 +631,7 @@ tests:
               severity: warning
             exp_annotations:
               summary: The rate limiter is failing open
-              description: 'The rate-limit store (Redis) failed bucket checks in 13 of the last 20 half-minutes (8 raise this alert), and the rate-limited requests whose check failed went through unchecked; when every check fails no bucket refuses anything (README "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
+              description: 'The rate-limit store (Redis) failed bucket checks in 13 of the last 20 half-minutes (8 raise this alert), and the rate-limited requests whose check failed went through unchecked; when every check fails no bucket refuses anything (docs/correctness.md "Security and Abuse Controls"). Check that the instances reach Redis, its latency and memory, and that it accepts EVAL; the WARN log "Rate-limit store unavailable for route ... Failing open." has the cause and onlineorder_security_rate_limit_store_failure_total{route} the routes.'
       - eval_time: 35m
         alertname: OnlineOrderRateLimiterFailingOpen
         exp_alerts: []

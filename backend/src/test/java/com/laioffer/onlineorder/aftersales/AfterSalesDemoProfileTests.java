@@ -99,9 +99,9 @@ class AfterSalesDemoProfileTests {
 
 
     /**
-     * The demo of the README: a request on a completed order gets the merchant's two minutes; once they are over (here
-     * moved into the past instead of waited for) the poller fires MERCHANT_TIMEOUT and executes the refund it created,
-     * and the case ends REFUNDED.
+     * The after-sales demo (docs/after-sales.md): a request on a completed order gets the merchant's two minutes; once
+     * they are over (here moved into the past instead of waited for) the poller fires MERCHANT_TIMEOUT and executes the
+     * refund it created, and the case ends REFUNDED.
      */
     @Test
     void unansweredRequest_shouldTimeOutAndBeRefundedByThePoller() {

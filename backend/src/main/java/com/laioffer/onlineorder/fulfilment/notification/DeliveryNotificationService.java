@@ -12,8 +12,9 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Customer notifications for delivery events (delivery-notification consumer group), deduplicated like the order
  * notifications: a processed_events mark per event plus one notification per order and event type. A dead letter
- * replayed after a later event of its delivery was notified is stale (README "Out-of-order events") and writes nothing.
- * Only the events that notify (assigned, picked up, delivered) move this consumer's position in the delivery's events.
+ * replayed after a later event of its delivery was notified is stale (docs/fulfilment.md "Out-of-order events") and
+ * writes nothing. Only the events that notify (assigned, picked up, delivered) move this consumer's position in the
+ * delivery's events.
  */
 @Service
 public class DeliveryNotificationService {

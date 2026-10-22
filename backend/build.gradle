@@ -77,9 +77,10 @@ dependencies {
     implementation 'io.micrometer:micrometer-registry-prometheus'
     implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.1'
     implementation 'com.github.ben-manes.caffeine:caffeine'
-    // Event contracts (JSON Schema draft 2020-12, see README "Event contracts"). 3.x is the line built on Jackson 3
-    // (tools.jackson); 3.0.6 is the newest release compiled against Jackson 3.1, the minor line Spring Boot 4.1 manages
-    // (3.0.7+ target 3.2). Schemas are JSON only, so the YAML reader and its snakeyaml-engine stay off the classpath.
+    // Event contracts (JSON Schema draft 2020-12, see docs/correctness.md "Event contracts"). 3.x is the line built on
+    // Jackson 3 (tools.jackson); 3.0.6 is the newest release compiled against Jackson 3.1, the minor line Spring Boot
+    // 4.1 manages (3.0.7+ target 3.2). Schemas are JSON only, so the YAML reader and its snakeyaml-engine stay off the
+    // classpath.
     implementation('com.networknt:json-schema-validator:3.0.6') {
         exclude group: 'tools.jackson.dataformat', module: 'jackson-dataformat-yaml'
     }

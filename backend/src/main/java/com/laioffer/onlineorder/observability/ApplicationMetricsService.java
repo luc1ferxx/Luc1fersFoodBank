@@ -199,7 +199,7 @@ public class ApplicationMetricsService {
 
 
     /**
-     * An event that broke its published contract (README "Event contracts").
+     * An event that broke its published contract (docs/correctness.md "Event contracts").
      *
      * @param side      producer (an event the application tried to write: a bug, its transaction was rolled back) or
      *                  consumer (a record read from Kafka: dead-lettered without retries)
