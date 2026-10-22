@@ -10,6 +10,9 @@ between them with the tabs under the header; guests and logins without a known r
 | `ROLE_RIDER` | Rider console: on-duty switch, the rider's own deliveries, picked up and delivered. |
 | `ROLE_ADMIN` | Admin console: list, create, and deactivate merchants (restaurant picked from the catalog) and riders; the manual order-status change and dead-letter replay; the after-sales queue by status, a case's history with its refund attempts and last error, arbitration, and the failed refunds with Retry. |
 
+Each console is its own JavaScript chunk, downloaded the first time its workspace is shown (the workspace shows
+"Loading merchant console..." meanwhile); customers and guests download only the ordering page and the shared code.
+
 Switching workspaces keeps the ordering page and the admin console as they were, so a checkout, cancel, status
 change, refund request or arbitration retried after a switch reuses its Idempotency-Key. A signed-in user's browser
 holds one change-signal stream (`GET /events/stream`, ADR 0003): the merchant and rider consoles and the notifications

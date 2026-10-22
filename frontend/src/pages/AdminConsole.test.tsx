@@ -35,7 +35,8 @@ const adminBackend = () => {
 const openAdmin = async (user: UserEvent, section: "Merchants" | "Riders" = "Merchants") => {
   await screen.findByText("Demo is signed in");
   await user.click(screen.getByRole("button", { name: "Admin console" }));
-  await user.click(screen.getByRole("button", { name: section }));
+  // The console is a lazy chunk: its tabs appear once it has loaded.
+  await user.click(await screen.findByRole("button", { name: section }));
   return screen.findByRole("region", { name: `${section.slice(0, -1)} accounts` });
 };
 
@@ -334,7 +335,7 @@ const failedRefundCase = (id: number, refundId: number): AfterSalesCase =>
 const openAfterSales = async (user: UserEvent) => {
   await screen.findByText("Demo is signed in");
   await user.click(screen.getByRole("button", { name: "Admin console" }));
-  await user.click(screen.getByRole("button", { name: "After-sales" }));
+  await user.click(await screen.findByRole("button", { name: "After-sales" }));
   return screen.findByRole("region", { name: "After-sales" });
 };
 

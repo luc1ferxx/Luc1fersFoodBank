@@ -55,7 +55,11 @@ src/
 | no known role, or no `roles` | Order food                                                                                                   |
 
 A user with several roles gets a switcher; a merchant or rider lands on their console, an admin who also orders on
-ordering. The workspace is keyed by user and view, so its state resets on login, logout, session expiry, or a switch.
+ordering. The shell is keyed by the signed-in user, so every workspace resets on login, logout or session expiry; a switch only hides the ordering page and the admin console (they stay mounted, keeping their forms and retry keys) and remounts the merchant and rider consoles.
+
+The merchant, rider and admin consoles are lazy imports (`React.lazy` in `App.tsx`), each built as its own chunk in
+`build/static/` and fetched the first time its workspace is shown (a loading row meanwhile), so a customer downloads
+only the ordering page and the shared code.
 
 Behaviour worth knowing before changing things:
 

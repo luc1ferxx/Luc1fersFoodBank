@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Suspense, lazy, useState } from "react";
 import "./App.css";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import type { OperationsTab } from "./components/OperationsPanel";
@@ -13,10 +13,22 @@ import {
   availableWorkspaces,
   defaultWorkspace,
 } from "./lib/workspaces";
-import { AdminConsole } from "./pages/AdminConsole";
-import { MerchantConsole } from "./pages/MerchantConsole";
 import { OrderingPage } from "./pages/OrderingPage";
-import { RiderConsole } from "./pages/RiderConsole";
+
+/**
+ * The staff consoles are lazy: Vite emits each as its own chunk, fetched the first time
+ * its workspace is shown, so a customer or guest downloads only the ordering page (the
+ * default workspace, imported eagerly above) and the shared code.
+ */
+const MerchantConsole = lazy(() =>
+  import("./pages/MerchantConsole").then((m) => ({ default: m.MerchantConsole })),
+);
+const RiderConsole = lazy(() =>
+  import("./pages/RiderConsole").then((m) => ({ default: m.RiderConsole })),
+);
+const AdminConsole = lazy(() =>
+  import("./pages/AdminConsole").then((m) => ({ default: m.AdminConsole })),
+);
 
 /**
  * Workspaces that stay mounted, hidden, once opened: the ordering page and the admin
@@ -76,12 +88,25 @@ function Workspaces({ session, menu, ...ordering }: WorkspacesProps) {
     }
   };
 
+  // One Suspense boundary per workspace, inside its error boundary (a chunk that fails
+  // to load lands there): a console's chunk still loading shows its own loading row and
+  // never suspends, and so hides, a kept-mounted workspace next to it.
   return (
     <ServerSignalsProvider signedIn={user !== null}>
       <WorkspaceSwitcher workspaces={workspaces} active={active} onChange={switchTo} />
       {mounted.map((workspace) => (
         <div key={workspace} hidden={workspace !== active}>
-          <ErrorBoundary label={WORKSPACE_LABELS[workspace]}>{content(workspace)}</ErrorBoundary>
+          <ErrorBoundary label={WORKSPACE_LABELS[workspace]}>
+            <Suspense
+              fallback={
+                <div className="loading-row">
+                  Loading {WORKSPACE_LABELS[workspace].toLowerCase()}...
+                </div>
+              }
+            >
+              {content(workspace)}
+            </Suspense>
+          </ErrorBoundary>
         </div>
       ))}
     </ServerSignalsProvider>
