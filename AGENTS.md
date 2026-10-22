@@ -3,7 +3,7 @@
 ## Project Shape
 
 - Full-stack food ordering app: React frontend in `frontend/`, Spring Boot backend in `backend/`.
-- Backend uses Java 17, Spring Boot 4.1 (Spring Framework 7, Spring Security 7, Spring Kafka 4), Gradle wrapper 8.14.3, PostgreSQL, Redis, Kafka, Spring Session, Actuator, Flyway, and Testcontainers 2. JSON is Jackson 3 (`tools.jackson.*`; the annotations stay `com.fasterxml.jackson.annotation`). `docs/spring-boot-4-migration.md` lists every package, test-annotation and property change from Spring Boot 3; apply it to code written against Spring Boot 3.
+- Backend uses Java 17, Spring Boot 4.1 (Spring Framework 7, Spring Security 7, Spring Kafka 4), Gradle wrapper 9.8.1, PostgreSQL, Redis, Kafka, Spring Session, Actuator, Flyway, and Testcontainers 2. JSON is Jackson 3 (`tools.jackson.*`; the annotations stay `com.fasterxml.jackson.annotation`). `docs/spring-boot-4-migration.md` lists every package, test-annotation and property change from Spring Boot 3; apply it to code written against Spring Boot 3.
 - Frontend is React 19 in strict TypeScript (6.0; typescript-eslint supports `<6.1`, so not the TypeScript 7 native compiler yet) built with Vite 8 (`@vitejs/plugin-react`), tested with Vitest + jsdom + React Testing Library, and linted with ESLint (flat config, type-aware typescript-eslint, react-hooks rules) + Prettier. No UI component library. CI and Docker use Node 24 LTS (the locked Vitest 5, jsdom 30, ESLint, and Vite together need Node `^22.22.2 || ^24.15.0 || >=26.0.0`; `engines` in `frontend/package.json` states it).
 
 ## Common Commands
