@@ -107,6 +107,12 @@ tasks.named('test') {
     // Spring caches one context per distinct test configuration (Testcontainers, Kafka and Redis clients included);
     // Gradle's 512 MB default ran out once the after-sales suites joined.
     maxHeapSize = '1g'
+    // The test classes run in several JVMs at once. Each fork keeps its own Spring context cache and starts its own
+    // containers (they are declared per class), so the fork count is bounded by the Docker host's memory, not by
+    // CPUs: four forks hold up to about 4 GB of containers at their peak. Half the CPUs, at most 4 (2 on the 4-vCPU
+    // CI runner); -PtestForks=N overrides it, and -PtestForks=1 runs the classes one after another.
+    maxParallelForks = (findProperty('testForks')
+            ?: Math.max(1, Math.min(4, Runtime.runtime.availableProcessors().intdiv(2)))) as Integer
     // The server runs in UTC (OnlineOrderApplication.main sets it); tests do not run main, so their JVM starts in UTC.
     systemProperty 'user.timezone', 'UTC'
 }
