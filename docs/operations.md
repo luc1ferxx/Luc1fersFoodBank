@@ -637,7 +637,9 @@ Pods of the previous release may run next to this one; the rollout needs no scal
   events still in the outbox, on the topics or among the dead letters as above. Rows it creates meanwhile have no
   number.
 
-To give the open rows of the rollout their numbers at once, an operator may run this once after the rollout. It reads
+Demo runs need none of this: the demo callback `db/demo/afterMigrate__backfill_order_numbers.sql` fills every row that
+has none at each start with `db/demo`. To give the open rows of the rollout their numbers at once, an operator may run
+this once after the rollout. It reads
 `orders` from the fulfilment tables, which the application never does, so it only works while they share one
 database (ADR 0001); the open rows are few, but run it in a quiet period:
 
@@ -1143,8 +1145,9 @@ replica with Redis hung; `FulfilmentReplicaRoutingContainerTests` runs the whole
 Refund requests on completed orders and the automatic refund of cancelled paid orders. Cases, refunds, the poller and
 the customer and admin API are in `backend/src/main/java/com/laioffer/onlineorder/aftersales/`, the merchant's side in
 `fulfilment.merchant`, the customer notifications in `fulfilment.notification`. The states, deadlines and amount rules
-are in [docs/adr/0002-after-sales-state-machine.md](adr/0002-after-sales-state-machine.md) (its sections 21-26 record
-what was built); this section is the operator's side.
+are in [docs/adr/0002-after-sales-state-machine.md](adr/0002-after-sales-state-machine.md), and what was built in
+[docs/adr/0002-after-sales-implementation.md](adr/0002-after-sales-implementation.md); this section is the operator's
+side.
 
 ### How a refund is paid
 
