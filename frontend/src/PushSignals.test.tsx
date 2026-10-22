@@ -347,7 +347,8 @@ describe("push signals", () => {
     }
     await user.click(logout);
     expect(await screen.findByText("Signed out.")).toBeInTheDocument();
-    expect(first.closedByClient).toBe(true);
+    // The shell closes the stream in an effect cleanup, which may run after the text is on screen.
+    await waitFor(() => expect(first.closedByClient).toBe(true));
     await flushPromises();
     expect(eventStreams()).toHaveLength(1);
 
@@ -372,7 +373,8 @@ describe("push signals", () => {
     act(() => backend.receiveMerchantOrder(merchantOrderFixture({ order_id: 9 })));
 
     expect(await screen.findByText(SESSION_EXPIRED_MESSAGE)).toBeInTheDocument();
-    expect(stream.closedByClient).toBe(true);
+    // The shell closes the stream in an effect cleanup, which may run after the text is on screen.
+    await waitFor(() => expect(stream.closedByClient).toBe(true));
     await flushPromises();
     expect(eventStreams()).toHaveLength(1);
   });
