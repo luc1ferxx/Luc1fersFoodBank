@@ -3,7 +3,7 @@
 The backend moved from Spring Boot 3.5.16 (Spring Framework 6.2, Jackson 2) to Spring Boot 4.1.1 (Spring Framework
 7.0.9, Spring Security 7.1, Spring Data 2026.0, Spring Kafka 4.1 with kafka-clients 4.2, Spring Session 4.1,
 Micrometer 1.17 / Micrometer Tracing 1.7, OpenTelemetry 1.62, Jackson 3.1, Flyway 12.4, Testcontainers 2.0,
-JUnit 6). Java stays at 17 and the Gradle wrapper at 8.14.3 (Spring Boot 4 supports Gradle 8.14 and later).
+JUnit 6). Java stays at 17; the Gradle wrapper is 9.8.1 (Spring Boot 4 supports Gradle 8.14 and later).
 
 This file is the checklist for porting code written against Spring Boot 3 (other branches, old snippets). Apply every
 row that matches; the compiler finds most of them, the ones marked **runtime** it does not.

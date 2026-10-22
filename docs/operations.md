@@ -275,7 +275,7 @@ Rate limiter failing open (`OnlineOrderRateLimiterFailingOpen`, docs/correctness
 ## 3. Container image
 
 The root `Dockerfile` builds the frontend in `node:24.22.0-bookworm-slim` (`npm ci`,
-`npm run build`), the jar in `gradle:8.14.3-jdk17-noble` (the npm-based `buildFrontend` task is skipped there and the
+`npm run build`), the jar in `gradle:9.8.1-jdk17-noble` (the npm-based `buildFrontend` task is skipped there and the
 stage's build output is embedded instead), extracts Spring Boot layers with `-Djarmode=tools`, and runs on
 `eclipse-temurin:17.0.20.1_1-jre-noble` as uid 10001 with `JAVA_OPTS="-XX:MaxRAMPercentage=75.0
 -XX:InitialRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError"` (override `JAVA_OPTS` to change them). Ports: 8080
