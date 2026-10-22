@@ -66,6 +66,15 @@ class PushFanoutTests {
 
 
     @Test
+    void localFanout_shouldReportTheSubscribedGaugeAsOne() {
+        local = new LocalPushFanout(registry, metrics);
+
+        Assertions.assertEquals(1.0, meters.get(PushMetrics.SUBSCRIBED).gauge().value(),
+                "no subscription to lose: the series exists and reads 1");
+    }
+
+
+    @Test
     void redisFanout_shouldPublishTheSignalAsJsonOnTheChannel() throws Exception {
         StringRedisTemplate template = Mockito.mock(StringRedisTemplate.class);
         CountDownLatch published = new CountDownLatch(1);

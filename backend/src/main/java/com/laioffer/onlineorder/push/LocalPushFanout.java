@@ -9,7 +9,8 @@ import org.springframework.beans.factory.DisposableBean;
 /**
  * {@code app.push.fanout=local}: delivers each signal to this instance's streams only, on the "push-delivery" thread.
  * For tests, the h2 profile and single-instance runs; with several instances a stream misses the signals written on
- * the others and relies on its fallback polling.
+ * the others and relies on its fallback polling. There is no subscription to lose, so {@code onlineorder.push.subscribed}
+ * reads a constant 1.
  */
 public class LocalPushFanout implements PushFanout, DisposableBean {
 
@@ -23,6 +24,7 @@ public class LocalPushFanout implements PushFanout, DisposableBean {
     public LocalPushFanout(PushStreamRegistry registry, PushMetrics metrics) {
         this.registry = registry;
         this.metrics = metrics;
+        metrics.bindSubscribed(() -> 1);
     }
 
 

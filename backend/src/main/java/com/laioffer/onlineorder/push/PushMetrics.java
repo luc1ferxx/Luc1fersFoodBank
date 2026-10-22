@@ -18,6 +18,7 @@ import java.util.function.Supplier;
 public class PushMetrics {
 
     static final String STREAMS = "onlineorder.push.streams";
+    static final String SUBSCRIBED = "onlineorder.push.subscribed";
     static final String SIGNALS = "onlineorder.push.signals";
     static final String DELIVERIES = "onlineorder.push.deliveries";
     static final String PUBLISH_FAILURES = "onlineorder.push.publish_failures";
@@ -52,6 +53,20 @@ public class PushMetrics {
     void bindStreams(Supplier<Number> openStreams) {
         Gauge.builder(STREAMS, openStreams)
                 .description("Open push streams on this instance")
+                .strongReference(true)
+                .register(meterRegistry);
+    }
+
+
+    /**
+     * Registers the gauge that says whether this instance receives the push channel: 1 while its own probe comes back
+     * ({@link PushSubscription}), else 0; the local fan-out, where every signal reaches the local streams, binds a
+     * constant 1 so the series exists in every configuration.
+     */
+    void bindSubscribed(Supplier<Number> subscribed) {
+        Gauge.builder(SUBSCRIBED, subscribed)
+                .description("1 while this instance receives the push channel's messages (its own probe comes back), "
+                        + "else 0")
                 .strongReference(true)
                 .register(meterRegistry);
     }

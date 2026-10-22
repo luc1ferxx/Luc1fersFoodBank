@@ -115,7 +115,7 @@ Application metrics on top of Spring Boot's (HTTP, Hikari, Tomcat, JVM, Kafka cl
 | `onlineorder_db_routing_reads_total{target,reason}`, `onlineorder_db_replica_lag_seconds{replica}`, `onlineorder_db_replica_routable{replica}` | Read replicas (only with `DATABASE_REPLICA_URLS`; section 11) |
 | `onlineorder_aftersales_refunds_total{outcome}`, `onlineorder_aftersales_cancellations_undercaptured_total`, `onlineorder_aftersales_deadlines_total{trigger,outcome}`, `onlineorder_aftersales_steps_total{action,from,to}`, `onlineorder_aftersales_merchant_decisions_total{decision}` | After-sales refunds, deadlines, case steps and merchant answers (section 12) |
 | `onlineorder_security_rate_limit_rejected_total{route}`, `onlineorder_security_rate_limit_store_failure_total{route}` | Requests refused with `429 RATE_LIMITED` per bucket, and requests let through unchecked because the bucket check failed in Redis (fail open; `OnlineOrderRateLimiterFailingOpen`) |
-| `onlineorder_push_streams`, `onlineorder_push_signals_total{topic}`, `onlineorder_push_deliveries_total{topic}`, `onlineorder_push_publish_failures_total` | Push signals (section 13): open streams on the instance, signals published after a commit, signals written to a stream, signals that could not be handed on |
+| `onlineorder_push_streams`, `onlineorder_push_signals_total{topic}`, `onlineorder_push_deliveries_total{topic}`, `onlineorder_push_publish_failures_total`, `onlineorder_push_subscribed` | Push signals (section 13): open streams on the instance, signals published after a commit, signals written to a stream, signals that could not be handed on, 1 while the instance receives the channel's messages (its own probe comes back) |
 
 `http.server.requests` publishes a percentiles histogram bounded to 5ms-10s plus exact SLO buckets at 50ms, 100ms,
 250ms, 500ms, 1s and 2s. The latency objective reads the `le="0.5"` bucket. It and the dashboard's latency panels leave
@@ -178,8 +178,9 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 - JVM and Tomcat: heap, GC pause share, CPU, threads, connections.
 - Rate limits: `429` refusals per bucket, and in red the requests let through because the rate-limit store failed
   (above zero means requests went through unchecked, all of them when Redis is down; `OnlineOrderRateLimiterFailingOpen`).
-- Push signals (SSE): open streams per instance, signals published and delivered per topic, and in red the signals
-  lost before Redis, next to the streams refused with `429` or `503` (section 13; `OnlineOrderPush*`).
+- Push signals (SSE): open streams per instance, signals published and delivered per topic, in red the signals lost
+  before Redis, next to the streams refused with `429` or `503`, and the subscription stat: the share of the selected
+  instances that receive their own push probe (section 13; `OnlineOrderPush*`).
 
 ### Alerts
 
@@ -211,7 +212,7 @@ the onlineorder metrics above, no rule errors and no firing alerts; every dashbo
 | `OnlineOrderAfterSalesDeadlinesFailing` | after-sales deadlines failed and backed off (`outcome="failed"`) in every 5m window for 15m; their cases stay past their deadline (section 12, "Deadlines") | warning |
 | `OnlineOrderCancellationsUndercaptured` | a paid order was cancelled with a refund above its captured payment in the last 15m; its refund will be given up (section 12) | warning |
 | `OnlineOrderPushPublishFailures` | push signals could not be published in every 5m window for 10m; their recipients' consoles fall back to the 60 s poll (section 13) | warning |
-| `OnlineOrderPushSignalsUndelivered` | more than 20 push signals published and streams open in the last 15m, but none written to a stream: no instance is subscribed to the Redis channel (section 13) | warning |
+| `OnlineOrderPushSubscriptionDown` | an instance has not received its own push probe for 5m (`onlineorder_push_subscribed` at 0): not subscribed to the Redis channel or unable to reach Redis, so it receives no signal and its consoles poll every 60 s (section 13) | warning |
 | `OnlineOrderPushStreamsRefused` | an instance answered `503` to stream connects in every 5m window for 10m: at `PUSH_MAX_STREAMS`, shutting down, or its database unreachable (section 13) | warning |
 
 On Kubernetes, load the same file into Prometheus (or wrap it in a `PrometheusRule` for the Prometheus Operator) and
@@ -371,7 +372,7 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
 | `CLEANUP_AUDIT_LOG_RETENTION`, `CLEANUP_ORDER_STATUS_HISTORY_RETENTION` | `0d` (kept forever) | - |
 | `PARTITIONS_MONTHS_AHEAD`, `PARTITIONS_LOCK_TIMEOUT`, `PARTITIONS_MAINTENANCE_ENABLED` | 3, 5s, true | - |
 | `AFTER_SALES_*` (time limits, poller, refunds, refund gateway, consumer groups), `KAFKA_AFTER_SALES_TOPIC`, `FULFILMENT_LISTENER_CONCURRENCY` | section 12 | - |
-| `PUSH_FANOUT`, `PUSH_CHANNEL`, `PUSH_STREAM_TIMEOUT`, `PUSH_KEEPALIVE_INTERVAL`, `PUSH_MAX_STREAMS_PER_USER`, `PUSH_MAX_STREAMS` | `redis`, `onlineorder:push:v1`, 30m, 25s, 5, 2000 (section 13) | - |
+| `PUSH_FANOUT`, `PUSH_CHANNEL`, `PUSH_STREAM_TIMEOUT`, `PUSH_KEEPALIVE_INTERVAL`, `PUSH_PROBE_INTERVAL`, `PUSH_MAX_STREAMS_PER_USER`, `PUSH_MAX_STREAMS` | `redis`, `onlineorder:push:v1`, 30m, 25s, 30s, 5, 2000 (section 13) | - |
 
 ## 5. CI gates
 
@@ -1560,7 +1561,7 @@ polling, never to wrong data.
 | `push-keepalive` | Every `PUSH_KEEPALIVE_INTERVAL` (25s): `:keepalive` to every stream (finds the clients that went away), then the active flag of every merchant and rider stream, read from the primary; a deactivated login gets `event: forbidden` and its stream ends |
 | `push-publisher` | The Redis `PUBLISH` of each committed signal (`PUSH_FANOUT=redis`), so a writer never waits for Redis |
 | `push-delivery` | Writes each signal the subscription received to this pod's streams of its recipient |
-| `push-subscriber` | Starts the subscription in the background and retries it (1s, doubling to 30s) while Redis is unreachable at startup; afterwards Lettuce reconnects and subscribes again by itself |
+| `push-subscriber` | Starts the subscription in the background and retries it (1s, doubling to 30s) while Redis is unreachable at startup; afterwards Lettuce reconnects and subscribes again by itself. Once the subscription started, every `PUSH_PROBE_INTERVAL` (30s) it publishes a probe on the `:probe` channel and checks that the previous one came back, which feeds `onlineorder_push_subscribed` |
 
 None of them is a `TaskScheduler` bean: a second one would make Spring Boot back off the scheduler every `@Scheduled`
 job runs on. Their queues hold 10,000 signals each; a full queue drops the signal and counts it as a publish failure.
@@ -1570,11 +1571,16 @@ job runs on. Their queues hold 10,000 signals each; a full queue drops the signa
 Every pod publishes on and subscribes to `onlineorder:push:v1` (`PUSH_CHANNEL`), messages like
 `{"recipient":"restaurant:5","topic":"merchant.orders"}` (recipients `customer:{id}`, `restaurant:{id}`, `rider:{id}`;
 topics `notifications`, `merchant.orders`, `merchant.after_sales`, `rider.deliveries`). Pub/sub keeps nothing: a pod
-that is not subscribed when a message is published never sees it. Check it with:
+that is not subscribed when a message is published never sees it. To know that it still receives, every pod also
+subscribes to the sibling channel `onlineorder:push:v1:probe` (the signal channel plus `:probe`) and publishes there,
+every `PUSH_PROBE_INTERVAL` (30s), a probe `{"probe":"<instance id>","seq":N}` (the instance id is a random UUID
+made at startup, the sequence a counter); every pod receives every other pod's probes and ignores them, and only its
+own coming back before the next one keeps `onlineorder_push_subscribed` at 1. Check it with:
 
 ```sh
 redis-cli PUBSUB NUMSUB onlineorder:push:v1    # one subscriber per running pod
 redis-cli SUBSCRIBE onlineorder:push:v1        # watch the signals go by
+redis-cli SUBSCRIBE onlineorder:push:v1:probe  # a probe per pod every 30 s
 ```
 
 Unknown message properties are ignored, so a release may add some. Any other change of the message format takes a new
@@ -1590,17 +1596,19 @@ signals during the rollout, which only costs the fallback polls. `PUSH_FANOUT=lo
 | `rate(onlineorder_push_signals_total[5m])` by `topic` | Committed changes that published a signal (counted on the writing pod) |
 | `rate(onlineorder_push_deliveries_total[5m])` by `topic` | Signals written to a stream (counted on the pod holding it); zero while signals rise means no stream listens or the subscription is down |
 | `rate(onlineorder_push_publish_failures_total[5m])` | Signals lost before Redis: Redis unreachable or slow (`spring.data.redis.timeout`), or a full queue. Clients poll meanwhile |
+| `onlineorder_push_subscribed` | 1 while the pod receives the channel's messages (its own probe, published every `PUSH_PROBE_INTERVAL` on the `:probe` channel, came back before the next one), 0 while it does not come back (not subscribed, while publishing fine) or cannot be published (Redis unreachable): either way the pod delivers nothing to its streams, and its consoles poll every 60 s. A constant 1 with `PUSH_FANOUT=local` |
 | `http_server_requests_seconds_count{uri="/events/stream",status=~"429\|503"}` | Streams refused at a limit |
 
 The dashboard row "Push signals (SSE)" plots them: open streams per instance, signals published and delivered per
-topic, and the publish failures with the refused streams.
+topic, the publish failures with the refused streams, and the subscription stat (the share of the selected instances
+whose `onlineorder_push_subscribed` is 1).
 
 ### Alerts
 
 | Alert | Fires when | Do |
 | --- | --- | --- |
 | `OnlineOrderPushPublishFailures` | `onlineorder_push_publish_failures_total` rose in every 5-minute window for 10 minutes | The WARN log "Could not publish a push signal on Redis channel ...; clients fall back to polling" (one per streak) has the cause. Check Redis as for `OnlineOrderRateLimiterFailingOpen` (`PING`, latency, memory) and that the application's Redis user may `PUBLISH` on the channel (`ACL GETUSER <user>`). A Redis outage fires the rate-limit alert and breaks the sessions too; failures here alone are pub/sub or the `push-publisher` thread (its queue full behind a stuck publish shows in a thread dump). The INFO log "Push signals reach Redis channel ... again" ends the streak; the signals lost meanwhile are not replayed, the consoles' next poll shows the changes |
-| `OnlineOrderPushSignalsUndelivered` | more than 20 signals were published in 15 minutes and streams are open, but no instance wrote one to a stream | No pod is subscribed: `redis-cli PUBSUB NUMSUB onlineorder:push:v1` should show one subscriber per running pod. A pod that lost its subscription logs "Subscribed to push channel ..." once it is back; one that never gets it back is restarted. Pods of two releases with different `PUSH_CHANNEL` values do not see each other's signals. The sums are cluster-wide, so one pod of several that lost its subscription does not fire it: `sum by (instance) (rate(onlineorder_push_deliveries_total[5m]))` shows that pod at zero. A load test with a console open on the side raises it too (its customers hold no streams) |
+| `OnlineOrderPushSubscriptionDown` | `onlineorder_push_subscribed` of an instance has been 0 for 5 minutes: its own probe has not come back (not subscribed while publishing fine, or Redis unreachable), so it delivers nothing to its streams | That pod is not subscribed to `onlineorder:push:v1` (Redis restarted and Lettuce has not subscribed again, a channel renamed on one side) or cannot reach Redis: `redis-cli PUBSUB NUMSUB onlineorder:push:v1` should show one subscriber per running pod, and the pod's log has the WARN "Push subscription lost on channel ..." where it started and the INFO "Push subscription restored on channel ..." once it is back. Its streams get keepalives only meanwhile and its consoles poll every 60 s; nothing needs replaying. A pod that does not get the subscription back is restarted (a restart renews it). Pods of two releases with different `PUSH_CHANNEL` values each probe their own channel, so this does not see that split. A whole Redis outage fires `OnlineOrderPushPublishFailures` and the rate-limit alert too; this one alone is that pod's subscription or its path to Redis |
 | `OnlineOrderPushStreamsRefused` | an instance answered `503` to stream connects in every 5-minute window for 10 minutes | `onlineorder_push_streams` of that instance near `PUSH_MAX_STREAMS` (2000): add pods or raise the limit (below `SERVER_TOMCAT_MAX_CONNECTIONS`). Otherwise the instance's login lookups cannot reach the database (the 5xx rate and the Hikari alerts show it too), or it has been shutting down for longer than its grace period. The refused browsers poll and try again after 30 s, doubling to 5 minutes; nothing needs replaying |
 
 ### Limits and capacity
@@ -1641,10 +1649,12 @@ appears until the stream ends.
 ### Failure modes
 
 - Redis down: publishes fail (`onlineorder_push_publish_failures_total` grows, `OnlineOrderPushPublishFailures` after
-  10 minutes of it, one warning per streak in the log) and
-  the subscription waits for Lettuce to reconnect; streams stay open and get only keepalives, and the consoles poll
-  every 60 s. When Redis is back the log says `Subscribed to push channel onlineorder:push:v1`; signals published in
-  between are lost, the next poll or signal shows the change.
+  10 minutes of it, one warning per streak in the log) and the subscription waits for Lettuce to reconnect; the probe
+  stops coming back, so `onlineorder_push_subscribed` drops to 0 within two probe intervals (the WARN "Push
+  subscription lost on channel ...") and `OnlineOrderPushSubscriptionDown` fires after 5 minutes of it; streams stay
+  open and get only keepalives, and the consoles poll every 60 s. When Redis is back the log says `Subscribed to push
+  channel onlineorder:push:v1` and, once a probe came back, `Push subscription restored on channel ...`; signals
+  published in between are lost, the next poll or signal shows the change.
 - A deactivated merchant or rider: their stream gets `event: forbidden` within one keepalive interval, and their next
   connect is `403`; every merchant and rider REST request checks the flag anyway.
 - A logout does not end the streams the browser had open (the client closes them; signals carry no data); the

@@ -17,6 +17,9 @@ import java.time.Duration;
  * @param streamTimeout     a stream is completed after this long; the browser opens a new one by itself
  * @param keepaliveInterval time between keepalive comments, each followed by the re-check of a merchant's or rider's
  *                          active flag; keep it well below the proxies' read timeout
+ * @param probeInterval     time between the probes each instance of the redis fan-out sends itself on the ":probe"
+ *                          sibling of the channel; a probe that has not come back by the next one reads as a lost
+ *                          subscription ({@code onlineorder.push.subscribed} 0)
  * @param maxStreamsPerUser open streams one login may hold on this instance; the next is refused with 429
  * @param maxStreams        open streams this instance holds at most; the next is refused with 503
  */
@@ -26,6 +29,7 @@ public record PushProperties(
         @DefaultValue("onlineorder:push:v1") String channel,
         @DefaultValue("30m") Duration streamTimeout,
         @DefaultValue("25s") Duration keepaliveInterval,
+        @DefaultValue("30s") Duration probeInterval,
         @DefaultValue("5") int maxStreamsPerUser,
         @DefaultValue("2000") int maxStreams
 ) {
@@ -45,6 +49,7 @@ public record PushProperties(
         }
         requirePositive("app.push.stream-timeout", streamTimeout);
         requirePositive("app.push.keepalive-interval", keepaliveInterval);
+        requirePositive("app.push.probe-interval", probeInterval);
         if (maxStreamsPerUser < 1 || maxStreams < 1) {
             throw new IllegalArgumentException(
                     "app.push.max-streams-per-user and app.push.max-streams must be at least 1");

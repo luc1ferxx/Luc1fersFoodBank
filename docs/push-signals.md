@@ -71,13 +71,19 @@ buffering off ([docs/operations.md](operations.md) section 13).
 | `app.push.channel` (`PUSH_CHANNEL`) | `onlineorder:push:v1` | Redis pub/sub channel; the suffix versions the message format |
 | `app.push.stream-timeout` (`PUSH_STREAM_TIMEOUT`) | `30m` | A stream's lifetime (its own async timeout; `spring.mvc.async.request-timeout` does not apply) |
 | `app.push.keepalive-interval` (`PUSH_KEEPALIVE_INTERVAL`) | `25s` | Keepalive comment and the re-check of merchant and rider streams |
+| `app.push.probe-interval` (`PUSH_PROBE_INTERVAL`) | `30s` | The probe round trip: a probe published on the `:probe` channel, whose return before the next one marks this instance as receiving (`onlineorder.push.subscribed`) |
 | `app.push.max-streams-per-user` (`PUSH_MAX_STREAMS_PER_USER`) | `5` | Open streams of one login per instance, then `429 PUSH_STREAM_LIMIT` |
 | `app.push.max-streams` (`PUSH_MAX_STREAMS`) | `2000` | Open streams per instance, then `503` |
 
 Metrics: `onlineorder.push.streams` (gauge, open streams on this instance), `onlineorder.push.signals{topic}`
-(published after a commit), `onlineorder.push.deliveries{topic}` (written to a stream of this instance) and
-`onlineorder.push.publish_failures` (signals that could not be handed on: Redis unavailable, a full queue). The Grafana
-row "Push signals (SSE)" shows them, and three alerts watch them: `OnlineOrderPushPublishFailures` (signals lost before
-Redis for 10 minutes), `OnlineOrderPushSignalsUndelivered` (signals published and streams open, but none delivered for
-15 minutes: no instance is subscribed to the channel) and `OnlineOrderPushStreamsRefused` (an instance answered 503 to
-streams for 10 minutes). docs/operations.md section 13 has the runbook for each.
+(published after a commit), `onlineorder.push.deliveries{topic}` (written to a stream of this instance),
+`onlineorder.push.publish_failures` (signals that could not be handed on: Redis unavailable, a full queue) and
+`onlineorder.push.subscribed` (gauge, 1 while this instance receives the channel's messages: every
+`app.push.probe-interval` it publishes `{"probe":"<its id>","seq":N}` on the sibling channel
+`onlineorder:push:v1:probe`, which it subscribes to as well, and expects it back before the next one; every other
+instance's probe is ignored, and with `fanout=local` the gauge is a constant 1). The Grafana row "Push signals (SSE)"
+shows them, and three alerts watch them: `OnlineOrderPushPublishFailures` (signals lost before Redis for 10 minutes),
+`OnlineOrderPushSubscriptionDown` (an instance has not received its own probe for 5 minutes: it is not subscribed to
+the channel or cannot reach Redis, so it publishes fine but receives nothing and its consoles are on the 60 s fallback
+poll) and `OnlineOrderPushStreamsRefused` (an instance answered 503 to streams for 10 minutes). docs/operations.md
+section 13 has the runbook for each.

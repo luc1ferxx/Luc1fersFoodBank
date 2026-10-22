@@ -366,26 +366,25 @@ groups:
           description: '{{ $value | humanize }} push signal(s) could not be published in the last 5 minutes, and publishes have kept failing for 10 minutes; their recipients'' consoles see each change on their next fallback poll (60 s) instead of at once. The WARN log "Could not publish a push signal on Redis channel ..." (one per streak) has the cause; check that the instances reach Redis (redis-cli PING, --latency) and that their Redis user may PUBLISH on onlineorder:push:v1 (docs/operations.md section 13).'
 
       # Every instance subscribes to the channel on its push-subscriber thread and writes what it receives to its own
-      # streams. One whose subscription is gone (Redis restarted and Lettuce has not subscribed again, a channel renamed
-      # on one side of a rollout) publishes fine and delivers nothing, without an error: its streams get keepalives
-      # only, and their consoles fall back to the 60 s poll. Deliveries trail signals legitimately (a recipient with no
-      # stream open: a customer ordering through the API, a merchant whose console is closed), so this asks for streams
-      # open and signals flowing with not one delivered in 15 minutes. The cluster-wide sums keep a quiet instance with
-      # one idle console from raising it, at the price of missing one instance of several that lost its subscription
-      # (sum by (instance) (rate(onlineorder_push_deliveries_total[5m])) shows that). A load test with a console open
-      # on the side raises it: the test's customers hold no streams.
-      - alert: OnlineOrderPushSignalsUndelivered
-        expr: |
-          sum(increase(onlineorder_push_signals_total{application="OnlineOrder"}[15m])) > 20
-          and
-          sum(increase(onlineorder_push_deliveries_total{application="OnlineOrder"}[15m])) == 0
-          and
-          sum(onlineorder_push_streams{application="OnlineOrder"}) > 0
+      # streams. To know that it still receives, each instance also subscribes to the sibling channel
+      # onlineorder:push:v1:probe and publishes there, every app.push.probe-interval (30s), a probe
+      # {"probe":"<its id>","seq":N}; onlineorder_push_subscribed is 1 while its own probe comes back before the next
+      # one (every other instance's probe is ignored) and 0 while it does not, or while the probe cannot be published.
+      # 0 means its own probe did not come back: it is not subscribed (Redis restarted and Lettuce has not subscribed
+      # again) while publishing fine, or it cannot reach Redis at all; either way its streams get keepalives only, and
+      # its consoles fall back to the 60 s poll. A fresh instance reads 0 only until its first probe returns
+      # (milliseconds), well within the `for`. Pods of two
+      # releases with different PUSH_CHANNEL values each probe their own channel, so the gauge does not see that split
+      # (those pods do not see each other's signals during the rollout, which costs the fallback polls). With
+      # app.push.fanout=local the gauge is a constant 1.
+      - alert: OnlineOrderPushSubscriptionDown
+        expr: max by (instance) (onlineorder_push_subscribed{application="OnlineOrder"}) == 0
+        for: 5m
         labels:
           severity: warning
         annotations:
-          summary: Push signals reach no stream
-          description: '{{ $value | humanize }} push signals were published in the last 15 minutes and streams are open, but none was written to a stream: no instance receives the signals, so every console is on its 60 s fallback poll. redis-cli PUBSUB NUMSUB onlineorder:push:v1 should show one subscriber per instance; an instance that lost its subscription logs "Subscribed to push channel ..." once it is back, and a restart renews it. Instances of two releases with different PUSH_CHANNEL values do not see each other''s signals (docs/operations.md section 13).'
+          summary: Push subscription down on {{ $labels.instance }}
+          description: 'Instance {{ $labels.instance }} has not received its own push probe for 5 minutes: it is not subscribed to onlineorder:push:v1 or cannot reach Redis, so signals published anywhere do not reach its streams and its consoles are on the 60 s fallback poll. The WARN log "Push subscription lost on channel ..." marks the start and the INFO log "Push subscription restored on channel ..." the end. redis-cli PUBSUB NUMSUB onlineorder:push:v1 should show one subscriber per instance; a restart renews the subscription (docs/operations.md section 13).'
 
       # A stream connect is answered 503 when the instance already holds app.push.max-streams (2000), while it shuts
       # down, or when the login lookups at connect (merchant and rider bindings) cannot reach the database. The browser
