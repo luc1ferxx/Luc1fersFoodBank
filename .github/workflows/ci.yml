@@ -31,8 +31,10 @@ jobs:
       - run: npm test
       - run: npm run build
 
-  # The test classes are split over several runners (-PtestShard=i/N, backend/build.gradle); each shard uploads its
-  # results and its JaCoCo data, and backend-coverage merges the data for the coverage gate. SpotBugs runs on its own.
+  # The test classes are split over several runners (-PtestShard=i/N, backend/build.gradle), the slices balanced by the
+  # measured durations in backend/config/test-durations.properties (refreshed occasionally from a green run's
+  # backend-test-reports-* artifacts with backend/scripts/test-durations.py); each shard uploads its results and its
+  # JaCoCo data, and backend-coverage merges the data for the coverage gate. SpotBugs runs on its own.
   backend-test:
     runs-on: ubuntu-latest
     strategy:
