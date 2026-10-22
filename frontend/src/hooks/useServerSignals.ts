@@ -17,6 +17,14 @@ import { EVENT_STREAM_PATH } from "../api/endpoints";
 export const PUSH_FALLBACK_POLL_MS = 60000;
 
 /**
+ * The shortest time between two reads a topic's signals can cause (usePolling). The first
+ * signal of a quiet period reads at once; the signals of the next PUSH_SIGNAL_COALESCE_MS
+ * fold into one read when that window ends. It bounds a burst (an inbox the backend
+ * changes thousands of times in a few minutes) to one read per second per topic.
+ */
+export const PUSH_SIGNAL_COALESCE_MS = 1000;
+
+/**
  * The wait before a new stream once the browser gave one up (readyState CLOSED: the
  * server refused it with 401, 403, 429 or 503, or a reconnect failed). It doubles with
  * every give-up in a row, up to STREAM_RETRY_MAX_MS, and starts over once a stream opens.

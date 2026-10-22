@@ -16,11 +16,12 @@ Each console is its own JavaScript chunk, downloaded the first time its workspac
 Switching workspaces keeps the ordering page and the admin console as they were, so a checkout, cancel, status
 change, refund request or arbitration retried after a switch reuses its Idempotency-Key. A signed-in user's browser
 holds one change-signal stream (`GET /events/stream`, ADR 0003): the merchant and rider consoles and the notifications
-read again on each signal of their list while the tab is visible, and poll only every 60 seconds while the stream is
-open, every 15 seconds while it is not. The customer's refund cases are read every 10 seconds while the page is
-shown and a case is still open or refunding, and together with the order list whenever a notification read (on a
-signal or a poll) brings a new notification, so an order that completes gets "Request a refund" without a refresh; the
-admin's after-sales section reads when opened and on Refresh. A
-deactivated merchant or rider (the backend answers `403` on `/merchant/**` and `/rider/**`) gets a notice instead of
-the raw error, polling stops, and Refresh checks again. A request the rate limiter refused (`429 RATE_LIMITED`) says
-"Too many requests. Try again in N seconds." in every workspace, N from its `Retry-After`.
+read again on a signal of their list while the tab is visible, at most once a second per list (the first signal of a
+quiet second reads at once; the rest of that second fold into one read when it ends), and poll only every 60 seconds
+while the stream is open, every 15 seconds while it is not. The customer's refund cases are read every 10 seconds
+while the page is shown and a case is still open or refunding, and together with the order list whenever a
+notification read (on a signal or a poll) brings a new notification, so an order that completes gets "Request a
+refund" without a refresh; the admin's after-sales section reads when opened and on Refresh. A deactivated merchant or
+rider (the backend answers `403` on `/merchant/**` and `/rider/**`) gets a notice instead of the raw error, polling
+stops, and Refresh checks again. A request the rate limiter refused (`429 RATE_LIMITED`) says "Too many requests. Try
+again in N seconds." in every workspace, N from its `Retry-After`.

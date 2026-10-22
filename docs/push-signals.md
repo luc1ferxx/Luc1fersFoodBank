@@ -3,10 +3,12 @@
 The merchant's orders and after-sales inbox, the rider's deliveries and the customer's notifications used to be
 polled every 10-15 seconds. Now the server pushes **change signals** over Server-Sent Events
 ([ADR 0003](adr/0003-push-signals.md), `com.laioffer.onlineorder.push`): a signal only says "this list of yours
-changed", and the client answers it by reading the REST endpoint it already uses. Signals carry no data, so a lost or
-duplicated one costs a late or an extra read, never a wrong screen, and the REST reads (with their access checks,
-read-replica rules and stale-response handling) stay the only source of data. The consoles keep polling, every 60
-seconds while their stream is open and at the old interval while it is not.
+changed", and the client answers it by reading the REST endpoint it already uses, at most once a second per topic
+(`PUSH_SIGNAL_COALESCE_MS`: the first signal of a quiet second reads at once, the rest of that second fold into one
+read when it ends). Signals carry no data, so a lost or duplicated one costs a late or an extra read, never a wrong
+screen, and the REST reads (with their access checks, read-replica rules and stale-response handling) stay the only
+source of data. The consoles keep polling, every 60 seconds while their stream is open and at the old interval while
+it is not.
 
 `GET /events/stream` (session login, `text/event-stream`, servlet async: an open stream holds a connection but no
 thread) sends, exactly:

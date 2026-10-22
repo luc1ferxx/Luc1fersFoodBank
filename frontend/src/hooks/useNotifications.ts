@@ -12,9 +12,10 @@ const newestIdOf = (notifications: readonly OrderNotification[]) =>
   notifications.reduce((newest, notification) => Math.max(newest, notification.id), 0);
 
 /**
- * Order notifications for the signed-in user, read again on every `notifications`
- * signal while the user's stream is open (and every 60 seconds then, in case one was
- * lost), else polled every 15 seconds, while polling is enabled. Polling stops while
+ * Order notifications for the signed-in user, read again on a `notifications` signal
+ * while the user's stream is open, at most once a second (`usePolling` folds a burst
+ * into one read, and reads every 60 seconds then, in case a signal was lost), else
+ * polled every 15 seconds, while polling is enabled. Polling stops while
  * the tab is hidden and catches up with one immediate request when the tab becomes
  * visible again. It also stops while the ordering page is not the shown workspace
  * (`shown: false`).

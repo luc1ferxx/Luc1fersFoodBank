@@ -7,6 +7,7 @@ import { resetVisibility, setVisibility } from "../test/helpers";
 import { usePolling } from "./usePolling";
 import {
   PUSH_FALLBACK_POLL_MS,
+  PUSH_SIGNAL_COALESCE_MS,
   STREAM_RETRY_BASE_MS,
   STREAM_RETRY_MAX_MS,
   useServerSignals,
@@ -32,6 +33,13 @@ function Status() {
 
 const status = () => screen.getByRole("paragraph").textContent;
 
+/** Lets the coalescing window that a read opened end, so the next signal reads at once. */
+const endCoalesceWindow = () => {
+  act(() => {
+    vi.advanceTimersByTime(PUSH_SIGNAL_COALESCE_MS);
+  });
+};
+
 describe("ServerSignalsProvider", () => {
   afterEach(() => {
     resetVisibility();
@@ -39,6 +47,7 @@ describe("ServerSignalsProvider", () => {
   });
 
   it("calls the subscribers of a signal's topic only, and every subscriber when the stream opens", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const orders = vi.fn();
     const deliveries = vi.fn();
     render(
@@ -55,9 +64,14 @@ describe("ServerSignalsProvider", () => {
     act(() => stream.connect());
     expect(status()).toBe("connected");
     expect([orders.mock.calls.length, deliveries.mock.calls.length]).toEqual([1, 1]);
+    endCoalesceWindow();
 
     act(() => stream.signal("merchant.orders"));
+    expect([orders.mock.calls.length, deliveries.mock.calls.length]).toEqual([2, 1]);
+    // A second signal within the window folds into one read when the window ends.
     act(() => stream.signal("merchant.orders"));
+    expect([orders.mock.calls.length, deliveries.mock.calls.length]).toEqual([2, 1]);
+    endCoalesceWindow();
     expect([orders.mock.calls.length, deliveries.mock.calls.length]).toEqual([3, 1]);
     act(() => stream.signal("rider.deliveries"));
     expect([orders.mock.calls.length, deliveries.mock.calls.length]).toEqual([3, 2]);
@@ -91,6 +105,7 @@ describe("ServerSignalsProvider", () => {
   });
 
   it("reports the stream down after an error and calls every subscriber once when it reopens", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const notifications = vi.fn();
     render(
       <ServerSignalsProvider signedIn>
@@ -101,6 +116,7 @@ describe("ServerSignalsProvider", () => {
     const stream = latestEventStream();
     act(() => stream.connect());
     expect(notifications).toHaveBeenCalledTimes(1);
+    endCoalesceWindow();
 
     act(() => stream.drop());
     expect(status()).toBe("polling");
@@ -125,6 +141,7 @@ describe("ServerSignalsProvider", () => {
     );
     const stream = latestEventStream();
     act(() => stream.connect());
+    endCoalesceWindow();
 
     act(() => stream.forbid());
 
@@ -260,7 +277,7 @@ describe("usePolling with a signal topic", () => {
   });
 
   it("ignores signals while the tab is hidden or polling is off", () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
     const onTick = vi.fn();
     const { rerender } = render(
       <ServerSignalsProvider signedIn>
@@ -270,6 +287,7 @@ describe("usePolling with a signal topic", () => {
     const stream = latestEventStream();
     act(() => stream.connect());
     expect(onTick).toHaveBeenCalledTimes(1);
+    endCoalesceWindow();
 
     setVisibility("hidden");
     act(() => stream.signal("merchant.orders"));

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { type OrderNotification, ROLES } from "./api/dto";
 import { MERCHANT_POLL_MS } from "./hooks/useMerchantOrders";
 import { NOTIFICATION_POLL_MS } from "./hooks/useNotifications";
-import { PUSH_FALLBACK_POLL_MS } from "./hooks/useServerSignals";
+import { PUSH_FALLBACK_POLL_MS, PUSH_SIGNAL_COALESCE_MS } from "./hooks/useServerSignals";
 import { SESSION_EXPIRED_MESSAGE } from "./hooks/useSession";
 import {
   afterSalesCaseFixture,
@@ -54,6 +54,25 @@ type Backend = ReturnType<typeof installFakeBackend>;
 
 const reads = (backend: Backend, path: string) => backend.callsTo("GET", path).length;
 
+/**
+ * Fakes the poll intervals and the coalescing window of the signals. The fake clock also
+ * follows real time: Testing Library's waitFor and findBy drain with a setTimeout(0),
+ * which a frozen clock would never fire.
+ */
+const useFakeSignalTimers = () => {
+  vi.useFakeTimers({
+    toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"],
+    shouldAdvanceTime: true,
+  });
+};
+
+/** Lets the coalescing window that a read opened end, so the next signal reads at once. */
+const endCoalesceWindow = () => {
+  act(() => {
+    vi.advanceTimersByTime(PUSH_SIGNAL_COALESCE_MS);
+  });
+};
+
 const notice = (id: number, orderId: number, title: string): OrderNotification => ({
   id,
   order_id: orderId,
@@ -83,7 +102,7 @@ describe("push signals", () => {
   });
 
   it("shows a merchant a newly paid order on its signal, without waiting for a poll", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    useFakeSignalTimers();
     const backend = merchantBackend();
     renderApp();
 
@@ -94,6 +113,7 @@ describe("push signals", () => {
     expect(stream.recipients).toEqual(["customer:21", "restaurant:1"]);
     // Opening reads once: signals sent before the stream opened are lost.
     await waitFor(() => expect(reads(backend, "/merchant/orders")).toBe(2));
+    endCoalesceWindow();
 
     // Another customer pays; the inbox consumer's commit signals the restaurant.
     act(() => backend.receiveMerchantOrder(merchantOrderFixture({ order_id: 9 })));
@@ -108,7 +128,7 @@ describe("push signals", () => {
   });
 
   it("shows a rider a new assignment on its signal, without waiting for a poll", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    useFakeSignalTimers();
     const backend = installFakeBackend({ user: riderUser });
     backend.state.deliveries = [deliveryFixture({ delivery_id: 5, order_id: 101 })];
     renderApp();
@@ -117,6 +137,7 @@ describe("push signals", () => {
     const stream = await connectEventStream();
     expect(stream.recipients).toEqual(["customer:31", "rider:7"]);
     await waitFor(() => expect(reads(backend, "/rider/deliveries")).toBe(2));
+    endCoalesceWindow();
 
     // Dispatch assigns the rider another order.
     act(() => backend.assignDelivery(deliveryFixture({ delivery_id: 6, order_id: 102 })));
@@ -128,7 +149,7 @@ describe("push signals", () => {
   });
 
   it("shows a customer a new notification at once, and reads the orders and refund requests after it", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    useFakeSignalTimers();
     const backend = installFakeBackend({ user: demoUser });
     backend.state.orders = [orderFixture({ id: 7, status: "PREPARING" })];
     const user = renderApp();
@@ -140,6 +161,7 @@ describe("push signals", () => {
     await waitFor(() => expect(reads(backend, "/notifications")).toBe(2));
     await flushPromises();
     expect([reads(backend, "/orders"), reads(backend, "/after-sales/cases")]).toEqual([1, 1]);
+    endCoalesceWindow();
 
     // The order completes and the notification consumer writes its notice.
     backend.state.orders = [orderFixture({ id: 7, status: "COMPLETED" })];
@@ -151,6 +173,36 @@ describe("push signals", () => {
     await waitFor(() =>
       expect([reads(backend, "/orders"), reads(backend, "/after-sales/cases")]).toEqual([2, 2]),
     );
+  });
+
+  it("reads the merchant inbox once a second during a burst of signals", async () => {
+    useFakeSignalTimers();
+    const backend = merchantBackend();
+    renderApp();
+
+    await orderCard(7);
+    await connectEventStream();
+    await waitFor(() => expect(reads(backend, "/merchant/orders")).toBe(2));
+    endCoalesceWindow();
+
+    // The deadline poller cancels stale orders by the thousand: one signal per change.
+    act(() => {
+      for (let orderId = 9; orderId <= 13; orderId += 1) {
+        backend.receiveMerchantOrder(merchantOrderFixture({ order_id: orderId }));
+      }
+    });
+    expect(await orderCard(9)).toBeInTheDocument();
+    expect(reads(backend, "/merchant/orders")).toBe(3);
+
+    // The window ends with reads owed: one read brings everything that changed meanwhile.
+    endCoalesceWindow();
+    expect(await orderCard(13)).toBeInTheDocument();
+    expect(reads(backend, "/merchant/orders")).toBe(4);
+    act(() => {
+      vi.advanceTimersByTime(PUSH_SIGNAL_COALESCE_MS * 3);
+    });
+    await flushPromises();
+    expect(reads(backend, "/merchant/orders")).toBe(4);
   });
 
   it("stretches the poll to 60 seconds while the stream is open", async () => {
@@ -197,13 +249,14 @@ describe("push signals", () => {
   });
 
   it("reads once on a reconnect, then waits for signals again", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    useFakeSignalTimers();
     const backend = merchantBackend();
     renderApp();
 
     await orderCard(7);
     const stream = await connectEventStream();
     await waitFor(() => expect(reads(backend, "/merchant/orders")).toBe(2));
+    endCoalesceWindow();
     act(() => stream.drop());
     // A paid order while the stream is down: its signal is lost.
     backend.state.merchantOrders.unshift(merchantOrderFixture({ order_id: 9 }));
@@ -241,13 +294,14 @@ describe("push signals", () => {
   });
 
   it("closes the stream on forbidden and shows the console's deactivation notice", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    useFakeSignalTimers();
     const backend = merchantBackend();
     renderApp();
 
     const paid = await orderCard(7);
     const stream = await connectEventStream();
     await waitFor(() => expect(reads(backend, "/merchant/orders")).toBe(2));
+    endCoalesceWindow();
 
     // An admin deactivates the merchant; the next keepalive finds out.
     backend.state.user = withMerchantActive(false);
@@ -304,11 +358,14 @@ describe("push signals", () => {
   });
 
   it("closes the stream when the session expires", async () => {
+    useFakeSignalTimers();
     const backend = merchantBackend();
     renderApp();
 
     await orderCard(7);
     const stream = await connectEventStream();
+    await waitFor(() => expect(reads(backend, "/merchant/orders")).toBe(2));
+    endCoalesceWindow();
     backend.on("GET", "/merchant/orders", () => apiError(401, "Authentication required"));
     act(() => backend.receiveMerchantOrder(merchantOrderFixture({ order_id: 9 })));
 
