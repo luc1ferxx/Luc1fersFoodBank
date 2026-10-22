@@ -11,6 +11,9 @@ import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderEventOutboxService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
 import com.laioffer.onlineorder.statemachine.StaleTransitionException;
+import com.laioffer.onlineorder.push.PushRecipient;
+import com.laioffer.onlineorder.push.PushSignals;
+import com.laioffer.onlineorder.push.PushTopic;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -65,6 +68,9 @@ class DispatchServiceTests {
     @Mock
     private ApplicationMetricsService metricsService;
 
+    @Mock
+    private PushSignals pushSignals;
+
     private DispatchService service;
 
 
@@ -78,6 +84,7 @@ class DispatchServiceTests {
                 processedEventService,
                 sequenceTracker,
                 metricsService,
+                pushSignals,
                 "delivery-events"
         );
         // Events built by FulfilmentTestEvents carry no sequence; the tracker applies them (EventSequenceTrackerTests).
@@ -119,6 +126,7 @@ class DispatchServiceTests {
         Assertions.assertEquals("Alice", event.data().riderName());
         Assertions.assertEquals("ASSIGNED", event.data().status());
         Mockito.verify(metricsService).recordDispatchAssignment("assigned");
+        Mockito.verify(pushSignals).publish(PushRecipient.rider(3L), PushTopic.RIDER_DELIVERIES);
     }
 
 
@@ -166,7 +174,8 @@ class DispatchServiceTests {
 
         service.handle(accepted);
 
-        Mockito.verifyNoInteractions(deliveryRepository, dispatchOrderRepository, riderRepository, outboxService);
+        Mockito.verifyNoInteractions(
+                deliveryRepository, dispatchOrderRepository, riderRepository, outboxService, pushSignals);
     }
 
 
@@ -353,6 +362,7 @@ class DispatchServiceTests {
         Mockito.verify(outboxService).enqueueEvent(
                 Mockito.eq("delivery-events"), Mockito.eq("10"), Mockito.argThat(event -> "DELIVERY".equals(event.aggregateType())
                         && Long.valueOf(7L).equals(event.aggregateId()) && "delivery.cancelled".equals(event.eventType())));
+        Mockito.verify(pushSignals).publish(PushRecipient.rider(3L), PushTopic.RIDER_DELIVERIES);
     }
 
 
@@ -616,6 +626,9 @@ class DispatchServiceTests {
         Assertions.assertEquals("delivery.reassigned", event.eventType());
         Assertions.assertEquals(4L, event.data().riderId());
         Assertions.assertEquals("Bob", event.data().riderName());
+        // Both riders' lists changed: the delivery left Alice's and joined Bob's.
+        Mockito.verify(pushSignals).publish(PushRecipient.rider(3L), PushTopic.RIDER_DELIVERIES);
+        Mockito.verify(pushSignals).publish(PushRecipient.rider(4L), PushTopic.RIDER_DELIVERIES);
         Assertions.assertEquals("PICKED_UP", event.data().status());
     }
 

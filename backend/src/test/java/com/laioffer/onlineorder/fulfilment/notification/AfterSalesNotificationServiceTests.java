@@ -18,6 +18,7 @@ import com.laioffer.onlineorder.repository.OrderRepository;
 import com.laioffer.onlineorder.service.EventSequenceTracker;
 import com.laioffer.onlineorder.service.OrderNotificationService;
 import com.laioffer.onlineorder.service.ProcessedEventService;
+import com.laioffer.onlineorder.push.PushSignals;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -81,13 +82,17 @@ class AfterSalesNotificationServiceTests {
     @Mock
     private EventSequenceTracker sequenceTracker;
 
+    @Mock
+    private PushSignals pushSignals;
+
     private AfterSalesNotificationService service;
 
 
     @BeforeEach
     void setUp() {
         service = new AfterSalesNotificationService(
-                new OrderNotificationService(orderNotificationRepository, orderRepository, orderPaymentRepository, 50),
+                new OrderNotificationService(
+                        orderNotificationRepository, orderRepository, orderPaymentRepository, pushSignals, 50),
                 processedEventService,
                 sequenceTracker
         );

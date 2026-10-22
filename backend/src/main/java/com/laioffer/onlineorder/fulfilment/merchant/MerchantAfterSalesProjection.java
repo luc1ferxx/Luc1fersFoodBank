@@ -3,6 +3,9 @@ package com.laioffer.onlineorder.fulfilment.merchant;
 
 import com.laioffer.onlineorder.messaging.AfterSalesCaseLinePayload;
 import com.laioffer.onlineorder.messaging.AfterSalesCasePayload;
+import com.laioffer.onlineorder.push.PushRecipient;
+import com.laioffer.onlineorder.push.PushSignals;
+import com.laioffer.onlineorder.push.PushTopic;
 import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
 import tools.jackson.core.type.TypeReference;
@@ -18,7 +21,8 @@ import java.util.List;
  * snapshot of a case, the data of an after-sales event or the case a merchant command returns, is upserted by the case
  * version it carries. A row is added for a case the inbox does not have yet, and a row only moves to a newer version,
  * so a late or replayed event never moves it back, and an event of a version a merchant command already wrote changes
- * nothing.
+ * nothing. A change signals the restaurant's merchant streams (push topic {@code merchant.after_sales}) after the
+ * commit, whichever of the two writers made it.
  */
 @Component
 class MerchantAfterSalesProjection {
@@ -28,11 +32,17 @@ class MerchantAfterSalesProjection {
 
     private final MerchantAfterSalesRepository repository;
     private final ObjectMapper objectMapper;
+    private final PushSignals pushSignals;
 
 
-    MerchantAfterSalesProjection(MerchantAfterSalesRepository repository, ObjectMapper objectMapper) {
+    MerchantAfterSalesProjection(
+            MerchantAfterSalesRepository repository,
+            ObjectMapper objectMapper,
+            PushSignals pushSignals
+    ) {
         this.repository = repository;
         this.objectMapper = objectMapper;
+        this.pushSignals = pushSignals;
     }
 
 
@@ -46,6 +56,15 @@ class MerchantAfterSalesProjection {
      * @return true when the row was inserted or updated, false when it already reflected this or a newer version
      */
     boolean apply(AfterSalesCasePayload snapshot, LocalDateTime now) {
+        boolean changed = upsert(snapshot, now);
+        if (changed) {
+            pushSignals.publish(PushRecipient.restaurant(snapshot.restaurantId()), PushTopic.MERCHANT_AFTER_SALES);
+        }
+        return changed;
+    }
+
+
+    private boolean upsert(AfterSalesCasePayload snapshot, LocalDateTime now) {
         int inserted = repository.insertIfAbsent(
                 snapshot.caseId(),
                 snapshot.orderId(),

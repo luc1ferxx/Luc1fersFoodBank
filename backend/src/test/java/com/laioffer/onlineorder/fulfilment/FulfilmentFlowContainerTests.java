@@ -1,6 +1,7 @@
 package com.laioffer.onlineorder.fulfilment;
 
 
+import com.laioffer.onlineorder.push.SseTestClient;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,6 +20,8 @@ import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 
+import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -28,7 +31,8 @@ import java.util.Map;
  * pay -> merchant inbox -> accept -> rider assigned -> picked up -> delivered -> COMPLETED, once with the merchant
  * marking the order PREPARING and the assigned rider working the delivery through the rider API, and once without
  * either (completion then passes through PREPARING itself; the admin endpoints simulate the rider). The timeout paths
- * are in {@link FulfilmentTimeoutContainerTests}, which needs short timeouts this class must not have.
+ * are in {@link FulfilmentTimeoutContainerTests}, which needs short timeouts this class must not have. The push signals
+ * of the flow reach the merchant's, the customer's and the assigned rider's streams through Redis.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers(disabledWithoutDocker = true)
@@ -80,6 +84,55 @@ class FulfilmentFlowContainerTests extends FulfilmentContainerTestSupport {
     @Test
     void deliveredOrderTheMerchantNeverMarkedPreparing_shouldStillBeCompleted() {
         runPaidOrderToCompletion(false);
+    }
+
+
+    /**
+     * ADR 0003 end to end: each writer publishes after its commit, the signal crosses the Redis channel, and the
+     * browsers' streams (here real HTTP streams on the app's port, with Redis sessions) get it.
+     */
+    @Test
+    void paidOrder_shouldSignalTheMerchantTheCustomerAndTheAssignedRiderOverTheirStreams() {
+        String customer = signUpAndLogin();
+        String burgerKing = login("merchant.burgerking@laifood.com", "merchant123");
+        Map<Long, String> riderSessions = new LinkedHashMap<>();
+        for (Map<String, Object> rider : jdbcTemplate.queryForList("""
+                SELECT riders.id, customers.email
+                FROM riders
+                JOIN customers ON customers.id = riders.customer_id
+                """)) {
+            riderSessions.put(((Number) rider.get("id")).longValue(), login((String) rider.get("email"), "rider123"));
+        }
+        Map<Long, SseTestClient> riderStreams = new LinkedHashMap<>();
+        try (SseTestClient customerStream = SseTestClient.open(url(""), customer);
+             SseTestClient merchantStream = SseTestClient.open(url(""), burgerKing)) {
+            riderSessions.forEach((riderId, session) ->
+                    riderStreams.put(riderId, SseTestClient.open(url(""), session)));
+            for (SseTestClient stream : List.of(customerStream, merchantStream)) {
+                Assertions.assertEquals(200, stream.status());
+                stream.awaitLine("retry: 5000", Duration.ofSeconds(10));
+            }
+            riderStreams.values().forEach(stream -> stream.awaitLine("retry: 5000", Duration.ofSeconds(10)));
+
+            Long orderId = payForItemOf(customer, "Burger King", "e2e-push-" + System.nanoTime());
+
+            // order.paid -> merchant inbox (merchant.orders) and "Payment confirmed" (notifications).
+            merchantStream.awaitSignal("merchant.orders", EVENT_WAIT);
+            customerStream.awaitSignal("notifications", EVENT_WAIT);
+            Assertions.assertEquals(
+                    HttpStatus.OK, post("/merchant/orders/" + orderId + "/accept", burgerKing).getStatusCode());
+            merchantStream.awaitSignal("merchant.orders", EVENT_WAIT);
+
+            // order.accepted -> dispatch assigns a rider (rider.deliveries) -> "Rider assigned" (notifications).
+            Long riderId = awaitValue("a rider to be assigned", EVENT_WAIT, () -> jdbcTemplate.query(
+                    "SELECT rider_id FROM deliveries WHERE order_id = ?",
+                    rs -> rs.next() ? rs.getLong(1) : null,
+                    orderId));
+            riderStreams.get(riderId).awaitSignal("rider.deliveries", EVENT_WAIT);
+            customerStream.awaitSignal("notifications", EVENT_WAIT);
+        } finally {
+            riderStreams.values().forEach(SseTestClient::close);
+        }
     }
 
 
