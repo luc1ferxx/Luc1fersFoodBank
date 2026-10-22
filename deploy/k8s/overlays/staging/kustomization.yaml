@@ -35,7 +35,7 @@ configMapGenerator:
 patches:
   - target:
       kind: Ingress
-      name: onlineorder
+      name: onlineorder|onlineorder-events
     patch: |-
       - op: replace
         path: /spec/rules/0/host

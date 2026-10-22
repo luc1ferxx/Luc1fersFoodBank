@@ -16,6 +16,7 @@ How OnlineOrder is observed, packaged, deployed and gated. Paths are relative to
 | Partitions, order numbers, worker ids | section 9; the sharding plan in `docs/adr/0001-order-sharding.md` |
 | Money and currencies | section 10 |
 | After-sales refunds (runbook, V12 rollout, poller) | `backend/src/main/java/com/laioffer/onlineorder/aftersales/`, section 12 |
+| Push signals (SSE stream, Redis channel, ingress) | `backend/src/main/java/com/laioffer/onlineorder/push/`, section 13 |
 
 ## 1. Telemetry in the application
 
@@ -108,9 +109,11 @@ Application metrics on top of Spring Boot's (HTTP, Hikari, Tomcat, JVM, Kafka cl
 | `onlineorder_db_routing_reads_total{target,reason}`, `onlineorder_db_replica_lag_seconds{replica}`, `onlineorder_db_replica_routable{replica}` | Read replicas (only with `DATABASE_REPLICA_URLS`; section 11) |
 | `onlineorder_aftersales_refunds_total{outcome}`, `onlineorder_aftersales_cancellations_undercaptured_total`, `onlineorder_aftersales_deadlines_total{trigger,outcome}`, `onlineorder_aftersales_steps_total{action,from,to}`, `onlineorder_aftersales_merchant_decisions_total{decision}` | After-sales refunds, deadlines, case steps and merchant answers (section 12) |
 | `onlineorder_security_rate_limit_rejected_total{route}`, `onlineorder_security_rate_limit_store_failure_total{route}` | Requests refused with `429 RATE_LIMITED` per bucket, and requests let through unchecked because the bucket check failed in Redis (fail open; `OnlineOrderRateLimiterFailingOpen`) |
+| `onlineorder_push_streams`, `onlineorder_push_signals_total{topic}`, `onlineorder_push_deliveries_total{topic}`, `onlineorder_push_publish_failures_total` | Push signals (section 13): open streams on the instance, signals published after a commit, signals written to a stream, signals that could not be handed on |
 
 `http.server.requests` publishes a percentiles histogram bounded to 5ms-10s plus exact SLO buckets at 50ms, 100ms,
-250ms, 500ms, 1s and 2s. The latency objective reads the `le="0.5"` bucket.
+250ms, 500ms, 1s and 2s. The latency objective reads the `le="0.5"` bucket. It and the dashboard's latency panels leave
+out `/events/stream`, whose requests stay open until the stream ends (section 13).
 
 ## 2. Local observability stack
 
@@ -357,6 +360,7 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
 | `CLEANUP_AUDIT_LOG_RETENTION`, `CLEANUP_ORDER_STATUS_HISTORY_RETENTION` | `0d` (kept forever) | - |
 | `PARTITIONS_MONTHS_AHEAD`, `PARTITIONS_LOCK_TIMEOUT`, `PARTITIONS_MAINTENANCE_ENABLED` | 3, 5s, true | - |
 | `AFTER_SALES_*` (time limits, poller, refunds, refund gateway, consumer groups), `KAFKA_AFTER_SALES_TOPIC`, `FULFILMENT_LISTENER_CONCURRENCY` | section 12 | - |
+| `PUSH_FANOUT`, `PUSH_CHANNEL`, `PUSH_STREAM_TIMEOUT`, `PUSH_KEEPALIVE_INTERVAL`, `PUSH_MAX_STREAMS_PER_USER`, `PUSH_MAX_STREAMS` | `redis`, `onlineorder:push:v1`, 30m, 25s, 5, 2000 (section 13) | - |
 
 ## 5. CI gates
 
@@ -1519,3 +1523,97 @@ where this backend had 15 cores to share and served every read from the primary.
 connection longer, so its acquire times can be higher than these at a far lower request rate. The delivery and DLT
 listeners (9 threads at concurrency 3) had no records. Watch acquire p99 and pending on the dashboard during the first
 rollout to staging, which has the real pod limits and a replica.
+
+
+## 13. Push signals (SSE)
+
+`GET /events/stream` ([ADR 0003](adr/0003-push-signals.md), README "Push Signals (SSE)") keeps one text/event-stream
+response open per signed-in browser tab. After a commit that changes a merchant's orders or after-sales cases, a
+rider's deliveries or a customer's notifications, the writer publishes a signal without data, and the open streams of
+that restaurant, rider or customer tell their page to re-read its REST list. The consoles keep polling every 60
+seconds while their stream is open (15 s, or 10 s for refund cases, without it), so everything here degrades to
+polling, never to wrong data.
+
+### What runs where
+
+| Thread | Does |
+| --- | --- |
+| `push-keepalive` | Every `PUSH_KEEPALIVE_INTERVAL` (25s): `:keepalive` to every stream (finds the clients that went away), then the active flag of every merchant and rider stream, read from the primary; a deactivated login gets `event: forbidden` and its stream ends |
+| `push-publisher` | The Redis `PUBLISH` of each committed signal (`PUSH_FANOUT=redis`), so a writer never waits for Redis |
+| `push-delivery` | Writes each signal the subscription received to this pod's streams of its recipient |
+| `push-subscriber` | Starts the subscription in the background and retries it (1s, doubling to 30s) while Redis is unreachable at startup; afterwards Lettuce reconnects and subscribes again by itself |
+
+None of them is a `TaskScheduler` bean: a second one would make Spring Boot back off the scheduler every `@Scheduled`
+job runs on. Their queues hold 10,000 signals each; a full queue drops the signal and counts it as a publish failure.
+
+### Redis channel
+
+Every pod publishes on and subscribes to `onlineorder:push:v1` (`PUSH_CHANNEL`), messages like
+`{"recipient":"restaurant:5","topic":"merchant.orders"}` (recipients `customer:{id}`, `restaurant:{id}`, `rider:{id}`;
+topics `notifications`, `merchant.orders`, `merchant.after_sales`, `rider.deliveries`). Pub/sub keeps nothing: a pod
+that is not subscribed when a message is published never sees it. Check it with:
+
+```sh
+redis-cli PUBSUB NUMSUB onlineorder:push:v1    # one subscriber per running pod
+redis-cli SUBSCRIBE onlineorder:push:v1        # watch the signals go by
+```
+
+Unknown message properties are ignored, so a release may add some. Any other change of the message format takes a new
+channel suffix (`:v2`), like the session namespace: pods of the old and the new release then do not see each other's
+signals during the rollout, which only costs the fallback polls. `PUSH_FANOUT=local` delivers in-process only (the
+`h2` profile, tests, a single instance); with several pods it would leave every stream blind to the other pods' writes.
+
+### Metrics
+
+| Metric | Read it as |
+| --- | --- |
+| `onlineorder_push_streams` | Open streams on the pod, about one per open console tab; compare with `PUSH_MAX_STREAMS` |
+| `rate(onlineorder_push_signals_total[5m])` by `topic` | Committed changes that published a signal (counted on the writing pod) |
+| `rate(onlineorder_push_deliveries_total[5m])` by `topic` | Signals written to a stream (counted on the pod holding it); zero while signals rise means no stream listens or the subscription is down |
+| `rate(onlineorder_push_publish_failures_total[5m])` | Signals lost before Redis: Redis unreachable or slow (`spring.data.redis.timeout`), or a full queue. Clients poll meanwhile |
+| `http_server_requests_seconds_count{uri="/events/stream",status=~"429\|503"}` | Streams refused at a limit |
+
+### Limits and capacity
+
+A stream holds a connection, never a thread (servlet async). `PUSH_MAX_STREAMS` (2000 per pod) answers `503` above it,
+or while the pod shuts down; keep it below `SERVER_TOMCAT_MAX_CONNECTIONS` (8192), which every other request shares.
+`PUSH_MAX_STREAMS_PER_USER` (5) answers `429 PUSH_STREAM_LIMIT`; it counts per pod, so a login whose tabs land on
+several pods may hold that many on each. A browser whose stream is refused polls at the old interval. A stream ends
+after `PUSH_STREAM_TIMEOUT` (30m, its own async timeout, so `spring.mvc.async.request-timeout` does not apply) and the
+browser reconnects after the `retry: 5000` it got first. On SIGTERM a pod completes its streams before Tomcat's
+graceful shutdown starts, so they do not hold the shutdown and their browsers reconnect to another pod (the preStop
+sleep has already taken the pod out of the endpoints).
+
+### Proxies and the ingress
+
+Each frame must reach the browser when it is written, and the connection must survive the 25 s between keepalives.
+The response carries `Cache-Control: no-cache` and `X-Accel-Buffering: no` (nginx stops buffering it). On Kubernetes
+`/events/stream` has its own Ingress, `onlineorder-events` in `deploy/k8s/base/ingress.yaml` (ingress-nginx applies
+annotations per Ingress), with `proxy-buffering: "off"` and 120-second read and send timeouts; the staging overlay
+patches its host and TLS secret with the main Ingress. Another proxy in front needs the same: no buffering or
+compression of `text/event-stream`, and an idle timeout well above 25 s. A proxy that buffers shows as streams that open
+(`onlineorder_push_streams` rises) while the consoles only change on their fallback polls.
+
+### Checking a stream
+
+```sh
+curl -s -c /tmp/push-cookies -o /dev/null -w '%{http_code}\n' \
+  -d 'username=merchant.burgerking@laifood.com&password=merchant123' http://localhost:8080/login
+curl -N -b /tmp/push-cookies -H 'Accept: text/event-stream' http://localhost:8080/events/stream
+```
+
+The second command prints `retry: 5000` at once, `:keepalive` every 25 seconds and, for example after a paid order of
+Burger King, `event: signal` with `data: {"topic":"merchant.orders"}`. `401` means the session cookie is missing,
+`403` a deactivated merchant or rider, `429` or `503` a limit above. Without `-N` curl buffers the output, and nothing
+appears until the stream ends.
+
+### Failure modes
+
+- Redis down: publishes fail (`onlineorder_push_publish_failures_total` grows, one warning per streak in the log) and
+  the subscription waits for Lettuce to reconnect; streams stay open and get only keepalives, and the consoles poll
+  every 60 s. When Redis is back the log says `Subscribed to push channel onlineorder:push:v1`; signals published in
+  between are lost, the next poll or signal shows the change.
+- A deactivated merchant or rider: their stream gets `event: forbidden` within one keepalive interval, and their next
+  connect is `403`; every merchant and rider REST request checks the flag anyway.
+- A logout does not end the streams the browser had open (the client closes them; signals carry no data); the
+  stream timeout bounds how long one stays open.

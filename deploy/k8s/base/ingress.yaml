@@ -24,3 +24,37 @@ spec:
                 name: onlineorder
                 port:
                   name: http
+---
+# The push stream (GET /events/stream, docs/adr/0003-push-signals.md) on its own Ingress, because ingress-nginx applies
+# annotations per Ingress: a long-lived text/event-stream response needs a read timeout well above the 25s keepalive
+# (nginx's default is 60s) and no response buffering, which would hold the signals back. ingress-nginx merges both
+# Ingresses of the host into one server; the Exact path wins over the / prefix.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: onlineorder-events
+  labels:
+    app.kubernetes.io/name: onlineorder
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - onlineorder.example.com
+      secretName: onlineorder-tls
+  rules:
+    - host: onlineorder.example.com
+      http:
+        paths:
+          - path: /events/stream
+            pathType: Exact
+            backend:
+              service:
+                name: onlineorder
+                port:
+                  name: http

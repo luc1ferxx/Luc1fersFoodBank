@@ -64,6 +64,26 @@ tests:
         alertname: OnlineOrderLatencySLOFastBurn
         exp_alerts: []
 
+  - name: push streams do not count against the latency objective
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="OnlineOrder", uri="/orders", status="200"}'
+        values: '0+60x90'
+      - series: 'http_server_requests_seconds_bucket{application="OnlineOrder", uri="/orders", status="200", le="0.5"}'
+        values: '0+60x90'
+      # Every stream ends after its 30-minute timeout, so none is within 500ms.
+      - series: 'http_server_requests_seconds_count{application="OnlineOrder", uri="/events/stream", status="200"}'
+        values: '0+30x90'
+      - series: 'http_server_requests_seconds_bucket{application="OnlineOrder", uri="/events/stream", status="200", le="0.5"}'
+        values: '0x90'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: OnlineOrderLatencySLOFastBurn
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: OnlineOrderLatencySLOSlowBurn
+        exp_alerts: []
+
   - name: latency objective burning fast
     interval: 1m
     input_series:

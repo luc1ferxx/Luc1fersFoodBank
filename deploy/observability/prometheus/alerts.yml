@@ -18,34 +18,35 @@ groups:
           /
           sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*"}[5m]))
 
-      # Share of requests slower than the 500ms latency objective, over the burn-rate windows.
+      # Share of requests slower than the 500ms latency objective, over the burn-rate windows. The push stream
+      # (/events/stream) is left out: each one is a request that stays open until it times out (30 minutes).
       - record: onlineorder:http_slow_requests:ratio_rate5m
         expr: |
           1 - (
-            sum(rate(http_server_requests_seconds_bucket{application="OnlineOrder", uri!~"/actuator.*", le="0.5"}[5m]))
+            sum(rate(http_server_requests_seconds_bucket{application="OnlineOrder", uri!~"/actuator.*|/events/stream", le="0.5"}[5m]))
             /
-            sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*"}[5m]))
+            sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*|/events/stream"}[5m]))
           )
       - record: onlineorder:http_slow_requests:ratio_rate30m
         expr: |
           1 - (
-            sum(rate(http_server_requests_seconds_bucket{application="OnlineOrder", uri!~"/actuator.*", le="0.5"}[30m]))
+            sum(rate(http_server_requests_seconds_bucket{application="OnlineOrder", uri!~"/actuator.*|/events/stream", le="0.5"}[30m]))
             /
-            sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*"}[30m]))
+            sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*|/events/stream"}[30m]))
           )
       - record: onlineorder:http_slow_requests:ratio_rate1h
         expr: |
           1 - (
-            sum(rate(http_server_requests_seconds_bucket{application="OnlineOrder", uri!~"/actuator.*", le="0.5"}[1h]))
+            sum(rate(http_server_requests_seconds_bucket{application="OnlineOrder", uri!~"/actuator.*|/events/stream", le="0.5"}[1h]))
             /
-            sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*"}[1h]))
+            sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*|/events/stream"}[1h]))
           )
       - record: onlineorder:http_slow_requests:ratio_rate6h
         expr: |
           1 - (
-            sum(rate(http_server_requests_seconds_bucket{application="OnlineOrder", uri!~"/actuator.*", le="0.5"}[6h]))
+            sum(rate(http_server_requests_seconds_bucket{application="OnlineOrder", uri!~"/actuator.*|/events/stream", le="0.5"}[6h]))
             /
-            sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*"}[6h]))
+            sum(rate(http_server_requests_seconds_count{application="OnlineOrder", uri!~"/actuator.*|/events/stream"}[6h]))
           )
 
   - name: onlineorder-alerts
