@@ -109,6 +109,10 @@ class TwoLevelCacheRedisIntegrationTests {
         Assertions.assertTrue(ttlMillis >= REMOTE_TTL.toMillis() * 0.85 - 1000, "ttl " + ttlMillis);
         Assertions.assertTrue(ttlMillis <= REMOTE_TTL.toMillis() * 1.15, "ttl " + ttlMillis);
 
+        // The put also told the other instances to drop their L1 copy. Wait for that message to arrive before the
+        // reader fills its L1 from Redis; otherwise, on a busy machine, it could land after the read and empty it.
+        await(() -> reader.menu().remoteInvalidationsReceivedCount() == 1, "the writer's put reached the reader");
+
         // The second instance has an empty L1, so this read deserializes the Redis entry.
         List<CatalogMenuItemDto> read = reader.menu().get(5L, () -> Assertions.fail("must be served from Redis"));
         Assertions.assertEquals(menu, read);
