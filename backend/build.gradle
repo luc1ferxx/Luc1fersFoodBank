@@ -81,7 +81,7 @@ dependencies {
     // Jackson 3 (tools.jackson); 3.0.6 is the newest release compiled against Jackson 3.1, the minor line Spring Boot
     // 4.1 manages (3.0.7+ target 3.2). Schemas are JSON only, so the YAML reader and its snakeyaml-engine stay off the
     // classpath.
-    implementation('com.networknt:json-schema-validator:3.0.6') {
+    implementation('com.networknt:json-schema-validator:3.0.8') {
         exclude group: 'tools.jackson.dataformat', module: 'jackson-dataformat-yaml'
     }
     // H2 plus its web console (the h2 profile enables it at /h2-console).
