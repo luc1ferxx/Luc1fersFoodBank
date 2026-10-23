@@ -1,7 +1,5 @@
 import org.gradle.internal.os.OperatingSystem
 
-import java.math.RoundingMode
-
 plugins {
     id 'java'
     id 'org.springframework.boot' version '4.1.1'
@@ -104,69 +102,6 @@ dependencies {
 }
 
 
-// CI runs the classes on several runners (.github/workflows/ci.yml): -PtestShard=i/N runs the i-th (from 1) of N slices
-// of the compiled top-level test classes (nested classes with their outer class), balanced by the durations measured
-// in config/test-durations.properties. scripts/test-durations.py rebuilds that file from a green run's JUnit XML; it is
-// refreshed occasionally, not per pull request (docs/operations.md section 5), and TestDurationsFileTests fails when
-// it names a class that is gone. Every class is in exactly one slice, whether or not the file knows it; the slices'
-// JaCoCo files are merged by the report tasks below, and testShardPlan prints the plan without running anything.
-def testDurationsFile = file('config/test-durations.properties')
-
-
-// The fully qualified names of the compiled top-level test classes under the class directories, sorted.
-def compiledTestClasses = { FileCollection classesDirs ->
-    classesDirs.files.findAll { it.isDirectory() }.collectMany { dir ->
-        project.fileTree(dir) { include '**/*.class'; exclude '**/*$*.class' }.files.collect { f ->
-            (dir.toPath().relativize(f.toPath()).toString() - ~/\.class$/).replace(File.separator, '.')
-        }
-    }.sort()
-}
-
-
-// Plans count shards for the classes, deterministically for a class list and file: shards is one
-// [seconds: BigDecimal, classes: List<String>] per shard. Greedy: the classes by measured duration descending (ties by
-// name), each to the shard with the smallest total so far (ties: the lowest shard). A class the file does not name
-// (unknown) gets fallback: the median of the known durations, or 1.0 when the file is missing or empty, which degrades
-// the plan to the greedy order by name. The file lists the classes that reported tests, so abstract bases and test
-// support classes, which run nothing, are planned at the median as well.
-def planTestShards = { List<String> classes, int count ->
-    def known = [:]
-    if (testDurationsFile.isFile()) {
-        testDurationsFile.eachLine('UTF-8') { line, number ->
-            def entry = line.trim()
-            if (entry && !entry.startsWith('#')) {
-                def parts = entry.split('=', 2)
-                def name = parts[0].trim()
-                def value = parts.length == 2 ? parts[1].trim() : ''
-                if (name.isEmpty() || name.contains('$') || !(value ==~ /\d+(\.\d+)?/)) {
-                    throw new GradleException("${testDurationsFile}: line ${number} is not <top-level class>=<seconds>" +
-                            " (refresh the file with scripts/test-durations.py): ${line}")
-                }
-                known[name] = new BigDecimal(value)
-            }
-        }
-    }
-    def durations = known.values().toSorted()
-    def fallback = durations
-            ? (durations[(durations.size() - 1).intdiv(2)] + durations[durations.size().intdiv(2)]) / 2
-            : BigDecimal.ONE
-    def shards = (1..count).collect { [seconds: BigDecimal.ZERO, classes: []] }
-    classes.collect { name -> [name: name, seconds: known.getOrDefault(name, fallback)] }
-            .sort { a, b -> b.seconds <=> a.seconds ?: a.name <=> b.name }
-            .each { entry ->
-                def shard = shards[0]
-                shards.each { if (it.seconds < shard.seconds) shard = it }
-                shard.classes << entry.name
-                shard.seconds += entry.seconds
-            }
-    assert shards.sum { it.classes.size() } == classes.size()
-    [shards: shards, unknown: classes.findAll { !known.containsKey(it) }, fallback: fallback]
-}
-
-
-def seconds = { BigDecimal value -> value.setScale(1, RoundingMode.HALF_UP) }
-
-
 tasks.named('test') {
     useJUnitPlatform()
     // Spring caches one context per distinct test configuration (Testcontainers, Kafka and Redis clients included);
@@ -180,63 +115,25 @@ tasks.named('test') {
             ?: Math.max(1, Math.min(4, Runtime.runtime.availableProcessors().intdiv(2)))) as Integer
     // The server runs in UTC (OnlineOrderApplication.main sets it); tests do not run main, so their JVM starts in UTC.
     systemProperty 'user.timezone', 'UTC'
-    // The CI shard (see planTestShards above): the plan is logged so the CI log shows the balance. The filter is set in
-    // doFirst, which the up-to-date check cannot see, so the shard and the file are declared as inputs: a run without
-    // a shard, or with another one, after a shard's run is never up to date.
+    // CI runs the classes on several runners (.github/workflows/ci.yml): -PtestShard=i/N runs the i-th (from 1) of N
+    // round-robin slices of the compiled top-level test classes, sorted by name, nested classes with their outer
+    // class. Every class is in exactly one slice, whatever it is named; the slices' JaCoCo files are merged by the
+    // report tasks below.
     def shard = findProperty('testShard')
-    inputs.property('testShard', shard ? shard.toString() : '')
     if (shard) {
         def (index, count) = shard.toString().split('/').collect { it as Integer }
-        if (index < 1 || index > count) {
-            throw new GradleException("testShard must be i/N with 1 <= i <= N, not ${shard}")
-        }
-        inputs.files(testDurationsFile).withPropertyName('testDurationsFile')
         doFirst {
-            def plan = planTestShards(compiledTestClasses(testClassesDirs), count)
-            plan.shards.eachWithIndex { s, i ->
-                logger.lifecycle("Test shard ${i + 1}/${count}: planned ${seconds(s.seconds)} s, " +
-                        "${s.classes.size()} classes")
+            def names = testClassesDirs.files.findAll { it.isDirectory() }.collectMany { dir ->
+                project.fileTree(dir) { include '**/*.class'; exclude '**/*$*.class' }.files.collect { f ->
+                    (dir.toPath().relativize(f.toPath()).toString() - ~/\.class$/).replace(File.separator, '.')
+                }
+            }.sort()
+            names.eachWithIndex { name, i ->
+                if (i % count == index - 1) {
+                    filter.includeTestsMatching(name)
+                    filter.includeTestsMatching(name + '$*')
+                }
             }
-            if (plan.unknown) {
-                logger.lifecycle("${plan.unknown.size()} classes are not in ${testDurationsFile.name}, planned at " +
-                        "${seconds(plan.fallback)} s each: ${plan.unknown.join(', ')}")
-            }
-            def names = plan.shards[index - 1].classes
-            logger.lifecycle("Running test shard ${index}/${count}: ${names.size()} classes")
-            // The plan's include list is exact, and a slice may hold only abstract bases and support classes, which
-            // run no test; with more shards than classes an empty filter would run every class instead of none.
-            filter.failOnNoMatchingTests = false
-            names.each { name ->
-                filter.includeTestsMatching(name)
-                filter.includeTestsMatching(name + '$*')
-            }
-            if (names.isEmpty()) {
-                filter.includeTestsMatching('<none>')
-            }
-        }
-    }
-}
-
-
-tasks.register('testShardPlan') {
-    group = 'verification'
-    description = 'Prints the CI test shard plan for -PtestShards=N (default 4) without running the tests.'
-    dependsOn tasks.named('testClasses')
-    def count = (findProperty('testShards') ?: 4) as Integer
-    if (count < 1) {
-        throw new GradleException("testShards must be at least 1, not ${count}")
-    }
-    doLast {
-        def classes = compiledTestClasses(sourceSets.test.output.classesDirs)
-        def plan = planTestShards(classes, count)
-        println "${classes.size()} test classes in ${count} shards, balanced by ${testDurationsFile.name}" +
-                " (${plan.unknown.size()} not in the file, planned at ${seconds(plan.fallback)} s each)"
-        if (plan.unknown) {
-            println "Not in the file: ${plan.unknown.join(', ')}"
-        }
-        plan.shards.eachWithIndex { s, i ->
-            println "Shard ${i + 1}/${count}: planned ${seconds(s.seconds)} s, ${s.classes.size()} classes"
-            s.classes.each { println "  ${it}" }
         }
     }
 }

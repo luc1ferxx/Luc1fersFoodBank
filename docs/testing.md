@@ -11,13 +11,6 @@ Each JVM starts its own Testcontainers, so a Docker host with little memory may 
 `-PtestForks=1` to run the classes one after another, which is also the way to tell a real failure from one caused by
 the load of the other forks.
 
-CI splits the classes over 4 shards (`-PtestShard=i/4`), balanced by the measured durations in
-`backend/config/test-durations.properties` (a class missing from the file is planned at the median);
-`./gradlew testShardPlan -PtestShards=4 -x buildFrontend -x syncFrontendBuild --no-daemon` prints the plan without
-running tests. The file is refreshed occasionally, not per pull request, from a green run's test reports:
-`gh run download <id> -p 'backend-test-reports-*' -D <dir> && python3 backend/scripts/test-durations.py <dir>`.
-`TestDurationsFileTests` fails when it names a class that no longer exists.
-
 Type-check, lint, test, and build the React app:
 
 ```sh
@@ -118,8 +111,6 @@ The backend runs on Spring Boot 4.1; [docs/spring-boot-4-migration.md](spring-bo
 | Run load test | `k6 run load-tests/order-flow.js`, against a backend started with `SECURITY_RATE_LIMIT_ENABLED=false` (the `signup` and `login` buckets per IP and `payment-checkout` per user refuse it otherwise) |
 | Backend CI gates | `cd backend && ./gradlew test jacocoTestReport jacocoTestCoverageVerification spotbugsMain -x buildFrontend -x syncFrontendBuild --no-daemon` |
 | One CI test shard (of 4) | `cd backend && ./gradlew test -PtestShard=2/4 -x buildFrontend -x syncFrontendBuild --no-daemon` |
-| Print the CI shard plan | `cd backend && ./gradlew testShardPlan -PtestShards=4 -x buildFrontend -x syncFrontendBuild --no-daemon` |
-| Refresh the shard durations | `gh run download <id> -p 'backend-test-reports-*' -D <dir> && python3 backend/scripts/test-durations.py <dir>` (occasionally, not per PR) |
 | Observability stack + app | `ONLINEORDER_SCRAPE_TARGETS=./prometheus/targets/compose docker compose -f deploy/observability/docker-compose.yml --profile app up -d --build` (Grafana on 3001) |
 | Build the image | `docker build -t onlineorder:local .` |
 | Render Kubernetes manifests | `kubectl kustomize deploy/k8s/overlays/staging` |

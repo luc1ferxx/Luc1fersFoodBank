@@ -379,17 +379,9 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
 `.github/workflows/ci.yml` (push to main/master, pull requests, and called by the release):
 
 - `backend-test`: 4 shards, each `./gradlew test -PtestShard=i/4 -x buildFrontend -x syncFrontendBuild --no-daemon`
-  on its own runner (a slice of the test classes, `backend/build.gradle`; the classes also run in 2 JVMs per runner).
-  The slices are balanced by the measured durations in `backend/config/test-durations.properties` (one line per
-  top-level test class, seconds with one decimal): the classes go to the shards greedily, longest first, each to the
-  shard with the least planned time, and a class the file does not name is planned at the median of the others. The
-  task logs every shard's planned seconds and class count; `./gradlew testShardPlan -PtestShards=4 ...` prints the
-  whole plan without running tests. The file is refreshed occasionally, not per pull request, from a green run's
-  `backend-test-reports-*` artifacts: `gh run download <id> -p 'backend-test-reports-*' -D <dir> && python3
-  backend/scripts/test-durations.py <dir>` (standard library only; nested classes fold into their outer class).
-  `TestDurationsFileTests` fails when the file names a class that no longer exists, so a rename or deletion refreshes
-  it. Testcontainers suites run on the runner's Docker. JUnit XML and the HTML test report of each shard are uploaded
-  as `backend-test-reports-<shard>`, also on failure, and its JaCoCo file as `backend-jacoco-<shard>`.
+  on its own runner (a round-robin slice of the test classes, `backend/build.gradle`; the classes also run in 2 JVMs
+  per runner). Testcontainers suites run on the runner's Docker. JUnit XML and the HTML test report of each shard are
+  uploaded as `backend-test-reports-<shard>`, also on failure, and its JaCoCo file as `backend-jacoco-<shard>`.
 - `backend-coverage`: downloads the shards' JaCoCo files into `backend/build/jacoco/shards` and runs
   `./gradlew jacocoTestReport jacocoTestCoverageVerification -PjacocoShards -x test ...`. The job summary shows the coverage table;
   the report is uploaded as `backend-coverage-report`.
