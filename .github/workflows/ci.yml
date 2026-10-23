@@ -90,7 +90,7 @@ jobs:
           cache: gradle
       - run: chmod +x gradlew
       - name: Download the shards' coverage data
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: backend-jacoco-*
           path: backend/build/jacoco/shards
