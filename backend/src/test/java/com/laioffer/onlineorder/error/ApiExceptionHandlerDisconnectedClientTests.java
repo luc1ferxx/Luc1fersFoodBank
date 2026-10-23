@@ -13,6 +13,7 @@ import org.mockito.Mockito;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.converter.HttpMessageNotWritableException;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.servlet.HandlerMapping;
 
 
 import java.io.IOException;
@@ -40,6 +41,8 @@ class ApiExceptionHandlerDisconnectedClientTests {
 
     @BeforeEach
     void captureHandlerLog() {
+        // The dispatcher sets the matched route template before a handler runs; the log names it, not the raw URI.
+        request.setAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE, "/merchant/orders");
         handlerLogger = (Logger) LoggerFactory.getLogger(ApiExceptionHandler.class);
         originalLevel = handlerLogger.getLevel();
         handlerLogger.setLevel(Level.DEBUG);

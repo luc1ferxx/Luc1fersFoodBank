@@ -68,6 +68,12 @@ public class AppConfig {
             ApiErrorResponseWriter apiErrorResponseWriter
     ) throws Exception {
         http
+                // No CSRF token (CodeQL java/spring-disabled-csrf-protection, accepted): the API is JSON over fetch
+                // from the same origin, and the session cookie is SameSite=Lax (application.yml), so a browser sends
+                // it on no cross-site POST, PUT, PATCH or DELETE, the login form included. What Lax leaves open is
+                // login CSRF (a cross-site form logging the victim into the attacker's account), a small risk for a
+                // demo whose accounts hold no payment data; a token would also need every fetch in the frontend to
+                // read and send it.
                 .csrf(AbstractHttpConfigurer::disable)
                 .addFilterBefore(rateLimitingFilter, UsernamePasswordAuthenticationFilter.class)
                 .headers(headers -> headers

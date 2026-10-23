@@ -77,7 +77,8 @@ carry the trace id of the scheduled run, whose spans are not exported.
 
 A response whose client went away while it was written (a console's read aborted by its next one, a closed tab) logs
 one DEBUG line from `ApiExceptionHandler` ("Client went away while the response was written: GET /merchant/orders:
-...") instead of `DefaultHandlerExceptionResolver`'s WARN "Ignoring exception, response committed already"; the
+...", with the matched route template, never the raw URI) instead of `DefaultHandlerExceptionResolver`'s WARN
+"Ignoring exception, response committed already"; the
 request still counts in `http_server_requests`, with the status the response already carried and `exception="none"`
 (the observation filter tags only an exception that escaped the dispatcher or was sent through `sendError`).
 

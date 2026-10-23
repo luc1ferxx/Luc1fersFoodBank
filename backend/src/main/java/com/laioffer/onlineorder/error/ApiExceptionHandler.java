@@ -23,6 +23,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.HandlerMapping;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.util.DisconnectedClientHelper;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -164,10 +165,13 @@ public class ApiExceptionHandler {
         if (!DisconnectedClientHelper.isClientDisconnectedException(ex)) {
             throw ex;
         }
+        // The route template the request matched, never the raw URI: a client-chosen string in a log line is log
+        // injection (CodeQL java/log-injection). The handler ran, so the pattern is set; "?" only for a test request.
+        Object route = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
         LOGGER.debug(
                 "Client went away while the response was written: {} {}: {}",
                 request.getMethod(),
-                request.getRequestURI(),
+                route != null ? route : "?",
                 ex.toString()
         );
     }
