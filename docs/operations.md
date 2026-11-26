@@ -446,6 +446,10 @@ lz4-java at 1.11.4; with them Trivy 0.75.0 reports 0 for the ubuntu 24.04 base a
 versions above what Spring Boot manages: drop each once Spring Boot manages that version or a later one, or it
 holds the dependency back. `h2.version` there is not a security patch (H2 2.4.240 regression, see the comment).
 
+Since Spring Boot 4.1.2 (2026-11-26) the Tomcat, Jackson 3 and Jackson 2 overrides and the pgjdbc version are gone:
+it manages Tomcat 11.0.27, Jackson 3.1.7 / 2.21.7 and pgjdbc 42.7.14 itself. What is left is lz4-java (1.12.1;
+kafka-clients 4.2.2 still asks for 1.11.2, below the fixed 1.11.4) and `h2.version`.
+
 ## 7. Schema changes: 64-bit keys and the audit trails
 
 Migrations V7, V7_1 and V7_2 change existing tables. All three run on PostgreSQL and on H2 (the `h2` profile runs
