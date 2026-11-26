@@ -124,8 +124,8 @@ out `/events/stream`, whose requests stay open until the stream ends (section 13
 
 ## 2. Local observability stack
 
-`deploy/observability/docker-compose.yml`: OpenTelemetry Collector `0.161.0`, Tempo `2.10.8`, Prometheus `v3.13.4`,
-Grafana `13.0.9`.
+`deploy/observability/docker-compose.yml`: OpenTelemetry Collector `0.164.0`, Tempo `2.10.10`, Prometheus `v3.15.1`,
+Grafana `13.3.0`.
 
 | Service | Default host port | Override |
 | --- | --- | --- |
@@ -275,8 +275,8 @@ Rate limiter failing open (`OnlineOrderRateLimiterFailingOpen`, docs/correctness
 
 ## 3. Container image
 
-The root `Dockerfile` builds the frontend in `node:24.22.0-bookworm-slim` (`npm ci`,
-`npm run build`), the jar in `gradle:9.8.1-jdk17-noble` (the npm-based `buildFrontend` task is skipped there and the
+The root `Dockerfile` builds the frontend in `node:24.22.3-bookworm-slim` (`npm ci`,
+`npm run build`), the jar in `gradle:9.8.2-jdk17-noble` (the npm-based `buildFrontend` task is skipped there and the
 stage's build output is embedded instead), extracts Spring Boot layers with `-Djarmode=tools`, and runs on
 `eclipse-temurin:17.0.20.1_1-jre-noble` as uid 10001 with `JAVA_OPTS="-XX:MaxRAMPercentage=75.0
 -XX:InitialRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError"` (override `JAVA_OPTS` to change them). Ports: 8080
