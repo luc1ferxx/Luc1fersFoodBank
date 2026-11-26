@@ -198,8 +198,8 @@ class KafkaConfigurationTests {
 
 
     @Test
-    // Spring Kafka recovers right away when the default backoff allows no retries, so the transient backoff
-    // function never runs; application.yml documents KAFKA_LISTENER_RETRIES=0 as the off switch.
+    // application.yml documents KAFKA_LISTENER_RETRIES=0 as the off switch: KafkaListenerConfig sets no transient
+    // backoff function then (Spring Kafka 4.1.2 would use it even though the default backoff allows no retries).
     void orderListener_shouldDeadLetterTransientFailuresRightAwayWhenRetriesAreDisabled() {
         KafkaTemplate<String, String> kafkaTemplate = deadLetterTemplate();
         contextRunner
