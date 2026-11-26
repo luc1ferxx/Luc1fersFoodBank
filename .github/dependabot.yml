@@ -14,6 +14,11 @@ updates:
       testcontainers:
         patterns:
           - "org.testcontainers*"
+    ignore:
+      # Held at 3.0.6, the newest release compiled against Jackson 3.1, the line Spring Boot 4.1 manages (3.0.7 and
+      # later target Jackson 3.2; see the comment in backend/build.gradle). Remove once Spring Boot manages Jackson 3.2.
+      - dependency-name: "com.networknt:json-schema-validator"
+        update-types: ["version-update:semver-patch", "version-update:semver-minor", "version-update:semver-major"]
 
   - package-ecosystem: npm
     directory: /frontend
