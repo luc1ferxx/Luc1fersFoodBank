@@ -124,8 +124,8 @@ out `/events/stream`, whose requests stay open until the stream ends (section 13
 
 ## 2. Local observability stack
 
-`deploy/observability/docker-compose.yml`: OpenTelemetry Collector `0.164.0`, Tempo `2.10.10`, Prometheus `v3.15.1`,
-Grafana `13.3.0`.
+`deploy/observability/docker-compose.yml`: OpenTelemetry Collector `0.165.0`, Tempo `2.10.10`, Prometheus `v3.16.0`,
+Grafana `13.3.1`.
 
 | Service | Default host port | Override |
 | --- | --- | --- |
@@ -276,9 +276,9 @@ Rate limiter failing open (`OnlineOrderRateLimiterFailingOpen`, docs/correctness
 ## 3. Container image
 
 The root `Dockerfile` builds the frontend in `node:24.22.3-bookworm-slim` (`npm ci`,
-`npm run build`), the jar in `gradle:9.8.2-jdk17-noble` (the npm-based `buildFrontend` task is skipped there and the
+`npm run build`), the jar in `gradle:9.9.2-jdk17-noble` (the npm-based `buildFrontend` task is skipped there and the
 stage's build output is embedded instead), extracts Spring Boot layers with `-Djarmode=tools`, and runs on
-`eclipse-temurin:17.0.20.1_1-jre-noble` as uid 10001 with `JAVA_OPTS="-XX:MaxRAMPercentage=75.0
+`eclipse-temurin:17.0.21.1_2-jre-noble` as uid 10001 with `JAVA_OPTS="-XX:MaxRAMPercentage=75.0
 -XX:InitialRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError"` (override `JAVA_OPTS` to change them). Ports: 8080
 application, 8081 management when the deployment sets `MANAGEMENT_SERVER_PORT=8081`.
 
@@ -447,7 +447,7 @@ versions above what Spring Boot manages: drop each once Spring Boot manages that
 holds the dependency back. `h2.version` there is not a security patch (H2 2.4.240 regression, see the comment).
 
 Since Spring Boot 4.1.2 (2026-11-26) the Tomcat, Jackson 3 and Jackson 2 overrides and the pgjdbc version are gone:
-it manages Tomcat 11.0.27, Jackson 3.1.7 / 2.21.7 and pgjdbc 42.7.14 itself. What is left is lz4-java (1.12.1;
+it manages Tomcat 11.0.27, Jackson 3.1.7 / 2.21.7 and pgjdbc 42.7.14 itself. What is left is lz4-java (1.14.1;
 kafka-clients 4.2.2 still asks for 1.11.2, below the fixed 1.11.4) and `h2.version`.
 
 ## 7. Schema changes: 64-bit keys and the audit trails
