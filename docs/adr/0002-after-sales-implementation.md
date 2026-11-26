@@ -27,7 +27,7 @@ P1 只加测试，全量门禁通过（873 个测试，0 失败，0 跳过）。
 对抗审查结论：通过，没有必须修复的问题。每个生产调用方都自己传入触发器和允许的 actor；与 P2 之前（cbdab99）的代码逐个分支对比，409 的错误码和文案、no-op 结果、历史原因、cancel_reason、事件、审计、幂等行、骑手负载和 tombstone 都保持一致。P1 测试只做了允许范围内的调整：`save`、`updateStatus`、`updateRider` 换成 CAS 方法，原有的顺序断言和"不写库"断言都保留。
 
 **与前文的偏差**
-1. `OrderTrigger`、`OrderTransitionContext` 和 `OrderStateMachine` 都放在 `com.laioffer.onlineorder.model`，没有按 4.1 标题放在 service 包。私有的 `cancelReasonCode` 移到了 `OrderTransitionContext.cancelReasonCode`（public static）。
+1. `OrderTrigger`、`OrderTransitionContext` 和 `OrderStateMachine` 都放在 `io.github.luc1ferxx.foodbank.model`，没有按 4.1 标题放在 service 包。私有的 `cancelReasonCode` 移到了 `OrderTransitionContext.cancelReasonCode`（public static）。
 2. `restaurantTrigger` 和 `timeoutTrigger` 在加锁**之前**选定触发器：在同一族（`MERCHANT_*` 或 `*_TIMEOUT`）里取第一个 from 集合和目标都匹配的。三种商家命令以外的组合，以及 PLACED、PAID 以外的等待状态，直接抛 `IllegalArgumentException`，不加锁。旧代码会接受任何合法边，但没有调用方会传这些参数。
 3. `decide()` 最先检查 actor：表里不允许的 actor 会得到 `IllegalStateException`（500），例如用 CUSTOMER 调 `transitionRestaurantOrder`。生产代码里没有这种调用。
 4. 配送用 `DeliveryStateMachine.advanceTrigger` 把目标状态映射成触发器；目标不是 PICKED_UP 或 DELIVERED 时，在加锁之后、写入之前抛 `IllegalArgumentException`。
@@ -318,7 +318,7 @@ P5 开始时，`git log --oneline master..HEAD` 共 38 个提交。每个阶段�
 P5 的文档提交在这个范围之后。
 
 **最终状态**
-- **通用组件**：`com.laioffer.onlineorder.statemachine` 共 6 个类（`StateMachine`、`Transition`、`Guard`、`Decision`、`CompareAndSet`、`StaleTransitionException`），只依赖 JDK。四个声明都是 `static final DEFINITION`：`model.OrderStateMachine`、`fulfilment.dispatch.DeliveryStateMachine`、`aftersales.AfterSalesStateMachine`、`aftersales.RefundStateMachine`。
+- **通用组件**：`io.github.luc1ferxx.foodbank.statemachine` 共 6 个类（`StateMachine`、`Transition`、`Guard`、`Decision`、`CompareAndSet`、`StaleTransitionException`），只依赖 JDK。四个声明都是 `static final DEFINITION`：`model.OrderStateMachine`、`fulfilment.dispatch.DeliveryStateMachine`、`aftersales.AfterSalesStateMachine`、`aftersales.RefundStateMachine`。
 - **订单与配送迁移**：
   - `orders.status` 和 `deliveries.status` 的每次写入都先 `decide`，再用 CAS 写（`OrderRepository.compareAndSetStatus`；`DeliveryRepository.compareAndSetStatus`、`compareAndSetRider`），行数不为 1 时抛 `StaleTransitionException`。`SELECT ... FOR UPDATE` 仍是决策点。
   - 409 的错误码和文案、no-op、历史、事件和审计与迁移前一致（第 22 节）。`onlineorder.order.transition` 改为提交后计数。

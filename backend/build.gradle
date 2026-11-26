@@ -9,7 +9,7 @@ plugins {
 }
 
 
-group = 'com.laioffer'
+group = 'io.github.luc1ferxx'
 version = '0.0.1-SNAPSHOT'
 description = 'OnlineOrder'
 

@@ -1,7 +1,7 @@
 # Order Fulfilment (event-driven)
 
 After payment, the order lifecycle is driven by Kafka. Separate modules inside the same Spring Boot app (a modular
-monolith under `com.laioffer.onlineorder.fulfilment`) consume the events, each with its own consumer group and its
+monolith under `io.github.luc1ferxx.foodbank.fulfilment`) consume the events, each with its own consumer group and its
 own tables:
 
 | Module | Package | Owns | Reacts to |
@@ -212,7 +212,7 @@ cancelled (`PATCH /orders/{id}/status`, which cancels the delivery and releases 
 Do not clear them with `POST /admin/deliveries/{id}/delivered`: that completes the customer's order and sends "Order
 delivered" for food nobody delivered.
 
-The orchestration lives in `com.laioffer.onlineorder.staff` (admin web layer): in one transaction it creates the login
+The orchestration lives in `io.github.luc1ferxx.foodbank.staff` (admin web layer): in one transaction it creates the login
 through `CustomerService` and binds it through the merchant module's `MerchantAccountService` or the dispatch
 module's `RiderService`; the modules still only touch their own tables.
 

@@ -1,0 +1,101 @@
+package io.github.luc1ferxx.foodbank.fulfilment.dispatch;
+
+
+import io.github.luc1ferxx.foodbank.audit.AuditActions;
+import io.github.luc1ferxx.foodbank.audit.AuditActor;
+import io.github.luc1ferxx.foodbank.audit.AuditLogService;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.function.Function;
+
+
+/**
+ * The admin's simulated rider actions (POST /admin/deliveries/{id}/picked-up and /delivered) and reassignments
+ * (POST /admin/deliveries/{id}/reassign), audited.
+ *
+ * <p>Each action is {@link DispatchService}'s guarded delivery transition plus one audit_log entry naming the admin,
+ * in one transaction. The delivery row is locked first, so the status read here is the one the transition starts from:
+ * a repeat of an action that already happened (the transition returns the delivery unchanged) and a refused one (404,
+ * 409, rolled back) add no entry. The order history of the completed order still names the delivery's rider (the
+ * order module learns about the delivery only from the delivery.delivered event); this entry is the record that an
+ * admin performed it.
+ */
+@Service
+public class DeliveryAdminService {
+
+    private final DispatchService dispatchService;
+    private final DeliveryRepository deliveryRepository;
+    private final AuditLogService auditLogService;
+
+
+    public DeliveryAdminService(
+            DispatchService dispatchService,
+            DeliveryRepository deliveryRepository,
+            AuditLogService auditLogService
+    ) {
+        this.dispatchService = dispatchService;
+        this.deliveryRepository = deliveryRepository;
+        this.auditLogService = auditLogService;
+    }
+
+
+    @Transactional
+    public DeliveryDto markPickedUp(Long deliveryId, AuditActor actor) {
+        return advance(deliveryId, DeliveryStatus.PICKED_UP, AuditActions.DELIVERY_PICKED_UP, actor,
+                dispatchService::markPickedUp);
+    }
+
+
+    @Transactional
+    public DeliveryDto markDelivered(Long deliveryId, AuditActor actor) {
+        return advance(deliveryId, DeliveryStatus.DELIVERED, AuditActions.DELIVERY_DELIVERED, actor,
+                dispatchService::markDelivered);
+    }
+
+
+    /**
+     * {@link DispatchService#reassign} plus one delivery.reassign entry naming the admin and both riders. Retrying with
+     * the rider the delivery already has changes nothing and is not audited; a refused reassignment rolls back.
+     */
+    @Transactional
+    public DeliveryDto reassign(Long deliveryId, Long riderId, AuditActor actor) {
+        // Taken before the reassignment, which locks the same row again in this transaction.
+        DeliveryEntity before = deliveryRepository.lockById(deliveryId);
+        DeliveryDto after = dispatchService.reassign(deliveryId, riderId);
+        if (before != null && !riderId.equals(before.riderId())) {
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("order_id", after.orderId());
+            details.put("status", after.status());
+            details.put("from_rider_id", before.riderId());
+            details.put("to_rider_id", after.riderId());
+            auditLogService.record(actor, AuditActions.DELIVERY_REASSIGN, AuditActions.TARGET_DELIVERY, deliveryId, details);
+        }
+        return after;
+    }
+
+
+    private DeliveryDto advance(
+            Long deliveryId,
+            DeliveryStatus target,
+            String action,
+            AuditActor actor,
+            Function<Long, DeliveryDto> transition
+    ) {
+        // Taken before the transition, which locks the same row again in this transaction.
+        DeliveryEntity before = deliveryRepository.lockById(deliveryId);
+        DeliveryDto after = transition.apply(deliveryId);
+        if (before != null && !target.name().equals(before.status())) {
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("order_id", after.orderId());
+            details.put("rider_id", after.riderId());
+            details.put("from_status", before.status());
+            details.put("to_status", after.status());
+            auditLogService.record(actor, action, AuditActions.TARGET_DELIVERY, deliveryId, details);
+        }
+        return after;
+    }
+}

@@ -4,7 +4,7 @@ import { type Decoder, decodeString, fieldsOf } from "./decode";
 /*
  * Request and response shapes of the backend API (snake_case, from the global Jackson
  * naming strategy), each response type next to its decoder. Field names follow the
- * backend records in backend/src/main/java/com/laioffer/onlineorder (model/*Dto and
+ * backend records in backend/src/main/java/io/github/luc1ferxx/foodbank (model/*Dto and
  * fulfilment/**). Java fields that can be null are `T | null` here.
  *
  * Every amount is a JSON number with a sibling `currency` (ISO 4217): "price" +

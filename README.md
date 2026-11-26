@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/React-19-61dafb?style=for-the-badge" alt="React 19" />
   <img src="https://img.shields.io/badge/PostgreSQL-15-4169e1?style=for-the-badge" alt="PostgreSQL 15" />
   <img src="https://img.shields.io/badge/Redis-7-dc382d?style=for-the-badge" alt="Redis 7" />
-  <img src="https://img.shields.io/badge/Kafka-3.8-231f20?style=for-the-badge" alt="Kafka 3.8" />
+  <img src="https://img.shields.io/badge/Kafka-3.9-231f20?style=for-the-badge" alt="Kafka 3.9" />
 </p>
 
 Customers order food, merchants accept and prepare it, riders deliver it, and admins handle refunds and recovery. All

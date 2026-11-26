@@ -1,0 +1,103 @@
+package io.github.luc1ferxx.foodbank.repository;
+
+
+import io.github.luc1ferxx.foodbank.entity.IdempotencyRequestEntity;
+import org.springframework.data.jdbc.repository.query.Modifying;
+import org.springframework.data.jdbc.repository.query.Query;
+import org.springframework.data.repository.ListCrudRepository;
+
+
+import java.time.LocalDateTime;
+
+
+public interface IdempotencyRequestRepository extends ListCrudRepository<IdempotencyRequestEntity, Long> {
+
+
+    @Modifying
+    @Query("""
+            INSERT INTO idempotency_requests (
+                customer_id,
+                scope,
+                idempotency_key,
+                request_hash,
+                status,
+                order_id,
+                created_at,
+                updated_at
+            ) VALUES (
+                :customerId,
+                :scope,
+                :idempotencyKey,
+                :requestHash,
+                :status,
+                NULL,
+                :createdAt,
+                :updatedAt
+            )
+            ON CONFLICT (customer_id, scope, idempotency_key) DO NOTHING
+            """)
+    int insertIfAbsent(
+            Long customerId,
+            String scope,
+            String idempotencyKey,
+            String requestHash,
+            String status,
+            LocalDateTime createdAt,
+            LocalDateTime updatedAt
+    );
+
+
+    @Query("""
+            SELECT *
+            FROM idempotency_requests
+            WHERE customer_id = :customerId
+              AND scope = :scope
+              AND idempotency_key = :idempotencyKey
+            FOR UPDATE
+            """)
+    IdempotencyRequestEntity lockByCustomerIdAndScopeAndIdempotencyKey(
+            Long customerId,
+            String scope,
+            String idempotencyKey
+    );
+
+
+    @Modifying
+    @Query("""
+            UPDATE idempotency_requests
+            SET status = :status,
+                order_id = :orderId,
+                updated_at = :updatedAt
+            WHERE id = :id
+            """)
+    void markSucceeded(Long id, String status, Long orderId, LocalDateTime updatedAt);
+
+
+    /**
+     * Marks an after-sales request done, bound to the case it opened or changed: its replays answer with that case.
+     */
+    @Modifying
+    @Query("""
+            UPDATE idempotency_requests
+            SET status = :status,
+                order_id = :orderId,
+                case_id = :caseId,
+                updated_at = :updatedAt
+            WHERE id = :id
+            """)
+    void markSucceededWithCase(Long id, String status, Long orderId, Long caseId, LocalDateTime updatedAt);
+
+
+    @Modifying
+    @Query("""
+            DELETE FROM idempotency_requests
+            WHERE id IN (
+                SELECT id
+                FROM idempotency_requests
+                WHERE updated_at < :updatedBefore
+                ORDER BY id
+                LIMIT :batchSize
+            )
+            """)
+    int deleteByUpdatedAtBefore(LocalDateTime updatedBefore, int batchSize);
+}

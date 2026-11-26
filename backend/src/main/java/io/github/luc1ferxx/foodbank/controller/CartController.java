@@ -1,0 +1,97 @@
+package io.github.luc1ferxx.foodbank.controller;
+
+
+import io.github.luc1ferxx.foodbank.entity.CustomerEntity;
+import io.github.luc1ferxx.foodbank.model.AddToCartBody;
+import io.github.luc1ferxx.foodbank.model.CartDto;
+import io.github.luc1ferxx.foodbank.model.OrderDto;
+import io.github.luc1ferxx.foodbank.model.UpdateCartItemBody;
+import io.github.luc1ferxx.foodbank.service.CartService;
+import io.github.luc1ferxx.foodbank.service.CustomerService;
+import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.bind.annotation.RestController;
+
+
+import java.security.Principal;
+
+
+@RestController
+public class CartController {
+
+    private final CartService cartService;
+    private final CustomerService customerService;
+
+
+    public CartController(
+            CartService cartService,
+            CustomerService customerService
+    ) {
+        this.cartService = cartService;
+        this.customerService = customerService;
+    }
+
+
+    @GetMapping("/cart")
+    public CartDto getCart(Principal principal) {
+        CustomerEntity customer = customerService.getCustomerByEmail(principal.getName());
+        return cartService.getCart(customer.id());
+    }
+
+
+    @PostMapping("/cart")
+    public void addToCart(Principal principal, @Valid @RequestBody AddToCartBody body) {
+        CustomerEntity customer = customerService.getCustomerByEmail(principal.getName());
+        cartService.addMenuItemToCart(customer.id(), body.menuId());
+    }
+
+
+    /**
+     * Empties the cart: 204, also when it was already empty.
+     */
+    @DeleteMapping("/cart")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void clearCart(Principal principal) {
+        CustomerEntity customer = customerService.getCustomerByEmail(principal.getName());
+        cartService.clearCart(customer.id());
+    }
+
+
+    @PutMapping("/cart/items/{orderItemId:\\d+}")
+    public void updateCartItem(
+            Principal principal,
+            @PathVariable("orderItemId") Long orderItemId,
+            @Valid @RequestBody UpdateCartItemBody body
+    ) {
+        CustomerEntity customer = customerService.getCustomerByEmail(principal.getName());
+        cartService.updateOrderItemQuantity(customer.id(), orderItemId, body.quantity());
+    }
+
+
+    @DeleteMapping("/cart/items/{orderItemId:\\d+}")
+    public void removeCartItem(
+            Principal principal,
+            @PathVariable("orderItemId") Long orderItemId
+    ) {
+        CustomerEntity customer = customerService.getCustomerByEmail(principal.getName());
+        cartService.updateOrderItemQuantity(customer.id(), orderItemId, 0);
+    }
+
+
+    @PostMapping("/cart/checkout")
+    public OrderDto checkout(
+            Principal principal,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey
+    ) {
+        CustomerEntity customer = customerService.getCustomerByEmail(principal.getName());
+        return cartService.checkoutWithIdempotency(customer.id(), "PLACED", idempotencyKey);
+    }
+}

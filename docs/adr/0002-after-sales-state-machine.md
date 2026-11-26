@@ -10,9 +10,9 @@
 
 | 缩写 | 实际路径 |
 |---|---|
-| `B/` | `backend/src/main/java/com/laioffer/onlineorder/` |
+| `B/` | `backend/src/main/java/io/github/luc1ferxx/foodbank/` |
 | `R/` | `backend/src/main/resources/` |
-| `T/` | `backend/src/test/java/com/laioffer/onlineorder/` |
+| `T/` | `backend/src/test/java/io/github/luc1ferxx/foodbank/` |
 | `TR/` | `backend/src/test/resources/` |
 | `F/` | `frontend/src/` |
 
@@ -67,7 +67,7 @@ cd frontend && npm ci && npm run typecheck && npm run lint && npm test && npm ru
 ## 2. 决策（Decisions）
 
 **D1 通用状态机组件**
-- 新包 `com.laioffer.onlineorder.statemachine`，纯 Java 17，不依赖 Spring，也不依赖任何状态机框架（Spring Statemachine、COLA、stateless4j、squirrel 都不用）。
+- 新包 `io.github.luc1ferxx.foodbank.statemachine`，纯 Java 17，不依赖 Spring，也不依赖任何状态机框架（Spring Statemachine、COLA、stateless4j、squirrel 都不用）。
 - 定义由四个维度声明：状态 x 触发器（命令或事件） x 角色（actor） x 守卫（guard）。
 - 引擎**只做决策**，是纯函数，不做 IO。
 - 加锁、CAS 写、历史、事件、审计由各聚合自己的服务完成。这样锁顺序和事务边界保持原样。
@@ -81,7 +81,7 @@ cd frontend && npm ci && npm run typecheck && npm run lint && npm test && npm ru
 - 每个命令显式声明"已完成"的语义（`alreadyDoneWhen`）。**不做**基于"可达性"的放宽，以保持 README.md:587-588 描述的"接单 vs 超时"语义。
 
 **D3 售后核心放在订单域**
-- 新包 `com.laioffer.onlineorder.aftersales`（方案 a），直接读 `orders` 和 `order_history_items`。
+- 新包 `io.github.luc1ferxx.foodbank.aftersales`（方案 a），直接读 `orders` 和 `order_history_items`。
 - 商家端在 `fulfilment.merchant`：
   - 商家决策**同步**经由 `OrderLifecycleCommands` 新增的一个方法。这是唯一允许的同步接缝，接受它变宽。
   - 商家列表读本模块的投影 `merchant_after_sales_cases`，投影由售后事件驱动。
@@ -146,12 +146,12 @@ cd frontend && npm ci && npm run typecheck && npm run lint && npm test && npm ru
 
 ---
 
-## 3. 通用状态机组件 API（`com.laioffer.onlineorder.statemachine`）
+## 3. 通用状态机组件 API（`io.github.luc1ferxx.foodbank.statemachine`）
 
 ### 3.1 类与签名
 
 ```java
-package com.laioffer.onlineorder.statemachine;
+package io.github.luc1ferxx.foodbank.statemachine;
 
 /** An immutable, validated declaration of one aggregate's lifecycle. Thread-safe; declare as static final. */
 public final class StateMachine<S extends Enum<S>, T extends Enum<T>, A extends Enum<A>, X> {
@@ -344,7 +344,7 @@ if (from.holdsRider() && !to.holdsRider()) riderRepository.decrementLoad(expecte
 
 ---
 
-## 5. 售后状态机（`com.laioffer.onlineorder.aftersales`）
+## 5. 售后状态机（`io.github.luc1ferxx.foodbank.aftersales`）
 
 ### 5.1 状态
 
@@ -508,10 +508,10 @@ stateDiagram-v2
 
 | 组件 | 包 | 读写的表 | 与他人的交互 |
 |---|---|---|---|
-| 售后核心（单一写入者、客户 API、管理员 API、截止时间、退款执行、取消退款） | `com.laioffer.onlineorder.aftersales` | 读写 `after_sales_cases`、`after_sales_case_lines`、`after_sales_case_history`、`refunds`；**读** `orders`、`order_history_items`（同属订单域）；写 `idempotency_requests`、`audit_log`、outbox | 由 `OrderService` 同步调用（同属订单域）：`CancellationRefunds.open(...)`、`AfterSalesMerchantCommands.decide(...)`；对外只发 `after-sales-events` |
-| 商家售后 | `com.laioffer.onlineorder.fulfilment.merchant` | 读写 `merchant_after_sales_cases`；读 `merchant_accounts` | 消费 `after-sales-events`；决策经 `OrderLifecycleCommands.decideAfterSalesCase(...)` |
-| 通知 | `com.laioffer.onlineorder.fulfilment.notification` | `processed_events`；经 `OrderNotificationService` 写 `order_notifications` | 消费 `after-sales-events` |
-| 订单 | `com.laioffer.onlineorder.service.OrderService` | 不变，另在取消时调用 `CancellationRefunds` | 实现扩展后的 `OrderLifecycleCommands` |
+| 售后核心（单一写入者、客户 API、管理员 API、截止时间、退款执行、取消退款） | `io.github.luc1ferxx.foodbank.aftersales` | 读写 `after_sales_cases`、`after_sales_case_lines`、`after_sales_case_history`、`refunds`；**读** `orders`、`order_history_items`（同属订单域）；写 `idempotency_requests`、`audit_log`、outbox | 由 `OrderService` 同步调用（同属订单域）：`CancellationRefunds.open(...)`、`AfterSalesMerchantCommands.decide(...)`；对外只发 `after-sales-events` |
+| 商家售后 | `io.github.luc1ferxx.foodbank.fulfilment.merchant` | 读写 `merchant_after_sales_cases`；读 `merchant_accounts` | 消费 `after-sales-events`；决策经 `OrderLifecycleCommands.decideAfterSalesCase(...)` |
+| 通知 | `io.github.luc1ferxx.foodbank.fulfilment.notification` | `processed_events`；经 `OrderNotificationService` 写 `order_notifications` | 消费 `after-sales-events` |
+| 订单 | `io.github.luc1ferxx.foodbank.service.OrderService` | 不变，另在取消时调用 `CancellationRefunds` | 实现扩展后的 `OrderLifecycleCommands` |
 
 **接缝扩展**（`B/fulfilment/order/OrderLifecycleCommands.java`）：
 
@@ -534,7 +534,7 @@ record AfterSalesDecision(AfterSalesCasePayload snapshot, boolean changed) { }
 ```
 
 - `OrderService` 实现该方法，直接委托给 `AfterSalesMerchantCommands`。`OrderService` 仍是唯一实现类。
-- 返回的快照复用事件 payload 记录 `com.laioffer.onlineorder.messaging.AfterSalesCasePayload`。这样商家模块的投影只需要一个 upsert 入口，命令和消费者共用。
+- 返回的快照复用事件 payload 记录 `io.github.luc1ferxx.foodbank.messaging.AfterSalesCasePayload`。这样商家模块的投影只需要一个 upsert 入口，命令和消费者共用。
 
 **遵守的规则**
 - 不引入新的同步接缝。
@@ -551,7 +551,7 @@ record AfterSalesDecision(AfterSalesCasePayload snapshot, boolean changed) { }
 ### 8.1 `R/db/migration/V12__after_sales.sql`
 
 ```sql
--- After-sales (com.laioffer.onlineorder.aftersales, order domain). One case per order (uq_after_sales_case_order):
+-- After-sales (io.github.luc1ferxx.foodbank.aftersales, order domain). One case per order (uq_after_sales_case_order):
 -- a customer refund request on a COMPLETED order, or the automatic refund of a paid order that was cancelled.
 CREATE TABLE after_sales_cases
 (
@@ -681,7 +681,7 @@ CREATE TABLE refunds
 );
 CREATE INDEX idx_refunds_due ON refunds (status, next_attempt_at, id);
 
--- Merchant module (com.laioffer.onlineorder.fulfilment.merchant): the merchant's after-sales inbox, built from
+-- Merchant module (io.github.luc1ferxx.foodbank.fulfilment.merchant): the merchant's after-sales inbox, built from
 -- after-sales-events by its own consumer group. No foreign keys: the module never reads the order domain's tables.
 CREATE TABLE merchant_after_sales_cases
 (
@@ -1482,7 +1482,7 @@ RefundDto(Long id, Long caseId, Long orderId, @JsonFormat(shape = STRING) Long o
 11. refunds 的 claim 查询加普通复合索引 `(status, next_attempt_at, id)` 和 `(status, claimed_until, id)`，H2 和 PostgreSQL 都能建，不需要部分索引。
 
 **订单 / 配送迁移**
-12. `OrderStateMachine` 放在 `com.laioffer.onlineorder.model`，和 `OrderStatus` 同包，避免 model 依赖 service。
+12. `OrderStateMachine` 放在 `io.github.luc1ferxx.foodbank.model`，和 `OrderStatus` 同包，避免 model 依赖 service。
 13. P2-1 的指标回归测试必须在修复前失败：让 `applyTransition` **之后**的步骤抛异常（例如审计写入或幂等 `markSucceeded`），而不是让 outbox 抛（outbox 在计指标之前，今天就不会多计）。P3-6 的回滚测试同理：让售后事件的 `enqueueEvent` 抛异常。
 14. 新增一个 `@SpringBootTest` 断言上下文里**恰好一个** `TaskScheduler`；现有 `SchedulingConfigurationTests` 不加载应用 bean，发现不了第二个。
 15. P1 测试 `customerCancel_ofAnOrderTheTimeoutCancelled_withANewKey` 的断言要允许新 key 写入的幂等行（插入并标记 SUCCEEDED）。

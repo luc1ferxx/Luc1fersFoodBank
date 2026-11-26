@@ -243,7 +243,7 @@ app:
       batch-size: ${FULFILMENT_DEADLINE_BATCH_SIZE:100}
       # Delay before a deadline whose firing failed (for example a lock timeout) is tried again.
       retry-backoff: ${FULFILMENT_DEADLINE_RETRY_BACKOFF:30s}
-  # After-sales refunds (com.laioffer.onlineorder.aftersales, docs/adr/0002-after-sales-state-machine.md).
+  # After-sales refunds (io.github.luc1ferxx.foodbank.aftersales, docs/adr/0002-after-sales-state-machine.md).
   after-sales:
     # After-sales events (aftersales.*) published by the after-sales module, keyed by the order id (same partition
     # count as the order topic).
@@ -265,7 +265,7 @@ app:
     picked-up-cancel-refund-percent: ${AFTER_SALES_PICKED_UP_CANCEL_REFUND_PERCENT:50}
     poller:
       # Fires the deadlines of the open cases, then executes the due refunds
-      # (com.laioffer.onlineorder.aftersales.AfterSalesPoller), on its own thread, not on the shared scheduler the
+      # (io.github.luc1ferxx.foodbank.aftersales.AfterSalesPoller), on its own thread, not on the shared scheduler the
       # outbox publisher uses. Follows Kafka like the fulfilment deadline poller; set AFTER_SALES_POLLER_ENABLED=true
       # to run them in the h2 profile (the demo profile does).
       enabled: ${AFTER_SALES_POLLER_ENABLED:${app.kafka.enabled:true}}
@@ -376,7 +376,7 @@ app:
     # interval per instance before the 404, so a restaurant created outside the admin API is served at once
     # while random ids still cannot hammer the database. 0 checks every unknown id.
     unknown-restaurant-recheck-interval: ${CATALOG_UNKNOWN_RESTAURANT_RECHECK_INTERVAL:1s}
-  # Push signals over Server-Sent Events (GET /events/stream, com.laioffer.onlineorder.push,
+  # Push signals over Server-Sent Events (GET /events/stream, io.github.luc1ferxx.foodbank.push,
   # docs/adr/0003-push-signals.md): after a commit that changes a merchant's orders or after-sales cases, a rider's
   # deliveries or a customer's notifications, the open streams of that restaurant, rider or customer get a signal
   # without data and re-read the REST list. The clients keep a slower polling fallback, so nothing depends on a signal.

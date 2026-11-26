@@ -1,7 +1,7 @@
 package db.migration;
 
 
-import com.laioffer.onlineorder.ids.SnowflakeIdGenerator;
+import io.github.luc1ferxx.foodbank.ids.SnowflakeIdGenerator;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
