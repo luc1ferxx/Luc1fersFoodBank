@@ -2,7 +2,7 @@ services:
 
 
   db:
-    image: postgres:15.19-alpine
+    image: postgres:15.20-alpine
     # The image's own client authentication rules plus streaming replication, for the optional replica below.
     command: ["postgres", "-c", "hba_file=/etc/postgresql/pg_hba.conf"]
     environment:
@@ -19,7 +19,7 @@ services:
   #   docker compose --profile replica up -d
   #   DATABASE_REPLICA_URLS=jdbc:postgresql://localhost:5434/onlineorder ./gradlew bootRun
   db-replica:
-    image: postgres:15.19-alpine
+    image: postgres:15.20-alpine
     profiles: ["replica"]
     depends_on:
       - db
