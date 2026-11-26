@@ -2,7 +2,7 @@
 
 After-sales covers refunds only: a customer asks for money back on a completed order, the restaurant answers once,
 the platform arbitrates a dispute, and every step that waits for someone has a deadline. A paid order that is
-cancelled is refunded through the same cases. The module is `com.laioffer.onlineorder.aftersales`
+cancelled is refunded through the same cases. The module is `io.github.luc1ferxx.foodbank.aftersales`
 (cases, refunds, the deadline and refund poller, the customer and admin APIs); the merchant's side lives in
 `fulfilment.merchant` and the customer notifications in `fulfilment.notification`. Migrations: `V12` (the tables,
 `order_payments` included), `V12_1` (currency checks, Java), `V12_2` (idempotency records bound to a case) and

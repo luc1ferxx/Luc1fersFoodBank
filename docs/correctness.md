@@ -96,7 +96,7 @@ COMPLETED and CANCELLED are terminal
 Status changes and their outbox events commit together. Invalid transitions fail without side effects.
 
 The order, delivery, after-sales case and refund lifecycles are each declared once with the generic `StateMachine` of
-`com.laioffer.onlineorder.statemachine` (`model.OrderStateMachine`, `fulfilment.dispatch.DeliveryStateMachine`,
+`io.github.luc1ferxx.foodbank.statemachine` (`model.OrderStateMachine`, `fulfilment.dispatch.DeliveryStateMachine`,
 `aftersales.AfterSalesStateMachine`, `aftersales.RefundStateMachine`). A declaration names, per trigger (a command or an
 event), the states it fires from, its target (or `stay()` for an internal transition such as a reassignment), the actor
 types allowed, its guards, and when it already happened (a retry that answers unchanged). `build()` refuses an invalid

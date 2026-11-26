@@ -1,0 +1,321 @@
+package io.github.luc1ferxx.foodbank;
+
+import io.github.luc1ferxx.foodbank.entity.CartEntity;
+import io.github.luc1ferxx.foodbank.entity.CustomerEntity;
+import io.github.luc1ferxx.foodbank.entity.MenuItemEntity;
+import io.github.luc1ferxx.foodbank.entity.OrderEntity;
+import io.github.luc1ferxx.foodbank.entity.OrderHistoryItemEntity;
+import io.github.luc1ferxx.foodbank.entity.OutboxEventEntity;
+import io.github.luc1ferxx.foodbank.messaging.OrderEventEnvelope;
+import io.github.luc1ferxx.foodbank.messaging.OrderEventItem;
+import io.github.luc1ferxx.foodbank.messaging.OrderEventPayload;
+import io.github.luc1ferxx.foodbank.messaging.OutboxEventPublisher;
+import io.github.luc1ferxx.foodbank.observability.ApplicationMetricsService;
+import io.github.luc1ferxx.foodbank.repository.CartRepository;
+import io.github.luc1ferxx.foodbank.repository.CustomerRepository;
+import io.github.luc1ferxx.foodbank.repository.MenuItemRepository;
+import io.github.luc1ferxx.foodbank.repository.OrderHistoryItemRepository;
+import io.github.luc1ferxx.foodbank.repository.OrderRepository;
+import io.github.luc1ferxx.foodbank.repository.OutboxEventRepository;
+import io.github.luc1ferxx.foodbank.service.OrderEventHandlerService;
+import io.github.luc1ferxx.foodbank.service.OrderEventOutboxService;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+
+import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+
+@SpringBootTest
+@Testcontainers(disabledWithoutDocker = true)
+class OutboxReliabilityIntegrationTests {
+
+    @Container
+    static PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine")
+            .withDatabaseName("onlineorder")
+            .withUsername("postgres")
+            .withPassword("secret");
+
+    @DynamicPropertySource
+    static void configure(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.username", POSTGRES::getUsername);
+        registry.add("spring.datasource.password", POSTGRES::getPassword);
+        registry.add("spring.flyway.locations", () -> "classpath:db/migration,classpath:db/demo");
+        registry.add("spring.session.store-type", () -> "none");
+        registry.add("spring.cache.type", () -> "none");
+        registry.add("app.kafka.enabled", () -> "false");
+        registry.add("app.outbox.publisher-enabled", () -> "false");
+        registry.add("app.outbox.max-attempts", () -> "2");
+        registry.add("app.cleanup.enabled", () -> "false");
+        registry.add("app.security.rate-limit.enabled", () -> "false");
+    }
+
+    @Autowired
+    private OrderEventOutboxService orderEventOutboxService;
+
+    @Autowired
+    private OrderEventHandlerService orderEventHandlerService;
+
+    @Autowired
+    private OutboxEventRepository outboxEventRepository;
+
+    @Autowired
+    private ApplicationMetricsService metricsService;
+
+    @Autowired
+    private CustomerRepository customerRepository;
+
+    @Autowired
+    private CartRepository cartRepository;
+
+    @Autowired
+    private MenuItemRepository menuItemRepository;
+
+    @Autowired
+    private OrderRepository orderRepository;
+
+    @Autowired
+    private OrderHistoryItemRepository orderHistoryItemRepository;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    private KafkaTemplate<String, String> kafkaTemplate;
+    private OutboxEventPublisher publisher;
+
+    @BeforeEach
+    @SuppressWarnings("unchecked")
+    void setup() {
+        kafkaTemplate = Mockito.mock(KafkaTemplate.class);
+        // A zero failure backoff lets each test retry right away instead of waiting out the pause.
+        publisher = new OutboxEventPublisher(
+                kafkaTemplate,
+                Duration.ofSeconds(5),
+                20,
+                Duration.ofMillis(500),
+                Duration.ofSeconds(30),
+                Duration.ZERO,
+                orderEventOutboxService,
+                metricsService
+        );
+    }
+
+    @Test
+    void publishPendingEvents_whenFirstSendFails_shouldKeepEventRetryableAndPublishItOnNextRun() {
+        OutboxEventEntity event = createPendingOutboxEvent("retry");
+        Mockito.when(kafkaTemplate.send(event.topic(), event.eventKey(), event.payload()))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("Kafka unavailable")))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        publisher.publishPendingEvents();
+
+        OutboxEventEntity retryableEvent = outboxEventRepository.findById(event.id()).orElseThrow();
+        Assertions.assertEquals("PENDING", retryableEvent.status());
+        Assertions.assertEquals(1, retryableEvent.attempts());
+        Assertions.assertNotNull(retryableEvent.lastError());
+        Assertions.assertTrue(retryableEvent.lastError().contains("Kafka unavailable"));
+        Assertions.assertNull(retryableEvent.publishedAt());
+
+        publisher.publishPendingEvents();
+
+        OutboxEventEntity publishedEvent = outboxEventRepository.findById(event.id()).orElseThrow();
+        Assertions.assertEquals("PUBLISHED", publishedEvent.status());
+        Assertions.assertEquals(2, publishedEvent.attempts());
+        Assertions.assertNull(publishedEvent.lastError());
+        Assertions.assertNotNull(publishedEvent.publishedAt());
+        Mockito.verify(kafkaTemplate, Mockito.times(2)).send(event.topic(), event.eventKey(), event.payload());
+    }
+
+    @Test
+    void publishPendingEvents_whenAttemptsReachMax_shouldMarkFailedAndStopRetrying() {
+        OutboxEventEntity event = createPendingOutboxEvent("max-attempts");
+        Mockito.when(kafkaTemplate.send(event.topic(), event.eventKey(), event.payload()))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("Kafka unavailable")))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("Kafka still unavailable")));
+
+        publisher.publishPendingEvents();
+
+        OutboxEventEntity retryableEvent = outboxEventRepository.findById(event.id()).orElseThrow();
+        Assertions.assertEquals("PENDING", retryableEvent.status());
+        Assertions.assertEquals(1, retryableEvent.attempts());
+        Assertions.assertNotNull(retryableEvent.lastError());
+        Assertions.assertTrue(retryableEvent.lastError().contains("Kafka unavailable"));
+        Assertions.assertNull(retryableEvent.publishedAt());
+
+        publisher.publishPendingEvents();
+
+        OutboxEventEntity failedEvent = outboxEventRepository.findById(event.id()).orElseThrow();
+        Assertions.assertEquals("FAILED", failedEvent.status());
+        Assertions.assertEquals(2, failedEvent.attempts());
+        Assertions.assertNotNull(failedEvent.lastError());
+        Assertions.assertTrue(failedEvent.lastError().contains("Kafka still unavailable"));
+        Assertions.assertNull(failedEvent.publishedAt());
+
+        publisher.publishPendingEvents();
+
+        OutboxEventEntity stillFailedEvent = outboxEventRepository.findById(event.id()).orElseThrow();
+        Assertions.assertEquals("FAILED", stillFailedEvent.status());
+        Assertions.assertEquals(2, stillFailedEvent.attempts());
+        Mockito.verify(kafkaTemplate, Mockito.times(2)).send(event.topic(), event.eventKey(), event.payload());
+    }
+
+    @Test
+    void publishPendingEvents_whenEventAlreadyPublished_shouldNotPublishItAgain() {
+        OutboxEventEntity event = createPendingOutboxEvent("single-publish");
+        Mockito.when(kafkaTemplate.send(event.topic(), event.eventKey(), event.payload()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        publisher.publishPendingEvents();
+        publisher.publishPendingEvents();
+
+        OutboxEventEntity publishedEvent = outboxEventRepository.findById(event.id()).orElseThrow();
+        Assertions.assertEquals("PUBLISHED", publishedEvent.status());
+        Assertions.assertEquals(1, publishedEvent.attempts());
+        Assertions.assertNotNull(publishedEvent.publishedAt());
+        Mockito.verify(kafkaTemplate, Mockito.times(1)).send(event.topic(), event.eventKey(), event.payload());
+    }
+
+    @Test
+    void handleOrderEvent_whenSameEventIsConsumedTwice_shouldRecordProcessedEventAndNotificationOnlyOnce() {
+        SeededOrder seededOrder = createOrderWithHistory("PAID");
+        String eventId = "evt-dedup-" + System.nanoTime();
+        OrderEventEnvelope event = new OrderEventEnvelope(
+                eventId,
+                1,
+                "order.paid",
+                "ORDER",
+                seededOrder.orderId(),
+                seededOrder.createdAt(),
+                eventId,
+                "idem-dedup",
+                new OrderEventPayload(
+                        seededOrder.customerId(),
+                        "PAID",
+                        seededOrder.totalPrice(),
+                        seededOrder.createdAt(),
+                        List.of(seededOrder.itemDto())
+                )
+        );
+
+        orderEventHandlerService.handle(event);
+        orderEventHandlerService.handle(event);
+
+        Assertions.assertEquals(1, countProcessedEvents(eventId));
+        Assertions.assertEquals(1, countOrderNotifications(seededOrder.orderId(), "order.paid"));
+    }
+
+    private OutboxEventEntity createPendingOutboxEvent(String label) {
+        long suffix = System.nanoTime();
+        LocalDateTime now = LocalDateTime.now();
+        return outboxEventRepository.save(new OutboxEventEntity(
+                null,
+                "ORDER",
+                suffix,
+                "evt-" + label + "-" + suffix,
+                "order-events",
+                String.valueOf(suffix),
+                "order.created",
+                "{\"event_id\":\"evt-" + label + "-" + suffix + "\"}",
+                "PENDING",
+                0,
+                null,
+                now,
+                now,
+                null
+        ));
+    }
+
+    private SeededOrder createOrderWithHistory(String status) {
+        long suffix = System.nanoTime();
+        LocalDateTime now = LocalDateTime.now();
+        CustomerEntity customer = customerRepository.save(new CustomerEntity(
+                null,
+                "outbox-dedup-" + suffix + "@example.com",
+                "{noop}demo123",
+                true,
+                "Outbox",
+                "Dedup",
+                "ACTIVE",
+                true,
+                0,
+                null,
+                null,
+                now,
+                now
+        ));
+        cartRepository.save(new CartEntity(null, customer.id(), BigDecimal.ZERO, "USD"));
+        MenuItemEntity menuItem = menuItemRepository.findById(1L).orElseThrow();
+        OrderEntity order = orderRepository.save(new OrderEntity(null, customer.id(), menuItem.unitPrice(), status, now));
+        OrderHistoryItemEntity historyItem = orderHistoryItemRepository.save(new OrderHistoryItemEntity(
+                null,
+                order.id(),
+                menuItem.id(),
+                menuItem.restaurantId(),
+                menuItem.price(),
+                1,
+                menuItem.name(),
+                menuItem.description(),
+                menuItem.imageUrl(),
+                "USD"
+        ));
+        return new SeededOrder(
+                customer.id(),
+                order.id(),
+                menuItem.price(),
+                now,
+                new OrderEventItem(
+                        historyItem.id(),
+                        historyItem.menuItemId(),
+                        historyItem.restaurantId(),
+                        historyItem.price(),
+                        null,
+                        historyItem.quantity(),
+                        historyItem.menuItemName(),
+                        historyItem.menuItemDescription(),
+                        historyItem.menuItemImageUrl()
+                )
+        );
+    }
+
+    private long countProcessedEvents(String eventId) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM processed_events WHERE consumer_name = 'order-notification-consumer' AND dedup_key = ?",
+                Long.class,
+                eventId
+        );
+        return count == null ? 0 : count;
+    }
+
+    private long countOrderNotifications(Long orderId, String eventType) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM order_notifications WHERE order_id = ? AND event_type = ?",
+                Long.class,
+                orderId,
+                eventType
+        );
+        return count == null ? 0 : count;
+    }
+
+    private record SeededOrder(
+            Long customerId,
+            Long orderId,
+            BigDecimal totalPrice,
+            LocalDateTime createdAt,
+            OrderEventItem itemDto
+    ) {
+    }
+}

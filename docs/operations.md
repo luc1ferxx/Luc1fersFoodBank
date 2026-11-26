@@ -4,19 +4,19 @@ How OnlineOrder is observed, packaged, deployed and gated. Paths are relative to
 
 | Topic | Where |
 | --- | --- |
-| Tracing, logs, metrics | `backend/src/main/java/com/laioffer/onlineorder/observability/`, `application.yml` (`management.*`) |
+| Tracing, logs, metrics | `backend/src/main/java/io/github/luc1ferxx/foodbank/observability/`, `application.yml` (`management.*`) |
 | Local observability stack | `deploy/observability/` |
 | Dashboards and alert rules | `deploy/observability/grafana/dashboards/`, `deploy/observability/prometheus/alerts.yml` |
 | Kubernetes | `deploy/k8s/` (kustomize base + `staging` and `prod` overlays) |
-| Read replicas (read/write splitting) | `backend/src/main/java/com/laioffer/onlineorder/datasource/`, section 11 |
+| Read replicas (read/write splitting) | `backend/src/main/java/io/github/luc1ferxx/foodbank/datasource/`, section 11 |
 | Image | `Dockerfile` |
 | Time zone (the server runs in UTC) | `OnlineOrderApplication.main`, section 3 |
 | CI and CD | `.github/workflows/`, `.github/dependabot.yml`, `.trivyignore` |
 | Event contracts, per-aggregate order | section 8 |
 | Partitions, order numbers, worker ids | section 9; the sharding plan in `docs/adr/0001-order-sharding.md` |
 | Money and currencies | section 10 |
-| After-sales refunds (runbook, V12 rollout, poller) | `backend/src/main/java/com/laioffer/onlineorder/aftersales/`, section 12 |
-| Push signals (SSE stream, Redis channel, ingress) | `backend/src/main/java/com/laioffer/onlineorder/push/`, section 13 |
+| After-sales refunds (runbook, V12 rollout, poller) | `backend/src/main/java/io/github/luc1ferxx/foodbank/aftersales/`, section 12 |
+| Push signals (SSE stream, Redis channel, ingress) | `backend/src/main/java/io/github/luc1ferxx/foodbank/push/`, section 13 |
 
 ## 1. Telemetry in the application
 
@@ -1006,7 +1006,7 @@ emptied first.
 ## 11. Read replicas
 
 Read/write splitting onto PostgreSQL streaming replicas (hot standbys), in
-`backend/src/main/java/com/laioffer/onlineorder/datasource/`. It is off unless `DATABASE_REPLICA_URLS` lists a
+`backend/src/main/java/io/github/luc1ferxx/foodbank/datasource/`. It is off unless `DATABASE_REPLICA_URLS` lists a
 replica: then nothing of it exists and every statement uses the single primary pool, as before. Local runs, tests and
 the base Kubernetes manifests leave it off; the staging and prod overlays turn it on.
 
@@ -1160,7 +1160,7 @@ replica with Redis hung; `FulfilmentReplicaRoutingContainerTests` runs the whole
 ## 12. After-sales refunds (V12-V12_4)
 
 Refund requests on completed orders and the automatic refund of cancelled paid orders. Cases, refunds, the poller and
-the customer and admin API are in `backend/src/main/java/com/laioffer/onlineorder/aftersales/`, the merchant's side in
+the customer and admin API are in `backend/src/main/java/io/github/luc1ferxx/foodbank/aftersales/`, the merchant's side in
 `fulfilment.merchant`, the customer notifications in `fulfilment.notification`. The states, deadlines and amount rules
 are in [docs/adr/0002-after-sales-state-machine.md](adr/0002-after-sales-state-machine.md), and what was built in
 [docs/adr/0002-after-sales-implementation.md](adr/0002-after-sales-implementation.md); this section is the operator's

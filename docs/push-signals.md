@@ -2,7 +2,7 @@
 
 The merchant's orders and after-sales inbox, the rider's deliveries and the customer's notifications used to be
 polled every 10-15 seconds. Now the server pushes **change signals** over Server-Sent Events
-([ADR 0003](adr/0003-push-signals.md), `com.laioffer.onlineorder.push`): a signal only says "this list of yours
+([ADR 0003](adr/0003-push-signals.md), `io.github.luc1ferxx.foodbank.push`): a signal only says "this list of yours
 changed", and the client answers it by reading the REST endpoint it already uses, at most once a second per topic
 (`PUSH_SIGNAL_COALESCE_MS`: the first signal of a quiet second reads at once, the rest of that second fold into one
 read when it ends). Signals carry no data, so a lost or duplicated one costs a late or an extra read, never a wrong

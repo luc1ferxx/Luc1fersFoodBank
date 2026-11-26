@@ -22,7 +22,7 @@
       configuration, which fails application startup as intended. The class is not subclassed.
     -->
     <Match>
-        <Class name="com.laioffer.onlineorder.service.DeadLetterReplayService"/>
+        <Class name="io.github.luc1ferxx.foodbank.service.DeadLetterReplayService"/>
         <Bug pattern="CT_CONSTRUCTOR_THROW"/>
     </Match>
 
@@ -62,8 +62,8 @@
     -->
     <Match>
         <Or>
-            <Class name="com.laioffer.onlineorder.messaging.OutboxEventPublisher"/>
-            <Class name="com.laioffer.onlineorder.messaging.OutboxEventPublisher$BatchPublication"/>
+            <Class name="io.github.luc1ferxx.foodbank.messaging.OutboxEventPublisher"/>
+            <Class name="io.github.luc1ferxx.foodbank.messaging.OutboxEventPublisher$BatchPublication"/>
         </Or>
         <Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/>
     </Match>

@@ -1,0 +1,745 @@
+package io.github.luc1ferxx.foodbank.messaging;
+
+
+import io.github.luc1ferxx.foodbank.entity.OutboxEventEntity;
+import io.github.luc1ferxx.foodbank.observability.ApplicationMetricsService;
+import io.github.luc1ferxx.foodbank.observability.OutboxTracing;
+import io.github.luc1ferxx.foodbank.service.OrderEventOutboxService;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.InvalidRecordException;
+import org.apache.kafka.common.errors.RecordBatchTooLargeException;
+import org.apache.kafka.common.errors.RecordTooLargeException;
+import org.apache.kafka.common.errors.RetriableException;
+import org.apache.kafka.common.errors.SerializationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.core.NestedExceptionUtils;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.support.SendResult;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
+
+/**
+ * Relays outbox events to Kafka.
+ *
+ * <p>Delivery semantics:
+ * <ul>
+ *     <li>At-least-once: an event is marked PUBLISHED only after Kafka acknowledged it. A failed, timed-out or
+ *     unrecorded send is sent again later, so consumers deduplicate by event id.</li>
+ *     <li>Per-aggregate order across instances: every event carries its aggregate's sequence, and the claim only
+ *     returns the head of each aggregate, an event with no earlier PENDING, PROCESSING or FAILED event of the same
+ *     aggregate ({@link OrderEventOutboxService#claimNextBatch}). An aggregate's next event is therefore claimed,
+ *     by whichever instance, only after Kafka acknowledged the previous one and it was marked PUBLISHED; a run claims
+ *     again while a published event has a PENDING successor. A FAILED event holds back the later events of its
+ *     aggregate until it is retried or abandoned (onlineorder.outbox.blocked_aggregates).
+ *     Within a batch, events of the same key (the order id: an order's ORDER, DELIVERY and MERCHANT_ORDER events)
+ *     are still sent one after another, and the idempotent producer (acks=all, enable.idempotence,
+ *     max.in.flight.requests.per.connection &lt;= 5) keeps the sends in flight in order within each partition.</li>
+ *     <li>Lease-based recovery: claimed events are PROCESSING. When the publisher is interrupted, the events
+ *     still in flight stay PROCESSING and the events it never sent are released. Events left PROCESSING for
+ *     longer than app.outbox.claim-timeout, for example after a crash or a shutdown mid-batch, are claimed
+ *     again; the later events of their aggregates wait for them. Such an event may reach Kafka twice (at least
+ *     once), but nothing of its aggregate overtakes it as long as the claim timeout exceeds the longest send.</li>
+ *     <li>Multi-instance safety: claiming uses SELECT ... FOR UPDATE SKIP LOCKED, so publishers in several
+ *     instances claim disjoint batches.</li>
+ * </ul>
+ *
+ * <p>Failures: a transient failure (a Kafka RetriableException such as a metadata or delivery timeout, or no
+ * acknowledgement before the batch deadline) returns the event to PENDING without using up one of its
+ * app.outbox.max-attempts, so a Kafka outage does not push events to FAILED. Any other failure uses up an
+ * attempt. A send rejected before the producer accepted the record stops the batch, except that a record error,
+ * such as a too large record, only holds back the later events of its key unless the previous send was rejected
+ * too.
+ *
+ * <p>After a run with a failure, later runs are skipped for a backoff that starts at app.outbox.publish-interval,
+ * doubles after each failed run and is capped at app.outbox.failure-backoff-max (zero disables it). A run whose
+ * only failures were record errors does not back off when it published other events.
+ */
+@Component
+@ConditionalOnProperty(name = "app.outbox.publisher-enabled", havingValue = "true", matchIfMissing = true)
+public class OutboxEventPublisher {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(OutboxEventPublisher.class);
+
+    private static final Duration CLAIM_TIMEOUT_MARGIN = Duration.ofSeconds(5);
+    private static final Duration KAFKA_DEFAULT_MAX_BLOCK = Duration.ofMinutes(1);
+    private static final int MAX_BACKOFF_DOUBLINGS = 30;
+    private static final int MAX_CAUSE_DEPTH = 10;
+
+    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final Duration publishTimeout;
+    private final int batchSize;
+    private final Duration publishInterval;
+    private final Duration failureBackoffMax;
+    private final OrderEventOutboxService orderEventOutboxService;
+    private final ApplicationMetricsService metricsService;
+    private final Clock clock;
+
+    private int consecutiveFailedRuns;
+    private Instant pausedAt;
+    private Duration pause = Duration.ZERO;
+    private volatile ObservationRegistry observationRegistry = ObservationRegistry.NOOP;
+
+
+    @Autowired
+    public OutboxEventPublisher(
+            KafkaTemplate<String, String> kafkaTemplate,
+            @Value("${app.kafka.publish-timeout:15s}") Duration publishTimeout,
+            @Value("${app.outbox.batch-size:200}") int batchSize,
+            @Value("${app.outbox.publish-interval:500ms}") Duration publishInterval,
+            @Value("${app.outbox.claim-timeout:30s}") Duration claimTimeout,
+            @Value("${app.outbox.failure-backoff-max:60s}") Duration failureBackoffMax,
+            OrderEventOutboxService orderEventOutboxService,
+            ApplicationMetricsService metricsService
+    ) {
+        this(
+                kafkaTemplate,
+                publishTimeout,
+                batchSize,
+                publishInterval,
+                claimTimeout,
+                failureBackoffMax,
+                orderEventOutboxService,
+                metricsService,
+                Clock.systemUTC()
+        );
+    }
+
+
+    public OutboxEventPublisher(
+            KafkaTemplate<String, String> kafkaTemplate,
+            Duration publishTimeout,
+            int batchSize,
+            Duration publishInterval,
+            Duration claimTimeout,
+            Duration failureBackoffMax,
+            OrderEventOutboxService orderEventOutboxService,
+            ApplicationMetricsService metricsService,
+            Clock clock
+    ) {
+        this.kafkaTemplate = kafkaTemplate;
+        this.publishTimeout = publishTimeout;
+        this.batchSize = batchSize;
+        this.publishInterval = publishInterval;
+        this.failureBackoffMax = failureBackoffMax;
+        this.orderEventOutboxService = orderEventOutboxService;
+        this.metricsService = metricsService;
+        this.clock = clock;
+        Duration maxBlock = producerMaxBlock(kafkaTemplate);
+        if (claimTimeout.compareTo(publishTimeout.plus(maxBlock).plus(CLAIM_TIMEOUT_MARGIN)) <= 0) {
+            LOGGER.warn(
+                    "app.outbox.claim-timeout ({}) should exceed app.kafka.publish-timeout ({}) plus the Kafka "
+                            + "producer max.block.ms ({}) by more than {}: claims can expire mid-batch and the same "
+                            + "events can be published twice",
+                    claimTimeout,
+                    publishTimeout,
+                    maxBlock,
+                    CLAIM_TIMEOUT_MARGIN
+            );
+        }
+    }
+
+
+    /**
+     * Each send runs in a relay observation that continues the trace stored with the event (see
+     * {@link OutboxTracing}). Without a registry, as in unit tests that build the publisher directly, events are
+     * sent untraced.
+     */
+    @Autowired(required = false)
+    public void setObservationRegistry(ObservationRegistry observationRegistry) {
+        this.observationRegistry = observationRegistry == null ? ObservationRegistry.NOOP : observationRegistry;
+    }
+
+
+    @Scheduled(fixedDelayString = "${app.outbox.publish-interval:500ms}")
+    public synchronized void publishPendingEvents() {
+        if (isPaused()) {
+            return;
+        }
+
+        boolean backOff = true;
+        try {
+            backOff = drainPendingEvents();
+        } finally {
+            updateFailureBackoff(backOff);
+        }
+    }
+
+
+    /**
+     * Claims and publishes batches until the backlog is drained. A full batch may have more behind it. A shorter batch
+     * drained the claimable events, but the claim returns only the head of each aggregate, so publishing a head may
+     * have made the aggregate's next event claimable: the run claims again when one of the published events has a
+     * PENDING successor, so that an aggregate with k waiting events needs one run, not k publish intervals.
+     *
+     * @return whether the run failed in a way that calls for a backoff
+     */
+    private boolean drainPendingEvents() {
+        while (!Thread.currentThread().isInterrupted()) {
+            List<OutboxEventEntity> events = orderEventOutboxService.claimNextBatch();
+            if (events.isEmpty()) {
+                return false;
+            }
+
+            BatchResult result = new BatchPublication(events).publish();
+            if (result.failed()) {
+                return result.backOff();
+            }
+            if (result.publishedIds().size() < events.size()) {
+                return false;
+            }
+            if (events.size() < batchSize && !orderEventOutboxService.hasPendingSuccessor(result.publishedIds())) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+
+    private boolean isPaused() {
+        if (pausedAt == null) {
+            return false;
+        }
+
+        Instant now = clock.instant();
+        // A wall clock that was set back must not stretch the pause beyond its length.
+        return !now.isBefore(pausedAt) && now.isBefore(pausedAt.plus(pause));
+    }
+
+
+    private void updateFailureBackoff(boolean backOff) {
+        if (!backOff) {
+            if (consecutiveFailedRuns > 0) {
+                LOGGER.info("Outbox publisher resumed after {} failed run(s)", consecutiveFailedRuns);
+            }
+            consecutiveFailedRuns = 0;
+            pausedAt = null;
+            return;
+        }
+
+        consecutiveFailedRuns++;
+        int doublings = Math.min(consecutiveFailedRuns - 1, MAX_BACKOFF_DOUBLINGS);
+        Duration backoff = publishInterval.multipliedBy(1L << doublings);
+        if (backoff.compareTo(failureBackoffMax) > 0) {
+            backoff = failureBackoffMax;
+        }
+        pause = backoff;
+        pausedAt = clock.instant();
+        LOGGER.warn(
+                "Outbox publish run failed; pausing the outbox publisher for {} (consecutive failed runs: {})",
+                backoff,
+                consecutiveFailedRuns
+        );
+    }
+
+
+    /**
+     * Sends the event with its relay observation in scope, so the KafkaTemplate send observation (and, through the
+     * record's traceparent header, the consumer) joins the trace of the request that wrote the event. A failure to
+     * open or close the scope only loses the scope; a failure of the send itself is rethrown unchanged.
+     */
+    private CompletableFuture<SendResult<String, String>> sendInScope(Observation relay, OutboxEventEntity event) {
+        RelayScope scope = openScope(relay, event);
+        try {
+            return kafkaTemplate.send(event.topic(), event.eventKey(), event.payload());
+        } finally {
+            closeScope(scope, event);
+        }
+    }
+
+
+    /**
+     * Tracing must never decide whether or how often an event is published: every call into the relay observation
+     * catches its own failures, logs them at debug level and lets the publisher carry on. If the relay observation
+     * cannot be started, the event is sent untraced. KafkaTemplate's own send observation is spring-kafka's and is
+     * not covered: a handler that throws inside it fails the send like any other send error.
+     */
+    private Observation startRelay(OutboxEventEntity event) {
+        try {
+            return OutboxTracing.startRelay(observationRegistry, event);
+        } catch (RuntimeException ex) {
+            LOGGER.debug("Could not start the trace relay for outbox event {}; sending it untraced", event.id(), ex);
+            return Observation.NOOP;
+        }
+    }
+
+
+    /**
+     * Micrometer makes the scope current before it notifies the handlers, and notifies them before it restores the
+     * previous scope on close. When a handler throws, the previous scope is restored here, so a failing handler
+     * cannot leave the relay current on the scheduler thread.
+     *
+     * @return the opened scope, or null when it could not be opened
+     */
+    private RelayScope openScope(Observation relay, OutboxEventEntity event) {
+        ObservationRegistry registry = observationRegistry;
+        Observation.Scope previous = registry.getCurrentObservationScope();
+        try {
+            return new RelayScope(relay.openScope(), registry, previous);
+        } catch (RuntimeException ex) {
+            restoreScope(registry, previous);
+            LOGGER.debug("Could not open the trace relay scope of outbox event {}", event.id(), ex);
+            return null;
+        }
+    }
+
+
+    private static void closeScope(RelayScope scope, OutboxEventEntity event) {
+        if (scope == null) {
+            return;
+        }
+        try {
+            scope.scope().close();
+        } catch (RuntimeException ex) {
+            restoreScope(scope.registry(), scope.previous());
+            LOGGER.debug("Could not close the trace relay scope of outbox event {}", event.id(), ex);
+        }
+    }
+
+
+    private static void restoreScope(ObservationRegistry registry, Observation.Scope previous) {
+        try {
+            registry.setCurrentObservationScope(previous);
+        } catch (RuntimeException ex) {
+            LOGGER.debug("Could not restore the observation scope of the outbox publisher", ex);
+        }
+    }
+
+
+    /**
+     * Runs the action, typically a log statement, with the relay span in scope, so the log line carries the traceId
+     * and spanId of the event's trace instead of those of the scheduled run.
+     */
+    private void inRelayScope(Observation relay, OutboxEventEntity event, Runnable action) {
+        RelayScope scope = openScope(relay, event);
+        try {
+            action.run();
+        } finally {
+            closeScope(scope, event);
+        }
+    }
+
+
+    /**
+     * Ends the relay observation once, when the publisher knows the event's outcome; a failure marks the span as an
+     * error.
+     */
+    private static void endRelay(Observation relay, OutboxEventEntity event, Throwable failure) {
+        try {
+            if (failure != null) {
+                relay.error(failure);
+            }
+            relay.stop();
+        } catch (RuntimeException ex) {
+            LOGGER.debug("Could not end the trace relay of outbox event {}", event.id(), ex);
+        }
+    }
+
+
+    /**
+     * A send can block for up to the producer's max.block.ms after the batch deadline was checked, so a batch can
+     * hold its claims for publish-timeout plus max.block.ms.
+     *
+     * @return the producer's max.block.ms, or zero when the producer configuration is not available
+     */
+    private static Duration producerMaxBlock(KafkaTemplate<String, String> kafkaTemplate) {
+        try {
+            ProducerFactory<String, String> producerFactory = kafkaTemplate.getProducerFactory();
+            if (producerFactory == null) {
+                return Duration.ZERO;
+            }
+
+            Object maxBlock = producerFactory.getConfigurationProperties().get(ProducerConfig.MAX_BLOCK_MS_CONFIG);
+            if (maxBlock == null) {
+                return KAFKA_DEFAULT_MAX_BLOCK;
+            }
+            return Duration.ofMillis(maxBlock instanceof Number number
+                    ? number.longValue()
+                    : Long.parseLong(maxBlock.toString().trim()));
+        } catch (RuntimeException ex) {
+            return Duration.ZERO;
+        }
+    }
+
+
+    private static String describe(Throwable failure) {
+        if (failure == null) {
+            return null;
+        }
+        Throwable rootCause = NestedExceptionUtils.getMostSpecificCause(failure);
+        return rootCause == failure ? failure.toString() : failure + "; caused by " + rootCause;
+    }
+
+
+    private static Throwable failureOf(CompletableFuture<?> completedFuture) {
+        try {
+            completedFuture.join();
+            return null;
+        } catch (CompletionException ex) {
+            return ex.getCause() == null ? ex : ex.getCause();
+        } catch (CancellationException ex) {
+            return ex;
+        }
+    }
+
+
+    /**
+     * Sends one claimed batch in waves: wave k holds the k-th event of every key, and a wave starts only after
+     * the previous one was acknowledged or failed. All waves share one deadline of publish-timeout.
+     */
+    private final class BatchPublication {
+
+        private final long deadline = System.nanoTime() + publishTimeout.toNanos();
+        // One claim returned the batch, so its events share the claim's token, which every result write passes on.
+        private final String claimToken;
+        private final Map<String, Deque<OutboxEventEntity>> unsentByKey = new LinkedHashMap<>();
+        private final List<OutboxEventEntity> published = new ArrayList<>();
+        private final List<FailedEvent> failed = new ArrayList<>();
+        private final List<Long> unsentIds = new ArrayList<>();
+        private boolean sendingStopped;
+        private boolean previousSendRejected;
+        private boolean interrupted;
+
+
+        private BatchPublication(List<OutboxEventEntity> events) {
+            claimToken = events.get(0).claimToken();
+            for (OutboxEventEntity event : events) {
+                unsentByKey.computeIfAbsent(event.eventKey(), key -> new ArrayDeque<>()).add(event);
+            }
+        }
+
+
+        private BatchResult publish() {
+            try {
+                while (!sendingStopped && !unsentByKey.isEmpty()) {
+                    awaitWave(sendWave());
+                }
+                for (Deque<OutboxEventEntity> events : unsentByKey.values()) {
+                    events.forEach(event -> unsentIds.add(event.id()));
+                }
+                recordOutcome();
+            } finally {
+                if (interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            boolean backOff = !failed.isEmpty() && (published.isEmpty() || failed.stream()
+                    .anyMatch(failure -> failure.kind() != FailureKind.RECORD));
+            return new BatchResult(published.stream().map(OutboxEventEntity::id).toList(), !failed.isEmpty(), backOff);
+        }
+
+
+        private List<InFlightEvent> sendWave() {
+            List<InFlightEvent> wave = new ArrayList<>();
+            Iterator<Deque<OutboxEventEntity>> keys = unsentByKey.values().iterator();
+            while (!sendingStopped && keys.hasNext()) {
+                if (deadline - System.nanoTime() <= 0) {
+                    sendingStopped = true;
+                    break;
+                }
+
+                Deque<OutboxEventEntity> keyEvents = keys.next();
+                OutboxEventEntity event = keyEvents.removeFirst();
+                InFlightEvent inFlight = send(event, keyEvents);
+                if (inFlight != null) {
+                    wave.add(inFlight);
+                }
+                if (keyEvents.isEmpty()) {
+                    keys.remove();
+                }
+            }
+            return wave;
+        }
+
+
+        /**
+         * @param laterEvents the later events of the event's key in this batch
+         * @return the pending send, or null when the event was not sent
+         */
+        private InFlightEvent send(
+                OutboxEventEntity event,
+                Deque<OutboxEventEntity> laterEvents
+        ) {
+            Observation relay = startRelay(event);
+            CompletableFuture<SendResult<String, String>> future;
+            try {
+                future = sendInScope(relay, event);
+            } catch (RuntimeException ex) {
+                if (Thread.interrupted()) {
+                    interrupted = true;
+                    sendingStopped = true;
+                    unsentIds.add(event.id());
+                    endRelay(relay, event, null);
+                } else {
+                    reject(event, relay, ex, laterEvents);
+                }
+                return null;
+            }
+
+            if (future == null) {
+                reject(event, relay, new IllegalStateException("Kafka send returned no result"), laterEvents);
+                return null;
+            }
+            if (future.isCompletedExceptionally()) {
+                reject(event, relay, failureOf(future), laterEvents);
+                return null;
+            }
+            previousSendRejected = false;
+            return new InFlightEvent(event, future, relay);
+        }
+
+
+        /**
+         * Handles a send that threw or failed right away, before the producer accepted the record. A record error
+         * holds back only the later events of the event's key. Any other rejection, usually a broker or metadata
+         * outage (KafkaTemplate throws once the producer gave up after max.block.ms), and a second rejection in a
+         * row stop the batch.
+         */
+        private void reject(
+                OutboxEventEntity event,
+                Observation relay,
+                Throwable cause,
+                Deque<OutboxEventEntity> laterEvents
+        ) {
+            FailedEvent failure = new FailedEvent(event, cause);
+            fail(failure, relay);
+            if (failure.kind() == FailureKind.RECORD && !previousSendRejected) {
+                laterEvents.forEach(laterEvent -> unsentIds.add(laterEvent.id()));
+                laterEvents.clear();
+            } else {
+                sendingStopped = true;
+            }
+            previousSendRejected = true;
+        }
+
+
+        /**
+         * When interrupted, the events still in flight stay PROCESSING until the claim timeout, while the later
+         * events of their keys, which were never sent, are released with the rest of the batch.
+         */
+        private void awaitWave(List<InFlightEvent> wave) {
+            for (int index = 0; index < wave.size(); index++) {
+                if (interrupted) {
+                    abandon(wave.subList(index, wave.size()));
+                    return;
+                }
+
+                InFlightEvent inFlight = wave.get(index);
+                OutboxEventEntity event = inFlight.event();
+                try {
+                    inFlight.future().get(Math.max(0L, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+                    published.add(event);
+                    endRelay(inFlight.relay(), event, null);
+                    continue;
+                } catch (InterruptedException ex) {
+                    interrupted = true;
+                    sendingStopped = true;
+                    abandon(wave.subList(index, wave.size()));
+                    return;
+                } catch (ExecutionException ex) {
+                    fail(new FailedEvent(event, ex.getCause()), inFlight.relay());
+                } catch (TimeoutException ex) {
+                    fail(new FailedEvent(
+                            event,
+                            "Kafka did not acknowledge the event within " + publishTimeout,
+                            null,
+                            FailureKind.TRANSIENT
+                    ), inFlight.relay());
+                } catch (CancellationException ex) {
+                    fail(new FailedEvent(event, ex), inFlight.relay());
+                }
+
+                Deque<OutboxEventEntity> laterEvents = unsentByKey.remove(event.eventKey());
+                if (laterEvents != null) {
+                    laterEvents.forEach(laterEvent -> unsentIds.add(laterEvent.id()));
+                }
+            }
+        }
+
+
+        /**
+         * Records the failure and logs it inside the event's trace, then ends the event's relay span as an error.
+         */
+        private void fail(FailedEvent failure, Observation relay) {
+            failed.add(failure);
+            OutboxEventEntity event = failure.event();
+            inRelayScope(relay, event, () -> LOGGER.warn(
+                    "Failed to publish outbox event {} to Kafka topic {}: {}",
+                    event.id(),
+                    event.topic(),
+                    failure.error(),
+                    failure.cause()
+            ));
+            endRelay(
+                    relay,
+                    event,
+                    failure.cause() != null ? failure.cause() : new TimeoutException(failure.error())
+            );
+        }
+
+
+        /**
+         * Ends the relay spans of sends that were still in flight when the publisher was interrupted; the events stay
+         * PROCESSING until the claim timeout.
+         */
+        private void abandon(List<InFlightEvent> inFlightEvents) {
+            for (InFlightEvent inFlight : inFlightEvents) {
+                endRelay(inFlight.relay(), inFlight.event(), null);
+            }
+        }
+
+
+        /**
+         * Runs every write even when one of them fails, so that a failed write does not leave the other events
+         * PROCESSING until the claim timeout; the first failure is rethrown afterwards.
+         */
+        private void recordOutcome() {
+            RuntimeException writeFailure = null;
+            if (!published.isEmpty()) {
+                writeFailure = runWrite(writeFailure, () -> {
+                    orderEventOutboxService.markPublished(
+                            claimToken,
+                            published.stream().map(OutboxEventEntity::id).toList()
+                    );
+                    for (OutboxEventEntity event : published) {
+                        metricsService.recordOutboxPublishResult(event.topic(), true);
+                    }
+                });
+            }
+            Map<String, List<Long>> transientFailureIdsByError = new LinkedHashMap<>();
+            for (FailedEvent failure : failed) {
+                OutboxEventEntity event = failure.event();
+                if (failure.kind() == FailureKind.TRANSIENT) {
+                    transientFailureIdsByError.computeIfAbsent(failure.error(), error -> new ArrayList<>())
+                            .add(event.id());
+                } else {
+                    writeFailure = runWrite(
+                            writeFailure,
+                            () -> orderEventOutboxService.markRetryableFailure(claimToken, event.id(), failure.error())
+                    );
+                }
+                metricsService.recordOutboxPublishResult(event.topic(), false);
+            }
+            for (Map.Entry<String, List<Long>> idsByError : transientFailureIdsByError.entrySet()) {
+                writeFailure = runWrite(
+                        writeFailure,
+                        () -> orderEventOutboxService.releaseFailedClaims(
+                                claimToken,
+                                idsByError.getValue(),
+                                idsByError.getKey()
+                        )
+                );
+            }
+            if (!unsentIds.isEmpty()) {
+                writeFailure = runWrite(
+                        writeFailure,
+                        () -> orderEventOutboxService.releaseClaims(claimToken, unsentIds)
+                );
+            }
+            if (writeFailure != null) {
+                throw writeFailure;
+            }
+        }
+
+
+        private RuntimeException runWrite(RuntimeException earlierFailure, Runnable write) {
+            try {
+                write.run();
+                return earlierFailure;
+            } catch (RuntimeException ex) {
+                if (earlierFailure == null) {
+                    return ex;
+                }
+                earlierFailure.addSuppressed(ex);
+                return earlierFailure;
+            }
+        }
+    }
+
+
+    private record InFlightEvent(
+            OutboxEventEntity event,
+            CompletableFuture<SendResult<String, String>> future,
+            Observation relay
+    ) {
+    }
+
+
+    private record RelayScope(Observation.Scope scope, ObservationRegistry registry, Observation.Scope previous) {
+    }
+
+
+    private record FailedEvent(OutboxEventEntity event, String error, Throwable cause, FailureKind kind) {
+
+        private FailedEvent(OutboxEventEntity event, Throwable cause) {
+            this(event, describe(cause), cause, FailureKind.of(cause));
+        }
+    }
+
+
+    private enum FailureKind {
+
+        /**
+         * Kafka or the network is unavailable: the event is released without using up an attempt.
+         */
+        TRANSIENT,
+
+        /**
+         * Kafka rejected the record itself, for example because it is too large: the event uses up an attempt,
+         * but the other keys keep being published.
+         */
+        RECORD,
+
+        /**
+         * Any other failure: the event uses up an attempt.
+         */
+        OTHER;
+
+
+        private static FailureKind of(Throwable failure) {
+            Throwable cause = failure;
+            for (int depth = 0; cause != null && depth < MAX_CAUSE_DEPTH; depth++) {
+                if (cause instanceof RetriableException) {
+                    return TRANSIENT;
+                }
+                if (cause instanceof RecordTooLargeException
+                        || cause instanceof RecordBatchTooLargeException
+                        || cause instanceof InvalidRecordException
+                        || cause instanceof SerializationException) {
+                    return RECORD;
+                }
+                cause = cause.getCause();
+            }
+            return OTHER;
+        }
+    }
+
+
+    private record BatchResult(List<Long> publishedIds, boolean failed, boolean backOff) {
+    }
+}
