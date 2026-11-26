@@ -41,7 +41,7 @@ ext['h2.version'] = '2.3.232'
 dependencyManagement {
     dependencies {
         // LZ4 codec of kafka-clients (CVE-2026-106451, fixed in 1.11.4); kafka-clients 4.2.2 still asks for 1.11.2.
-        dependency 'at.yawk.lz4:lz4-java:1.12.1'
+        dependency 'at.yawk.lz4:lz4-java:1.14.1'
     }
 }
 
