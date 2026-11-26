@@ -4,7 +4,7 @@
 # Base images are pinned to exact versions; Dependabot (docker ecosystem) proposes updates.
 
 # --- 1. Frontend (official Node image) ---
-FROM node:24.22.0-bookworm-slim AS frontend
+FROM node:24.22.3-bookworm-slim AS frontend
 
 WORKDIR /workspace/frontend
 COPY frontend/package.json frontend/package-lock.json ./
@@ -16,7 +16,7 @@ RUN npm run build
 
 
 # --- 2. Backend jar with the frontend embedded ---
-FROM gradle:9.8.1-jdk17-noble AS backend
+FROM gradle:9.8.2-jdk17-noble AS backend
 
 RUN install -d -o gradle -g gradle /workspace /workspace/backend /workspace/frontend
 WORKDIR /workspace/backend

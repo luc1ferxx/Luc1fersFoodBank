@@ -49,6 +49,10 @@ Version overrides at the top of the file:
 | `org.postgresql:postgresql:42.7.14` | kept (Spring Boot manages 42.7.13) |
 | `h2.version` 2.3.232 | **new**. Spring Boot 4.1.1 manages H2 2.4.240, where a `CHECK (col IN (...))` constraint keeps a reference to the session that created it; once that connection closes (Flyway migrates over its own connection), every insert into `orders`, `idempotency_requests` and the other tables with such a constraint fails with "Check constraint invalid ... The database has been closed". 2.3.232 is what Spring Boot 3.5 used. Drop the override once an H2 release fixes it (run `H2CartCheckoutIntegrationTests`). |
 
+The table is the state at the 4.1.1 migration. Spring Boot 4.1.2 manages Tomcat 11.0.27, Jackson 3.1.7 / 2.21.7 and
+pgjdbc 42.7.14 itself, so those three overrides and the pgjdbc version were removed with that upgrade; lz4-java and
+`h2.version` remain.
+
 `spring-boot-properties-migrator` was on the runtime classpath during the upgrade and has been removed again. With
 it, the application YAML loaded without a report, while the old keys passed through the environment or the command
 line were reported, so it was active.

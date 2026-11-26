@@ -2,7 +2,7 @@ import org.gradle.internal.os.OperatingSystem
 
 plugins {
     id 'java'
-    id 'org.springframework.boot' version '4.1.1'
+    id 'org.springframework.boot' version '4.1.2'
     id 'io.spring.dependency-management' version '1.1.7'
     id 'jacoco'
     id 'com.github.spotbugs' version '6.5.13'
@@ -26,19 +26,12 @@ repositories {
 }
 
 
-// Security patches above the versions Spring Boot 4.1.1 manages, for fixable HIGH/CRITICAL findings of the release
-// image scan (Trivy, 2026-10-16). Remove an entry once Spring Boot manages that version or a later one; left in place
-// it would pin the older version.
-// Tomcat 11.0.24: CVE-2026-65182, CVE-2026-65905, CVE-2026-68525 (CRITICAL), fixed in 11.0.25.
-ext['tomcat.version'] = '11.0.27'
-// Jackson 3.1.5: CVE-2026-89407, CVE-2026-89425 (jackson-core), CVE-2026-68497, CVE-2026-91776, CVE-2026-91777
-// (jackson-databind), fixed in 3.1.7.
-ext['jackson-bom.version'] = '3.1.7'
-// The same CVEs in Jackson 2 (fixed in 2.21.7; Spring Boot 4.1.1 manages 2.21.5). Jackson 2 is no longer the
-// application's JSON library, but springdoc's swagger-core still brings it onto the runtime classpath.
-ext['jackson-2-bom.version'] = '2.21.7'
+// Security patches above the versions Spring Boot manages go here (ext['<library>.version'] = '...'), for fixable
+// HIGH/CRITICAL findings of the release image scan (Trivy). Remove an entry once Spring Boot manages that version or a
+// later one; left in place it would pin the older version. The Tomcat 11.0.27, Jackson 3.1.7 and Jackson 2 2.21.7
+// entries went that way with Spring Boot 4.1.2, which manages exactly those versions.
 
-// Not a security patch: H2 2.4.240 (managed by Spring Boot 4.1.1) loses CHECK (... IN (...)) constraints once the
+// Not a security patch: H2 2.4.240 (still managed by Spring Boot 4.1.2) loses CHECK (... IN (...)) constraints once the
 // connection that created them is closed ("Check constraint invalid ... The database has been closed"). Flyway
 // migrates over its own connection, so under the h2 profile every insert into orders, idempotency_requests and the
 // other tables with such a constraint failed. 2.3.232 is the version Spring Boot 3.5 used; drop this once an H2
@@ -47,8 +40,8 @@ ext['h2.version'] = '2.3.232'
 
 dependencyManagement {
     dependencies {
-        // LZ4 codec of kafka-clients (CVE-2026-106451, fixed in 1.11.4); kafka-clients 4.2.1 still asks for 1.10.1.
-        dependency 'at.yawk.lz4:lz4-java:1.12.0'
+        // LZ4 codec of kafka-clients (CVE-2026-106451, fixed in 1.11.4); kafka-clients 4.2.2 still asks for 1.11.2.
+        dependency 'at.yawk.lz4:lz4-java:1.12.1'
     }
 }
 
@@ -75,7 +68,7 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
     implementation 'io.micrometer:micrometer-registry-prometheus'
-    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.1'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.2.0'
     implementation 'com.github.ben-manes.caffeine:caffeine'
     // Event contracts (JSON Schema draft 2020-12, see docs/correctness.md "Event contracts"). 3.x is the line built on
     // Jackson 3 (tools.jackson); 3.0.6 is the newest release compiled against Jackson 3.1, the minor line Spring Boot
@@ -87,7 +80,7 @@ dependencies {
     // H2 plus its web console (the h2 profile enables it at /h2-console).
     runtimeOnly 'org.springframework.boot:spring-boot-h2console'
     runtimeOnly 'org.flywaydb:flyway-database-postgresql'
-    runtimeOnly 'org.postgresql:postgresql:42.7.14'
+    runtimeOnly 'org.postgresql:postgresql'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
     testImplementation 'org.springframework.boot:spring-boot-micrometer-metrics-test'

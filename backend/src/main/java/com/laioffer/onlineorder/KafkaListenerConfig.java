@@ -57,9 +57,13 @@ public class KafkaListenerConfig {
                 recoverer,
                 new FixedBackOff(backOff.toMillis(), retries)
         );
-        errorHandler.setBackOffFunction((record, ex) -> isTransientDatabaseFailure(ex)
-                ? transientDatabaseBackOff(backOff, transientMaxBackOff, transientRetryTimeout)
-                : null);
+        // listener-retries=0 turns the transient retries off too (application.yml). Since Spring Kafka 4.1.2 the
+        // handler asks the back-off function even when the default back-off allows no retries, so it is not set then.
+        if (retries > 0) {
+            errorHandler.setBackOffFunction((record, ex) -> isTransientDatabaseFailure(ex)
+                    ? transientDatabaseBackOff(backOff, transientMaxBackOff, transientRetryTimeout)
+                    : null);
+        }
         // A record that breaks its event contract (or is not JSON) fails the same way on every attempt: straight to the
         // DLT, with the violations in the exception message header. The classifier looks through the listener's
         // wrapping exceptions.
