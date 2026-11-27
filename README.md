@@ -69,6 +69,7 @@ On one 15-core laptop that also ran k6 and the Docker services. Each row links t
 | The same at 500 VUs | 1,120 req/s; the machine's CPU is the limit, with 20 or 30 database connections alike | same |
 | Consumer threads per listener, 500 VUs | a paid order reaches the merchant inbox in 2.2 s (p95) with 3 threads, in 44 s with 1 | same |
 | Outbox claim query, 100k unpublished events behind 1M published ones | 115-225 ms → 0.1 ms with the partial index | [ADR 0001](docs/adr/0001-order-sharding.md#what-the-repository-measured) |
+| One pod at the base limits (1Gi, 2 CPUs), G1 | about 120 req/s of the order flow; GC pauses of 5 ms on average, 9 ms at most, below saturation; 644 MiB at peak | [Container image](docs/operations.md#3-container-image) |
 
 ---
 
