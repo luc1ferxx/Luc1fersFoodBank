@@ -278,13 +278,43 @@ Rate limiter failing open (`OnlineOrderRateLimiterFailingOpen`, docs/correctness
 The root `Dockerfile` builds the frontend in `node:24.22.3-bookworm-slim` (`npm ci`,
 `npm run build`), the jar in `gradle:9.9.1-jdk17-noble` (the npm-based `buildFrontend` task is skipped there and the
 stage's build output is embedded instead), extracts Spring Boot layers with `-Djarmode=tools`, and runs on
-`eclipse-temurin:17.0.21_9-jre-noble` as uid 10001 with `JAVA_OPTS="-XX:MaxRAMPercentage=75.0
--XX:InitialRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError"` (override `JAVA_OPTS` to change them). Ports: 8080
-application, 8081 management when the deployment sets `MANAGEMENT_SERVER_PORT=8081`.
+`eclipse-temurin:17.0.21_9-jre-noble` as uid 10001 with `JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0
+-XX:InitialRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError -Xlog:gc*:file=/tmp/gc.log:..."` (override `JAVA_OPTS` to
+change them). Ports: 8080 application, 8081 management when the deployment sets `MANAGEMENT_SERVER_PORT=8081`.
 
 `backend/Dockerfile` packages a jar built beforehand (`cd backend && ./gradlew bootJar`, then `docker build backend`)
 on the same pinned Java 17 runtime, layered and non-root. Use `docker build --platform linux/amd64 backend` to build
 for another architecture.
+
+**Collector and memory.** Left alone, the JVM picks its collector by the size of the container: with less than
+1792 MB of memory, or a single CPU, it takes Serial, otherwise G1. The base and staging pods (1Gi) would have run
+Serial and the production pods (2Gi) G1, so the image names G1. The heap is 75% of the limit (768 MiB at 1Gi) and
+starts at 50%. GC events go to `/tmp/gc.log` (rotated, 5 files of 8 MB), not to stdout, which stays the
+application's JSON log: `kubectl exec <pod> -- tail -f /tmp/gc.log`. `/tmp` is the pod's 256Mi `emptyDir`, too small
+for a heap dump, so an `OutOfMemoryError` only ends the process (`ExitOnOutOfMemoryError`) and the pod restarts.
+
+Measured on 2026-11-26 in a container with the base pod's limits (1Gi, 2 CPUs, read-only root, a 256 MB `/tmp`)
+against fresh PostgreSQL, Redis and Kafka containers, with `load-tests/order-flow.js` for 90 s, rate limiting off
+and native memory tracking on, on `eclipse-temurin:17.0.20.1_1-jre-noble`:
+
+| Collector | Load | req/s | p95 / p99 | Failed | Pauses under load: count, average, longest | Longest pause during startup | Container memory, peak |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Serial (the JVM's choice) | 30 VUs | 78 | 60 / 133 ms | 0 | 38, 7.0 ms, 14.7 ms | 84 ms (4 full collections) | 582 MiB |
+| G1 | 30 VUs | 79 | 59 / 138 ms | 0 | 34, 5.1 ms, 9.3 ms | 8.4 ms (no full collection) | 644 MiB |
+| Serial (the JVM's choice) | 100 VUs | 119 | 1319 / 3054 ms | 0.57% | 60, 8.7 ms, 16.5 ms | 79 ms (4 full collections) | 704 MiB |
+| G1 | 100 VUs | 118 | 1234 / 3075 ms | 0.18% | 51, 8.3 ms, 88 ms | 22 ms (no full collection) | 696 MiB |
+
+What it shows:
+
+- 1Gi is enough for G1. Its own structures take about 50 MiB (native memory tracking: `GC` 52 MiB), next to
+  Metaspace 104 MiB and the code cache 66 MiB, and the container stayed 320 MiB or more under its limit; it was never
+  OOM-killed.
+- The collector does not decide the latency here. At a load two CPUs can serve (30 VUs, about half of them busy),
+  both pause for a few milliseconds and p95 and p99 are the same. What G1 removes are Serial's full collections for
+  Metaspace during startup (up to 84 ms) and the difference between the environments.
+- A pod with two CPUs serves about 120 req/s of this flow. At 100 VUs both CPUs are saturated: p95 passes one
+  second, and Redis commands begin to exceed their 500 ms timeout, which fails 0.2-0.6% of the requests. Scale out
+  on CPU before that (the HPA does), not on memory.
 
 **Time zone.** The server runs in UTC: `OnlineOrderApplication.main` makes UTC the JVM's default zone before Spring
 starts, so neither the host's or container's `TZ` nor `-Duser.timezone` in `JAVA_OPTS` changes it (the image sets
@@ -420,8 +450,11 @@ Code scanning results (CodeQL, the release's Trivy SARIF) need a public reposito
    in `.trivyignore` with a reason and `exp:` date), uploads SARIF, writes an SPDX SBOM artifact, then pushes
    `ghcr.io/<owner>/onlineorder` (tag, semver, sha, `latest` on the default branch) with SBOM and provenance
    attestations from the build cache.
-3. `deploy-staging` (environment `staging`): when a `KUBE_CONFIG` secret (base64-encoded kubeconfig) exists, pins the
-   pushed digest with `kustomize edit set image` and applies `deploy/k8s/overlays/staging`, then waits for the
+3. `deploy-staging` (environment `staging`): runs only when the repository variable `DEPLOY_ENABLED` is `true`
+   (Settings > Secrets and variables > Actions > Variables). A job that names an environment records a deployment on
+   GitHub when it starts, whether or not it applies anything, so without a cluster the job must not start and the
+   release ends with the pushed image. When a `KUBE_CONFIG` secret (base64-encoded kubeconfig) exists, the job pins
+   the pushed digest with `kustomize edit set image` and applies `deploy/k8s/overlays/staging`, then waits for the
    rollout. Without the secret it records a notice and succeeds.
 4. `deploy-production` (environment `production`, `v*` tags only, after a staging deployment): the same for
    `overlays/prod`. Configure the `production` environment with required reviewers so the job waits for an approval,
