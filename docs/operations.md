@@ -276,9 +276,9 @@ Rate limiter failing open (`OnlineOrderRateLimiterFailingOpen`, docs/correctness
 ## 3. Container image
 
 The root `Dockerfile` builds the frontend in `node:24.22.3-bookworm-slim` (`npm ci`,
-`npm run build`), the jar in `gradle:9.9.2-jdk17-noble` (the npm-based `buildFrontend` task is skipped there and the
+`npm run build`), the jar in `gradle:9.9.1-jdk17-noble` (the npm-based `buildFrontend` task is skipped there and the
 stage's build output is embedded instead), extracts Spring Boot layers with `-Djarmode=tools`, and runs on
-`eclipse-temurin:17.0.21.1_2-jre-noble` as uid 10001 with `JAVA_OPTS="-XX:MaxRAMPercentage=75.0
+`eclipse-temurin:17.0.21_9-jre-noble` as uid 10001 with `JAVA_OPTS="-XX:MaxRAMPercentage=75.0
 -XX:InitialRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError"` (override `JAVA_OPTS` to change them). Ports: 8080
 application, 8081 management when the deployment sets `MANAGEMENT_SERVER_PORT=8081`.
 
@@ -395,7 +395,9 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
     lists, 46 of the 49 findings at introduction, and any later ones of those two patterns); the other entries are
     pattern + class. New findings of any other pattern fail the build.
 - `config-lint`: promtool check and rule tests, compose config, dashboard JSON, kustomize + kubeconform for base and
-  both overlays, actionlint.
+  both overlays, actionlint, and that every Dockerfile and compose image is published for linux/amd64 and
+  linux/arm64 (a tag without arm64 makes Docker on Apple Silicon fall back to linux/arm/v7, where the JVM fails at
+  startup).
 - `frontend-build`: `npm ci`, `npm run typecheck` (strict TypeScript), `npm run lint`, `npm test`, `npm run build`.
   `package-backend`: unchanged.
 

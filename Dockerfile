@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
 # Full source build: React frontend, Spring Boot jar, layered non-root runtime image.
-# Base images are pinned to exact versions; Dependabot (docker ecosystem) proposes updates.
+# Base images are pinned to exact versions; Dependabot (docker ecosystem) proposes updates. A new tag must exist for
+# linux/amd64 and linux/arm64 (CI's config-lint checks it): gradle:9.9.2-jdk17-noble and
+# eclipse-temurin:17.0.21.1_2-jre-noble were published without arm64, so both stay on the newest tag that has it.
 
 # --- 1. Frontend (official Node image) ---
 FROM node:24.22.3-bookworm-slim AS frontend
@@ -16,7 +18,7 @@ RUN npm run build
 
 
 # --- 2. Backend jar with the frontend embedded ---
-FROM gradle:9.9.2-jdk17-noble AS backend
+FROM gradle:9.9.1-jdk17-noble AS backend
 
 RUN install -d -o gradle -g gradle /workspace /workspace/backend /workspace/frontend
 WORKDIR /workspace/backend
@@ -34,7 +36,7 @@ RUN --mount=type=cache,target=/home/gradle/.gradle/caches,uid=1000,gid=1000 \
 
 
 # --- 3. Spring Boot layer extraction: dependencies change less often than the application ---
-FROM eclipse-temurin:17.0.21.1_2-jre-noble AS layers
+FROM eclipse-temurin:17.0.21_9-jre-noble AS layers
 
 WORKDIR /layers
 COPY --from=backend /workspace/application.jar application.jar
@@ -42,7 +44,7 @@ RUN java -Djarmode=tools -jar application.jar extract --layers --destination ext
 
 
 # --- 4. Runtime ---
-FROM eclipse-temurin:17.0.21.1_2-jre-noble
+FROM eclipse-temurin:17.0.21_9-jre-noble
 
 RUN groupadd --system --gid 10001 onlineorder \
     && useradd --system --uid 10001 --gid onlineorder --home-dir /app --shell /usr/sbin/nologin onlineorder
