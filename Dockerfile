@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
 # Full source build: React frontend, Spring Boot jar, layered non-root runtime image.
-# Base images are pinned to exact versions; Dependabot (docker ecosystem) proposes updates. A new tag must exist for
-# linux/amd64 and linux/arm64 (CI's config-lint checks it): gradle:9.9.2-jdk17-noble and
-# eclipse-temurin:17.0.21.1_2-jre-noble were published without arm64, so both stay on the newest tag that has it.
+# Base images are pinned to exact versions and updated by hand. A new tag must exist for linux/amd64 and linux/arm64
+# (CI's config-lint checks it): gradle:9.9.2-jdk17-noble and eclipse-temurin:17.0.21.1_2-jre-noble were published
+# without arm64, so both stay on the newest tag that has it.
 
 # --- 1. Frontend (official Node image) ---
 FROM node:24.22.3-bookworm-slim AS frontend

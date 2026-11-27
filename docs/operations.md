@@ -11,7 +11,7 @@ How OnlineOrder is observed, packaged, deployed and gated. Paths are relative to
 | Read replicas (read/write splitting) | `backend/src/main/java/io/github/luc1ferxx/foodbank/datasource/`, section 11 |
 | Image | `Dockerfile` |
 | Time zone (the server runs in UTC) | `OnlineOrderApplication.main`, section 3 |
-| CI and CD | `.github/workflows/`, `.github/dependabot.yml`, `.trivyignore` |
+| CI and CD | `.github/workflows/`, `.trivyignore` |
 | Event contracts, per-aggregate order | section 8 |
 | Partitions, order numbers, worker ids | section 9; the sharding plan in `docs/adr/0001-order-sharding.md` |
 | Money and currencies | section 10 |
@@ -437,7 +437,10 @@ Other workflows:
   pushes, pull requests and weekly.
 - `dependency-review.yml`: submits the Gradle dependency graph, then fails pull requests that add dependencies with
   known HIGH or CRITICAL vulnerabilities. Pull requests from forks cannot submit the Gradle graph.
-- `.github/dependabot.yml`: weekly Gradle, npm, GitHub Actions and Dockerfile updates; monthly compose image updates.
+- Dependabot is off since 2026-11-26: `.github/dependabot.yml` was removed, and its alerts and security updates are
+  off in the repository settings. Nothing proposes dependency updates any more; they are made by hand.
+  `dependency-review.yml` still fails a pull request that adds a dependency with a known HIGH or CRITICAL
+  vulnerability, and the release's image scan still stops a release on a fixable one.
 
 Code scanning results (CodeQL, the release's Trivy SARIF) need a public repository or GitHub Advanced Security.
 
