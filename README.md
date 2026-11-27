@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Java-17-b07219?style=for-the-badge" alt="Java 17" />
-  <img src="https://img.shields.io/badge/Spring%20Boot-4.1-6db33f?style=for-the-badge" alt="Spring Boot 4.1" />
+  <img src="https://img.shields.io/badge/Spring%20Boot-4.2-6db33f?style=for-the-badge" alt="Spring Boot 4.2" />
   <img src="https://img.shields.io/badge/React-19-61dafb?style=for-the-badge" alt="React 19" />
   <img src="https://img.shields.io/badge/PostgreSQL-15-4169e1?style=for-the-badge" alt="PostgreSQL 15" />
   <img src="https://img.shields.io/badge/Redis-7-dc382d?style=for-the-badge" alt="Redis 7" />
@@ -52,7 +52,7 @@ flowchart LR
 | Layer | Stack |
 | --- | --- |
 | Frontend | React 19, strict TypeScript, Vite, Vitest |
-| Backend | Java 17, Spring Boot 4.1, Spring Security 7, Spring Data JDBC, Flyway |
+| Backend | Java 17, Spring Boot 4.2, Spring Security 7, Spring Data JDBC, Flyway |
 | Data and messaging | PostgreSQL, Redis, Kafka |
 | Observability and delivery | OpenTelemetry, Prometheus, Grafana, Docker, Kubernetes (kustomize), GitHub Actions |
 
