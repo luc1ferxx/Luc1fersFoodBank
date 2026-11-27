@@ -179,6 +179,30 @@ jobs:
             -strict -summary -kubernetes-version 1.31.0 /manifests
       - name: Workflow files (actionlint)
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
+      # A tag can be published without some platforms, and Docker then falls back without a word: on an arm64 host it
+      # takes linux/arm/v7, whose JVM fails at startup under emulation. No job builds the image before a release, so
+      # every Dockerfile and compose image is checked here for the runners (amd64) and for Apple Silicon (arm64).
+      - name: Images exist for amd64 and arm64
+        run: |
+          images=$( { grep -hE '^FROM ' Dockerfile backend/Dockerfile | awk '{print $2}';
+                      grep -hE '^[[:space:]]*image:[[:space:]]*[a-z]' backend/docker-compose.yml \
+                        deploy/observability/docker-compose.yml load-tests/catalog-bench.compose.yml | awk '{print $2}'; } \
+                    | grep -v '\$' | sort -u )
+          missing=0
+          for image in $images; do
+            if ! manifest=$(docker manifest inspect "$image" 2>/dev/null); then
+              echo "::warning::Could not read the manifest of $image"
+              continue
+            fi
+            for arch in amd64 arm64; do
+              if ! echo "$manifest" | jq -e --arg arch "$arch" \
+                  'any(.manifests[]?; .platform.os == "linux" and .platform.architecture == $arch)' > /dev/null; then
+                echo "::error::$image is not published for linux/$arch"
+                missing=1
+              fi
+            done
+          done
+          exit "$missing"
       # EventSchemaContractTests (backend-test shards) checks the schema files against SHA256SUMS; this keeps a pull request
       # from changing a published file and its checksum together. Only new files and new SHA256SUMS lines may appear;
       # catalog.json may change (new versions, retirements).
