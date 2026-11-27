@@ -420,8 +420,11 @@ Code scanning results (CodeQL, the release's Trivy SARIF) need a public reposito
    in `.trivyignore` with a reason and `exp:` date), uploads SARIF, writes an SPDX SBOM artifact, then pushes
    `ghcr.io/<owner>/onlineorder` (tag, semver, sha, `latest` on the default branch) with SBOM and provenance
    attestations from the build cache.
-3. `deploy-staging` (environment `staging`): when a `KUBE_CONFIG` secret (base64-encoded kubeconfig) exists, pins the
-   pushed digest with `kustomize edit set image` and applies `deploy/k8s/overlays/staging`, then waits for the
+3. `deploy-staging` (environment `staging`): runs only when the repository variable `DEPLOY_ENABLED` is `true`
+   (Settings > Secrets and variables > Actions > Variables). A job that names an environment records a deployment on
+   GitHub when it starts, whether or not it applies anything, so without a cluster the job must not start and the
+   release ends with the pushed image. When a `KUBE_CONFIG` secret (base64-encoded kubeconfig) exists, the job pins
+   the pushed digest with `kustomize edit set image` and applies `deploy/k8s/overlays/staging`, then waits for the
    rollout. Without the secret it records a notice and succeeds.
 4. `deploy-production` (environment `production`, `v*` tags only, after a staging deployment): the same for
    `overlays/prod`. Configure the `production` environment with required reviewers so the job waits for an approval,

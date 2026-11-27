@@ -1,6 +1,7 @@
 name: Release
 
-# v* tag or manual run: CI -> image build -> Trivy gate -> SBOM -> push to GHCR -> staging -> production.
+# v* tag or manual run: CI -> image build -> Trivy gate -> SBOM -> push to GHCR, then staging -> production when the
+# repository variable DEPLOY_ENABLED is true.
 on:
   push:
     tags:
@@ -134,8 +135,12 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: echo "Pushed \`${IMAGE}@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
 
+  # Deployment is opt-in: set the repository variable DEPLOY_ENABLED to true once a cluster exists. A job that names
+  # an environment records a deployment on GitHub as soon as it starts, even when it applies nothing, so without the
+  # variable both deploy jobs are skipped and the release ends with the pushed image.
   deploy-staging:
     needs: publish-image
+    if: vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment:
       name: staging
