@@ -35,6 +35,9 @@ dependencyManagement {
     dependencies {
         // LZ4 codec of kafka-clients (CVE-2026-106451, fixed in 1.11.4); kafka-clients 4.4.0 still asks for 1.11.2.
         dependency 'at.yawk.lz4:lz4-java:1.14.1'
+        // Snappy codec of kafka-clients (CVE-2026-108106, CVE-2026-93451, fixed in 1.1.10.9); kafka-clients 4.4.0 asks
+        // for 1.1.10.7. The image scan stopped the v0.1.0 release on it.
+        dependency 'org.xerial.snappy:snappy-java:1.1.10.12'
     }
 }
 

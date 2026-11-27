@@ -484,7 +484,9 @@ holds the dependency back. `h2.version` there is not a security patch (H2 2.4.24
 Since Spring Boot 4.1.2 (2026-11-26) the Tomcat, Jackson 3 and Jackson 2 overrides and the pgjdbc version are gone:
 it manages Tomcat 11.0.27, Jackson 3.1.7 / 2.21.7 and pgjdbc 42.7.14 itself. Spring Boot 4.2.0 (2026-11-26) manages
 H2 2.5.252, which no longer has the 2.4.240 regression, so `h2.version` is gone too. What is left is lz4-java
-(1.14.1; kafka-clients 4.4.0 still asks for 1.11.2, below the fixed 1.11.4).
+(1.14.1; kafka-clients 4.4.0 still asks for 1.11.2, below the fixed 1.11.4) and, since the scan stopped the v0.1.0
+release on 2026-11-26, snappy-java (1.1.10.12; kafka-clients 4.4.0 asks for 1.1.10.7, which has CVE-2026-108106 and
+CVE-2026-93451, both HIGH and fixed in 1.1.10.9). Neither codec is in use: no producer sets `compression.type`.
 
 ## 7. Schema changes: 64-bit keys and the audit trails
 
