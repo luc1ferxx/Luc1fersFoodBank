@@ -58,6 +58,20 @@ flowchart LR
 
 ---
 
+## Measured
+
+On one 15-core laptop that also ran k6 and the Docker services. Each row links to the run and its conditions.
+
+| What | Result | Details |
+| --- | --- | --- |
+| Catalog reads through the two-level cache, 50 VUs | 16.1k → 52.5k req/s, p99 9.2 → 2.8 ms; 4 of 5.0M reads reached PostgreSQL | [Catalog Caching](docs/correctness.md#catalog-caching) |
+| Order flow (login, menus, cart, checkout, order list), 300 VUs | 820 req/s, p95 82 ms, p99 270 ms, no failed request | [Connections: listener threads and the pool](docs/operations.md#connections-listener-threads-and-the-pool) |
+| The same at 500 VUs | 1,120 req/s; the machine's CPU is the limit, with 20 or 30 database connections alike | same |
+| Consumer threads per listener, 500 VUs | a paid order reaches the merchant inbox in 2.2 s (p95) with 3 threads, in 44 s with 1 | same |
+| Outbox claim query, 100k unpublished events behind 1M published ones | 115-225 ms → 0.1 ms with the partial index | [ADR 0001](docs/adr/0001-order-sharding.md#what-the-repository-measured) |
+
+---
+
 ## Quick Start
 
 You need Java 17, Node 24 and Docker.
