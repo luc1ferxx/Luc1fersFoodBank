@@ -91,7 +91,7 @@ The test suite covers:
 
 Some integration tests use Testcontainers and require Docker. Tests annotated with `@Testcontainers(disabledWithoutDocker = true)` may skip when Docker is unavailable.
 
-The backend runs on Spring Boot 4.1; [docs/spring-boot-4-migration.md](spring-boot-4-migration.md) lists what changed from Spring Boot 3 (packages, Jackson 3, Spring Security 7, test annotations, configuration properties, the versioned session namespace, the H2 pin) for porting older code.
+The backend runs on Spring Boot 4.2; [docs/spring-boot-4-migration.md](spring-boot-4-migration.md) lists what changed from Spring Boot 3 (packages, Jackson 3, Spring Security 7, test annotations, configuration properties, the versioned session namespace, the H2 pin) for porting older code.
 
 
 ## Useful Commands

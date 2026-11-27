@@ -57,8 +57,8 @@ outgoing Kafka records.
   Boot 4). An authenticated `GET /cart` exports 9 spans instead of 5: `exists`, `hgetall`, `hmset` and `pexpireat`
   for the session; a catalog read that misses the local L1 adds the Redis cache read, a rate-limited request the
   token-bucket script. Plan Tempo storage for that (staging samples everything, prod 10%). To drop them, set
-  `MANAGEMENT_OBSERVATIONS_ENABLE_LETTUCE=false`; that also removes the `lettuce_seconds` and
-  `lettuce_active_seconds` timers, which no dashboard or alert reads.
+  `MANAGEMENT_OBSERVATIONS_ENABLE_LETTUCE=false`; that also removes the `lettuce_seconds` timer, which no
+  dashboard or alert reads (since Spring Boot 4.2 observations register no `*_active_seconds` long task timers).
 
 Sampling (`TRACING_SAMPLING_PROBABILITY`, default 0.1) decides which new traces are recorded; downstream spans
 follow the caller's decision. Trace ids exist for unsampled requests too. Spans are exported over OTLP/HTTP only when
@@ -364,7 +364,7 @@ docker run --rm -v /tmp:/m:ro ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary 
 | `TRACING_SAMPLING_PROBABILITY` | 0.1 | overlays |
 | `KAFKA_OBSERVATION_ENABLED` | true | - |
 | `SESSION_COOKIE_SECURE` | false | ConfigMap: true |
-| `SERVER_FORWARD_HEADERS_STRATEGY` | unset (Boot picks native on Kubernetes) | ConfigMap: native, stated explicitly (client IP for rate limits from `X-Forwarded-For`) |
+| `SERVER_REQUEST_HEADER_FORWARDED_STRATEGY` | unset (Boot picks web-server on Kubernetes) | ConfigMap: web-server, stated explicitly (client IP for rate limits from `X-Forwarded-For`). Spring Boot 4.2 deprecated `server.forward-headers-strategy=native` for it |
 | `SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE` | 30s | ConfigMap |
 | `SECURITY_RATE_LIMIT_ENABLED` | true (the `h2` profile turns it off) | - (`false` only for load tests: `load-tests/order-flow.js` signs up and logs in from one IP and pays faster than `payment-checkout` refills) |
 | `SECURITY_RATE_LIMIT_BUCKET_TTL` | 2m (legacy name `SECURITY_RATE_LIMIT_WINDOW`): expiry of a bucket's Redis key after its last request, never shorter than the bucket's full refill plus one interval | - |
@@ -447,8 +447,9 @@ versions above what Spring Boot manages: drop each once Spring Boot manages that
 holds the dependency back. `h2.version` there is not a security patch (H2 2.4.240 regression, see the comment).
 
 Since Spring Boot 4.1.2 (2026-11-26) the Tomcat, Jackson 3 and Jackson 2 overrides and the pgjdbc version are gone:
-it manages Tomcat 11.0.27, Jackson 3.1.7 / 2.21.7 and pgjdbc 42.7.14 itself. What is left is lz4-java (1.14.1;
-kafka-clients 4.2.2 still asks for 1.11.2, below the fixed 1.11.4) and `h2.version`.
+it manages Tomcat 11.0.27, Jackson 3.1.7 / 2.21.7 and pgjdbc 42.7.14 itself. Spring Boot 4.2.0 (2026-11-26) manages
+H2 2.5.252, which no longer has the 2.4.240 regression, so `h2.version` is gone too. What is left is lz4-java
+(1.14.1; kafka-clients 4.4.0 still asks for 1.11.2, below the fixed 1.11.4).
 
 ## 7. Schema changes: 64-bit keys and the audit trails
 

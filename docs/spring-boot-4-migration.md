@@ -50,8 +50,8 @@ Version overrides at the top of the file:
 | `h2.version` 2.3.232 | **new**. Spring Boot 4.1.1 manages H2 2.4.240, where a `CHECK (col IN (...))` constraint keeps a reference to the session that created it; once that connection closes (Flyway migrates over its own connection), every insert into `orders`, `idempotency_requests` and the other tables with such a constraint fails with "Check constraint invalid ... The database has been closed". 2.3.232 is what Spring Boot 3.5 used. Drop the override once an H2 release fixes it (run `H2CartCheckoutIntegrationTests`). |
 
 The table is the state at the 4.1.1 migration. Spring Boot 4.1.2 manages Tomcat 11.0.27, Jackson 3.1.7 / 2.21.7 and
-pgjdbc 42.7.14 itself, so those three overrides and the pgjdbc version were removed with that upgrade; lz4-java and
-`h2.version` remain.
+pgjdbc 42.7.14 itself, so those three overrides and the pgjdbc version were removed with that upgrade; `h2.version`
+went with Spring Boot 4.2.0 (section 6), and lz4-java remains.
 
 `spring-boot-properties-migrator` was on the runtime classpath during the upgrade and has been removed again. With
 it, the application YAML loaded without a report, while the old keys passed through the environment or the command
@@ -238,3 +238,23 @@ Differences (none breaks a dashboard or an alert; clients only sign in again onc
   (`ManagementPortIntegrationTests`), `/actuator/**` behind `ROLE_ADMIN` on the application port.
 - Catalog cache: Redis keys and JSON are byte for byte the same, so the key versions stay `v1`.
 - Outbox tracing continuity (`OutboxKafkaTraceContinuityTests`).
+
+## 6. Spring Boot 4.2
+
+The backend moved on to Spring Boot 4.2.0 on 2026-11-26 (Spring Framework 7.1, Spring Security 7.2, Spring Data
+2026.1, Spring Kafka 4.2 with kafka-clients 4.4, Spring Session 4.2, Micrometer 1.18 / Micrometer Tracing 1.8,
+OpenTelemetry 1.68, Flyway 12.11, H2 2.5; Jackson stays on 3.1). No application code changed and the suite passes
+as it was. What the release changed for this application:
+
+- **Forwarded headers (runtime, deployment only).** `server.forward-headers-strategy` is deprecated for
+  `server.request.header.forwarded.strategy`, and its value `native` is now `web-server`. The Kubernetes ConfigMap
+  sets `SERVER_REQUEST_HEADER_FORWARDED_STRATEGY=web-server`. Setting both properties fails startup.
+- **`h2.version` is gone.** H2 2.5.252 keeps its `CHECK (col IN (...))` constraints after the connection that created
+  them closes, so the 2.3.232 override was dropped (`H2CartCheckoutIntegrationTests` and the other H2 suites pass).
+- **json-schema-validator stays at 3.0.6.** Spring Boot 4.2 still manages Jackson 3.1 (3.1.8).
+- **lz4-java stays pinned.** kafka-clients 4.4.0 still asks for 1.11.2.
+- **Long task timers.** Observations no longer register their `*_active_seconds` long task timers by default
+  (`http_server_requests_active_seconds`, `lettuce_active_seconds`). No dashboard or alert read them.
+- **Sessions.** The session format did not change (`RedisSessionFormatTests`), so the namespace stays `:v2`.
+- **Deprecated for removal, still in use:** `TestRestTemplate` and `@AutoConfigureTestRestTemplate` in 13 test
+  classes (26 compiler warnings); `RestTestClient` replaces them.

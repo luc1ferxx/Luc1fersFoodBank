@@ -49,7 +49,7 @@ configMapGenerator:
       - TRACING_SAMPLING_PROBABILITY=0.1
       # TLS terminates at the Ingress: secure session cookies, and client IPs (rate limiting) from X-Forwarded-For.
       - SESSION_COOKIE_SECURE=true
-      - SERVER_FORWARD_HEADERS_STRATEGY=native
+      - SERVER_REQUEST_HEADER_FORWARDED_STRATEGY=web-server
       # Graceful shutdown budget; terminationGracePeriodSeconds (60) covers the preStop sleep (10s) plus this.
       - SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE=30s
       # Snowflake worker ids (order numbers) for pods that come and go: each pod leases one from the database and
