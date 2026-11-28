@@ -15,8 +15,8 @@
 | `PUT` | `/cart/items/{orderItemId}` | Update quantity |
 | `DELETE` | `/cart/items/{orderItemId}` | Remove item |
 | `DELETE` | `/cart` | Empty the cart (`204`, also when it is already empty or the account has no cart), for example after `409 CART_RESTAURANT_CONFLICT` |
-| `POST` | `/cart/checkout` | Checkout cart with idempotency key |
-| `POST` | `/payments/checkout` | Payment-style checkout with idempotency key |
+| `POST` | `/cart/checkout` | Checkout cart with idempotency key; `409 OUT_OF_STOCK` when an item has less stock left than the cart wants (see [Stock](correctness.md#stock)) |
+| `POST` | `/payments/checkout` | Payment-style checkout with idempotency key; `409 OUT_OF_STOCK` as for `/cart/checkout` |
 | `GET` | `/orders` | List current user's orders; each carries `id` (the key the order paths take) and `order_no` (the public order number, a JSON string) |
 | `POST` | `/orders/{orderId}/cancel` | Cancel an eligible order (a paid one with a captured payment above 0.00 is refunded automatically) |
 | `GET` | `/orders/{orderId}/history` | The order's status changes, oldest first (owner or admin; `404` for anyone else) |
@@ -34,6 +34,9 @@
 | `POST` | `/admin/outbox/events/{eventId}/abandon` | Give up on a failed event that can never be published (`{"reason": ...}`, audited), releasing the later events of its aggregate |
 | `PATCH` | `/admin/menu-items/{menuItemId}` | Update a menu item's `name`, `description` or `price`; evicts that restaurant's cached menu after commit |
 | `PATCH` | `/admin/restaurants/{restaurantId}` | Update a restaurant's `name`, `address`, `phone` or `image_url`; evicts the cached restaurant list after commit |
+| `GET` | `/admin/menu-items/{menuItemId}/stock` | A menu item's stock limit, `{"menu_item_id": 5, "remaining": 7}`, without `remaining` when the item is unlimited (see [Stock](correctness.md#stock)); `404` for an unknown item |
+| `PUT` | `/admin/menu-items/{menuItemId}/stock` | Set the limit, body `{"remaining": 10}` with a whole number from 0 to 1,000,000: a missing, `null`, non-numeric or out-of-range `remaining` is `400`, while Jackson's default coercion cuts a fraction to its whole part (`10.9` sets 10, `-0.5` sets 0) and reads a numeric string as its number; answers like `GET`; `404` for an unknown item; audited when the limit changed |
+| `DELETE` | `/admin/menu-items/{menuItemId}/stock` | Remove the limit (the item is unlimited again); answers `{"menu_item_id": 5}`; `404` for an unknown item; audited when the item had a limit |
 | `POST` | `/dead-letters/{deadLetterEventId}/replay` | Replay a stored dead-letter event |
 | `GET`, `POST` | `/admin/merchants`, `/admin/riders` | List or provision merchant and rider logins (see [Provisioning merchants and riders](fulfilment.md#provisioning-merchants-and-riders)) |
 | `PATCH` | `/admin/merchants/{merchantId}`, `/admin/riders/{riderId}` | Activate or deactivate a merchant or rider, body `{"active": false}` |

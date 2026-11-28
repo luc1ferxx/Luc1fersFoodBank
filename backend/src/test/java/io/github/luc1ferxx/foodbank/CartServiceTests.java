@@ -29,10 +29,13 @@ import io.github.luc1ferxx.foodbank.service.CartService;
 import io.github.luc1ferxx.foodbank.service.IdempotencyRequestInitializer;
 import io.github.luc1ferxx.foodbank.service.OrderEventOutboxService;
 import io.github.luc1ferxx.foodbank.service.OrderStatusHistoryService;
+import io.github.luc1ferxx.foodbank.service.StockService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
@@ -47,6 +50,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 
@@ -89,6 +93,9 @@ public class CartServiceTests {
     @Mock
     private ApplicationMetricsService metricsService;
 
+    @Mock
+    private StockService stockService;
+
     private CartService cartService;
 
 
@@ -106,7 +113,8 @@ public class CartServiceTests {
                 orderEventOutboxService,
                 orderStatusHistoryService,
                 orderPaymentRepository,
-                metricsService
+                metricsService,
+                stockService
         );
     }
 
@@ -318,6 +326,75 @@ public class CartServiceTests {
     }
 
 
+    /**
+     * Both checkouts, with and without payment, check the stock before anything is written and take it as the last
+     * step, after the order event and the emptied cart, so the menu items' rows stay locked only until the commit.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"PLACED", "PAID"})
+    void checkout_shouldCheckTheStockFirstAndTakeItLast(String status) {
+        long customerId = 1L;
+        long cartId = 2L;
+        long menuItemId = 3L;
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("10.00"), "USD");
+        OrderItemEntity cartItem = new OrderItemEntity(5L, menuItemId, cartId, amount("10.00"), 1, "USD");
+        MenuItemEntity menuItem = new MenuItemEntity(menuItemId, 9L, "Burger", "", amount("10.00"), "", "USD");
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(List.of(cartItem));
+        Mockito.when(menuItemRepository.findAllById(List.of(menuItemId))).thenReturn(List.of(menuItem));
+        Mockito.when(orderRepository.save(Mockito.any(OrderEntity.class)))
+                .thenAnswer(invocation -> {
+                    OrderEntity order = invocation.getArgument(0);
+                    return new OrderEntity(4L, order.customerId(), order.total(), order.status(),
+                            order.createdAt(), order.restaurantId(), order.cancelReason());
+                });
+        Mockito.when(orderHistoryItemRepository.saveAll(Mockito.anyIterable())).thenReturn(List.of());
+
+        Assertions.assertEquals(status, cartService.checkout(customerId, status).status());
+
+        InOrder steps = Mockito.inOrder(stockService, orderRepository, orderEventOutboxService, orderItemRepository,
+                cartRepository);
+        steps.verify(stockService).requireInStock(List.of(cartItem), Map.of(menuItemId, menuItem));
+        steps.verify(orderRepository).save(Mockito.any(OrderEntity.class));
+        steps.verify(orderEventOutboxService).enqueueOrderEvent(Mockito.any(), Mockito.anyList(), Mockito.isNull(),
+                Mockito.any());
+        steps.verify(orderItemRepository).deleteByCartId(cartId);
+        steps.verify(cartRepository).updateTotal(cartId, amount("0.00"), "USD");
+        steps.verify(stockService).reserve(4L, List.of(cartItem), Map.of(menuItemId, menuItem));
+        Mockito.verifyNoMoreInteractions(stockService);
+    }
+
+
+    @Test
+    void checkout_whenAnItemIsOutOfStock_shouldRejectWithoutCreatingAnOrder() {
+        long customerId = 1L;
+        long cartId = 2L;
+        long menuItemId = 3L;
+        CartEntity cartEntity = new CartEntity(cartId, customerId, amount("20.00"), "USD");
+        OrderItemEntity cartItem = new OrderItemEntity(5L, menuItemId, cartId, amount("10.00"), 2, "USD");
+        MenuItemEntity menuItem = new MenuItemEntity(menuItemId, 9L, "Burger", "", amount("10.00"), "", "USD");
+        ConflictException outOfStock = new ConflictException(StockService.OUT_OF_STOCK, "Not enough Burger left.");
+
+        Mockito.when(cartRepository.lockByCustomerId(customerId)).thenReturn(cartEntity);
+        Mockito.when(orderItemRepository.getAllByCartId(cartId)).thenReturn(List.of(cartItem));
+        Mockito.when(menuItemRepository.findAllById(List.of(menuItemId))).thenReturn(List.of(menuItem));
+        Mockito.doThrow(outOfStock).when(stockService).requireInStock(List.of(cartItem), Map.of(menuItemId, menuItem));
+
+        ConflictException conflict = Assertions.assertThrows(
+                ConflictException.class,
+                () -> cartService.checkout(customerId, "PAID")
+        );
+
+        Assertions.assertSame(outOfStock, conflict);
+        Mockito.verify(orderRepository, Mockito.never()).save(Mockito.any());
+        Mockito.verify(orderItemRepository, Mockito.never()).deleteByCartId(Mockito.anyLong());
+        Mockito.verifyNoInteractions(orderEventOutboxService, orderPaymentRepository, orderStatusHistoryService);
+        Mockito.verify(stockService, Mockito.never()).reserve(Mockito.any(), Mockito.any(), Mockito.any());
+        Mockito.verify(metricsService).recordCheckoutFailure("ConflictException");
+    }
+
+
     @Test
     void getCart_shouldReturnCartDto() {
         long customerId = 1L;
@@ -506,8 +583,8 @@ public class CartServiceTests {
                 Mockito.any(LocalDateTime.class),
                 Mockito.any(LocalDateTime.class)
         );
-        // A replay returns the stored order: no second order, event or payment capture.
-        Mockito.verifyNoInteractions(orderEventOutboxService, orderPaymentRepository);
+        // A replay returns the stored order: no second order, event, payment capture or stock taken.
+        Mockito.verifyNoInteractions(orderEventOutboxService, orderPaymentRepository, stockService);
     }
 
 

@@ -26,6 +26,7 @@ import io.github.luc1ferxx.foodbank.service.IdempotencyRequestInitializer;
 import io.github.luc1ferxx.foodbank.service.OrderEventOutboxService;
 import io.github.luc1ferxx.foodbank.service.OrderService;
 import io.github.luc1ferxx.foodbank.service.OrderStatusHistoryService;
+import io.github.luc1ferxx.foodbank.service.StockService;
 import io.github.luc1ferxx.foodbank.audit.AuditLogService;
 import io.github.luc1ferxx.foodbank.statemachine.StaleTransitionException;
 import org.junit.jupiter.api.Assertions;
@@ -82,6 +83,9 @@ class OrderServiceTests {
     @Mock
     private AfterSalesMerchantCommands afterSalesMerchantCommands;
 
+    @Mock
+    private StockService stockService;
+
     private OrderService orderService;
 
 
@@ -97,7 +101,8 @@ class OrderServiceTests {
                 orderStatusHistoryService,
                 auditLogService,
                 cancellationRefunds,
-                afterSalesMerchantCommands
+                afterSalesMerchantCommands,
+                stockService
         );
     }
 
@@ -748,6 +753,88 @@ class OrderServiceTests {
         Mockito.verifyNoInteractions(metricsService);
         Mockito.verify(idempotencyRequestRepository, Mockito.never())
                 .markSucceeded(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any());
+    }
+
+
+    /**
+     * Every cancel by the customer gives back the stock the order took, after the order's event and, for a paid order,
+     * after its refund: the menu items' rows are locked last. Only a paid order reads its pickup.
+     */
+    @ParameterizedTest
+    @CsvSource({"PLACED, false", "PAID, true", "ACCEPTED, true"})
+    void customerCancel_shouldGiveBackTheStockLast(OrderStatus from, boolean paid) {
+        Mockito.when(orderRepository.lockByIdAndCustomerId(5L, 1L)).thenReturn(order(from.name(), null));
+        stubCompareAndSet();
+
+        orderService.cancelOrder(1L, 5L);
+
+        InOrder steps = Mockito.inOrder(orderEventOutboxService, cancellationRefunds, stockService);
+        steps.verify(orderEventOutboxService).enqueueOrderEvent(
+                Mockito.any(), Mockito.anyList(), Mockito.isNull(), Mockito.any(LocalDateTime.class));
+        if (paid) {
+            steps.verify(cancellationRefunds).refundCancelledOrder(Mockito.any());
+        }
+        steps.verify(stockService).release(5L);
+        Mockito.verifyNoMoreInteractions(cancellationRefunds, stockService);
+        Mockito.verify(orderRepository, Mockito.times(paid ? 1 : 0)).findPickedUpAt(5L);
+    }
+
+
+    /**
+     * Picked-up food is gone: the cancel of a picked-up order is refunded in part and gives no stock back.
+     */
+    @Test
+    void customerCancel_ofAPickedUpOrder_shouldGiveBackNoStock() {
+        Mockito.when(orderRepository.lockByIdAndCustomerId(5L, 1L)).thenReturn(order("ACCEPTED", null));
+        Mockito.when(orderRepository.findPickedUpAt(5L)).thenReturn(Optional.of(LocalDateTime.of(2026, 10, 21, 9, 30)));
+        stubCompareAndSet();
+
+        orderService.cancelOrder(1L, 5L);
+
+        Mockito.verify(cancellationRefunds).refundCancelledOrder(Mockito.any());
+        Mockito.verifyNoInteractions(stockService);
+    }
+
+
+    /**
+     * A cancel that already happened returns the order unchanged, and one the status does not allow is refused: neither
+     * gives stock back.
+     */
+    @Test
+    void customerCancel_thatAlreadyHappenedOrIsRefused_shouldGiveBackNoStock() {
+        Mockito.when(orderRepository.lockByIdAndCustomerId(5L, 1L)).thenReturn(
+                order("CANCELLED", OrderLifecycleCommands.CUSTOMER_CANCELLED),
+                order("PREPARING", null)
+        );
+
+        Assertions.assertEquals("CANCELLED", orderService.cancelOrder(1L, 5L).status());
+        Assertions.assertThrows(ConflictException.class, () -> orderService.cancelOrder(1L, 5L));
+
+        Mockito.verifyNoInteractions(stockService);
+    }
+
+
+    /**
+     * Each cancel of the admin PATCH gives back the order's stock; no other move gives any back.
+     */
+    @ParameterizedTest
+    @CsvSource(textBlock = """
+            PLACED,    PAID,      false
+            PLACED,    CANCELLED, true
+            PAID,      ACCEPTED,  false
+            PAID,      CANCELLED, true
+            ACCEPTED,  PREPARING, false
+            ACCEPTED,  CANCELLED, true
+            PREPARING, COMPLETED, false
+            """)
+    void adminPatch_shouldGiveBackStockOnlyForACancel(OrderStatus from, OrderStatus to, boolean released) {
+        Mockito.when(orderRepository.lockById(5L)).thenReturn(order(from.name(), null));
+        stubCompareAndSet();
+
+        orderService.transitionOrderStatus(5L, to.name(), OrderActor.admin(9L));
+
+        Mockito.verify(stockService, Mockito.times(released ? 1 : 0)).release(5L);
+        Mockito.verifyNoMoreInteractions(stockService);
     }
 
 

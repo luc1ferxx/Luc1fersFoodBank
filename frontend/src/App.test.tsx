@@ -284,6 +284,29 @@ describe("cart and checkout", () => {
     expect(keys[2]).not.toBe(keys[0]);
   });
 
+  it("shows the backend's message when an item is out of stock and keeps the cart", async () => {
+    const backend = installFakeBackend({ user: demoUser, cartItems: [whopperLine] });
+    backend.on("POST", "/payments/checkout", () =>
+      apiError(
+        409,
+        "Not enough Whopper left. Lower its quantity or remove it from your cart, then try again.",
+        { code: "OUT_OF_STOCK" },
+      ),
+    );
+    const user = renderApp();
+
+    await screen.findByRole("button", { name: "Pay $12.78" });
+    await fillPaymentForm(user);
+    await user.click(screen.getByRole("button", { name: "Pay $12.78" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "409: Not enough Whopper left. Lower its quantity or remove it from your cart, then try again.",
+    );
+    expect(screen.getByRole("button", { name: "Remove Whopper" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pay $12.78" })).toBeEnabled();
+    expect(backend.callsTo("POST", "/payments/checkout")).toHaveLength(1);
+  });
+
   it("reuses the cancel Idempotency-Key when a cancel is retried", async () => {
     const backend = installFakeBackend({ user: demoUser });
     backend.state.orders = [orderFixture({ id: 7, status: "PAID" })];

@@ -194,6 +194,7 @@ class RateLimitingFilterTests {
 
         for (String[] request : List.of(
                 new String[]{"GET", "/admin/menu-items/5"},
+                new String[]{"GET", "/admin/menu-items/5/stock"},
                 new String[]{"PATCH", "/admin/menu-items/abc"},
                 new String[]{"PATCH", "/admin/restaurants/3/menu"}
         )) {
@@ -553,6 +554,8 @@ class RateLimitingFilterTests {
             "POST, /payments/%63heckout, payment-checkout",
             "PATCH, /admin/menu-items/%35, admin-catalog",
             "PATCH, /admin//restaurants/3/, admin-catalog",
+            "PUT, /admin/menu-items/%35/stock, admin-catalog",
+            "DELETE, /admin//menu-items/5/stock/, admin-catalog",
             "POST, /dead-letters/%31%32/replay, dead-letter-replay",
             "POST, /admin/outbox/events/7/%72etry, outbox-retry",
             "POST, /admin/outbox/events/7/%61bandon, outbox-abandon",
@@ -662,6 +665,7 @@ class RateLimitingFilterTests {
             "POST, /orders/42/after-sales, 3",
             "POST, /after-sales/cases/7/withdraw, 3",
             "PATCH, /admin/menu-items/5, 2",
+            "PUT, /admin/menu-items/5/stock, 2",
             "POST, /admin/merchants, 6",
             "PATCH, /admin/riders/12, 2",
             "PATCH, /orders/42/status, 2",

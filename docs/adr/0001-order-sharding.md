@@ -65,8 +65,9 @@ managed PostgreSQL instance with fast storage sustains, before any vertical scal
 - **Cost.** N databases mean N migrations per release, N backups and restore drills, N sets of alerts, a routing
   layer in every data access, scatter-gather for every admin view, and no foreign keys or joins across the split.
 - **The prerequisites are not met** (next section): sequence-based keys, a synchronous cross-module seam that writes
-  two modules' tables in one transaction, and foreign keys that cross the future boundary. Each is worth fixing on
-  its own schedule, and sharding before them would mean distributed transactions, which this design rules out.
+  two modules' tables in one transaction, the stock writes that put the global `menu_items` into the order's
+  transaction, and foreign keys that cross the future boundary. Each is worth fixing on its own schedule, and sharding
+  before them would mean distributed transactions, which this design rules out.
 
 ### Triggers to revisit (any one, sustained over a week of peak traffic, after vertical scaling)
 
@@ -86,7 +87,9 @@ managed PostgreSQL instance with fast storage sustains, before any vertical scal
 Every hot write path of the order domain is scoped by the customer: add to cart, checkout, cancel, order list, order
 detail, order history, notifications, idempotency records (`UNIQUE (customer_id, scope, idempotency_key)`). With
 `customer_id` as the key, checkout stays one local transaction on one shard, exactly as today, and every customer
-request routes with the customer id from the session.
+request routes with the customer id from the session. The exception is the stock of limited items, one global row per
+menu item that every customer's checkout writes: checkout's take and a cancel's give-back become a global reservation
+that the order's event confirms or a cancel releases (**Stock** under the seams below).
 
 Rejected keys:
 
@@ -113,7 +116,7 @@ to physical shards. The bucket count never changes; rebalancing moves buckets.
 | `processed_events` | with each consumer | the mark must commit with the consumer's own write |
 | `audit_log` | order shard for order actions, global for staff/catalog actions | written in the action's transaction |
 | `customers`, `authorities` (identity) | global | login by email needs one lookup; `customer_id` determines the shard without a lookup |
-| `restaurants`, `menu_items` (catalog) | global | read-mostly, cached; checkout copies the item into `order_history_items` already |
+| `restaurants`, `menu_items` (catalog) | global | read-mostly, cached; checkout copies the item into `order_history_items` already; the stock counter `menu_items.stock_remaining` (V15) is written by checkout and cancel (seams below) |
 | `merchant_accounts`, `merchant_orders` | merchant module database | already fed by events only |
 | `order_deadlines` | timeout module database | needs `customer_id` added (see seams) |
 | `riders`, `deliveries`, `dispatch_orders` | dispatch module database | `deliveries` already carries `customer_id` |
@@ -141,6 +144,11 @@ the session); deleting customers becomes an event (`customer.deleted`) that each
   `deliveries` already store `customer_id`; `order_deadlines` needs it (from the event payload, which carries it).
 - **Same-transaction cross-module writes** (audit rows written by staff actions that also touch order data) follow
   the same pattern: the order-side change and its audit row commit on the shard; staff-side rows commit globally.
+- **Stock** (V15, docs/correctness.md "Stock"). Checkout takes stock from `menu_items` and a cancel gives it back
+  inside the order's transaction, so the counter and the order commit together. With `menu_items` global and the
+  order on a shard, that becomes reserve then confirm: checkout reserves the stock in the global database (a
+  reservation per order, with an expiry), the order commits on its shard, and the order's event confirms the
+  reservation; a cancel or the expiry releases it.
 
 ### ID strategy
 

@@ -72,6 +72,7 @@ public class CartService {
     private final OrderStatusHistoryService orderStatusHistoryService;
     private final OrderPaymentRepository orderPaymentRepository;
     private final ApplicationMetricsService metricsService;
+    private final StockService stockService;
 
 
     public CartService(
@@ -86,7 +87,8 @@ public class CartService {
             OrderEventOutboxService orderEventOutboxService,
             OrderStatusHistoryService orderStatusHistoryService,
             OrderPaymentRepository orderPaymentRepository,
-            ApplicationMetricsService metricsService
+            ApplicationMetricsService metricsService,
+            StockService stockService
     ) {
         this.cartRepository = cartRepository;
         this.idempotencyRequestRepository = idempotencyRequestRepository;
@@ -100,6 +102,7 @@ public class CartService {
         this.orderStatusHistoryService = orderStatusHistoryService;
         this.orderPaymentRepository = orderPaymentRepository;
         this.metricsService = metricsService;
+        this.stockService = stockService;
     }
 
 
@@ -294,6 +297,10 @@ public class CartService {
      * the same transaction ({@link #recordCapture}), so the order and its payment commit or roll back together. A
      * PLACED order has no payment, and an idempotent replay returns the stored order before this method, so an order
      * never gets a second capture.
+     *
+     * <p>The order takes the stock of its limited items ({@link StockService}) whether it is created PAID or
+     * PLACED, since an admin can mark a PLACED order paid. A short item fails the checkout with 409 OUT_OF_STOCK,
+     * either early, before anything is written, or when the stock is taken, which rolls everything back.
      */
     private OrderDto checkoutInternal(Long customerId, CartEntity cart, String status, String idempotencyKey) {
         List<OrderItemEntity> cartItems = orderItemRepository.getAllByCartId(cart.id());
@@ -303,6 +310,7 @@ public class CartService {
 
         Map<Long, MenuItemEntity> menuItemsById = getRequiredMenuItemsById(cartItems);
         Long restaurantId = requireSingleRestaurant(menuItemsById);
+        stockService.requireInStock(cartItems, menuItemsById);
         Money total = cartTotal(cart.currency(), cartItems);
 
         LocalDateTime createdAt = LocalDateTime.now();
@@ -356,6 +364,8 @@ public class CartService {
         orderItemRepository.deleteByCartId(cart.id());
         Money emptyTotal = Money.zero(total.currency());
         cartRepository.updateTotal(cart.id(), emptyTotal.amount(), emptyTotal.currencyCode());
+        // Last: every checkout of a limited item waits for its row, which then stays locked only until the commit.
+        stockService.reserve(savedOrder.id(), cartItems, menuItemsById);
 
         return new OrderDto(savedOrder, orderHistoryItemDtos);
     }
