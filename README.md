@@ -174,3 +174,9 @@ This is a demo, so some parts are simulated or missing:
 - **Sharding** is planned, not built.
 
 The full list is in [docs/limitations.md](docs/limitations.md).
+
+---
+
+## License
+
+[MIT](LICENSE)
