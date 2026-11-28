@@ -75,10 +75,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @DirtiesContext
 class ReadReplicaRoutingIntegrationTests {
 
-    private static final String ADMIN = "demo@laifood.com";
+    private static final String ADMIN = "demo@example.com";
     private static final String DEMO_PASSWORD = "demo123";
-    private static final String MERCHANT = "merchant.burgerking@laifood.com";
-    private static final String RIDER = "rider.alice@laifood.com";
+    private static final String MERCHANT = "merchant.burgerking@example.com";
+    private static final String RIDER = "rider.alice@example.com";
     private static final Duration STICKY_WINDOW = Duration.ofSeconds(2);
     private static final Duration MAX_LAG = Duration.ofSeconds(1);
     private static final Duration WAIT = Duration.ofSeconds(30);

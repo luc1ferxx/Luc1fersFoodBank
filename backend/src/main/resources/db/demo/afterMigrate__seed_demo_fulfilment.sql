@@ -4,13 +4,13 @@
 -- before this file (callbacks of one event run in name order) so the demo restaurants already exist.
 --
 -- One merchant login (ROLE_MERCHANT) per demo restaurant, password merchant123:
---   merchant.burgerking@laifood.com -> Burger King
---   merchant.sgdtofu@laifood.com    -> SGD Tofu House
---   merchant.fashionwok@laifood.com -> Fashion Wok
+--   merchant.burgerking@example.com -> Burger King
+--   merchant.sgdtofu@example.com    -> SGD Tofu House
+--   merchant.fashionwok@example.com -> Fashion Wok
 -- and three riders for the dispatch module, each with a rider login (ROLE_RIDER), password rider123:
---   rider.alice@laifood.com -> Demo Rider Alice
---   rider.bob@laifood.com   -> Demo Rider Bob
---   rider.carol@laifood.com -> Demo Rider Carol
+--   rider.alice@example.com -> Demo Rider Alice
+--   rider.bob@example.com   -> Demo Rider Bob
+--   rider.carol@example.com -> Demo Rider Carol
 --
 -- Roles and bindings only go to logins this seed created, recognised by their seeded {noop} password. On an existing
 -- database one of these emails may already belong to someone who signed up with it (POST /signup stores a BCrypt
@@ -18,23 +18,23 @@
 
 
 INSERT INTO customers (email, enabled, password, first_name, last_name)
-SELECT 'merchant.burgerking@laifood.com', TRUE, '{noop}merchant123', 'Burger King', 'Merchant'
+SELECT 'merchant.burgerking@example.com', TRUE, '{noop}merchant123', 'Burger King', 'Merchant'
 WHERE NOT EXISTS (
-    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('merchant.burgerking@laifood.com')
+    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('merchant.burgerking@example.com')
 );
 
 
 INSERT INTO customers (email, enabled, password, first_name, last_name)
-SELECT 'merchant.sgdtofu@laifood.com', TRUE, '{noop}merchant123', 'SGD Tofu House', 'Merchant'
+SELECT 'merchant.sgdtofu@example.com', TRUE, '{noop}merchant123', 'SGD Tofu House', 'Merchant'
 WHERE NOT EXISTS (
-    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('merchant.sgdtofu@laifood.com')
+    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('merchant.sgdtofu@example.com')
 );
 
 
 INSERT INTO customers (email, enabled, password, first_name, last_name)
-SELECT 'merchant.fashionwok@laifood.com', TRUE, '{noop}merchant123', 'Fashion Wok', 'Merchant'
+SELECT 'merchant.fashionwok@example.com', TRUE, '{noop}merchant123', 'Fashion Wok', 'Merchant'
 WHERE NOT EXISTS (
-    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('merchant.fashionwok@laifood.com')
+    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('merchant.fashionwok@example.com')
 );
 
 
@@ -42,9 +42,9 @@ INSERT INTO authorities (email, authority)
 SELECT customers.email, 'ROLE_MERCHANT'
 FROM customers
 WHERE LOWER(customers.email) IN (
-        'merchant.burgerking@laifood.com',
-        'merchant.sgdtofu@laifood.com',
-        'merchant.fashionwok@laifood.com'
+        'merchant.burgerking@example.com',
+        'merchant.sgdtofu@example.com',
+        'merchant.fashionwok@example.com'
     )
   AND customers.password = '{noop}merchant123'
   AND NOT EXISTS (
@@ -55,7 +55,7 @@ WHERE LOWER(customers.email) IN (
 INSERT INTO merchant_accounts (customer_id, restaurant_id, created_at)
 SELECT customers.id, restaurants.id, CURRENT_TIMESTAMP
 FROM customers, restaurants
-WHERE LOWER(customers.email) = LOWER('merchant.burgerking@laifood.com')
+WHERE LOWER(customers.email) = LOWER('merchant.burgerking@example.com')
   AND customers.password = '{noop}merchant123'
   AND restaurants.name = 'Burger King'
   AND NOT EXISTS (
@@ -66,7 +66,7 @@ WHERE LOWER(customers.email) = LOWER('merchant.burgerking@laifood.com')
 INSERT INTO merchant_accounts (customer_id, restaurant_id, created_at)
 SELECT customers.id, restaurants.id, CURRENT_TIMESTAMP
 FROM customers, restaurants
-WHERE LOWER(customers.email) = LOWER('merchant.sgdtofu@laifood.com')
+WHERE LOWER(customers.email) = LOWER('merchant.sgdtofu@example.com')
   AND customers.password = '{noop}merchant123'
   AND restaurants.name = 'SGD Tofu House'
   AND NOT EXISTS (
@@ -77,7 +77,7 @@ WHERE LOWER(customers.email) = LOWER('merchant.sgdtofu@laifood.com')
 INSERT INTO merchant_accounts (customer_id, restaurant_id, created_at)
 SELECT customers.id, restaurants.id, CURRENT_TIMESTAMP
 FROM customers, restaurants
-WHERE LOWER(customers.email) = LOWER('merchant.fashionwok@laifood.com')
+WHERE LOWER(customers.email) = LOWER('merchant.fashionwok@example.com')
   AND customers.password = '{noop}merchant123'
   AND restaurants.name = 'Fashion Wok'
   AND NOT EXISTS (
@@ -104,23 +104,23 @@ WHERE NOT EXISTS (SELECT 1 FROM riders WHERE name = 'Demo Rider Carol');
 
 
 INSERT INTO customers (email, enabled, password, first_name, last_name)
-SELECT 'rider.alice@laifood.com', TRUE, '{noop}rider123', 'Alice', 'Rider'
+SELECT 'rider.alice@example.com', TRUE, '{noop}rider123', 'Alice', 'Rider'
 WHERE NOT EXISTS (
-    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('rider.alice@laifood.com')
+    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('rider.alice@example.com')
 );
 
 
 INSERT INTO customers (email, enabled, password, first_name, last_name)
-SELECT 'rider.bob@laifood.com', TRUE, '{noop}rider123', 'Bob', 'Rider'
+SELECT 'rider.bob@example.com', TRUE, '{noop}rider123', 'Bob', 'Rider'
 WHERE NOT EXISTS (
-    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('rider.bob@laifood.com')
+    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('rider.bob@example.com')
 );
 
 
 INSERT INTO customers (email, enabled, password, first_name, last_name)
-SELECT 'rider.carol@laifood.com', TRUE, '{noop}rider123', 'Carol', 'Rider'
+SELECT 'rider.carol@example.com', TRUE, '{noop}rider123', 'Carol', 'Rider'
 WHERE NOT EXISTS (
-    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('rider.carol@laifood.com')
+    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('rider.carol@example.com')
 );
 
 
@@ -128,9 +128,9 @@ INSERT INTO authorities (email, authority)
 SELECT customers.email, 'ROLE_RIDER'
 FROM customers
 WHERE LOWER(customers.email) IN (
-        'rider.alice@laifood.com',
-        'rider.bob@laifood.com',
-        'rider.carol@laifood.com'
+        'rider.alice@example.com',
+        'rider.bob@example.com',
+        'rider.carol@example.com'
     )
   AND customers.password = '{noop}rider123'
   AND NOT EXISTS (
@@ -144,7 +144,7 @@ UPDATE riders
 SET customer_id = (
     SELECT customers.id
     FROM customers
-    WHERE LOWER(customers.email) = 'rider.alice@laifood.com'
+    WHERE LOWER(customers.email) = 'rider.alice@example.com'
       AND customers.password = '{noop}rider123'
 )
 WHERE name = 'Demo Rider Alice'
@@ -152,14 +152,14 @@ WHERE name = 'Demo Rider Alice'
   AND EXISTS (
     SELECT 1
     FROM customers
-    WHERE LOWER(customers.email) = 'rider.alice@laifood.com'
+    WHERE LOWER(customers.email) = 'rider.alice@example.com'
       AND customers.password = '{noop}rider123'
 )
   AND NOT EXISTS (
     SELECT 1
     FROM riders bound
     JOIN customers ON customers.id = bound.customer_id
-    WHERE LOWER(customers.email) = 'rider.alice@laifood.com'
+    WHERE LOWER(customers.email) = 'rider.alice@example.com'
 );
 
 
@@ -167,7 +167,7 @@ UPDATE riders
 SET customer_id = (
     SELECT customers.id
     FROM customers
-    WHERE LOWER(customers.email) = 'rider.bob@laifood.com'
+    WHERE LOWER(customers.email) = 'rider.bob@example.com'
       AND customers.password = '{noop}rider123'
 )
 WHERE name = 'Demo Rider Bob'
@@ -175,14 +175,14 @@ WHERE name = 'Demo Rider Bob'
   AND EXISTS (
     SELECT 1
     FROM customers
-    WHERE LOWER(customers.email) = 'rider.bob@laifood.com'
+    WHERE LOWER(customers.email) = 'rider.bob@example.com'
       AND customers.password = '{noop}rider123'
 )
   AND NOT EXISTS (
     SELECT 1
     FROM riders bound
     JOIN customers ON customers.id = bound.customer_id
-    WHERE LOWER(customers.email) = 'rider.bob@laifood.com'
+    WHERE LOWER(customers.email) = 'rider.bob@example.com'
 );
 
 
@@ -190,7 +190,7 @@ UPDATE riders
 SET customer_id = (
     SELECT customers.id
     FROM customers
-    WHERE LOWER(customers.email) = 'rider.carol@laifood.com'
+    WHERE LOWER(customers.email) = 'rider.carol@example.com'
       AND customers.password = '{noop}rider123'
 )
 WHERE name = 'Demo Rider Carol'
@@ -198,12 +198,12 @@ WHERE name = 'Demo Rider Carol'
   AND EXISTS (
     SELECT 1
     FROM customers
-    WHERE LOWER(customers.email) = 'rider.carol@laifood.com'
+    WHERE LOWER(customers.email) = 'rider.carol@example.com'
       AND customers.password = '{noop}rider123'
 )
   AND NOT EXISTS (
     SELECT 1
     FROM riders bound
     JOIN customers ON customers.id = bound.customer_id
-    WHERE LOWER(customers.email) = 'rider.carol@laifood.com'
+    WHERE LOWER(customers.email) = 'rider.carol@example.com'
 );

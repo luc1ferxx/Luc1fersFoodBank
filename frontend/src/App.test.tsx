@@ -93,7 +93,7 @@ describe("guest browsing and auth", () => {
       expect(backend.callsTo("GET", "/notifications")).toHaveLength(1);
     });
     expect(backend.callsTo("POST", "/login")[0]?.body).toBe(
-      "username=demo%40laifood.com&password=demo123",
+      "username=demo%40example.com&password=demo123",
     );
 
     const [logoutButton] = screen.getAllByRole("button", { name: "Logout" });

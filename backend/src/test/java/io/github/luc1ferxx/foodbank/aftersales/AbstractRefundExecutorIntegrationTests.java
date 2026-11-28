@@ -57,7 +57,7 @@ abstract class AbstractRefundExecutorIntegrationTests {
 
     static final String BURGER_KING = "Burger King";
 
-    static final String BURGER_KING_MERCHANT = "merchant.burgerking@laifood.com";
+    static final String BURGER_KING_MERCHANT = "merchant.burgerking@example.com";
 
     static final String AFTER_SALES_TOPIC = "after-sales-events";
 

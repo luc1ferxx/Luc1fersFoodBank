@@ -61,7 +61,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("h2")
 class AuditLogIntegrationTests {
 
-    private static final String ADMIN_EMAIL = "demo@laifood.com";
+    private static final String ADMIN_EMAIL = "demo@example.com";
 
     @DynamicPropertySource
     static void configure(DynamicPropertyRegistry registry) {

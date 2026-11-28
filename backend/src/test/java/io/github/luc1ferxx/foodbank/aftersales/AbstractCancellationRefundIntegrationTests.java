@@ -490,7 +490,7 @@ abstract class AbstractCancellationRefundIntegrationTests {
 
 
     Long adminId() {
-        return jdbcTemplate.queryForObject("SELECT id FROM customers WHERE email = 'demo@laifood.com'", Long.class);
+        return jdbcTemplate.queryForObject("SELECT id FROM customers WHERE email = 'demo@example.com'", Long.class);
     }
 
 

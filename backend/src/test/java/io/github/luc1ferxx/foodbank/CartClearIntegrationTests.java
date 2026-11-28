@@ -87,7 +87,7 @@ class CartClearIntegrationTests {
     @Test
     void clearCart_forAnAccountWithoutACartRow_shouldBeTheSameSuccess() throws Exception {
         // The demo merchants are seeded by SQL with a login but no carts row.
-        String email = "merchant.burgerking@laifood.com";
+        String email = "merchant.burgerking@example.com";
         Long customerId = customerService.getCustomerByEmail(email).id();
         Assertions.assertEquals(0, cartRows(customerId));
         MockHttpSession merchant = login(email, "merchant123");

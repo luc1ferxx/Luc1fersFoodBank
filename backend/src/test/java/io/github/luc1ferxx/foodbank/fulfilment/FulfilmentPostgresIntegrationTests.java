@@ -88,11 +88,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Testcontainers(disabledWithoutDocker = true)
 class FulfilmentPostgresIntegrationTests {
 
-    static final String BURGER_KING_MERCHANT = "merchant.burgerking@laifood.com";
-    static final String SGD_TOFU_MERCHANT = "merchant.sgdtofu@laifood.com";
+    static final String BURGER_KING_MERCHANT = "merchant.burgerking@example.com";
+    static final String SGD_TOFU_MERCHANT = "merchant.sgdtofu@example.com";
     static final String MERCHANT_PASSWORD = "merchant123";
-    static final String ALICE_RIDER = "rider.alice@laifood.com";
-    static final String BOB_RIDER = "rider.bob@laifood.com";
+    static final String ALICE_RIDER = "rider.alice@example.com";
+    static final String BOB_RIDER = "rider.bob@example.com";
 
     @Container
     static PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine")
@@ -275,7 +275,7 @@ class FulfilmentPostgresIntegrationTests {
         merchantOrderService.reject(customerIdOf(SGD_TOFU_MERCHANT), order.orderId(), "Closed early");
         PaidOrder otherOrder = paidOrderAt("SGD Tofu House");
         MockHttpSession owner = login(order.customerEmail(), "demo123");
-        MockHttpSession admin = login("demo@laifood.com", "demo123");
+        MockHttpSession admin = login("demo@example.com", "demo123");
         MockHttpSession merchant = login(SGD_TOFU_MERCHANT, MERCHANT_PASSWORD);
         MockHttpSession otherCustomer = login(otherOrder.customerEmail(), "demo123");
 
@@ -318,7 +318,7 @@ class FulfilmentPostgresIntegrationTests {
         PaidOrder order = paidOrderAt("Burger King");
         deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
         MockHttpSession customer = login(order.customerEmail(), "demo123");
-        MockHttpSession admin = login("demo@laifood.com", "demo123");
+        MockHttpSession admin = login("demo@example.com", "demo123");
 
         mockMvc.perform(get("/merchant/orders").session(customer))
                 .andExpect(status().isForbidden())
@@ -488,7 +488,7 @@ class FulfilmentPostgresIntegrationTests {
 
     @Test
     void adminPatchPaidRacingThePaymentTimeout_shouldHaveExactlyOneWinner() throws Exception {
-        Long adminId = customerIdOf("demo@laifood.com");
+        Long adminId = customerIdOf("demo@example.com");
         ExecutorService executor = Executors.newFixedThreadPool(3);
         try {
             for (int round = 0; round < 6; round++) {
@@ -568,7 +568,7 @@ class FulfilmentPostgresIntegrationTests {
     @EnumSource(value = OrderStatus.class, names = {"ACCEPTED", "PREPARING"})
     void deliveryCompletionRacingAdminPatchCompleted_shouldCompleteOnce(OrderStatus statusWhenDelivered) throws Exception {
         Long merchantId = customerIdOf(BURGER_KING_MERCHANT);
-        Long adminId = customerIdOf("demo@laifood.com");
+        Long adminId = customerIdOf("demo@example.com");
         ExecutorService executor = Executors.newFixedThreadPool(3);
         try {
             for (int round = 0; round < 6; round++) {
@@ -742,7 +742,7 @@ class FulfilmentPostgresIntegrationTests {
 
     @Test
     void twoAdminsPatchingTheSameTargetWithDifferentKeys_shouldAuditOneChange() throws Exception {
-        Long firstAdmin = customerIdOf("demo@laifood.com");
+        Long firstAdmin = customerIdOf("demo@example.com");
         Long secondAdmin = newAdmin();
         ExecutorService executor = Executors.newFixedThreadPool(2);
         try {
@@ -826,7 +826,7 @@ class FulfilmentPostgresIntegrationTests {
     @Test
     void adminPatchCompletedFromPreparing_shouldLeaveTheDeliveryOpen() {
         Long merchantId = customerIdOf(BURGER_KING_MERCHANT);
-        Long adminId = customerIdOf("demo@laifood.com");
+        Long adminId = customerIdOf("demo@example.com");
         PaidOrder order = paidOrderAt("Burger King");
         deliverOrderEvent(order.orderId(), "order.paid", merchantInboxService::handle);
         merchantOrderService.accept(merchantId, order.orderId());
@@ -870,7 +870,7 @@ class FulfilmentPostgresIntegrationTests {
     @Test
     void eventSequences_shouldGrowByOnePerAppliedTransition() {
         Long merchantId = customerIdOf(BURGER_KING_MERCHANT);
-        Long adminId = customerIdOf("demo@laifood.com");
+        Long adminId = customerIdOf("demo@example.com");
         PaidOrder order = paidOrderAt("Burger King");
         Long orderId = order.orderId();
         deliverOrderEvent(orderId, "order.paid", merchantInboxService::handle);
@@ -923,7 +923,7 @@ class FulfilmentPostgresIntegrationTests {
     @Test
     void appliedOrderTransitions_shouldWriteTheHistoryRowAndTheEventAtTheOrdersUpdateTime() {
         Long merchantId = customerIdOf(BURGER_KING_MERCHANT);
-        Long adminId = customerIdOf("demo@laifood.com");
+        Long adminId = customerIdOf("demo@example.com");
 
         // The merchant accepts, then the rider's delivery completes the order through PREPARING (two steps, one
         // transaction).
@@ -1116,7 +1116,7 @@ class FulfilmentPostgresIntegrationTests {
      */
     @Test
     void riderDeliveredRacingAdminReassign_shouldKeepRiderLoadsConsistent() throws Exception {
-        Long adminId = customerIdOf("demo@laifood.com");
+        Long adminId = customerIdOf("demo@example.com");
         Long aliceLogin = customerIdOf(ALICE_RIDER);
         Long aliceId = riderIdOf(ALICE_RIDER);
         Long bobLogin = customerIdOf(BOB_RIDER);
@@ -1377,7 +1377,7 @@ class FulfilmentPostgresIntegrationTests {
                 "SELECT status FROM merchant_orders WHERE order_id = ?", String.class, order.orderId()));
         Assertions.assertThrows(
                 ConflictException.class,
-                () -> merchantOrderService.accept(customerIdOf("merchant.fashionwok@laifood.com"), order.orderId())
+                () -> merchantOrderService.accept(customerIdOf("merchant.fashionwok@example.com"), order.orderId())
         );
     }
 
@@ -1460,7 +1460,7 @@ class FulfilmentPostgresIntegrationTests {
     void acceptTimeout_whenTheOnlyMerchantWasDeactivatedBeforeTheOrder_shouldNotBeSet() throws Exception {
         String restaurant = newRestaurantWithoutStaff();
         Long restaurantId = jdbcTemplate.queryForObject("SELECT id FROM restaurants WHERE name = ?", Long.class, restaurant);
-        MockHttpSession admin = login("demo@laifood.com", "demo123");
+        MockHttpSession admin = login("demo@example.com", "demo123");
         String merchantEmail = "merchant-" + System.nanoTime() + "@example.com";
         String created = mockMvc.perform(post("/admin/merchants")
                         .session(admin)
@@ -1590,7 +1590,7 @@ class FulfilmentPostgresIntegrationTests {
                 deliveryId
         ));
 
-        MockHttpSession admin = login("demo@laifood.com", "demo123");
+        MockHttpSession admin = login("demo@example.com", "demo123");
         MockHttpSession customer = login(order.customerEmail(), "demo123");
         mockMvc.perform(post("/admin/deliveries/{id}/picked-up", deliveryId).session(customer))
                 .andExpect(status().isForbidden());
@@ -1698,7 +1698,7 @@ class FulfilmentPostgresIntegrationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[?(@.delivery_id == %d)].order_no".formatted(deliveryId)).value(expected));
         mockMvc.perform(get("/admin/deliveries").param("order_id", order.orderId().toString())
-                        .session(login("demo@laifood.com", "demo123")))
+                        .session(login("demo@example.com", "demo123")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].order_no").value(expected));
         Assertions.assertEquals(orderNo, jdbcTemplate.queryForObject(

@@ -219,7 +219,7 @@ class RedisSessionFormatTests {
 
     private String loginAndGetSessionId() {
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-        form.add("username", "demo@laifood.com");
+        form.add("username", "demo@example.com");
         form.add("password", "demo123");
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
@@ -241,7 +241,7 @@ class RedisSessionFormatTests {
         session.setAttribute(
                 HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY,
                 new SecurityContextImpl(UsernamePasswordAuthenticationToken.authenticated(
-                        "demo@laifood.com",
+                        "demo@example.com",
                         null,
                         List.of(new SimpleGrantedAuthority("ROLE_USER"))
                 ))

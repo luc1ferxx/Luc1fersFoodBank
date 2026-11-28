@@ -50,13 +50,13 @@ abstract class AbstractMerchantAfterSalesIntegrationTests {
 
     static final String BURGER_KING = "Burger King";
 
-    static final String BURGER_KING_MERCHANT = "merchant.burgerking@laifood.com";
+    static final String BURGER_KING_MERCHANT = "merchant.burgerking@example.com";
 
-    static final String TOFU_HOUSE_MERCHANT = "merchant.sgdtofu@laifood.com";
+    static final String TOFU_HOUSE_MERCHANT = "merchant.sgdtofu@example.com";
 
     static final String MERCHANT_PASSWORD = "merchant123";
 
-    static final String ADMIN = "demo@laifood.com";
+    static final String ADMIN = "demo@example.com";
 
     @Autowired
     MockMvc mockMvc;

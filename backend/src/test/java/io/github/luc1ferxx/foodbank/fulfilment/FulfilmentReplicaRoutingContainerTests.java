@@ -78,8 +78,8 @@ class FulfilmentReplicaRoutingContainerTests extends FulfilmentContainerTestSupp
     @Test
     void paidOrderReachesCompleted_withTheReadEndpointsOnTheReplica() throws InterruptedException {
         String customer = signUpAndLogin();
-        String burgerKing = login("merchant.burgerking@laifood.com", "merchant123");
-        String admin = login("demo@laifood.com", "demo123");
+        String burgerKing = login("merchant.burgerking@example.com", "merchant123");
+        String admin = login("demo@example.com", "demo123");
         // Past every login's read-your-writes window.
         Thread.sleep(2_100);
         double replicaReadsBefore = reads("replica-1", "replica");

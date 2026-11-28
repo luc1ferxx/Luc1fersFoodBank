@@ -156,7 +156,7 @@ class PushStreamEndpointTests {
 
     @Test
     void aMerchantsStream_shouldGetItsRestaurantsSignalsUntilTheMerchantIsDeactivated() throws Exception {
-        Login admin = login("demo@laifood.com", "demo123");
+        Login admin = login("demo@example.com", "demo123");
         String email = "push-merchant-" + System.nanoTime() + "@example.com";
         AdminMerchantDto merchant = staffProvisioningService.createMerchant(
                 new CreateMerchantBody(email, PASSWORD, "Push", "Merchant", 1L), AuditActor.admin(admin.id()));
@@ -191,7 +191,7 @@ class PushStreamEndpointTests {
 
     @Test
     void aRidersStream_shouldGetTheRidersSignalsUntilTheRiderIsDeactivated() throws Exception {
-        Login admin = login("demo@laifood.com", "demo123");
+        Login admin = login("demo@example.com", "demo123");
         String email = "push-rider-" + System.nanoTime() + "@example.com";
         AdminRiderDto rider = staffProvisioningService.createRider(
                 new CreateRiderBody(email, PASSWORD, "Push", "Rider", null), AuditActor.admin(admin.id()));

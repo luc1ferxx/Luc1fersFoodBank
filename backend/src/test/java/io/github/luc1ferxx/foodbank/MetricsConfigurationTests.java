@@ -47,7 +47,7 @@ class MetricsConfigurationTests {
 
     @Test
     void prometheusEndpoint_shouldExposePoolThreadAndLatencyHistogramMetrics() {
-        String adminCookie = login("demo@laifood.com", "demo123");
+        String adminCookie = login("demo@example.com", "demo123");
         Assertions.assertEquals(HttpStatus.OK, restTemplate.getForEntity(url("/restaurants/menu"), String.class).getStatusCode());
 
         HttpHeaders headers = new HttpHeaders();
@@ -87,7 +87,7 @@ class MetricsConfigurationTests {
 
     @Test
     void requestMetrics_shouldNameConstrainedRoutesWithoutTheirIdConstraint() {
-        String adminCookie = login("demo@laifood.com", "demo123");
+        String adminCookie = login("demo@example.com", "demo123");
         HttpHeaders headers = new HttpHeaders();
         headers.add(HttpHeaders.COOKIE, adminCookie);
         ResponseEntity<String> retry = restTemplate.exchange(

@@ -24,14 +24,14 @@ function LoginForm({
     <form className="stack-form" onSubmit={handleSubmit}>
       <label>
         Email
-        <input name="username" type="email" placeholder="demo@laifood.com" required />
+        <input name="username" type="email" placeholder="demo@example.com" required />
       </label>
       <label>
         Password
         <input name="password" type="password" placeholder="demo123" required />
       </label>
       <div className="demo-credentials">
-        <code>demo@laifood.com</code>
+        <code>demo@example.com</code>
         <code>demo123</code>
       </div>
       <button className="primary-button" type="submit" disabled={pending}>

@@ -110,7 +110,7 @@ class AuthenticationFlowTests {
 
     @Test
     void h2DemoCheckout_shouldAddCartItemAndReturnPaidOrder() {
-        ResponseEntity<String> loginResponse = login("demo@laifood.com", "demo123");
+        ResponseEntity<String> loginResponse = login("demo@example.com", "demo123");
         Assertions.assertEquals(HttpStatus.OK, loginResponse.getStatusCode());
         String sessionCookie = extractSessionCookie(loginResponse);
         Assertions.assertNotNull(sessionCookie);

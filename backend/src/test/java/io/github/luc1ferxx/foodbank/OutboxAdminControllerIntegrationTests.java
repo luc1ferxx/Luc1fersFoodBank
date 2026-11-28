@@ -61,7 +61,7 @@ class OutboxAdminControllerIntegrationTests {
         );
         Assertions.assertEquals(HttpStatus.FORBIDDEN, userResponse.getStatusCode());
 
-        String adminCookie = login("demo@laifood.com", "demo123");
+        String adminCookie = login("demo@example.com", "demo123");
         ResponseEntity<String> adminResponse = restTemplate.exchange(
                 url("/admin/outbox/events/failed"),
                 HttpMethod.GET,
@@ -74,7 +74,7 @@ class OutboxAdminControllerIntegrationTests {
 
     @Test
     void retryFailedEvent_shouldOnlyRetryFailedEventsAndClearRetryState() {
-        String adminCookie = login("demo@laifood.com", "demo123");
+        String adminCookie = login("demo@example.com", "demo123");
         Long failedEventId = insertOutboxEvent("FAILED", 10, "Kafka unavailable", LocalDateTime.now());
 
         ResponseEntity<Map> retryResponse = restTemplate.exchange(
@@ -129,7 +129,7 @@ class OutboxAdminControllerIntegrationTests {
         );
         Assertions.assertEquals(HttpStatus.FORBIDDEN, userResponse.getStatusCode());
 
-        HttpHeaders adminHeaders = jsonHeadersWithCookie(login("demo@laifood.com", "demo123"));
+        HttpHeaders adminHeaders = jsonHeadersWithCookie(login("demo@example.com", "demo123"));
         ResponseEntity<String> withoutReason = restTemplate.exchange(
                 url("/admin/outbox/events/" + failedEventId + "/abandon"),
                 HttpMethod.POST,

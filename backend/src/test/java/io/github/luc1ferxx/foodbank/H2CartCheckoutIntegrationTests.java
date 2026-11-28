@@ -51,7 +51,7 @@ class H2CartCheckoutIntegrationTests {
 
     @Test
     void h2Profile_shouldAddCartItemsAndCompletePaidCheckout() {
-        Long customerId = customerId("demo@laifood.com");
+        Long customerId = customerId("demo@example.com");
 
         cartService.addMenuItemToCart(customerId, 1L);
         cartService.addMenuItemToCart(customerId, 1L);
@@ -81,7 +81,7 @@ class H2CartCheckoutIntegrationTests {
 
     @Test
     void h2Profile_shouldKeepTheCartToOneRestaurantAndRecordItOnTheOrder() {
-        Long customerId = customerId("demo@laifood.com");
+        Long customerId = customerId("demo@example.com");
         cartService.clearCart(customerId);
         Long burgerRestaurantId = restaurantIdOfMenuItem(1L);
         Long otherRestaurantItemId = jdbcTemplate.queryForObject(
@@ -118,7 +118,7 @@ class H2CartCheckoutIntegrationTests {
 
     @Test
     void paymentCheckout_shouldRecordOneCaptureThatNeitherAReplayNorAnotherCheckoutAdds() {
-        Long customerId = customerId("demo@laifood.com");
+        Long customerId = customerId("demo@example.com");
         cartService.clearCart(customerId);
         PaymentCheckoutBody card = new PaymentCheckoutBody("Demo User", "4242424242424242", "12/30", "123");
         String key = "h2-capture-key-" + System.nanoTime();

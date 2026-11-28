@@ -1287,7 +1287,7 @@ RefundDto(Long id, Long caseId, Long orderId, @JsonFormat(shape = STRING) Long o
    - ACCEPTED 变体里，管理员先执行时收到 409 "ACCEPTED -> COMPLETED"。
 4. `customerCancelRacingTheAcceptTimeout_shouldKeepTheWinnersReason`。
 5. `twoAdminsPatchingTheSameTargetWithDifferentKeys_shouldAuditOneChange`：一条 `changed=true`，一条 `changed=false`。
-6. `riderDeliveredRacingAdminReassign_shouldKeepRiderLoadsConsistent`。使用 demo 种子骑手 `rider.alice@laifood.com`，以及另一位在岗骑手；调用 `RiderService.markDelivered(customerId, deliveryId)` 与 `DeliveryAdminService.reassign(deliveryId, riderId, AuditActor.admin(...))`。两种结局：
+6. `riderDeliveredRacingAdminReassign_shouldKeepRiderLoadsConsistent`。使用 demo 种子骑手 `rider.alice@example.com`，以及另一位在岗骑手；调用 `RiderService.markDelivered(customerId, deliveryId)` 与 `DeliveryAdminService.reassign(deliveryId, riderId, AuditActor.admin(...))`。两种结局：
    - 配送 DELIVERED，改派 409。
    - 骑手 404，配送 PICKED_UP 且归骑手 B，发出 `delivery.reassigned`。
 

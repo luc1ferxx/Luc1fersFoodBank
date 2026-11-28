@@ -66,7 +66,7 @@ class OrderNumberH2IntegrationTests {
     void checkout_shouldNumberTheOrderWithTheConfiguredWorkerId() {
         Assertions.assertInstanceOf(StaticWorkerIdGenerator.class, idGenerator);
         Long customerId = jdbcTemplate.queryForObject(
-                "SELECT id FROM customers WHERE email = 'demo@laifood.com'", Long.class);
+                "SELECT id FROM customers WHERE email = 'demo@example.com'", Long.class);
         cartService.clearCart(customerId);
         cartService.addMenuItemToCart(customerId, 1L);
 

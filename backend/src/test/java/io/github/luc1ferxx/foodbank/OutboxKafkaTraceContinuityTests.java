@@ -299,7 +299,7 @@ class OutboxKafkaTraceContinuityTests {
 
     private String login() {
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-        form.add("username", "demo@laifood.com");
+        form.add("username", "demo@example.com");
         form.add("password", "demo123");
 
         HttpHeaders headers = new HttpHeaders();

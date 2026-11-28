@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="400" height="300">
+<rect width="400" height="300" fill="#e2edf0"/>
+<ellipse cx="200" cy="160" rx="150" ry="62" fill="#fff" opacity=".45"/>
+<g transform="translate(200 153) scale(0.9)">
+<ellipse cx="0" cy="66" rx="70" ry="7" fill="#000" opacity=".1"/>
+<rect x="-62" y="56" width="124" height="10" rx="5" fill="#9a6a3c"/>
+<rect x="-98" y="-8" width="24" height="14" rx="6" fill="#33312f"/>
+<rect x="74" y="-8" width="24" height="14" rx="6" fill="#33312f"/>
+<path d="M -82 -6 h 164 l -14 50 a 16 16 0 0 1 -15 12 h -106 a 16 16 0 0 1 -15 -12 z" fill="#33312f"/>
+<ellipse cx="0" cy="-6" rx="82" ry="20" fill="#4a4744"/>
+<ellipse cx="0" cy="-6" rx="72" ry="15" fill="#c9432b"/>
+<rect x="-8" y="-6.5" width="16" height="13" rx="3" fill="#fbf5e9" transform="translate(13.6 -15.9) rotate(9) scale(0.95)"/>
+<rect x="-8" y="-6.5" width="16" height="13" rx="3" fill="#fbf5e9" transform="translate(-26 -15.1) rotate(-1) scale(0.95)"/>
+<rect x="-8" y="-6.5" width="16" height="13" rx="3" fill="#fbf5e9" transform="translate(36.3 -9.5) rotate(-10) scale(0.95)"/>
+<rect x="-8" y="-6.5" width="16" height="13" rx="3" fill="#fbf5e9" transform="translate(-28.3 -8.5) rotate(3) scale(0.95)"/>
+<path d="M -6 3 a 7 7 0 1 1 9 5" fill="none" stroke="#f08f7a" stroke-width="5" stroke-linecap="round" transform="translate(-2.9 -18.4) rotate(26) scale(0.8)"/>
+<path d="M -6 3 a 7 7 0 1 1 9 5" fill="none" stroke="#f08f7a" stroke-width="5" stroke-linecap="round" transform="translate(-28.5 -15.6) rotate(-24) scale(0.8)"/>
+<path d="M -6 3 a 7 7 0 1 1 9 5" fill="none" stroke="#f08f7a" stroke-width="5" stroke-linecap="round" transform="translate(28.6 -14) rotate(-16) scale(0.8)"/>
+<circle r="9" fill="#f3ecd8" transform="translate(-46.8 -9.8) rotate(21) scale(0.8)"/>
+<circle r="9" fill="#f3ecd8" transform="translate(-20.5 -8.6) rotate(25) scale(0.8)"/>
+<path d="M -6 3 a 7 7 0 1 1 9 5" fill="none" stroke="#f08f7a" stroke-width="5" stroke-linecap="round" transform="translate(11.4 -7.6) rotate(-23) scale(0.8)"/>
+<path d="M -6 3 a 7 7 0 1 1 9 5" fill="none" stroke="#f08f7a" stroke-width="5" stroke-linecap="round" transform="translate(35.5 -4.6) rotate(-21) scale(0.8)"/>
+<circle r="3.5" fill="#5fa04e" transform="translate(32.1 -15.3) rotate(-52) scale(0.8)"/>
+<circle r="3.5" fill="#5fa04e" transform="translate(-31.4 -14.8) rotate(52) scale(0.8)"/>
+<circle r="3.5" fill="#5fa04e" transform="translate(-3.3 -14.7) rotate(10) scale(0.8)"/>
+<circle r="3.5" fill="#5fa04e" transform="translate(42.5 -11.4) rotate(-47) scale(0.8)"/>
+<circle r="3.5" fill="#5fa04e" transform="translate(13.3 -7.3) rotate(62) scale(0.8)"/>
+<circle r="3.5" fill="#5fa04e" transform="translate(4.2 -6.8) rotate(62) scale(0.8)"/>
+<circle r="3.5" fill="#5fa04e" transform="translate(47.9 -5.6) rotate(-54) scale(0.8)"/>
+<circle r="3.5" fill="#5fa04e" transform="translate(-23.8 -3.8) rotate(-48) scale(0.8)"/>
+<circle r="3.5" fill="#5fa04e" transform="translate(25.9 -1.8) rotate(-5) scale(0.8)"/>
+<path d="M -28 -34 q -9 -11 0 -22 t 0 -22" fill="none" stroke="#a8957f" stroke-width="5" stroke-linecap="round" opacity=".5"/>
+<path d="M 0 -34 q -9 -11 0 -22 t 0 -22" fill="none" stroke="#a8957f" stroke-width="5" stroke-linecap="round" opacity=".5"/>
+<path d="M 28 -34 q -9 -11 0 -22 t 0 -22" fill="none" stroke="#a8957f" stroke-width="5" stroke-linecap="round" opacity=".5"/>
+</g>
+</svg>

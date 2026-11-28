@@ -216,7 +216,7 @@ class CatalogCacheIntegrationTests {
     void adminMenuItemUpdate_shouldEvictTheMenuAfterCommitAndServeTheNewValues() {
         getJsonList("/restaurant/" + restaurantId + "/menu");
         Assertions.assertTrue(redis.hasKey(menuKey()));
-        String adminCookie = login("demo@laifood.com", "demo123");
+        String adminCookie = login("demo@example.com", "demo123");
 
         ResponseEntity<Map> update = patch(
                 "/admin/menu-items/" + whopperId,
@@ -282,7 +282,7 @@ class CatalogCacheIntegrationTests {
     void adminRestaurantUpdate_shouldEvictTheRestaurantList() {
         getJsonList("/restaurants/menu");
         Assertions.assertTrue(redis.hasKey("onlineorder:cache:v2:restaurants::all"));
-        String adminCookie = login("demo@laifood.com", "demo123");
+        String adminCookie = login("demo@example.com", "demo123");
 
         ResponseEntity<Map> update = patch(
                 "/admin/restaurants/" + restaurantId,
@@ -317,7 +317,7 @@ class CatalogCacheIntegrationTests {
         Assertions.assertEquals(HttpStatus.FORBIDDEN, patch("/admin/restaurants/" + restaurantId, Map.of("name", "x"), userCookie).getStatusCode());
         Assertions.assertEquals(0, new BigDecimal("5.00").compareTo(priceInDatabase(whopperId)), "rejected writes change nothing");
 
-        String adminCookie = login("demo@laifood.com", "demo123");
+        String adminCookie = login("demo@example.com", "demo123");
         Assertions.assertEquals(HttpStatus.BAD_REQUEST, patch("/admin/menu-items/" + whopperId, Map.of("price", -1), adminCookie).getStatusCode());
         Assertions.assertEquals(HttpStatus.BAD_REQUEST, patch("/admin/menu-items/" + whopperId, Map.of("name", "   "), adminCookie).getStatusCode());
         Assertions.assertEquals(HttpStatus.BAD_REQUEST, patch("/admin/menu-items/" + whopperId, Map.of(), adminCookie).getStatusCode());
@@ -396,7 +396,7 @@ class CatalogCacheIntegrationTests {
         ResponseEntity<Map> update = patch(
                 "/admin/menu-items/" + whopperId,
                 Map.of("price", new BigDecimal("6.75")),
-                login("demo@laifood.com", "demo123")
+                login("demo@example.com", "demo123")
         );
         Assertions.assertTrue(update.getHeaders().getCacheControl().contains("no-store"), "other responses keep no-store");
 

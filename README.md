@@ -94,7 +94,7 @@ Open:
 
 | Demo login | Password | Roles |
 | --- | --- | --- |
-| `demo@laifood.com` | `demo123` | customer and admin |
+| `demo@example.com` | `demo123` | customer and admin |
 
 The demo seed (`backend/src/main/resources/db/demo`) also creates a merchant login per restaurant and three rider
 logins.
@@ -174,3 +174,9 @@ This is a demo, so some parts are simulated or missing:
 - **Sharding** is planned, not built.
 
 The full list is in [docs/limitations.md](docs/limitations.md).
+
+---
+
+## License
+
+[MIT](LICENSE)

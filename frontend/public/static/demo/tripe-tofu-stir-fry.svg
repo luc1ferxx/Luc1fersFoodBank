@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="400" height="300">
+<rect width="400" height="300" fill="#f7ead6"/>
+<ellipse cx="200" cy="160" rx="150" ry="62" fill="#fff" opacity=".45"/>
+<g transform="translate(200 126) scale(1.2)">
+<ellipse cx="0" cy="66" rx="76" ry="7" fill="#000" opacity=".1"/>
+<ellipse cx="0" cy="30" rx="88" ry="34" fill="#fff"/>
+<ellipse cx="0" cy="28" rx="72" ry="25" fill="#f1ede4"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#5c9f47" transform="translate(-1.2 -22.4) rotate(-29) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#5c9f47" transform="translate(17.3 -21.9) rotate(-19) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#f1e6cf" transform="translate(-16.9 -15.4) rotate(52) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#5c9f47" transform="translate(-2.5 -14.7) rotate(-60) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#f1e6cf" transform="translate(9.5 -14.7) rotate(-61) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#e9dcc3" transform="translate(20.5 -14.4) rotate(-54) scale(1.1)"/>
+<rect x="-8" y="-6.5" width="16" height="13" rx="3" fill="#c7a777" transform="translate(7 -9.8) rotate(10) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#d9472f" transform="translate(25 -9) rotate(10) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#d9472f" transform="translate(-21.9 -8.7) rotate(-63) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#d9472f" transform="translate(-36.7 -5.3) rotate(-41) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#5c9f47" transform="translate(-44.7 -2.9) rotate(30) scale(1.1)"/>
+<rect x="-8" y="-6.5" width="16" height="13" rx="3" fill="#c7a777" transform="translate(-29.3 0) rotate(8) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#5c9f47" transform="translate(-33.2 0.4) rotate(-1) scale(1.1)"/>
+<rect x="-8" y="-6.5" width="16" height="13" rx="3" fill="#c7a777" transform="translate(-31.5 3) rotate(63) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#e9dcc3" transform="translate(45 3.4) rotate(50) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#d9472f" transform="translate(-31.3 3.9) rotate(34) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#e9dcc3" transform="translate(-48 4.2) rotate(-51) scale(1.1)"/>
+<rect x="-8" y="-6.5" width="16" height="13" rx="3" fill="#c7a777" transform="translate(-13.8 6.7) rotate(32) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#f1e6cf" transform="translate(18.2 7) rotate(-58) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#5c9f47" transform="translate(55.2 7.9) rotate(22) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#e9dcc3" transform="translate(28.9 8.1) rotate(-38) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#d9472f" transform="translate(48.7 8.7) rotate(61) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#f1e6cf" transform="translate(-20.9 9.7) rotate(-51) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#f1e6cf" transform="translate(-3.4 11.5) rotate(-16) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#e9dcc3" transform="translate(-7.3 12.6) rotate(49) scale(1.1)"/>
+<rect x="-8" y="-6.5" width="16" height="13" rx="3" fill="#c7a777" transform="translate(0.8 12.7) rotate(-55) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#e9dcc3" transform="translate(26.1 13.3) rotate(-62) scale(1.1)"/>
+<rect x="-8" y="-6.5" width="16" height="13" rx="3" fill="#c7a777" transform="translate(-49.3 15.5) rotate(30) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#d9472f" transform="translate(49.4 17) rotate(-62) scale(1.1)"/>
+<rect x="-15" y="-4.5" width="30" height="9" rx="4.5" fill="#f1e6cf" transform="translate(-30 20.3) rotate(55) scale(1.1)"/>
+</g>
+</svg>

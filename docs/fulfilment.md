@@ -216,9 +216,9 @@ The orchestration lives in `io.github.luc1ferxx.foodbank.staff` (admin web layer
 through `CustomerService` and binds it through the merchant module's `MerchantAccountService` or the dispatch
 module's `RiderService`; the modules still only touch their own tables.
 
-Demo staff (seeded only with `classpath:db/demo`): merchants `merchant.burgerking@laifood.com`,
-`merchant.sgdtofu@laifood.com`, `merchant.fashionwok@laifood.com` (password `merchant123`), and riders
-`rider.alice@laifood.com`, `rider.bob@laifood.com`, `rider.carol@laifood.com` (password `rider123`, bound to Demo
+Demo staff (seeded only with `classpath:db/demo`): merchants `merchant.burgerking@example.com`,
+`merchant.sgdtofu@example.com`, `merchant.fashionwok@example.com` (password `merchant123`), and riders
+`rider.alice@example.com`, `rider.bob@example.com`, `rider.carol@example.com` (password `rider123`, bound to Demo
 Rider Alice, Bob and Carol, which start on duty). The seed only grants the role and binding to logins it created itself
 (their seeded `{noop}` password): an account someone registered with one of these emails through `POST /signup` stays
 a plain customer.

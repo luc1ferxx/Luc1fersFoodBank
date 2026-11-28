@@ -64,9 +64,9 @@ abstract class AbstractAfterSalesDeadlineIntegrationTests {
 
     static final String BURGER_KING = "Burger King";
 
-    static final String BURGER_KING_MERCHANT = "merchant.burgerking@laifood.com";
+    static final String BURGER_KING_MERCHANT = "merchant.burgerking@example.com";
 
-    static final String ADMIN = "demo@laifood.com";
+    static final String ADMIN = "demo@example.com";
 
     /**
      * app.after-sales.poller.retry-backoff as application.yml sets it.

@@ -170,7 +170,7 @@ describe("role-based workspaces", () => {
       "GET",
       "/me",
       () =>
-        new Response(JSON.stringify({ id: 1, email: "demo@laifood.com", first_name: "Demo" }), {
+        new Response(JSON.stringify({ id: 1, email: "demo@example.com", first_name: "Demo" }), {
           headers: { "Content-Type": "application/json" },
         }),
     );
