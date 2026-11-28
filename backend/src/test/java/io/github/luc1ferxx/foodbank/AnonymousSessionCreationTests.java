@@ -108,7 +108,7 @@ class AnonymousSessionCreationTests {
     @Test
     void successfulLogin_shouldCreateSessionThatAuthorizesTheNextRequest() throws Exception {
         MvcResult loginResult = mockMvc.perform(post("/login")
-                        .param("username", "demo@laifood.com")
+                        .param("username", "demo@example.com")
                         .param("password", "demo123"))
                 .andExpect(status().isOk())
                 .andReturn();

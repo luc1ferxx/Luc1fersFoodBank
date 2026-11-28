@@ -42,9 +42,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class StaffDemoSeedH2Tests {
 
     private static final List<String> DEMO_RIDERS = List.of(
-            "rider.alice@laifood.com",
-            "rider.bob@laifood.com",
-            "rider.carol@laifood.com"
+            "rider.alice@example.com",
+            "rider.bob@example.com",
+            "rider.carol@example.com"
     );
 
     @DynamicPropertySource
@@ -95,7 +95,7 @@ class StaffDemoSeedH2Tests {
         Assertions.assertEquals(0, jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM merchant_accounts WHERE active = FALSE", Integer.class));
 
-        MockHttpSession bob = login("rider.bob@laifood.com", "rider123");
+        MockHttpSession bob = login("rider.bob@example.com", "rider123");
         mockMvc.perform(get("/rider/me").session(bob))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.name").value("Demo Rider Bob"))
@@ -104,7 +104,7 @@ class StaffDemoSeedH2Tests {
                 .andExpect(jsonPath("$.roles[0]").value("ROLE_RIDER"))
                 .andExpect(jsonPath("$.rider.name").value("Demo Rider Bob"));
 
-        MockHttpSession merchant = login("merchant.fashionwok@laifood.com", "merchant123");
+        MockHttpSession merchant = login("merchant.fashionwok@example.com", "merchant123");
         mockMvc.perform(get("/me").session(merchant))
                 .andExpect(jsonPath("$.merchant.restaurant_name").value("Fashion Wok"))
                 .andExpect(jsonPath("$.merchant.active").value(true));
@@ -116,8 +116,8 @@ class StaffDemoSeedH2Tests {
     void demoSeed_onAnExistingDatabase_shouldNotMakeASelfRegisteredAccountARiderOrMerchant() throws Exception {
         // An existing database where someone signed up with a demo staff email before the seed bound it: the account
         // has a BCrypt password and ROLE_USER, Demo Rider Alice has no login and the email no merchant account.
-        String rider = "rider.alice@laifood.com";
-        String merchant = "merchant.burgerking@laifood.com";
+        String rider = "rider.alice@example.com";
+        String merchant = "merchant.burgerking@example.com";
         Long riderLoginId = customerId(rider);
         Long merchantLoginId = customerId(merchant);
         Long burgerKingId = jdbcTemplate.queryForObject(

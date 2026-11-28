@@ -392,7 +392,7 @@ class StaleEventPostgresIntegrationTests {
         Assertions.assertEquals("PENDING_MERCHANT|0", afterSalesInboxRow(caseId));
 
         Long merchantId = jdbcTemplate.queryForObject(
-                "SELECT id FROM customers WHERE email = 'merchant.burgerking@laifood.com'", Long.class);
+                "SELECT id FROM customers WHERE email = 'merchant.burgerking@example.com'", Long.class);
         Assertions.assertEquals("REFUNDING", merchantAfterSalesService.approve(merchantId, caseId).status());
         Assertions.assertEquals("REFUNDING|1", afterSalesInboxRow(caseId));
         Object answeredAt = jdbcTemplate.queryForObject(

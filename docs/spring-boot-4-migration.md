@@ -137,7 +137,7 @@ needs `@AutoConfigureTracing`. OTLP export still stays off there (`management.tr
   `hasRole(...)` compiled and behave unchanged.
 - **Runtime** - every password login now carries an extra authority: Spring Security 7.1's
   `AbstractUserDetailsAuthenticationProvider` adds `FactorGrantedAuthority` `FACTOR_PASSWORD` (multi-factor
-  support). For `demo@laifood.com`, `Authentication.getAuthorities()` is `FACTOR_PASSWORD`, `ROLE_ADMIN`,
+  support). For `demo@example.com`, `Authentication.getAuthorities()` is `FACTOR_PASSWORD`, `ROLE_ADMIN`,
   `ROLE_USER` (Spring Boot 3.5: the two roles). `hasRole`/`hasAnyRole` checks are unaffected. Code that turns the
   authorities into a list of roles (a `roles` field in `/me`, the actor of an audit entry, any "first authority"
   fallback) must keep only the `ROLE_` ones, for example

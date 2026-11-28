@@ -94,7 +94,7 @@ Open:
 
 | Demo login | Password | Roles |
 | --- | --- | --- |
-| `demo@laifood.com` | `demo123` | customer and admin |
+| `demo@example.com` | `demo123` | customer and admin |
 
 The demo seed (`backend/src/main/resources/db/demo`) also creates a merchant login per restaurant and three rider
 logins.

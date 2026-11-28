@@ -73,10 +73,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Testcontainers(disabledWithoutDocker = true)
 class StaffAccountsPostgresIntegrationTests {
 
-    private static final String ADMIN = "demo@laifood.com";
+    private static final String ADMIN = "demo@example.com";
     private static final String DEMO_PASSWORD = "demo123";
-    private static final String BURGER_KING_MERCHANT = "merchant.burgerking@laifood.com";
-    private static final String DEMO_RIDER = "rider.alice@laifood.com";
+    private static final String BURGER_KING_MERCHANT = "merchant.burgerking@example.com";
+    private static final String DEMO_RIDER = "rider.alice@example.com";
 
     @Container
     static PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine")

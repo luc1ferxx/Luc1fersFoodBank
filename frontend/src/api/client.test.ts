@@ -468,7 +468,7 @@ describe("role endpoints", () => {
       Promise.resolve(
         json({
           id: 21,
-          email: "merchant@laifood.com",
+          email: "merchant@example.com",
           roles: ["ROLE_MERCHANT"],
           merchant: {
             merchant_id: 3,
@@ -481,7 +481,7 @@ describe("role endpoints", () => {
     );
     await expect(api.getCurrentUser()).resolves.toEqual({
       id: 21,
-      email: "merchant@laifood.com",
+      email: "merchant@example.com",
       first_name: null,
       last_name: null,
       roles: ["ROLE_MERCHANT"],
@@ -489,10 +489,10 @@ describe("role endpoints", () => {
       rider: null,
     });
 
-    stubFetch(() => Promise.resolve(json({ id: 1, email: "demo@laifood.com" })));
+    stubFetch(() => Promise.resolve(json({ id: 1, email: "demo@example.com" })));
     await expect(api.getCurrentUser()).resolves.toMatchObject({ roles: [], merchant: null });
 
-    stubFetch(() => Promise.resolve(json({ id: 1, email: "demo@laifood.com", roles: "ADMIN" })));
+    stubFetch(() => Promise.resolve(json({ id: 1, email: "demo@example.com", roles: "ADMIN" })));
     await expect(api.getCurrentUser()).rejects.toThrow(
       'Unexpected response from the server: me.roles should be an array, got the string "ADMIN".',
     );
@@ -654,7 +654,7 @@ describe("request", () => {
     const unsubscribe = onUnauthorized(listener);
 
     await expect(
-      api.login({ username: "demo@laifood.com", password: "wrong" }),
+      api.login({ username: "demo@example.com", password: "wrong" }),
     ).rejects.toMatchObject({
       status: 401,
       message: "Invalid email or password",

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="400" height="300">
+<rect width="400" height="300" fill="#ebe4f2"/>
+<ellipse cx="200" cy="160" rx="150" ry="62" fill="#fff" opacity=".45"/>
+<g transform="translate(200 126) scale(1.2)">
+<ellipse cx="0" cy="66" rx="76" ry="7" fill="#000" opacity=".1"/>
+<ellipse cx="0" cy="30" rx="88" ry="34" fill="#fff"/>
+<ellipse cx="0" cy="28" rx="72" ry="25" fill="#f1ede4"/>
+<circle r="3.5" fill="#bd7b4e" transform="translate(-22.3 -21.1) rotate(63) scale(1.1)"/>
+<circle r="3.5" fill="#bd7b4e" transform="translate(-11.7 -18.3) rotate(1) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#6f4a8a" transform="translate(16.2 -16.5) rotate(-39) scale(1.1)"/>
+<circle r="3.5" fill="#bd7b4e" transform="translate(-9.1 -16.2) rotate(1) scale(1.1)"/>
+<circle r="3.5" fill="#bd7b4e" transform="translate(23.7 -14) rotate(-29) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#84609f" transform="translate(7.1 -11.8) rotate(56) scale(1.1)"/>
+<circle r="3.5" fill="#bd7b4e" transform="translate(30.8 -11.7) rotate(7) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#6f4a8a" transform="translate(-21.4 -5.3) rotate(62) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#6f4a8a" transform="translate(15.7 -4.1) rotate(-41) scale(1.1)"/>
+<circle r="3.5" fill="#bd7b4e" transform="translate(43.6 -2.2) rotate(-45) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#6f4a8a" transform="translate(43.7 -1) rotate(-15) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#6f4a8a" transform="translate(-48.7 0.3) rotate(-31) scale(1.1)"/>
+<circle r="3.5" fill="#bd7b4e" transform="translate(6.6 1.7) rotate(39) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#6f4a8a" transform="translate(30.5 1.8) rotate(4) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#6f4a8a" transform="translate(-50.6 4) rotate(4) scale(1.1)"/>
+<circle r="3.5" fill="#bd7b4e" transform="translate(21.1 4.8) rotate(20) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#6f4a8a" transform="translate(27.4 5.1) rotate(-58) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#84609f" transform="translate(17.4 5.1) rotate(12) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#6f4a8a" transform="translate(-23.4 5.5) rotate(-49) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#84609f" transform="translate(-45.1 5.5) rotate(64) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#6f4a8a" transform="translate(53 5.8) rotate(-56) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#84609f" transform="translate(38.2 7.3) rotate(11) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#6f4a8a" transform="translate(40.3 8.1) rotate(32) scale(1.1)"/>
+<circle r="3.5" fill="#bd7b4e" transform="translate(48.1 8.5) rotate(-35) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#84609f" transform="translate(-48.1 10.4) rotate(36) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#6f4a8a" transform="translate(-45.3 11.6) rotate(-11) scale(1.1)"/>
+<circle r="3.5" fill="#bd7b4e" transform="translate(35.5 13.6) rotate(-48) scale(1.1)"/>
+<rect x="-14" y="-7" width="28" height="14" rx="7" fill="#84609f" transform="translate(-38.1 16.9) rotate(-17) scale(1.1)"/>
+<circle r="3.5" fill="#bd7b4e" transform="translate(-27 17.9) rotate(15) scale(1.1)"/>
+<circle r="3.5" fill="#bd7b4e" transform="translate(4.2 19.2) rotate(7) scale(1.1)"/>
+<circle r="3.5" fill="#5c9f47" transform="translate(-7.4 -22.2) rotate(45) scale(0.8)"/>
+<circle r="3.5" fill="#5c9f47" transform="translate(-13.9 -19.4) rotate(-1) scale(0.8)"/>
+<circle r="3.5" fill="#5c9f47" transform="translate(-13.8 -14.7) rotate(62) scale(0.8)"/>
+<circle r="3.5" fill="#5c9f47" transform="translate(38 -7.3) rotate(3) scale(0.8)"/>
+<circle r="3.5" fill="#5c9f47" transform="translate(-39.9 2.2) rotate(41) scale(0.8)"/>
+<circle r="3.5" fill="#5c9f47" transform="translate(-5.2 3.3) rotate(-9) scale(0.8)"/>
+<circle r="3.5" fill="#5c9f47" transform="translate(30.5 5) rotate(11) scale(0.8)"/>
+<circle r="3.5" fill="#5c9f47" transform="translate(-14.3 10.4) rotate(36) scale(0.8)"/>
+</g>
+</svg>

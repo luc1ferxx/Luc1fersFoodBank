@@ -58,7 +58,7 @@ class AfterSalesFlowContainerTests extends FulfilmentContainerTestSupport {
 
     private static final String BURGER_KING = "Burger King";
 
-    private static final String BURGER_KING_MERCHANT = "merchant.burgerking@laifood.com";
+    private static final String BURGER_KING_MERCHANT = "merchant.burgerking@example.com";
 
     private static final String AFTER_SALES_TOPIC = "after-sales-events";
 
@@ -107,7 +107,7 @@ class AfterSalesFlowContainerTests extends FulfilmentContainerTestSupport {
     void requestTheMerchantApproves_shouldBeRefundedByThePollerAndNotified() {
         String customer = signUpAndLogin();
         String burgerKing = login(BURGER_KING_MERCHANT, "merchant123");
-        String admin = login("demo@laifood.com", "demo123");
+        String admin = login("demo@example.com", "demo123");
         Long orderId = completedOrder(customer, burgerKing, admin);
         String order = "order #" + orderOf(customer, orderId).get("order_no");
         Money total = money(orderOf(customer, orderId), "total_price");
@@ -171,7 +171,7 @@ class AfterSalesFlowContainerTests extends FulfilmentContainerTestSupport {
     void counterOfferTheCustomerAccepts_shouldRefundTheOfferedAmount() {
         String customer = signUpAndLogin();
         String burgerKing = login(BURGER_KING_MERCHANT, "merchant123");
-        String admin = login("demo@laifood.com", "demo123");
+        String admin = login("demo@example.com", "demo123");
         Long orderId = completedOrder(customer, burgerKing, admin);
         String order = "order #" + orderOf(customer, orderId).get("order_no");
 
@@ -225,7 +225,7 @@ class AfterSalesFlowContainerTests extends FulfilmentContainerTestSupport {
     void rejectionTheCustomerEscalates_shouldBeRefundedInPartByThePlatform() {
         String customer = signUpAndLogin();
         String burgerKing = login(BURGER_KING_MERCHANT, "merchant123");
-        String admin = login("demo@laifood.com", "demo123");
+        String admin = login("demo@example.com", "demo123");
         addToCart(customer, lastMenuItemOf(BURGER_KING));
         Long orderId = completedOrder(customer, burgerKing, admin);
         String order = "order #" + orderOf(customer, orderId).get("order_no");
@@ -295,7 +295,7 @@ class AfterSalesFlowContainerTests extends FulfilmentContainerTestSupport {
     void requestTheMerchantLeavesUnanswered_shouldBeApprovedByTheMerchantTimeout() {
         String customer = signUpAndLogin();
         String burgerKing = login(BURGER_KING_MERCHANT, "merchant123");
-        String admin = login("demo@laifood.com", "demo123");
+        String admin = login("demo@example.com", "demo123");
         Long orderId = completedOrder(customer, burgerKing, admin);
         String order = "order #" + orderOf(customer, orderId).get("order_no");
 
@@ -350,7 +350,7 @@ class AfterSalesFlowContainerTests extends FulfilmentContainerTestSupport {
     void paidOrderTheCustomerCancels_shouldBeRefundedWholeWithoutAnAnswer() {
         String customer = signUpAndLogin();
         String burgerKing = login(BURGER_KING_MERCHANT, "merchant123");
-        String admin = login("demo@laifood.com", "demo123");
+        String admin = login("demo@example.com", "demo123");
         Long orderId = payForItemOf(customer, BURGER_KING, "e2e-cancel-pay-" + System.nanoTime());
         await("the order to reach the Burger King inbox", EVENT_WAIT, () ->
                 findById(getList("/merchant/orders?status=PAID", burgerKing), "order_id", orderId) != null);
@@ -417,7 +417,7 @@ class AfterSalesFlowContainerTests extends FulfilmentContainerTestSupport {
     void withdrawnRequest_shouldLeaveOneMoreAttemptThatIsRefunded() {
         String customer = signUpAndLogin();
         String burgerKing = login(BURGER_KING_MERCHANT, "merchant123");
-        String admin = login("demo@laifood.com", "demo123");
+        String admin = login("demo@example.com", "demo123");
         Long orderId = completedOrder(customer, burgerKing, admin);
         String order = "order #" + orderOf(customer, orderId).get("order_no");
 

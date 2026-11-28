@@ -39,7 +39,7 @@ function parsePositiveInt(value, name) {
 function buildUser(index) {
   const suffix = String(index + 1).padStart(3, '0');
   return {
-    email: `${USER_PREFIX}-${suffix}@laifood.local`,
+    email: `${USER_PREFIX}-${suffix}@example.test`,
     password: USER_PASSWORD,
     first_name: `Load${suffix}`,
     last_name: 'Tester',

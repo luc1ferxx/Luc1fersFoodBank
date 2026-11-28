@@ -24,7 +24,7 @@ import { flushPromises, renderApp } from "../test/helpers";
 const adminBackend = () => {
   const backend = installFakeBackend({ user: demoUser });
   backend.state.merchantAccounts = [
-    merchantAccountFixture({ merchant_id: 3, email: "merchant.burgerbarn@laifood.com" }),
+    merchantAccountFixture({ merchant_id: 3, email: "merchant.burgerbarn@example.com" }),
   ];
   backend.state.riderAccounts = [
     riderAccountFixture({ rider_id: 1, name: "Demo Rider Alice", customer_id: null }),
@@ -64,7 +64,7 @@ describe("admin console: merchant accounts", () => {
 
     const section = await openAdmin(user);
     await waitFor(() =>
-      expect(rowFor(section, "merchant.burgerbarn@laifood.com")).toHaveTextContent("Burger Barn"),
+      expect(rowFor(section, "merchant.burgerbarn@example.com")).toHaveTextContent("Burger Barn"),
     );
 
     const form = within(section).getByRole("form", { name: "Create a merchant account" });
@@ -99,15 +99,15 @@ describe("admin console: merchant accounts", () => {
     const section = await openAdmin(user);
     const form = within(section).getByRole("form", { name: "Create a merchant account" });
     await waitFor(() => expect(within(form).getByLabelText("Restaurant")).toBeEnabled());
-    await fillLogin(form, user, "demo@laifood.com");
+    await fillLogin(form, user, "demo@example.com");
     await user.selectOptions(within(form).getByLabelText("Restaurant"), "#1 Burger Barn");
     const listReads = backend.callsTo("GET", "/admin/merchants").length;
     await user.click(within(form).getByRole("button", { name: "Create merchant" }));
 
     expect(await within(form).findByRole("alert")).toHaveTextContent(
-      "demo@laifood.com already has an account. Use another email.",
+      "demo@example.com already has an account. Use another email.",
     );
-    expect(within(form).getByLabelText("Email")).toHaveValue("demo@laifood.com");
+    expect(within(form).getByLabelText("Email")).toHaveValue("demo@example.com");
     expect(backend.state.merchantAccounts).toHaveLength(1);
     await waitFor(() =>
       expect(backend.callsTo("GET", "/admin/merchants").length).toBe(listReads + 1),
@@ -143,21 +143,21 @@ describe("admin console: merchant accounts", () => {
 
     const section = await openAdmin(user);
     const deactivate = await within(section).findByRole("button", {
-      name: "Deactivate merchant.burgerbarn@laifood.com",
+      name: "Deactivate merchant.burgerbarn@example.com",
     });
     await user.click(deactivate);
 
     const activate = await within(section).findByRole("button", {
-      name: "Activate merchant.burgerbarn@laifood.com",
+      name: "Activate merchant.burgerbarn@example.com",
     });
-    expect(rowFor(section, "merchant.burgerbarn@laifood.com")).toHaveTextContent("Inactive");
+    expect(rowFor(section, "merchant.burgerbarn@example.com")).toHaveTextContent("Inactive");
     expect(
-      within(section).getByText("Deactivated merchant merchant.burgerbarn@laifood.com."),
+      within(section).getByText("Deactivated merchant merchant.burgerbarn@example.com."),
     ).toBeInTheDocument();
 
     await user.click(activate);
     await waitFor(() =>
-      expect(rowFor(section, "merchant.burgerbarn@laifood.com")).toHaveTextContent("Active"),
+      expect(rowFor(section, "merchant.burgerbarn@example.com")).toHaveTextContent("Active"),
     );
     expect(backend.callsTo("PATCH", "/admin/merchants/3").map(requestJson)).toEqual([
       { active: false },
@@ -175,11 +175,11 @@ describe("admin console: merchant accounts", () => {
     const section = await openAdmin(user);
     await user.click(
       await within(section).findByRole("button", {
-        name: "Deactivate merchant.burgerbarn@laifood.com",
+        name: "Deactivate merchant.burgerbarn@example.com",
       }),
     );
 
-    const row = rowFor(section, "merchant.burgerbarn@laifood.com");
+    const row = rowFor(section, "merchant.burgerbarn@example.com");
     expect(await within(row).findByRole("alert")).toHaveTextContent(
       "503: Accounts unavailable Trace trace-95.",
     );
@@ -196,21 +196,21 @@ describe("admin console: rider accounts", () => {
     await waitFor(() => expect(rowFor(section, "Demo Rider Alice")).toHaveTextContent("No login"));
 
     const form = within(section).getByRole("form", { name: "Create a rider account" });
-    await fillLogin(form, user, "nina.rider@laifood.com");
+    await fillLogin(form, user, "nina.rider@example.com");
     await user.type(within(form).getByLabelText("Phone"), "(408) 555-0199");
     await user.click(within(form).getByRole("button", { name: "Create rider" }));
 
     expect(
-      await within(section).findByText("Created rider nina.rider@laifood.com."),
+      await within(section).findByText("Created rider nina.rider@example.com."),
     ).toBeInTheDocument();
     expect(requestJson(backend.callsTo("POST", "/admin/riders")[0])).toEqual({
-      email: "nina.rider@laifood.com",
+      email: "nina.rider@example.com",
       password: "secret123",
       first_name: "Nina",
       last_name: "Noodle",
       phone: "(408) 555-0199",
     });
-    expect(rowFor(section, "nina.rider@laifood.com")).toHaveTextContent("Nina Noodle");
+    expect(rowFor(section, "nina.rider@example.com")).toHaveTextContent("Nina Noodle");
   });
 
   it("explains a rider email that already has an account", async () => {
@@ -219,12 +219,12 @@ describe("admin console: rider accounts", () => {
 
     const section = await openAdmin(user, "Riders");
     const form = within(section).getByRole("form", { name: "Create a rider account" });
-    await fillLogin(form, user, "rider.alice@laifood.com");
+    await fillLogin(form, user, "rider.alice@example.com");
     await user.type(within(form).getByLabelText("Phone"), "(408) 555-0199");
     await user.click(within(form).getByRole("button", { name: "Create rider" }));
 
     expect(await within(form).findByRole("alert")).toHaveTextContent(
-      "rider.alice@laifood.com already has an account. Use another email.",
+      "rider.alice@example.com already has an account. Use another email.",
     );
     expect(backend.state.riderAccounts).toHaveLength(1);
   });

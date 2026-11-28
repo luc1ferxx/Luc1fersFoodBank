@@ -114,7 +114,7 @@ class ReadReplicaSessionStoreOutageTests {
 
         // Healthy Redis: a signed-in user's catalog read finds no read-your-writes window in the session (the login's
         // has passed) and reads the replica.
-        String cookie = login("demo@laifood.com", "demo123");
+        String cookie = login("demo@example.com", "demo123");
         Thread.sleep(STICKY_WINDOW.toMillis() + 100);
         double replicaReads = reads("replica-1", ReplicaRouter.REASON_REPLICA);
         double sticky = reads(ReplicaRouter.PRIMARY, ReplicaRouter.REASON_STICKY);

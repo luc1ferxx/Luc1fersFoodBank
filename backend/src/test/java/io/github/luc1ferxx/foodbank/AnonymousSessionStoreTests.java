@@ -157,7 +157,7 @@ class AnonymousSessionStoreTests {
 
     @Test
     void successfulLogin_shouldStoreOneSessionThatAuthorizesTheNextRequest() {
-        ResponseEntity<String> loginResponse = login("demo@laifood.com", "demo123");
+        ResponseEntity<String> loginResponse = login("demo@example.com", "demo123");
 
         Assertions.assertEquals(HttpStatus.OK, loginResponse.getStatusCode());
         Assertions.assertEquals(1, SESSIONS.size());

@@ -94,7 +94,7 @@ class FulfilmentFlowContainerTests extends FulfilmentContainerTestSupport {
     @Test
     void paidOrder_shouldSignalTheMerchantTheCustomerAndTheAssignedRiderOverTheirStreams() {
         String customer = signUpAndLogin();
-        String burgerKing = login("merchant.burgerking@laifood.com", "merchant123");
+        String burgerKing = login("merchant.burgerking@example.com", "merchant123");
         Map<Long, String> riderSessions = new LinkedHashMap<>();
         for (Map<String, Object> rider : jdbcTemplate.queryForList("""
                 SELECT riders.id, customers.email
@@ -138,9 +138,9 @@ class FulfilmentFlowContainerTests extends FulfilmentContainerTestSupport {
 
     private void runPaidOrderToCompletion(boolean merchantMarksPreparing) {
         String customer = signUpAndLogin();
-        String burgerKing = login("merchant.burgerking@laifood.com", "merchant123");
-        String sgdTofu = login("merchant.sgdtofu@laifood.com", "merchant123");
-        String admin = login("demo@laifood.com", "demo123");
+        String burgerKing = login("merchant.burgerking@example.com", "merchant123");
+        String sgdTofu = login("merchant.sgdtofu@example.com", "merchant123");
+        String admin = login("demo@example.com", "demo123");
 
         Long orderId = payForItemOf(customer, "Burger King", "e2e-happy-" + System.nanoTime());
 

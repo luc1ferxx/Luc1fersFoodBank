@@ -370,7 +370,7 @@ class ApiContractIntegrationTests {
 
         long caseId = opened.get("id").asLong();
         Long merchantId = jdbcTemplate.queryForObject(
-                "SELECT id FROM customers WHERE email = 'merchant.burgerking@laifood.com'", Long.class);
+                "SELECT id FROM customers WHERE email = 'merchant.burgerking@example.com'", Long.class);
         new TransactionTemplate(transactionManager).executeWithoutResult(status -> afterSalesTransitions.fire(
                 afterSalesCaseRepository.lockById(caseId),
                 new AfterSalesTransitions.Command(AfterSalesTrigger.MERCHANT_OFFER, AfterSalesActor.MERCHANT,
@@ -386,7 +386,7 @@ class ApiContractIntegrationTests {
                 .forEach(payload -> merchantAfterSalesInboxService.handle(
                         eventContracts.read(EventTopic.AFTER_SALES_EVENTS, payload, AfterSalesEventEnvelope.class)));
         JsonNode merchantCase = json(mockMvc.perform(get("/merchant/after-sales")
-                        .session(logIn("merchant.burgerking@laifood.com", "merchant123")))
+                        .session(logIn("merchant.burgerking@example.com", "merchant123")))
                 .andExpect(status().isOk())).get(0);
         Assertions.assertEquals(
                 List.of("case_id", "order_id", "order_no", "status", "reason_code", "description", "lines",
@@ -439,7 +439,7 @@ class ApiContractIntegrationTests {
         JsonNode adminRefunds = json(mockMvc.perform(get("/admin/refunds")
                         .param("status", "PENDING")
                         .param("limit", "100")
-                        .session(logIn("demo@laifood.com", "demo123")))
+                        .session(logIn("demo@example.com", "demo123")))
                 .andExpect(status().isOk()));
         Assertions.assertTrue(adminRefunds.isArray());
         JsonNode adminRefund = null;
@@ -476,7 +476,7 @@ class ApiContractIntegrationTests {
         OrderDto order = cartService.checkout(customerId, "PAID");
         String orderNo = String.valueOf(order.orderNo());
         merchantInboxService.handle(latestOrderEvent(order.id(), "order.paid"));
-        MockHttpSession merchant = logIn("merchant.burgerking@laifood.com", "merchant123");
+        MockHttpSession merchant = logIn("merchant.burgerking@example.com", "merchant123");
         List<String> merchantOrderFields = List.of("order_id", "order_no", "restaurant_id", "customer_id", "status",
                 "total_price", "currency", "items", "paid_at", "updated_at");
 

@@ -316,7 +316,7 @@ refund gateway.
 (cd backend && SPRING_PROFILES_ACTIVE=h2,demo ./gradlew bootRun)
 ```
 
-1. Sign in as `demo@laifood.com` (a customer and an admin), add a menu item to the cart and pay with
+1. Sign in as `demo@example.com` (a customer and an admin), add a menu item to the cart and pay with
    `POST /payments/checkout` (with an `Idempotency-Key`).
 2. Complete the order as the admin: `PATCH /orders/{orderId}/status` with `{"status": "ACCEPTED"}`, then `PREPARING`,
    then `COMPLETED`, each with its own `Idempotency-Key`.

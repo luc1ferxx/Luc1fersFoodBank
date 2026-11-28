@@ -51,9 +51,9 @@ abstract class AbstractAfterSalesAdminIntegrationTests {
 
     static final String BURGER_KING = "Burger King";
 
-    static final String BURGER_KING_MERCHANT = "merchant.burgerking@laifood.com";
+    static final String BURGER_KING_MERCHANT = "merchant.burgerking@example.com";
 
-    static final String ADMIN_EMAIL = "demo@laifood.com";
+    static final String ADMIN_EMAIL = "demo@example.com";
 
     @Autowired
     MockMvc mockMvc;

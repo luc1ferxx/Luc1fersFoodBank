@@ -256,7 +256,7 @@ class ContainerizedOrderFlowTests {
         Assertions.assertEquals(1, entries.size());
         Map<String, Object> entry = entries.get(0);
         Assertions.assertEquals(
-                jdbcTemplate.queryForObject("SELECT id FROM customers WHERE email = 'demo@laifood.com'", Long.class),
+                jdbcTemplate.queryForObject("SELECT id FROM customers WHERE email = 'demo@example.com'", Long.class),
                 ((Number) entry.get("actor_customer_id")).longValue()
         );
         Assertions.assertEquals("ROLE_ADMIN", entry.get("actor_role"));
@@ -270,7 +270,7 @@ class ContainerizedOrderFlowTests {
 
     private ResponseEntity<String> login() {
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-        form.add("username", "demo@laifood.com");
+        form.add("username", "demo@example.com");
         form.add("password", "demo123");
 
         HttpHeaders headers = new HttpHeaders();

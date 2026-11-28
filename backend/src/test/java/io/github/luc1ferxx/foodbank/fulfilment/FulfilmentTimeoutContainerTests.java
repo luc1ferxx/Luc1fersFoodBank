@@ -60,8 +60,8 @@ class FulfilmentTimeoutContainerTests extends FulfilmentContainerTestSupport {
     @Test
     void ordersNobodyActsOn_shouldBeCancelledByTheAcceptAndPaymentTimeouts() {
         String customer = signUpAndLogin();
-        String fashionWok = login("merchant.fashionwok@laifood.com", "merchant123");
-        String admin = login("demo@laifood.com", "demo123");
+        String fashionWok = login("merchant.fashionwok@example.com", "merchant123");
+        String admin = login("demo@example.com", "demo123");
 
         Long paidOrderId = payForItemOf(customer, "Fashion Wok", "e2e-timeout-" + System.nanoTime());
         String otherCustomer = signUpAndLogin();

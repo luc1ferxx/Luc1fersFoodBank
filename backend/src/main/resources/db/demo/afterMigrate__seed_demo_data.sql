@@ -1,16 +1,18 @@
 -- Demo restaurants price in USD: a restaurant prices its whole menu in one currency (restaurants.currency), and
 -- each menu item takes its restaurant's currency.
+-- Their pictures are the drawings in frontend/public/static/demo, which the app serves as /static/demo/*.svg,
+-- so the demo loads nothing from another host.
 INSERT INTO customers (email, enabled, password, first_name, last_name)
-SELECT 'demo@laifood.com', TRUE, '{noop}demo123', 'Demo', 'User'
+SELECT 'demo@example.com', TRUE, '{noop}demo123', 'Demo', 'User'
 WHERE NOT EXISTS (
-    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('demo@laifood.com')
+    SELECT 1 FROM customers WHERE LOWER(email) = LOWER('demo@example.com')
 );
 
 
 INSERT INTO authorities (email, authority)
 SELECT customers.email, 'ROLE_USER'
 FROM customers
-WHERE LOWER(customers.email) = LOWER('demo@laifood.com')
+WHERE LOWER(customers.email) = LOWER('demo@example.com')
   AND NOT EXISTS (
     SELECT 1 FROM authorities WHERE authorities.email = customers.email AND authority = 'ROLE_USER'
 );
@@ -19,7 +21,7 @@ WHERE LOWER(customers.email) = LOWER('demo@laifood.com')
 INSERT INTO authorities (email, authority)
 SELECT customers.email, 'ROLE_ADMIN'
 FROM customers
-WHERE LOWER(customers.email) = LOWER('demo@laifood.com')
+WHERE LOWER(customers.email) = LOWER('demo@example.com')
   AND NOT EXISTS (
     SELECT 1 FROM authorities WHERE authorities.email = customers.email AND authority = 'ROLE_ADMIN'
 );
@@ -28,7 +30,7 @@ WHERE LOWER(customers.email) = LOWER('demo@laifood.com')
 INSERT INTO carts (customer_id, total_price, currency)
 SELECT id, 0.00, 'USD'
 FROM customers
-WHERE LOWER(email) = LOWER('demo@laifood.com')
+WHERE LOWER(email) = LOWER('demo@example.com')
   AND NOT EXISTS (
       SELECT 1 FROM carts WHERE carts.customer_id = customers.id
   );
@@ -37,7 +39,7 @@ WHERE LOWER(email) = LOWER('demo@laifood.com')
 INSERT INTO restaurants (name, address, image_url, phone, currency)
 SELECT 'Burger King',
        '773 N Mathilda Ave, Sunnyvale, CA 94085',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/store%2Fheader%2F10171.png',
+       '/static/demo/restaurant-burgers.svg',
        '(408) 736-0101',
        'USD'
 WHERE NOT EXISTS (SELECT 1 FROM restaurants WHERE name = 'Burger King');
@@ -46,7 +48,7 @@ WHERE NOT EXISTS (SELECT 1 FROM restaurants WHERE name = 'Burger King');
 INSERT INTO restaurants (name, address, image_url, phone, currency)
 SELECT 'SGD Tofu House',
        '3450 El Camino Real #105, Santa Clara, CA 95051',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/store%2Fheader%2F1579.jpg',
+       '/static/demo/restaurant-tofu.svg',
        '(408) 261-3030',
        'USD'
 WHERE NOT EXISTS (SELECT 1 FROM restaurants WHERE name = 'SGD Tofu House');
@@ -55,7 +57,7 @@ WHERE NOT EXISTS (SELECT 1 FROM restaurants WHERE name = 'SGD Tofu House');
 INSERT INTO restaurants (name, address, image_url, phone, currency)
 SELECT 'Fashion Wok',
        '163 S Murphy Ave, Sunnyvale, CA 94086',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/store%2Fheader%2F273997.jpg',
+       '/static/demo/restaurant-wok.svg',
        '(408) 739-8866',
        'USD'
 WHERE NOT EXISTS (SELECT 1 FROM restaurants WHERE name = 'Fashion Wok');
@@ -63,7 +65,7 @@ WHERE NOT EXISTS (SELECT 1 FROM restaurants WHERE name = 'Fashion Wok');
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Made with white meat chicken, our Chicken Fries are coated in a light crispy breading seasoned with savory spices and herbs.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=300,format=auto,quality=50/https://cdn.doordash.com/media/photos/f439436f-c5ab-47af-bac4-7b73ab60a24b-retina-large.jpg',
+       '/static/demo/chicken-fries.svg',
        'Chicken Fries - 9 Pc',
        4.89,
        restaurants.id,
@@ -77,7 +79,7 @@ WHERE restaurants.name = 'Burger King'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Our Whopper Sandwich is a 1/4 lb of savory flame-grilled beef topped with juicy tomatoes, fresh lettuce, creamy mayonnaise, ketchup, crunchy pickles, and sliced white onions on a soft sesame seed bun.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=300,format=auto,quality=50/https://cdn.doordash.com/media/photos/f878a689-618b-4c70-a00f-e7b1f320adc9-retina-large.jpg',
+       '/static/demo/burger-meal.svg',
        'Whopper Meal',
        10.59,
        restaurants.id,
@@ -91,7 +93,7 @@ WHERE restaurants.name = 'Burger King'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Our Impossible Whopper Sandwich features a savory flame-grilled patty made from plants topped with juicy tomatoes, fresh lettuce, creamy mayonnaise, ketchup, crunchy pickles, and sliced white onions on a soft sesame seed bun.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/5c306a5f-fdd2-41d2-a660-9762aaa8eee8-retina-large.jpg',
+       '/static/demo/plant-burger.svg',
        'Impossible Whopper',
        7.99,
        restaurants.id,
@@ -105,7 +107,7 @@ WHERE restaurants.name = 'Burger King'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Say hello to our Hershey Sundae Pie. One part crunchy chocolate crust and one part chocolate creme filling, garnished with a delicious topping and real chocolate chips.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/80b1670d-e9c0-4886-a5b7-1ad48edd24ca-retina-large.jpg',
+       '/static/demo/chocolate-pie.svg',
        'Hershey Sundae Pie',
        3.09,
        restaurants.id,
@@ -119,7 +121,7 @@ WHERE restaurants.name = 'Burger King'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Our Whopper Sandwich is a 1/4 lb of savory flame-grilled beef topped with juicy tomatoes, fresh lettuce, creamy mayonnaise, ketchup, crunchy pickles, and sliced white onions on a soft sesame seed bun.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/9b3d7985-e457-43b3-938d-5184f48c2687-retina-large-jpeg',
+       '/static/demo/burger.svg',
        'Whopper',
        6.39,
        restaurants.id,
@@ -133,7 +135,7 @@ WHERE restaurants.name = 'Burger King'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Our Double Whopper Sandwich is a pairing of two 1/4 lb savory flame-grilled beef patties topped with juicy tomatoes, fresh lettuce, creamy mayonnaise, ketchup, crunchy pickles, and sliced white onions on a soft sesame seed bun.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/45addf4a-e8a8-47cb-a705-cce1d10ce86d-retina-large.jpg',
+       '/static/demo/double-burger-meal.svg',
        'Double Whopper Meal',
        11.69,
        restaurants.id,
@@ -147,7 +149,7 @@ WHERE restaurants.name = 'Burger King'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Crispy chicken with mayo and fresh toppings on a toasted bun.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/31dd68c2-06ec-42ad-bcd4-da7bd3425437-retina-large-jpeg',
+       '/static/demo/spicy-chicken-sandwich.svg',
        'Spicy Crispy Chicken Sandwich',
        6.09,
        restaurants.id,
@@ -161,7 +163,7 @@ WHERE restaurants.name = 'Burger King'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Our Original Chicken Sandwich is lightly breaded and topped with shredded lettuce and creamy mayonnaise on a sesame seed bun.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/3e437f54-fa4e-4e9d-bf80-8a1e5b120f32-retina-large-jpeg',
+       '/static/demo/chicken-sandwich.svg',
        'Original Chicken Sandwich',
        6.09,
        restaurants.id,
@@ -175,7 +177,7 @@ WHERE restaurants.name = 'Burger King'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Two 1/4 lb savory flame-grilled beef patties topped with thick-cut smoked bacon, melted American cheese, ketchup, and creamy mayonnaise.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/adb96c32-3c5b-4375-ba92-b30767d2513d-retina-large.jpg',
+       '/static/demo/bacon-burger-meal.svg',
        'Bacon King Sandwich Meal',
        12.19,
        restaurants.id,
@@ -189,7 +191,7 @@ WHERE restaurants.name = 'Burger King'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Cool down with our creamy hand spun Oreo shake.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/c3ad483f-bad7-44f1-96af-4c3dcfc63c6d-retina-large.jpg',
+       '/static/demo/cookie-shake.svg',
        'Classic Oreo Shake',
        3.99,
        restaurants.id,
@@ -203,7 +205,7 @@ WHERE restaurants.name = 'Burger King'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Tofu boiled with your choice of meat and mushrooms. Served with your choice of side and an assortment of kimchi dishes.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/b7055ca9-3caf-4d9d-9c99-04be1e36dbbf-retina-large-jpeg',
+       '/static/demo/tofu-stew-original.svg',
        'Original Soft Tofu',
        17.06,
        restaurants.id,
@@ -217,7 +219,7 @@ WHERE restaurants.name = 'SGD Tofu House'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Tofu boiled with beef, shrimp, and clams. Served with your choice of side and an assortment of kimchi dishes.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/37ad1974-1395-4e5c-86ff-fdf120cf8c58-retina-large-jpeg',
+       '/static/demo/tofu-stew-combination.svg',
        'Combination Soft Tofu',
        17.06,
        restaurants.id,
@@ -231,7 +233,7 @@ WHERE restaurants.name = 'SGD Tofu House'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Tofu boiled with mussels, shrimp, and clam. Served with your choice of side and an assortment of kimchi dishes.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/96bc8289-1950-4b4f-823d-12f33349a5fe-retina-large-jpeg',
+       '/static/demo/tofu-stew-seafood.svg',
        'Seafood Soft Tofu',
        17.06,
        restaurants.id,
@@ -245,7 +247,7 @@ WHERE restaurants.name = 'SGD Tofu House'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Squid, clam, imitation crab, and grilled onions fried in batter.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/0a94b7e9-903d-49b7-937a-7940c8b56ad5-retina-large-jpeg',
+       '/static/demo/seafood-pancake.svg',
        'Seafood Pancake',
        20.27,
        restaurants.id,
@@ -259,7 +261,7 @@ WHERE restaurants.name = 'SGD Tofu House'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Tofu boiled with kimchi and your choice of meat. Served with your choice of side and an assortment of kimchi dishes.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/0c062cff-1868-40e1-946d-29d3e46f1541-retina-large-jpeg',
+       '/static/demo/tofu-stew-kimchi.svg',
        'Kimchi Soft Tofu',
        17.06,
        restaurants.id,
@@ -273,7 +275,7 @@ WHERE restaurants.name = 'SGD Tofu House'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Beef short ribs served with rice and an assortment of kimchi dishes.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/6340c369-2485-4d60-afcf-ca9068448d84-retina-large.jpg',
+       '/static/demo/short-ribs.svg',
        'Beef Short Ribs',
        29.36,
        restaurants.id,
@@ -287,7 +289,7 @@ WHERE restaurants.name = 'SGD Tofu House'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Tofu boiled with dumplings, rice cake, and beef. Served with your choice of side and an assortment of kimchi dishes.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/b7055ca9-3caf-4d9d-9c99-04be1e36dbbf-retina-large-jpeg',
+       '/static/demo/tofu-stew-dumpling.svg',
        'Dumpling Soft Tofu',
        17.06,
        restaurants.id,
@@ -301,7 +303,7 @@ WHERE restaurants.name = 'SGD Tofu House'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Tofu boiled with assorted mushrooms. Served with your choice of side and an assortment of kimchi dishes.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/b7055ca9-3caf-4d9d-9c99-04be1e36dbbf-retina-large-jpeg',
+       '/static/demo/tofu-stew-mushroom.svg',
        'Assorted Mushroom Tofu',
        17.06,
        restaurants.id,
@@ -315,7 +317,7 @@ WHERE restaurants.name = 'SGD Tofu House'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Rice, BBQ beef, and vegetables served in stoneware with an assortment of kimchi dishes.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/9844dd4e-3c74-4942-8f90-2b3f4be25049-retina-large-jpeg',
+       '/static/demo/stone-bowl-rice.svg',
        'BBQ Beef and Vegetables in Stoneware',
        20.27,
        restaurants.id,
@@ -329,7 +331,7 @@ WHERE restaurants.name = 'SGD Tofu House'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Tofu boiled with ham and cheese. Served with your choice of side and an assortment of kimchi dishes.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/9c6b2a1c-1e2c-4d80-a111-2bebbcadd64c-retina-large.jpg',
+       '/static/demo/tofu-stew-ham-cheese.svg',
        'Ham and Cheese Soft Tofu',
        17.06,
        restaurants.id,
@@ -343,7 +345,7 @@ WHERE restaurants.name = 'SGD Tofu House'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Medium spicy.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/5b34852e-d253-461c-8be8-1bb0bc5e39be-retina-large.jpg',
+       '/static/demo/pork-pepper-stir-fry.svg',
        'Stir Fried Pork with Pepper',
        13.99,
        restaurants.id,
@@ -357,7 +359,7 @@ WHERE restaurants.name = 'Fashion Wok'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'A savory eggplant dish with pork, garlic, and cilantro.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/bf70f262-0c55-41e1-89bc-84c061ae485f-retina-large.jpg',
+       '/static/demo/eggplant-pork.svg',
        'Eggplant with Minced Pork, Garlic, Cilantro',
        14.99,
        restaurants.id,
@@ -371,7 +373,7 @@ WHERE restaurants.name = 'Fashion Wok'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Mild spicy.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/cb870c77-ace1-49ec-aa2f-9e18de102242-retina-large.jpg',
+       '/static/demo/cauliflower-pork.svg',
        'Stir Fried Cauliflower with Pork',
        14.99,
        restaurants.id,
@@ -385,7 +387,7 @@ WHERE restaurants.name = 'Fashion Wok'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Mild spicy.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/1acf9c6b-189d-4583-a151-7ef522c283d9-retina-large.jpg',
+       '/static/demo/fish-sour-soup.svg',
        'Poached Fish Fillets in Sour Soup',
        17.99,
        restaurants.id,
@@ -399,7 +401,7 @@ WHERE restaurants.name = 'Fashion Wok'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Very spicy.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/7f05859d-5e83-476d-a45a-73a3eb8a94e0-retina-large.jpg',
+       '/static/demo/beef-pepper-stir-fry.svg',
        'Stir Fried Beef with Pepper',
        16.99,
        restaurants.id,
@@ -413,7 +415,7 @@ WHERE restaurants.name = 'Fashion Wok'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Medium spicy.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/8b2ca9fc-2c1d-4bf2-96ff-d0bd3c415e8d-retina-large.jpg',
+       '/static/demo/tripe-tofu-stir-fry.svg',
        'Stir Fried Shredded Tripe with Wugang Tofu',
        19.99,
        restaurants.id,
@@ -427,7 +429,7 @@ WHERE restaurants.name = 'Fashion Wok'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Very spicy.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/89ad8679-346e-41d8-b98f-3501fff4b277-retina-large.jpg',
+       '/static/demo/beef-chili-oil.svg',
        'Poached Sliced Beef in Hot Chili Oil',
        17.99,
        restaurants.id,
@@ -441,7 +443,7 @@ WHERE restaurants.name = 'Fashion Wok'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'With chopped broccoli, peas, carrots, bok choy, and egg.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/ec06c431-9426-4971-a129-920440e1c9ce-retina-large.jpg',
+       '/static/demo/fried-rice.svg',
        'Fried Rice',
        9.50,
        restaurants.id,
@@ -455,7 +457,7 @@ WHERE restaurants.name = 'Fashion Wok'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'Very spicy.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/2fe1b87f-d41f-4fa4-8cae-5f2ee5bb97e4-retina-large.jpg',
+       '/static/demo/pepper-eggplant-egg.svg',
        'Smashed Green Pepper, Chinese Eggplant and Preserved Egg',
        11.99,
        restaurants.id,
@@ -469,7 +471,7 @@ WHERE restaurants.name = 'Fashion Wok'
 
 INSERT INTO menu_items (description, image_url, name, price, restaurant_id, currency)
 SELECT 'A simple greens dish with minced garlic.',
-       'https://img.cdn4dd.com/cdn-cgi/image/fit=contain,width=1920,format=auto,quality=50/https://cdn.doordash.com/media/photos/a307e73d-dd12-4841-be14-6f5825a64c59-retina-large.jpg',
+       '/static/demo/garlic-greens.svg',
        'Stir Fried A-Choy with Minced Garlic',
        10.99,
        restaurants.id,

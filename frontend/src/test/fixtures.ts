@@ -14,10 +14,10 @@ export const USD = currencyCode("USD");
 /** Taco Town prices in euros, so the UI tests see a second currency. */
 export const EUR = currencyCode("EUR");
 
-/** A customer who is also an admin, like the demo seed's demo@laifood.com. */
+/** A customer who is also an admin, like the demo seed's demo@example.com. */
 export const demoUser: CurrentUser = {
   id: 1,
-  email: "demo@laifood.com",
+  email: "demo@example.com",
   first_name: "Demo",
   last_name: "User",
   roles: [ROLES.user, ROLES.admin],
@@ -39,7 +39,7 @@ export const customerUser: CurrentUser = {
 /** A merchant login bound to Burger Barn (no ROLE_USER, like the demo merchants). */
 export const merchantUser: CurrentUser = {
   id: 21,
-  email: "merchant.burgerbarn@laifood.com",
+  email: "merchant.burgerbarn@example.com",
   first_name: "Burger Barn",
   last_name: "Merchant",
   roles: [ROLES.merchant],
@@ -59,7 +59,7 @@ export const riderProfileFixture: RiderProfile = {
 /** A rider login. */
 export const riderUser: CurrentUser = {
   id: 31,
-  email: "rider.alice@laifood.com",
+  email: "rider.alice@example.com",
   first_name: "Alice",
   last_name: "Rider",
   roles: [ROLES.rider],

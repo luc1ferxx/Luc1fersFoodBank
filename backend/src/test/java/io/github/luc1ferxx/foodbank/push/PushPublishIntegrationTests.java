@@ -189,7 +189,7 @@ class PushPublishIntegrationTests {
 
     @Test
     void aNewNotification_shouldSignalItsCustomerAndARedeliveredOneNothing() {
-        long customerId = customerService.getCustomerByEmail("demo@laifood.com").id();
+        long customerId = customerService.getCustomerByEmail("demo@example.com").id();
         RecordingChannel customer = openStream(PushRecipient.customer(customerId));
         long orderId = insertOrder(customerId);
         // The after-sales notices insert with a target-less ON CONFLICT, which H2 runs too.
@@ -223,7 +223,7 @@ class PushPublishIntegrationTests {
 
 
     private long customerId() {
-        return customerService.getCustomerByEmail("demo@laifood.com").id();
+        return customerService.getCustomerByEmail("demo@example.com").id();
     }
 
 

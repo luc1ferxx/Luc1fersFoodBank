@@ -54,7 +54,7 @@ abstract class AbstractAfterSalesApiIntegrationTests {
 
     static final String BURGER_KING = "Burger King";
 
-    static final String BURGER_KING_MERCHANT = "merchant.burgerking@laifood.com";
+    static final String BURGER_KING_MERCHANT = "merchant.burgerking@example.com";
 
     @Autowired
     MockMvc mockMvc;
