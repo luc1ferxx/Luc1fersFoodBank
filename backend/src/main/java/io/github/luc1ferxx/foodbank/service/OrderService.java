@@ -102,6 +102,7 @@ public class OrderService implements OrderLifecycleCommands {
     private final AuditLogService auditLogService;
     private final CancellationRefunds cancellationRefunds;
     private final AfterSalesMerchantCommands afterSalesMerchantCommands;
+    private final StockService stockService;
 
 
     public OrderService(
@@ -114,7 +115,8 @@ public class OrderService implements OrderLifecycleCommands {
             OrderStatusHistoryService orderStatusHistoryService,
             AuditLogService auditLogService,
             CancellationRefunds cancellationRefunds,
-            AfterSalesMerchantCommands afterSalesMerchantCommands
+            AfterSalesMerchantCommands afterSalesMerchantCommands,
+            StockService stockService
     ) {
         this.orderRepository = orderRepository;
         this.orderHistoryItemRepository = orderHistoryItemRepository;
@@ -126,6 +128,7 @@ public class OrderService implements OrderLifecycleCommands {
         this.auditLogService = auditLogService;
         this.cancellationRefunds = cancellationRefunds;
         this.afterSalesMerchantCommands = afterSalesMerchantCommands;
+        this.stockService = stockService;
     }
 
 
@@ -496,7 +499,8 @@ public class OrderService implements OrderLifecycleCommands {
      * new status (with its cancel reason and updated_at) with a compare-and-set on the status the order was read in,
      * then its order_status_history row and its order event to the outbox, in the same transaction and all with the
      * same time. A cancel of a paid order (PAID or ACCEPTED) then opens its refund, still in that transaction and at
-     * that time. A trigger that already happened or that the status does not allow writes nothing.
+     * that time, and every cancel of an order that was not picked up gives back the stock it took. A trigger that
+     * already happened or that the status does not allow writes nothing.
      *
      * @param context       what the trigger's checks read; null for the triggers that read none
      * @param cancelReason  stored on the order when the trigger cancels it; the order keeps its reason otherwise
@@ -545,15 +549,24 @@ public class OrderService implements OrderLifecycleCommands {
         );
         List<OrderHistoryItemDto> items = getOrderItems(updatedOrder.id());
         orderEventOutboxService.enqueueOrderEvent(updatedOrder, items, null, transitionedAt);
-        if (targetStatus == OrderStatus.CANCELLED && REFUNDED_WHEN_CANCELLED.contains(currentStatus)) {
+        if (targetStatus == OrderStatus.CANCELLED) {
+            boolean paid = REFUNDED_WHEN_CANCELLED.contains(currentStatus);
             // After the order's own event (ADR 0002 D12): the order row stays locked, and the refund commits with the
-            // cancel or rolls it back. A pickup that committed before this cancel took the lock is seen here.
-            cancellationRefunds.refundCancelledOrder(new CancellationRefunds.Cancellation(
-                    updatedOrder,
-                    trigger,
-                    orderRepository.findPickedUpAt(updatedOrder.id()).orElse(null),
-                    transitionedAt
-            ));
+            // cancel or rolls it back. A pickup that committed before this cancel took the lock is seen here. A PLACED
+            // order has no delivery (dispatch starts at ACCEPTED), so it has no pickup to read.
+            LocalDateTime pickedUpAt = paid ? orderRepository.findPickedUpAt(updatedOrder.id()).orElse(null) : null;
+            if (paid) {
+                cancellationRefunds.refundCancelledOrder(new CancellationRefunds.Cancellation(
+                        updatedOrder,
+                        trigger,
+                        pickedUpAt,
+                        transitionedAt
+                ));
+            }
+            // Picked-up food is gone, so its stock is not given back. After the refund: menu_items rows are locked last.
+            if (pickedUpAt == null) {
+                stockService.release(updatedOrder.id());
+            }
         }
         // Counted once the transition commits: a later step of the caller (its audit entry, its idempotency record)
         // can still roll it back.

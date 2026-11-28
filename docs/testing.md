@@ -28,6 +28,15 @@ Build the backend jar with embedded frontend assets:
 The test suite covers:
 
 - checkout idempotency, rollback, and concurrent checkout behavior
+- menu item stock on PostgreSQL and H2 (`StockH2IntegrationTests`, `StockPostgresIntegrationTests`): paid and unpaid
+  checkouts taking it, `409 OUT_OF_STOCK` from the early check and from the take leaving nothing behind (a retry with
+  the same key then goes through), replays taking nothing more, every cancel path giving it back once but not after
+  the pickup, limits changed after the order, the take and the give-back in ascending menu item id whatever order the
+  cart had, the check constraint, and the admin API with its 400, 401, 403 and 404; on PostgreSQL, two checkouts for
+  the last unit, a checkout refused for its second item, a checkout racing a cancel and a limit removed while a
+  checkout waits, each in both serial orders (`PostgresRowLocks`), the item rows a waiting take or give-back already
+  holds (a `NOWAIT` probe), a cart add next to an uncommitted take, and a burst of concurrent checkouts selling exactly
+  what is left; the service's branches (`StockServiceTests`)
 - order status transition rules and rollback behavior
 - outbox publish success, retryable failure, max-attempt failure, and admin retry
 - Kafka consumer deduplication and notification idempotency
@@ -109,6 +118,7 @@ The backend runs on Spring Boot 4.2; [docs/spring-boot-4-migration.md](spring-bo
 | Copy frontend build into backend | `cd frontend && npm run deploy:backend` |
 | Build executable jar | `cd backend && ./gradlew bootJar --no-daemon` |
 | Run load test | `k6 run load-tests/order-flow.js`, against a backend started with `SECURITY_RATE_LIMIT_ENABLED=false` (the `signup` and `login` buckets per IP and `payment-checkout` per user refuse it otherwise) |
+| Race buyers for one limited item | `BASE_URL=http://localhost:18080 STOCK=100 BUYERS=400 k6 run load-tests/stock-race.js`, against the stack of `load-tests/catalog-bench.compose.yml` (usage and options in the script's header) |
 | Backend CI gates | `cd backend && ./gradlew test jacocoTestReport jacocoTestCoverageVerification spotbugsMain -x buildFrontend -x syncFrontendBuild --no-daemon` |
 | One CI test shard (of 4) | `cd backend && ./gradlew test -PtestShard=2/4 -x buildFrontend -x syncFrontendBuild --no-daemon` |
 | Observability stack + app | `ONLINEORDER_SCRAPE_TARGETS=./prometheus/targets/compose docker compose -f deploy/observability/docker-compose.yml --profile app up -d --build` (Grafana on 3001) |

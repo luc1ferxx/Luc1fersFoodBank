@@ -11,6 +11,7 @@ public final class AuditActions {
     public static final String OUTBOX_EVENT_ABANDON = "outbox_event.abandon";
     public static final String DEAD_LETTER_REPLAY = "dead_letter.replay";
     public static final String MENU_ITEM_UPDATE = "menu_item.update";
+    public static final String MENU_ITEM_STOCK_UPDATE = "menu_item.stock.update";
     public static final String RESTAURANT_UPDATE = "restaurant.update";
     public static final String DELIVERY_PICKED_UP = "delivery.picked_up";
     public static final String DELIVERY_DELIVERED = "delivery.delivered";

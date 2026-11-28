@@ -1,6 +1,6 @@
-# Throwaway PostgreSQL and Redis for load-tests/catalog-read.js. It is its own compose project on unusual host
-# ports, so it can run next to backend/docker-compose.yml (5433, 6379) without touching that data; nothing is
-# persisted.
+# Throwaway PostgreSQL and Redis for load-tests/catalog-read.js and load-tests/stock-race.js. It is its own compose
+# project on unusual host ports, so it can run next to backend/docker-compose.yml (5433, 6379) without touching that
+# data; nothing is persisted.
 #
 #   docker compose -f load-tests/catalog-bench.compose.yml up -d --wait
 #   (cd backend && ./gradlew bootJar -x buildFrontend -x syncFrontendBuild --no-daemon)

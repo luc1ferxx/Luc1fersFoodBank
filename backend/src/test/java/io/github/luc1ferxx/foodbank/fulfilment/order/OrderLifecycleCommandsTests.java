@@ -28,6 +28,7 @@ import io.github.luc1ferxx.foodbank.service.IdempotencyRequestInitializer;
 import io.github.luc1ferxx.foodbank.service.OrderEventOutboxService;
 import io.github.luc1ferxx.foodbank.service.OrderService;
 import io.github.luc1ferxx.foodbank.service.OrderStatusHistoryService;
+import io.github.luc1ferxx.foodbank.service.StockService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -89,6 +90,9 @@ class OrderLifecycleCommandsTests {
     @Mock
     private AfterSalesMerchantCommands afterSalesMerchantCommands;
 
+    @Mock
+    private StockService stockService;
+
     private OrderService orderService;
 
 
@@ -104,7 +108,8 @@ class OrderLifecycleCommandsTests {
                 orderStatusHistoryService,
                 auditLogService,
                 cancellationRefunds,
-                afterSalesMerchantCommands
+                afterSalesMerchantCommands,
+                stockService
         );
     }
 
@@ -817,6 +822,69 @@ class OrderLifecycleCommandsTests {
                 orderService.completeDeliveredOrder(ORDER_ID, OrderActor.rider(4L)));
 
         Mockito.verifyNoInteractions(cancellationRefunds);
+    }
+
+
+    /**
+     * The merchant's reject, the accept timeout and the payment timeout each give back the stock of the order they
+     * cancel, after the refund of a paid order (the menu items' rows are locked last); the unpaid order has none.
+     */
+    @Test
+    void merchantRejectAndTimeouts_shouldGiveBackTheStockOfTheCancelledOrder() {
+        Mockito.when(orderRepository.lockById(ORDER_ID)).thenReturn(
+                order("PAID", RESTAURANT_ID),
+                order("PAID", RESTAURANT_ID),
+                order("PLACED", RESTAURANT_ID)
+        );
+        stubCompareAndSet();
+
+        orderService.transitionRestaurantOrder(ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED,
+                "MERCHANT_REJECTED: sold out", OrderActor.merchant(40L));
+        orderService.cancelIfStillIn(
+                ORDER_ID, OrderStatus.PAID, OrderLifecycleCommands.MERCHANT_TIMEOUT, OrderActor.system());
+        orderService.cancelIfStillIn(
+                ORDER_ID, OrderStatus.PLACED, OrderLifecycleCommands.PAYMENT_TIMEOUT, OrderActor.system());
+
+        InOrder steps = Mockito.inOrder(cancellationRefunds, stockService);
+        steps.verify(cancellationRefunds).refundCancelledOrder(
+                Mockito.argThat(cancellation -> cancellation.trigger() == OrderTrigger.MERCHANT_REJECT));
+        steps.verify(stockService).release(ORDER_ID);
+        steps.verify(cancellationRefunds).refundCancelledOrder(
+                Mockito.argThat(cancellation -> cancellation.trigger() == OrderTrigger.ACCEPT_TIMEOUT));
+        // The accept timeout's, then the payment timeout's.
+        steps.verify(stockService, Mockito.times(2)).release(ORDER_ID);
+        Mockito.verifyNoMoreInteractions(cancellationRefunds, stockService);
+    }
+
+
+    /**
+     * Only a cancel gives stock back: not a move to another status, nor a cancel that already happened or is refused.
+     */
+    @Test
+    void commandsThatCancelNothing_shouldGiveBackNoStock() {
+        Mockito.when(orderRepository.lockById(ORDER_ID)).thenReturn(
+                order("PAID", RESTAURANT_ID),
+                order("ACCEPTED", RESTAURANT_ID),
+                order("ACCEPTED", RESTAURANT_ID),
+                order("CANCELLED", RESTAURANT_ID, "MERCHANT_REJECTED: out of buns"),
+                order("ACCEPTED", RESTAURANT_ID)
+        );
+        stubCompareAndSet();
+
+        orderService.transitionRestaurantOrder(
+                ORDER_ID, RESTAURANT_ID, OrderStatus.PAID, OrderStatus.ACCEPTED, null, OrderActor.merchant(40L));
+        Assertions.assertEquals(DeliveryCompletion.COMPLETED,
+                orderService.completeDeliveredOrder(ORDER_ID, OrderActor.rider(4L)));
+        // An accept timeout that lost the race, a repeated reject and the reject of an accepted order.
+        Assertions.assertTrue(orderService.cancelIfStillIn(
+                ORDER_ID, OrderStatus.PAID, OrderLifecycleCommands.MERCHANT_TIMEOUT, OrderActor.system()).isEmpty());
+        Assertions.assertFalse(orderService.transitionRestaurantOrder(ORDER_ID, RESTAURANT_ID, OrderStatus.PAID,
+                OrderStatus.CANCELLED, "MERCHANT_REJECTED: sold out", OrderActor.merchant(40L)).changed());
+        Assertions.assertThrows(ConflictException.class, () -> orderService.transitionRestaurantOrder(ORDER_ID,
+                RESTAURANT_ID, OrderStatus.PAID, OrderStatus.CANCELLED, "MERCHANT_REJECTED: sold out",
+                OrderActor.merchant(40L)));
+
+        Mockito.verifyNoInteractions(stockService);
     }
 
 

@@ -85,6 +85,7 @@ class RateLimitedRouteMappingTests {
         }
 
         Assertions.assertEquals(List.of(
+                "DELETE /admin/menu-items/{menuItemId:\\d+}/stock",
                 "DELETE /cart",
                 "DELETE /cart/items/{orderItemId:\\d+}",
                 "PATCH /admin/menu-items/{menuItemId:\\d+}",
@@ -120,6 +121,7 @@ class RateLimitedRouteMappingTests {
                 "POST /rider/deliveries/{deliveryId:\\d+}/delivered",
                 "POST /rider/deliveries/{deliveryId:\\d+}/picked-up",
                 "POST /signup",
+                "PUT /admin/menu-items/{menuItemId:\\d+}/stock",
                 "PUT /cart/items/{orderItemId:\\d+}",
                 "PUT /rider/me/availability"
         ), limited.stream().sorted().toList());

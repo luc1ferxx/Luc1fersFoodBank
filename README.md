@@ -22,7 +22,8 @@ four roles share one Spring Boot backend and one React app.
 
 ## Highlights
 
-- **Correct checkout**: idempotency keys, row locks on the cart, and money stored with its currency.
+- **Correct checkout**: idempotency keys, row locks on the cart, menu item stock that cannot oversell, and money stored
+  with its currency.
 - **Transactional outbox → Kafka**: order changes and their events commit together. Events stay in order per order,
   follow published JSON schemas, and are deduplicated by every consumer.
 - **Event-driven fulfilment**: merchant inbox, deadlines, rider dispatch and order completion run as separate modules
@@ -68,6 +69,7 @@ On one 15-core laptop that also ran k6 and the Docker services. Each row links t
 | Order flow (login, menus, cart, checkout, order list), 300 VUs | 820 req/s, p95 82 ms, p99 270 ms, no failed request | [Connections: listener threads and the pool](docs/operations.md#connections-listener-threads-and-the-pool) |
 | The same at 500 VUs | 1,120 req/s; the machine's CPU is the limit, with 20 or 30 database connections alike | same |
 | Consumer threads per listener, 500 VUs | a paid order reaches the merchant inbox in 2.2 s (p95) with 3 threads, in 44 s with 1 | same |
+| Stock race: 400 buyers pay at the same instant for the last 100 units of one dish | exactly 100 paid, 300 got `409 OUT_OF_STOCK`, no other error and 0 left, in each of 3 runs; all 400 answered within 0.37 s | [Stock](docs/correctness.md#stock) |
 | Outbox claim query, 100k unpublished events behind 1M published ones | 115-225 ms → 0.1 ms with the partial index | [ADR 0001](docs/adr/0001-order-sharding.md#what-the-repository-measured) |
 | One pod at the base limits (1Gi, 2 CPUs), G1 | about 120 req/s of the order flow; GC pauses of 5 ms on average, 9 ms at most, below saturation; 644 MiB at peak | [Container image](docs/operations.md#3-container-image) |
 
@@ -149,7 +151,7 @@ docs/           design notes, operations runbook and ADRs
 | Topic | Where |
 | --- | --- |
 | REST endpoints | [docs/api.md](docs/api.md) |
-| Checkout, money, time, order states, outbox, event contracts, caching, read replicas, security and rate limits | [docs/correctness.md](docs/correctness.md) |
+| Checkout, stock, money, time, order states, outbox, event contracts, caching, read replicas, security and rate limits | [docs/correctness.md](docs/correctness.md) |
 | Order fulfilment: merchant inbox, deadlines, dispatch, out-of-order events | [docs/fulfilment.md](docs/fulfilment.md) |
 | After-sales refunds and the after-sales demo | [docs/after-sales.md](docs/after-sales.md) |
 | Push signals (SSE) | [docs/push-signals.md](docs/push-signals.md) |
@@ -168,7 +170,8 @@ docs/           design notes, operations runbook and ADRs
 This is a demo, so some parts are simulated or missing:
 
 - **Simulated:** payment and refunds.
-- **Missing:** inventory, taxes, discounts, tips and currency conversion.
+- **Missing:** taxes, discounts, tips and currency conversion.
+- **Stock**: the menu shows none, so a sold-out item shows up at payment, and the cart reserves nothing.
 - **Kafka** delivery is at-least-once, and consumers deduplicate.
 - **Push** is best effort, with polling as the fallback.
 - **Sharding** is planned, not built.

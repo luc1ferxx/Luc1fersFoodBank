@@ -6,7 +6,7 @@
 - The backend stores one durable idempotency record per customer, checkout scope, and key.
 - Repeating the same logical request returns the stored order result.
 - Reusing the same key with a different request fingerprint returns a conflict.
-- Checkout locks the cart row, creates the order, snapshots order items, writes the outbox event, clears the cart, and stores the idempotency result in one database transaction.
+- Checkout locks the cart row, creates the order, snapshots order items, writes the outbox event, clears the cart, takes the stock of limited items ("Stock" below), and stores the idempotency result in one database transaction.
 - If the transaction fails before commit, all checkout writes roll back together.
 
 ```mermaid
@@ -19,12 +19,112 @@ sequenceDiagram
   UI->>API: POST /payments/checkout + Idempotency-Key
   API->>DB: lock cart row
   API->>DB: validate cart and idempotency fingerprint
+  API->>DB: check stock of limited items (no lock)
   API->>DB: create order and item snapshots
   API->>DB: write outbox event
-  API->>DB: clear cart and store checkout result
+  API->>DB: clear cart
+  API->>DB: take stock (conditional UPDATE, ascending id)
+  API->>DB: store checkout result
   API-->>UI: order response
   API->>Kafka: publish event after commit
 ```
+
+## Stock
+
+A menu item can have a stock limit, and checkout never sells more than it (V15, `StockService`). Customers never see
+the stock: a short item fails checkout with `409 OUT_OF_STOCK` and a message that names the item but no number, which
+would be stale by the time it is read.
+
+- **Model.** `menu_items.stock_remaining` is a nullable counter: `NULL` means unlimited (every item was so before
+  V15), and `chk_menu_item_stock_remaining_non_negative` keeps it at 0 or above. Checkout marks each order line that
+  took stock (`order_history_items.stock_reserved`), and a cancel gives back the marked lines only. Working out what
+  to give back from the order's lines and the item's current limit instead would be wrong whenever the limit changed
+  in between: an order placed while the item was unlimited, or before V15, would give back stock it never took.
+  Neither column is on an entity or a catalog DTO (only the admin's `MenuItemStockDto` carries the stock): `@Query`
+  methods of `MenuItemRepository` and `OrderHistoryItemRepository` read and write them, so the cached menu is
+  unchanged. V15 adds no foreign key to `menu_items` ([ADR 0001](adr/0001-order-sharding.md)).
+- **Check early.** Right after the cart's single-restaurant check, before the order is written, `requireInStock` reads
+  the cart's limited items and what is left of each, without a lock. A line that wants more fails the checkout at once,
+  so the checkouts of a sold-out item cost a few reads and lock no item.
+- **Take late.** The stock is taken after the order, its lines, its event and the emptied cart, just before the
+  idempotency result is stored and the checkout commits: `reserve` reads the limited items again (a limit may have
+  been set since) and, in ascending id, runs
+  `UPDATE menu_items SET stock_remaining = stock_remaining - :quantity WHERE id = :id AND stock_remaining >= :quantity`.
+  A changed row marks the order's line. No changed row means the item is short: `409 OUT_OF_STOCK`, and the whole
+  checkout rolls back, the stock already taken for other lines included (unless a re-read finds the limit removed
+  meanwhile: the item is then unlimited and takes nothing). Taking last keeps a hot item's row locked only from the
+  take to the commit, not while the order is written.
+- **Why it cannot oversell.** The `UPDATE` locks the row, so the takes of one item queue behind each other. Under READ
+  COMMITTED, when a take had to wait for the lock, PostgreSQL checks its `WHERE` again against the row the previous
+  take committed, so a take succeeds only while enough is left; no step reads the stock and writes it back later. The
+  check constraint is the backstop: a write that would go below zero fails, whatever the code does.
+- **No deadlock.** Checkout locks the cart row, the idempotency row and the new order's rows, then the `menu_items`
+  rows in ascending id. A cancel locks its command's row (the idempotency, merchant inbox or deadline row), the order
+  row and the after-sales rows, then the `menu_items` rows in ascending id. As every transaction takes the
+  `menu_items` rows last and in ascending id, one that waits for an item row holds nothing the row's holder still
+  needs, so no cycle can form; no main code locks an item row with `SELECT ... FOR UPDATE`. The take's lock (`FOR NO
+  KEY UPDATE`) does not block the `FOR KEY SHARE` that adding the item to a cart takes through the cart line's foreign
+  key, since `stock_remaining` is in no unique key.
+- **Waiting on a hot item.** The early check refuses a checkout only once the item is already short, so while stock
+  lasts every checkout of it reaches the take and queues on its row, holding its pooled connection, its cart row and
+  its idempotency row while it waits, and each take keeps the row until its checkout commits. A cart with two hot
+  items holds the lower one's row while it queues for the higher one, so their queues chain, and cancels queue for the
+  row too, holding the order row and their command's row. A request that waits longer than `lock_timeout` (3 s)
+  fails with a 500 (a lock timeout is not mapped to 503 today). The pool's `connection-timeout` (2 s) is shorter,
+  though, so when checkouts of one item arrive faster than its row commits them, the waiters can fill the pool (30
+  connections, shared with the Kafka listeners, the outbox publisher and cleanup) first, and unrelated requests on that
+  instance then get `503 SERVICE_UNAVAILABLE`.
+- **Measured.** `load-tests/stock-race.js` against the stack of `load-tests/catalog-bench.compose.yml` (Kafka off),
+  on the laptop of the README's "Measured" section: 400 buyers, each with one unit in the cart, paid at the same
+  instant for an item limited to 100. In each of three runs exactly 100 were paid, the other 300 got
+  `409 OUT_OF_STOCK`, no other request failed and the item ended at 0. All 400 checkouts were answered within
+  0.26-0.37 s of the start (p95 of one checkout 260-360 ms, as all 400 arrive at once and share the 30 pooled
+  connections), well inside the pool's `connection-timeout` and `lock_timeout`. A checkout without limited items
+  costs two more primary-key reads (the early check and the take each read which items are limited): with
+  `load-tests/order-flow.js` at 300 VUs, two runs each before and after this change, the throughput stayed at about
+  515 req/s, the checkout's median at about 7 ms, and its p95 went from 13 to 15-16 ms.
+- **Idempotent replays.** A replay with the same `Idempotency-Key` returns the stored order before any of this, so it
+  never takes stock twice. A `409 OUT_OF_STOCK` rolls the idempotency record back with the rest, so the customer can
+  lower the quantity and pay again with the same key.
+- **Giving back.** Every move into `CANCELLED` (a customer's or an admin's cancel, a merchant's reject, the payment and
+  accept timeouts) goes through `OrderService.applyTransition`, under the order's row lock and a compare-and-set on its
+  status. There `release` gives each marked line's quantity back to its item, if the item still has a limit, and clears
+  the marks. `CANCELLED` is final, so a cancel gives back exactly what its order took, once, and without marks a
+  second call would give nothing. The exception is a paid order the rider has picked up: the food is gone, so its
+  cancel gives nothing back (the `orders.picked_up_at` read of the refund rule, made once under the same lock).
+- **`PLACED` orders hold stock too.** `POST /cart/checkout` takes stock like `POST /payments/checkout`, because an
+  admin can mark a `PLACED` order paid (`ADMIN_MARK_PAID`): if only paid checkouts took stock, that path would oversell.
+  The order keeps the stock once it is paid and gives it back when it is cancelled, by the customer, an admin or the
+  payment timeout (`app.fulfilment.payment-timeout`, 15m, which needs Kafka). `POST /cart/checkout` needs only a login
+  and no payment (the UI never calls it), so any account can take an item off sale this way: one cart line can ask for
+  the whole remainder (cart quantities have no upper bound) and hold it until the payment timeout, which never comes
+  on `h2`, then check out again; the early 409, which takes no lock, lets it find the remainder by trying quantities.
+  That is an accepted limit ([limitations](limitations.md)); closing it would mean taking a `PLACED` order's stock only
+  when an admin marks it paid, or capping what unpaid orders hold.
+- **Admin API.** `GET`, `PUT` (`{"remaining": 10}`, from 0 to 1,000,000) and `DELETE` on
+  `/admin/menu-items/{menuItemId}/stock` read, set and remove a limit ([API](api.md#admin-and-recovery-apis)). A limit
+  is an absolute value: how many can still be ordered. The three are admin-only (`/admin/menu-items/*/stock` in
+  `AppConfig`, every method), `PUT` and `DELETE` share the `admin-catalog` bucket, and a change is audited as
+  `menu_item.stock.update` (`restaurant_id`, `limited` and, when limited, `remaining`); the same value again writes
+  nothing. They evict no cache, since nothing cached shows stock, and `GET` reads the primary, as checkout does.
+- **Alternatives not taken.**
+  - `SELECT ... FOR UPDATE`, then `UPDATE`: the same serialization and outcome, with the row locked for two statements
+    and a round trip instead of one.
+  - An optimistic version column: under contention most writers lose the compare-and-set and retry, so a popular item
+    turns into a stream of retries.
+  - Redis `DECR` or a Lua pre-deduction: fast, but a second source of truth outside the order's transaction. A crash
+    or a rollback between the two leaves them apart, so it needs reconciliation.
+  - A distributed lock: a new dependency with its own failure modes (expired leases, a Redis outage) for what the row
+    lock already serializes inside the order's transaction.
+  - A queue per item: every order of the item waits for one consumer, and checkout becomes asynchronous.
+- **After sharding.** `menu_items` stays in the global database while orders move to shards (ADR 0001), so the take
+  and the give-back can no longer commit with the order: checkout reserves the stock globally first, the order commits
+  on its shard, and a confirm settles the reservation (a cancel or the reservation's expiry releases it).
+
+Known limits are in [docs/limitations.md](limitations.md), the V15 rollout in [docs/operations.md](operations.md)
+section 14. Tests: `StockServiceTests`, `StockH2IntegrationTests` and `StockPostgresIntegrationTests`
+([docs/testing.md](testing.md)), and end to end `load-tests/stock-race.js`, which races more buyers than there is
+stock for one item (usage in its header).
 
 ## Money and currency
 
@@ -118,15 +218,16 @@ steps for the rider, also when an admin marked the delivery delivered through `/
 records that admin). Same-status no-ops and idempotent retries write nothing. `GET /orders/{orderId}/history` serves
 it; orders placed before V7_1 start with one `SYSTEM`/`backfill` row.
 
-Admin actions (status changes, outbox retries and abandons, dead-letter replays, catalog edits, merchant and rider
-provisioning and activation, delivery reassignment, the simulated rider actions, after-sales arbitrations and refund
-retries) and the riders' own changes (going on or off duty, picking up and delivering through `/rider/**`) are also
-written to `audit_log` by `AuditLogService.record` in the action's transaction: the login (`actor_customer_id`, the
-customer id of the admin's or the rider's login), the role (`ROLE_ADMIN`, `ROLE_RIDER`), the action, its target, a JSON
-`details` object and the trace id. The actions are `order.status.update`, `outbox_event.retry`, `outbox_event.abandon`,
-`dead_letter.replay`, `menu_item.update`, `restaurant.update`, `merchant.create`, `merchant.update`, `rider.create`,
-`rider.update`, `rider.availability`, `delivery.picked_up`, `delivery.delivered`, `delivery.reassign`,
-`after_sales_case.arbitrate` and `refund.retry` (`AuditActions`); staff entries carry the login's customer id and email,
+Admin actions (status changes, outbox retries and abandons, dead-letter replays, catalog edits and stock limits,
+merchant and rider provisioning and activation, delivery reassignment, the simulated rider actions, after-sales
+arbitrations and refund retries) and the riders' own changes (going on or off duty, picking up and delivering through
+`/rider/**`) are also written to `audit_log` by `AuditLogService.record` in the action's transaction: the login
+(`actor_customer_id`, the customer id of the admin's or the rider's login), the role (`ROLE_ADMIN`, `ROLE_RIDER`), the
+action, its target, a JSON `details` object and the trace id. The actions are `order.status.update`,
+`outbox_event.retry`, `outbox_event.abandon`, `dead_letter.replay`, `menu_item.update`, `menu_item.stock.update`,
+`restaurant.update`, `merchant.create`, `merchant.update`, `rider.create`, `rider.update`, `rider.availability`,
+`delivery.picked_up`, `delivery.delivered`, `delivery.reassign`, `after_sales_case.arbitrate` and `refund.retry`
+(`AuditActions`); staff entries carry the login's customer id and email,
 never a password. Refused actions add no entry, and neither do a retry of `PATCH /orders/{id}/status` with the same
 `Idempotency-Key` or a repeated action that changes nothing (the same flag again, a delivery move that already
 happened). Every dead-letter replay request that is not refused is recorded with its outcome (`REPLAYED`,
@@ -331,7 +432,7 @@ settings and failure modes: [docs/operations.md](operations.md), section 11):
   | `rider-availability` | `PUT /rider/me/availability` | 10, one every 6 s |
   | `order-status` | `PATCH /orders/{id}/status` (admin) | 30, one every 2 s |
   | `admin-deliveries` | `POST /admin/deliveries/{id}/picked-up`, `delivered`, `reassign` | 60, one every second |
-  | `admin-catalog` | `PATCH /admin/menu-items/{id}`, `PATCH /admin/restaurants/{id}` | 30, one every 2 s |
+  | `admin-catalog` | `PATCH /admin/menu-items/{id}`, `PATCH /admin/restaurants/{id}`, `PUT` and `DELETE /admin/menu-items/{id}/stock` | 30, one every 2 s |
   | `admin-provisioning` | `POST /admin/merchants`, `POST /admin/riders` | 10, one every 6 s |
   | `admin-staff-status` | `PATCH /admin/merchants/{id}`, `PATCH /admin/riders/{id}` | 30, one every 2 s |
   | `after-sales-arbitrate` | `POST /admin/after-sales/{id}/arbitrate` | 10, one every 6 s |

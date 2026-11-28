@@ -17,6 +17,7 @@ How OnlineOrder is observed, packaged, deployed and gated. Paths are relative to
 | Money and currencies | section 10 |
 | After-sales refunds (runbook, V12 rollout, poller) | `backend/src/main/java/io/github/luc1ferxx/foodbank/aftersales/`, section 12 |
 | Push signals (SSE stream, Redis channel, ingress) | `backend/src/main/java/io/github/luc1ferxx/foodbank/push/`, section 13 |
+| Menu item stock (V15 rollout) | `backend/src/main/java/io/github/luc1ferxx/foodbank/service/StockService.java`, section 14 |
 
 ## 1. Telemetry in the application
 
@@ -1705,3 +1706,34 @@ appears until the stream ends.
   connect is `403`; every merchant and rider REST request checks the flag anyway.
 - A logout does not end the streams the browser had open (the client closes them; signals carry no data); the
   stream timeout bounds how long one stays open.
+
+## 14. Menu item stock (V15)
+
+Checkout takes the stock of limited menu items and every cancel gives it back (docs/correctness.md "Stock"); admins
+read, set and remove limits through `/admin/menu-items/{menuItemId}/stock` (docs/api.md).
+
+### Rollout (V15)
+
+V15 adds `menu_items.stock_remaining` (nullable, no default: catalog only) and its check
+`chk_menu_item_stock_remaining_non_negative`, validated by one scan of the small `menu_items` table, then
+`order_history_items.stock_reserved` (a constant default: catalog only). Nothing is rewritten, but Flyway runs the
+three statements in one transaction: it holds the `ACCESS EXCLUSIVE` lock on `menu_items` from the first statement
+until V15 commits, through its wait for the lock on `order_history_items`, and the statements on a table queue behind
+V15 from the moment it waits for that table's lock. So menu loads that miss the cache, add-to-cart and checkouts wait
+from the start, and order reads and status changes (both read the order's lines) once V15 reaches
+`order_history_items`. The locks are brief only while no other transaction holds either table: Flyway's connections
+have no `lock_timeout`, so a long one (a report, a backup, a `psql` session) stalls all of that for as long as it
+runs. Add `"SPRING_FLYWAY_INITSQLS=SET lock_timeout = '10s'"` for this release (step 1 of "Deploying the release with
+V7-V7_2", section 7): a lock held longer then fails V15 after 10 s, which rolls back and is retried when the pod
+restarts. Keep the statement order, `menu_items` first: a checkout of the previous release reads `menu_items` before
+it inserts into `order_history_items`, so altering `order_history_items` first could deadlock with it.
+
+Pods of the previous release may run next to it, with two effects:
+
+- They ignore limits: their checkouts neither check nor take stock, so set limits only once the rollout is done (after
+  a rollback the previous release ignores them again), and their cancels give nothing back, which can only leave the
+  stock too low.
+- After V15 commits, their server-side prepared statements that select every column of the two tables (a restaurant's
+  menu on a cache miss, the lines of an order list) fail once per connection ("cached plan must not change result
+  type"), as after V11 (section 10), and on a read replica's pool once the replica has replayed V15. Those requests
+  answer `500`; a rollout with no old pod running (steps 2-4 of "Deploying the release with V7-V7_2") avoids it.
